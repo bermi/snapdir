@@ -1,0 +1,1312 @@
+#!/usr/bin/env bash
+
+# # snapdir 0.1.0
+#
+# ## Description:
+#
+#     Audit and distribute authenticated directory snapshots.
+#
+# ## License
+#
+# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
+
+# By default this script will take the name of the current file
+_SNAPDIR="snapdir"
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	_SNAPDIR="$(basename "${BASH_SOURCE[0]}")"
+fi
+_SNAPDIR_VERSION="0.1.0"
+
+set -eEuo pipefail
+IFS=$'\n\t'
+
+######  #     # #     #
+#     # #     # ##    #
+#     # #     # # #   #
+######  #     # #  #  #
+#   #   #     # #   # #
+#    #  #     # #    ##
+#     #  #####  #     #
+
+snapdir_run() (
+	# run in a subshell to avoid polluting the environment with helper functions
+	# You can call this function when sourcing this script if you want to expose it as
+	# a sub-command
+
+	set -eEuo pipefail
+	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults"
+	local boolean_args="debug|force|linked|keep|purge|verbose"
+	local value_required_args="manifest|id|remote|cwd|script_path|cache_dir|concurrency_limit|path"
+	local legal_argument_keys="${boolean_args}|${value_required_args}"
+
+	parse_argument_key() {
+		sed -E 's|^--?|_SNAPDIR_|; s|-|_|g;' <<<"${1^^}"
+	}
+
+	validate_option() {
+		set -eEuo pipefail
+		grep -q -E "^_SNAPDIR_(${legal_argument_keys^^})$" <<<"${1}" || {
+			echo "error: Unknown option: ${1//_SNAPDIR_/}" | tr '[:upper:]' '[:lower:]' >&2
+			echo "Valid options are: --(${legal_argument_keys})" >&2
+			exit 1
+		}
+	}
+
+	_snapdir_parse_argument_key() {
+		sed -E 's|^--?|_SNAPDIR_|; s|-|_|g;' <<<"${1^^}"
+	}
+
+	_snapdir_validate_option() {
+		set -eEuo pipefail
+		grep -q -E "^_SNAPDIR_(${legal_argument_keys^^})$" <<<"${1}" || {
+			echo "error: Unknown option: ${1//_SNAPDIR_/}" | tr '[:upper:]' '[:lower:]' >&2
+			echo "Valid options are: --(${legal_argument_keys})" >&2
+			exit 1
+		}
+	}
+
+	_snapdir_help() {
+		_snapdir_export_env_defaults
+		sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+		exit 0
+	}
+
+	local command=""
+	local positional_args=""
+	local key
+	local value
+	local is_boolean
+	local subcommand_candidate="$1"
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		manifest | id | stage | checkout | fetch | pull | push | verify | verify-cache | flush-cache | test | defaults)
+			# if command is already set, compain about multiple commands
+			if [ -n "$command" ]; then
+				echo "error: multiple commands specified: $command $1" >&2
+				return 1
+			fi
+			command="$1"
+			shift
+			;;
+		help | -h | --help)
+			_snapdir_help
+			;;
+		version | -v | --version)
+			echo "${_SNAPDIR_VERSION}"
+			exit 0
+			;;
+		# export all --*=* flags as _SNAPDIR_* env vars
+		--*=* | -*=*)
+			key="$(parse_argument_key "${1%%=*}")"
+			validate_option "$key"
+			export "$key"="${1#*=}"
+			shift
+			;;
+		# export all --* * flags as _SNAPDIR_* env vars
+		--*)
+			is_boolean=$(grep -q -E "^--?(${boolean_args})$" <<<"${1}" && echo true || echo false)
+			key="$(parse_argument_key "${1}")"
+			validate_option "$key"
+			shift
+			value="${1:-true}"
+			# if key is in boolean_args
+			if [[ ${is_boolean} == "false" ]] && [[ ${value:0:1} != "-" ]]; then
+				# since this might be the last arg, this will always be truthy
+				shift || true
+			else
+				value="true"
+			fi
+			export "${key}"="${value}"
+			;;
+		*)
+			positional_args="${positional_args}${1} "
+			shift
+			;;
+		esac
+	done
+
+	# if command is not set, show help
+	if [ -z "$command" ]; then
+		echo "Uknown command '$subcommand_candidate'. Valid commands are: ${subcommands}" >&2
+		echo "Try: ${_SNAPDIR} --help" >&2
+		return 1
+	fi
+
+	_snapdir_export_env_defaults
+	# env | grep _snapdir_ | sort
+	eval "snapdir_${command//-/_} $positional_args ${*:2}"
+)
+
+#     #    #    #     # ### ####### #######  #####  #######
+##   ##   # #   ##    #  #  #       #       #     #    #
+# # # #  #   #  # #   #  #  #       #       #          #
+#  #  # #     # #  #  #  #  #####   #####    #####     #
+#     # ####### #   # #  #  #       #             #    #
+#     # #     # #    ##  #  #       #       #     #    #
+#     # #     # #     # ### #       #######  #####     #
+
+snapdir_manifest() {
+	set -eEuo pipefail
+	# the manifest only gets generated once per call
+	if [[ ${_SNAPDIR_MANIFEST:-} != "" ]]; then
+		echo "$_SNAPDIR_MANIFEST"
+		return 0
+	fi
+
+	# Returns a list of files and the directories that should be part of the snapshot in the following format
+	# <file_path> <b3sum|-> <mode>
+	local base_dir
+	base_dir="$(_snapdir_get_base_dir "${1:-""}")"
+	local snapdir_dir
+	snapdir_dir="$(_snapdir_get_snapdir_dir "$base_dir" "${2:-"."}")"
+	local snapdir_dir_abs_path
+	snapdir_dir_abs_path="$(realpath "${base_dir}/${snapdir_dir}")"
+	test -d "${snapdir_dir_abs_path}" || {
+		echo "error: Snapshot directory '${snapdir_dir_abs_path}' does not exist." >&2
+		return 1
+	}
+	_SNAPDIR_MANIFEST=$(dirfest "$snapdir_dir_abs_path")
+
+	echo "${_SNAPDIR_MANIFEST}"
+}
+
+#       ### ######
+#        #  #     #
+#        #  #     #
+#        #  #     #
+#        #  #     #
+#        #  #     #
+#       ### ######
+
+snapdir_id() {
+	set -eEuo pipefail
+	# the id only gets generated once per call
+	if [[ ${_SNAPDIR_ID:-} != "" ]]; then
+		echo "$_SNAPDIR_ID"
+		return 0
+	fi
+	local manifest="${_SNAPDIR_MANIFEST:-""}"
+	if [[ ${manifest} == "" ]]; then
+		local base_dir
+		base_dir="$(_snapdir_get_base_dir "${1:-""}")"
+		local snapdir_dir
+		snapdir_dir="$(_snapdir_get_snapdir_dir "$base_dir" "${2:-"."}")"
+		manifest="$(snapdir_manifest "${base_dir}" "${snapdir_dir}")"
+	fi
+	_SNAPDIR_ID="$(echo "$manifest" | b3sum --no-names -)"
+	echo "$_SNAPDIR_ID"
+}
+
+######  #     #  #####  #     #
+#     # #     # #     # #     #
+#     # #     # #       #     #
+######  #     #  #####  #######
+#       #     #       # #     #
+#       #     # #     # #     #
+#        #####   #####  #     #
+
+snapdir_push() {
+	set -eEuo pipefail
+	local snapdir_id
+	snapdir_id=$(snapdir_id "${1:-""}" "${2:-"."}")
+	export _SNAPDIR_ID="$snapdir_id"
+	export tmp_dir
+
+	# The user might be piping the snapshot or it might be based on an existing snapshot id
+	if [[ ${_SNAPDIR_MANIFEST:-""} != "" ]]; then
+		tmp_dir="$(mktemp -d -t "${_SNAPDIR}"_"${snapdir_id}".XXXXXXXXXX)"
+		snapdir checkout --id="$snapdir_id" --linked "$tmp_dir" >/dev/null
+		_SNAPDIR_DIR="$tmp_dir"
+	fi
+	local push_directory
+	push_directory=$(_SNAPDIR_KEEP=true _SNAPDIR_VERBOSE=false snapdir_stage "${_SNAPDIR_CWD}" "${_SNAPDIR_DIR:-${2:-"."}}")
+
+	local remote="${_SNAPDIR_REMOTE:?Missing --remote option when calling ${_SNAPDIR} push}"
+	_snapdir_log "Pushing snapshot '${snapdir_id}' by copying '${push_directory}' to '${remote}'."
+	local push_command
+	push_command="$(_SNAPDIR_VERBOSE=false _snapdir_get_push_command "${push_directory}" "${remote}")"
+	local verbose="${_SNAPDIR_VERBOSE:-false}"
+	local verbose_flag=""
+	if [[ ${verbose} == true ]]; then
+		verbose_flag="set -x;"
+	fi
+	if [[ ${push_command} != "" ]]; then
+		_snapdir_log "Pushing snapshot to remote '${remote}' with command: '${push_command}'"
+		bash -c "set -eEuo pipefail;${verbose_flag}${push_command}"
+	else
+		_snapdir_log "Nothing to push to '${remote}'."
+	fi
+	rm -rf "$push_directory"
+	if [[ ${tmp_dir} != "" ]]; then
+		rm -rf "${tmp_dir}"
+	fi
+	echo "${snapdir_id}"
+}
+
+####### ####### #######  #####  #     #
+#       #          #    #     # #     #
+#       #          #    #       #     #
+#####   #####      #    #       #######
+#       #          #    #       #     #
+#       #          #    #     # #     #
+#       #######    #     #####  #     #
+
+snapdir_fetch() {
+	set -eEuo pipefail
+	local snapdir_id="${_SNAPDIR_ID:?Missing --id option when calling ${_SNAPDIR} fetch}"
+	local remote="${_SNAPDIR_REMOTE:?Missing --remote option when calling ${_SNAPDIR} push}"
+	local manifest_rel_path
+	manifest_rel_path="$(_snapdir_get_manifest_rel_path "${snapdir_id}")"
+
+	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
+	local manifest_cache_path="$cache_dir/${manifest_rel_path}"
+	if test -f "${manifest_cache_path}"; then
+		_SNAPDIR_MANIFEST="$(cat "${manifest_cache_path}")"
+	else
+		mkdir -p "$(dirname "${manifest_cache_path}")"
+		local fetch_manifest_command
+		fetch_manifest_command=$(_snapdir_get_fetch_snapdir_manifest_command "${snapdir_id}" "${remote}")
+		local verbose="${_SNAPDIR_VERBOSE:-false}"
+		local verbose_flag=""
+		if [[ ${verbose} == true ]]; then
+			verbose_flag="set -x;"
+		fi
+		bash -c "set -eEuo pipefail;${verbose_flag}${fetch_manifest_command}" || {
+			echo "error: Failed to fetch manifest for snapshot '${snapdir_id}' from remote '${remote}' when calling '${fetch_manifest_command}'." >&2
+			return 1
+		}
+		_SNAPDIR_MANIFEST="$(cat "${manifest_cache_path}.tmp")"
+	fi
+
+	local _output_dest="/dev/stdout"
+	if [[ ${_SNAPDIR_VERBOSE:-false} == false ]]; then
+		_output_dest="/dev/null"
+	fi
+
+	fetch_files_commands=$(_SNAPDIR_MANIFEST="${_SNAPDIR_MANIFEST}" _snapdir_get_fetch_snapdir_files_command)
+	if [[ ${fetch_files_commands} != "" ]]; then
+		echo "${fetch_files_commands}" | _snapdir_parallel_exec >"$_output_dest" || {
+			rm -rf "${manifest_cache_path}.tmp"
+			echo "error: Failed to fetch files for snapshot '${snapdir_id}' from remote '${remote}' when calling '${fetch_files_commands}'." >&2
+			return 1
+		}
+	fi
+
+	test -f "${manifest_cache_path}" || mv "${manifest_cache_path}.tmp" "${manifest_cache_path}"
+}
+
+#       ######  #     # #       #
+#       #     # #     # #       #
+#       #     # #     # #       #
+#       ######  #     # #       #
+#       #       #     # #       #
+#       #       #     # #       #
+#       #        #####  ####### #######
+
+snapdir_pull() {
+	set -eEuo pipefail
+	local base_dir
+	base_dir="$(_snapdir_get_base_dir "${1:-"."}")"
+
+	if [[ ${_SNAPDIR_RETRIES:-} != "" ]]; then
+		echo "warning: snapdir_pull ${_SNAPDIR_RETRIES}/retries" >&2
+		# exit after _SNAPDIR_MAX_RETRIES
+		if [[ ${_SNAPDIR_RETRIES} -gt ${_SNAPDIR_MAX_RETRIES:-3} ]]; then
+			echo "error: snapdir_pull failed after ${_SNAPDIR_MAX_RETRIES} retries" >&2
+			return 1
+		fi
+	fi
+
+	snapdir_fetch
+	_SNAPDIR_PURGE=true snapdir_verify || {
+		_SNAPDIR_RETRIES=${_SNAPDIR_RETRIES:-0}
+		_SNAPDIR_RETRIES=$((_SNAPDIR_RETRIES + 1)) snapdir_pull "${base_dir}"
+	}
+	snapdir_checkout "${base_dir}"
+}
+
+######  #     # #######  #####  #    # ####### #     # #######
+#     # #     # #       #     # #   #  #     # #     #    #
+#       #     # #       #       #  #   #     # #     #    #
+#       ####### #####   #       ###    #     # #     #    #
+#       #     # #       #       #  #   #     # #     #    #
+#     # #     # #       #     # #   #  #     # #     #    #
+######  #     # #######  #####  #    # #######  #####     #
+
+snapdir_checkout() {
+	set -eEuo pipefail
+	local base_dir
+	base_dir="$(_snapdir_get_base_dir "${1:-"."}" false)"
+	local snapdir_id="${_SNAPDIR_ID:?Missing --id option when calling ${_SNAPDIR} checkout}"
+	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
+	local manifest_rel_path
+	manifest_rel_path="$(_snapdir_get_manifest_rel_path "${snapdir_id}")"
+
+	local manifest_cache_path="$cache_dir/${manifest_rel_path}"
+	test -f "${manifest_cache_path}" || {
+		echo "Manifest not found locally. Did you forget to fetch ${snapdir_id} from the remote?" >&2
+		return 1
+	}
+	local only_path=""
+	if [[ ${_SNAPDIR_PATH:-""} != "" ]]; then
+		only_path="$(_snapdir_absolute_path "${base_dir}/${_SNAPDIR_PATH}")"
+	fi
+
+	# We store all state changes in associative arrays so that they only get applied if there are no errors
+	local directories=()
+	local success_messages=()
+	local source_files=()
+	local source_perms=()
+	local target_files=()
+	while read -r line; do
+		set -eEuo pipefail
+		# split line by spaces and define the line_parts array
+		IFS=' ' read -r -a line_parts <<<"${line}"
+		local type="${line_parts[0]}"
+		local permissions="${line_parts[1]}"
+		local checksum="${line_parts[2]}"
+		local relative_path="${line_parts[4]}"
+		local absolute_path
+		absolute_path="$(_snapdir_absolute_path "${base_dir}/${relative_path}")"
+		# When providing --path we only want to include the files starting with that path
+		if [[ ${only_path} != "" ]] && grep -v -q "^${only_path}" <<<"${absolute_path}"; then
+			continue
+		fi
+		if [[ ${type} == "D" ]]; then
+			test -d "$absolute_path" || directories+=("$absolute_path")
+		else
+			local object_rel_path
+			object_rel_path="$(_snapdir_get_object_rel_path "${checksum}")"
+			local cache_path="$cache_dir/${object_rel_path}"
+			test -f "$cache_path" || {
+				# Fatal error
+				echo "${absolute_path} with checksum ${checksum} not found on cache. Did you forget to fetch ${snapdir_id} from the remote?" >&2
+				return 1
+			}
+			local parent_dir
+			parent_dir="$(dirname "$absolute_path")"
+			test -d "${parent_dir}" || directories+=("${parent_dir}")
+			if test -f "$absolute_path"; then
+				local current_checksum
+				current_checksum=$(b3sum --no-names "$absolute_path")
+				if [[ $current_checksum == "$checksum" ]]; then
+					success_messages+=("${absolute_path} is up to date")
+					continue
+				elif [[ ${_SNAPDIR_FORCE:-false} == false ]]; then
+					# Fatal error
+					echo "File ${absolute_path} already exists. To override file, use the --force flag." >&2
+					return 1
+				else
+					success_messages+=("Existing ${absolute_path} file overwritten via --force flag.")
+				fi
+			fi
+			_snapdir_log "Checking out ${absolute_path} with checksum ${checksum}"
+			source_files+=("$cache_path")
+			target_files+=("$absolute_path")
+			source_perms+=("$permissions")
+		fi
+	done <"${manifest_cache_path}"
+
+	for directory in "${directories[@]}"; do
+		mkdir -p "$directory"
+	done
+
+	if [[ ${_SNAPDIR_LINKED:-false} == true ]]; then
+		# link all files
+		for ((i = 0; i < ${#source_files[@]}; i++)); do
+			ln "${source_files[$i]}" "${target_files[$i]}"
+		done
+	else
+		# copy all sources to targets and set permissions
+		for ((i = 0; i < ${#source_files[@]}; i++)); do
+			cp -a "${source_files[$i]}" "${target_files[$i]}"
+			chmod "${source_perms[$i]}" "${target_files[$i]}"
+		done
+	fi
+
+	if [[ ${_SNAPDIR_VERBOSE:-""} == "true" ]]; then
+		# print success messages
+		for message in "${success_messages[@]}"; do
+			_snapdir_log "$message"
+		done
+	fi
+}
+
+#     #####  #######    #     #####  #######
+#    #     #    #      # #   #     # #
+#    #          #     #   #  #       #
+#     #####     #    #     # #  #### #####
+#          #    #    ####### #     # #
+#    #     #    #    #     # #     # #
+#     #####     #    #     #  #####  #######
+
+snapdir_stage() {
+	set -eEuo pipefail
+	local base_dir
+	base_dir="$(_snapdir_get_base_dir "${1:-""}")"
+	local snapdir_dir
+	snapdir_dir="$(_snapdir_get_snapdir_dir "$base_dir" "${2:-"."}")"
+	local manifest="${_SNAPDIR_MANIFEST:-$(snapdir_manifest "${base_dir}" "${snapdir_dir}")}"
+	local snapdir_id
+	snapdir_id="$(snapdir_manifest "$base_dir" "${snapdir_dir}" | b3sum --no-names -)"
+	local staging_directory
+	staging_directory="$(mktemp -d -t "${_SNAPDIR}"_"${snapdir_id}".XXXXXXXXXX)"
+
+	local manifest_rel_path
+	manifest_rel_path="$(_snapdir_get_manifest_rel_path "${snapdir_id}")"
+
+	mkdir -p "$staging_directory/$(dirname "${manifest_rel_path}")"
+	local staged_manifest_path="$staging_directory/${manifest_rel_path}"
+	echo "${manifest}" >"$staged_manifest_path"
+	# ensure the staged manifest b3sum matches the snapshot id
+	local staged_manifest_b3sum
+	staged_manifest_b3sum="$(b3sum "$staged_manifest_path" --no-names)"
+	if [[ ${staged_manifest_b3sum} != "${snapdir_id}" ]]; then
+		echo "Staged manifest $staged_manifest_path b3sum does not match snapshot id ${snapdir_id}." >&2
+		return 1
+	fi
+
+	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
+	local manifest_cache_path="$cache_dir/${manifest_rel_path}"
+	mkdir -p "$cache_dir/$(dirname "${manifest_rel_path}")"
+
+	while read -r line; do
+		set -eEuo pipefail
+		local checksum
+		local file_path
+		checksum="$(echo "$line" | cut -d' ' -f3)"
+		file_path="${base_dir}/$(echo "$line" | cut -d' ' -f5)"
+		local object_rel_path
+		object_rel_path="$(_snapdir_get_object_rel_path "${checksum}")"
+		local object_rel_dir
+		object_rel_dir="$(dirname "${object_rel_path}")"
+		# Caches the object and verifies the checksum
+		local cache_path="$cache_dir/${object_rel_path}"
+
+		if test -f "${file_path}"; then
+			# prevent overwriting unchanged files in order to avoid unnecessary inotify events
+			if ! test -f "${cache_path}" || ! cmp "${cache_path}" "${file_path}"; then
+				_snapdir_log "Caching ${cache_path}"
+				mkdir -p "$cache_dir/${object_rel_dir}"
+				test -f "${cache_path}" && {
+					_snapdir_log "Warning: Purged tampered ${cache_path}"
+				}
+				# Files on the cache should be immutable
+				cp "${file_path}" "${cache_path}"
+				chmod 600 "${cache_path}"
+			else
+				_snapdir_log "Object cache for ${file_path} alredy exists"
+			fi
+		else
+			_snapdir_log "File ${file_path} already cached"
+		fi
+
+		local symlink_path="$staging_directory/${object_rel_path}"
+		if [[ ! -e $symlink_path ]] && test -f "${cache_path}"; then
+			mkdir -p "$staging_directory/${object_rel_dir}"
+			_snapdir_log "Linking ${cache_path} to ${symlink_path}"
+			# use softlink to allow the cache and the staging area to be on different volumes
+			ln -s "${cache_path}" "$symlink_path"
+		fi
+	done <<<"$manifest"
+
+	# its important to save the cache manifest after the objects are saved on the cache
+	# since this will ensure the cache manifest is consistent with the objects
+	# prevent overwriting unchanged files in order to avoid unnecessary inotify events
+	if ! test -f "${manifest_cache_path}" || ! cmp "${manifest_cache_path}" "${staged_manifest_path}"; then
+		_snapdir_log "Committing manifest ${snapdir_id} as ${manifest_cache_path}"
+		cp "${staged_manifest_path}" "${manifest_cache_path}"
+		chmod 600 "${manifest_cache_path}"
+	else
+		_snapdir_log "Manifest unchanged for ${snapdir_id}"
+	fi
+
+	if [[ ${_SNAPDIR_KEEP:-"false"} == "true" ]]; then
+		echo "$staging_directory"
+	else
+		rm -rf "$staging_directory"
+		echo "$snapdir_id"
+	fi
+}
+
+#       #     # ####### ######  ### ####### #     #
+#       #     # #       #     #  #  #        #   #
+#       #     # #       #     #  #  #         # #
+#       #     # #####   ######   #  #####      #
+#        #   #  #       #   #    #  #          #
+#         # #   #       #    #   #  #          #
+#          #    ####### #     # ### #          #
+
+snapdir_verify() {
+	set -eEuo pipefail
+	local purge="${_SNAPDIR_PURGE:-false}"
+	# When purge is enabled, we'll buffer the result of b3sum to remove FAILED objects
+	if [[ ${purge} == "true" ]]; then
+		local result
+		result="$(_snapdir_check_integrity 2>&1 || echo "")"
+		local failed_objects
+		failed_objects="$(echo "$result" | grep -E ': FAILED' | cut -d ':' -f1 | tr '\n' ' ')"
+		echo "$result"
+		if [[ ${failed_objects:-""} != "" ]]; then
+			echo "$failed_objects" | xargs rm
+			return 1
+		fi
+	else
+		_snapdir_check_integrity
+	fi
+}
+
+#    #     # ####### ######  ### ####### #     #     #####     #     #####  #     # #######
+#    #     # #       #     #  #  #        #   #     #     #   # #   #     # #     # #
+#    #     # #       #     #  #  #         # #      #        #   #  #       #     # #
+#    #     # #####   ######   #  #####      #       #       #     # #       ####### #####
+#     #   #  #       #   #    #  #          #       #       ####### #       #     # #
+#      # #   #       #    #   #  #          #       #     # #     # #     # #     # #
+#       #    ####### #     # ### #          #        #####  #     #  #####  #     # #######
+
+snapdir_verify_cache() {
+	set -eEuo pipefail
+	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
+	local purge="${_SNAPDIR_PURGE:-false}"
+	local failed=false
+	test -d "${cache_dir}"/.objects || return 0
+	while read -r line; do
+		set -eEuo pipefail
+		local checksum
+		local expected_checksum
+		checksum="$(echo "$line" | cut -d' ' -f1)"
+		expected_checksum="$(echo "$line" | cut -d' ' -f2)"
+		if [[ ${checksum} != "${expected_checksum}" ]]; then
+			failed=true
+			echo "Checksum mismatch for ${expected_checksum}" >&2
+			if [[ ${purge} == "true" ]]; then
+				rm "${cache_dir}/$(_snapdir_get_object_rel_path "${expected_checksum}")"
+			fi
+		fi
+	done <<<"$(b3sum "${cache_dir}"/.objects/*/*/*/* | sed 's| .*.objects/| |; s|/||g' 2>&1 || echo "")"
+	if [[ ${failed} == "true" ]]; then
+		return 1
+	fi
+}
+
+####### #       #     #  #####  #     #     #####     #     #####  #     # #######
+#       #       #     # #     # #     #    #     #   # #   #     # #     # #
+#       #       #     # #       #     #    #        #   #  #       #     # #
+#####   #       #     #  #####  #######    #       #     # #       ####### #####
+#       #       #     #       # #     #    #       ####### #       #     # #
+#       #       #     # #     # #     #    #     # #     # #     # #     # #
+#       #######  #####   #####  #     #     #####  #     #  #####  #     # #######
+
+snapdir_flush_cache() {
+	set -eEuo pipefail
+	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
+	rm -rf "${cache_dir}"
+}
+
+######  ####### #######    #    #     # #       #######  #####
+#     # #       #         # #   #     # #          #    #     #
+#     # #       #        #   #  #     # #          #    #
+#     # #####   #####   #     # #     # #          #     #####
+#     # #       #       ####### #     # #          #          #
+#     # #       #       #     # #     # #          #    #     #
+######  ####### #       #     #  #####  #######    #     #####
+
+snapdir_defaults() {
+	dirfest_defaults
+	env | grep _SNAPDIR | grep -v VERSION | sed -E 's|^_SNAPDIR_|--|; s|_|-|g;' | tr '[:upper:]' '[:lower:]' | sort
+	echo "SNAPDIR_BIN_PATH=${SNAPDIR_BIN_PATH:-$_SNAPDIR_BIN_PATH}"
+}
+
+######  ######  ### #     #    #    ####### #######    ####### #     #  #####
+#     # #     #  #  #     #   # #      #    #          #       ##    # #     #
+#     # #     #  #  #     #  #   #     #    #          #       # #   # #
+######  ######   #  #     # #     #    #    #####      #####   #  #  #  #####
+#       #   #    #   #   #  #######    #    #          #       #   # #       #
+#       #    #   #    # #   #     #    #    #          #       #    ## #     #
+#       #     # ###    #    #     #    #    #######    #       #     #  #####
+
+_snapdir_get_fetch_snapdir_manifest_command() {
+	set -eEuo pipefail
+	local snapdir_id="${_SNAPDIR_ID:?Missing --id option}"
+	local remote="${_SNAPDIR_REMOTE:?Missing --remote option}"
+	local remote_adapter_bin_path
+	remote_adapter_bin_path=$(_snapdir_get_remote_adapter_bin_path "${remote}")
+	$remote_adapter_bin_path get-manifest-command "${snapdir_id}" "${remote}"
+}
+
+_snapdir_get_fetch_snapdir_files_command() {
+	set -eEuo pipefail
+	local remote="${_SNAPDIR_REMOTE:?Missing --remote option}"
+	local manifest="${_SNAPDIR_MANIFEST:?Missing --manifest option}"
+	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
+	local remote_adapter_bin_path
+	remote_adapter_bin_path=$(_snapdir_get_remote_adapter_bin_path "${remote}")
+	$remote_adapter_bin_path get-fetch-files-command "${manifest}" "${remote}" "${cache_dir}"
+}
+
+_snapdir_get_remote_adapter_bin_path() {
+	local remote_protocol
+	local remote="${1:?Missing remote}"
+	_snapdir_export_remote_vars
+	remote_protocol="$(echo "${remote}" | cut -d':' -f1)"
+	local remote_adapter_bin_path
+	remote_adapter_bin_path=$(which "snapdir-${remote_protocol}-adapter" || echo "")
+	if [[ ${remote_adapter_bin_path} == "" ]]; then
+		echo "Unsupported remote protocol: ${remote_protocol}" >&2
+		echo "No 'snapdir-${remote_protocol}-adapter' could be found on your PATH" >&2
+		return 1
+	fi
+}
+
+_snapdir_get_push_command() {
+	set -eEuo pipefail
+	local staging_directory="${1:?Missing staging directory}"
+	local remote="${2:?Missing remote}"
+	local remote_adapter_bin_path
+	remote_adapter_bin_path=$(_snapdir_get_remote_adapter_bin_path "${remote}")
+	$remote_adapter_bin_path get-push-command "${staging_directory}" "${remote}"
+}
+
+_snapdir_get_manifest_rel_path() {
+	set -eEuo pipefail
+	local snapdir_id="${1:-${_SNAPDIR_ID:?Missing --id option}}"
+	echo ".manifests/${snapdir_id:0:3}/${snapdir_id:3:3}/${snapdir_id:6:3}/${snapdir_id:9}"
+}
+
+_snapdir_get_manifest_rel_base() {
+	set -eEuo pipefail
+	local snapdir_id="${1:-${_SNAPDIR_ID:?Missing --id option}}"
+	echo ".manifests/${snapdir_id:0:3}/${snapdir_id:3:3}/${snapdir_id:6:3}/"
+}
+
+_snapdir_get_object_rel_path() {
+	set -eEuo pipefail
+	local checksum="${1:?Missing object checksum}"
+	echo ".objects/${checksum:0:3}/${checksum:3:3}/${checksum:6:3}/${checksum:9}"
+}
+
+_snapdir_get_base_dir() {
+	set -eEuo pipefail
+	local base_dir="${1:-${_SNAPDIR_CWD}}"
+	local verify=${2:-true}
+	# resolve to absolute path
+	base_dir="$(realpath "${base_dir}")"
+	if [[ ${verify} == "true" ]] && ! test -d "${base_dir}"; then
+		echo "error: Base directory '${base_dir}' does not exist." >&2
+		return 1
+	fi
+	echo "${base_dir}"
+}
+
+_snapdir_get_snapdir_dir() {
+	set -eEuo pipefail
+	local base_dir="${1:-${_SNAPDIR_CWD}}"
+	local snapdir_dir="${2:-${_SNAPDIR_DIR}}"
+	if [[ ${snapdir_dir} == "." ]] || [[ ${base_dir} == "${snapdir_dir}" ]]; then
+		echo .
+		return 0
+	fi
+	local relative_dir
+	relative_dir=$(realpath --relative-to="${base_dir}" "${snapdir_dir}")
+	echo "${relative_dir:-.}"
+}
+
+_snapdir_export_env_defaults() {
+	# Environment variables
+	set -eEuo pipefail
+
+	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR:-"${HOME:-~}/.cache/${_SNAPDIR}/"}"
+	_SNAPDIR_VERBOSE=${_SNAPDIR_VERBOSE:-"false"}
+	_SNAPDIR_FORCE=${_SNAPDIR_FORCE:-"false"}
+	_SNAPDIR_CONCURRENCY_LIMIT=${_SNAPDIR_CONCURRENCY_LIMIT:-$(_snapdir_get_concurrency_limit)}
+	_SNAPDIR_CWD="${_SNAPDIR_CWD:-$(pwd)}"
+
+	if [[ ${_SNAPDIR_ID:-""} != "" ]]; then
+		local manifest_cache_path
+		manifest_cache_path="${_SNAPDIR_CACHE_DIR}/$(_snapdir_get_manifest_rel_path)"
+		test -f "${manifest_cache_path}" && {
+			_SNAPDIR_MANIFEST="$(cat "${manifest_cache_path}")"
+		}
+	fi
+
+	# Are we receiving a manifest via stdin?
+	if [[ ${_SNAPDIR_MANIFEST:-""} == "" ]] && [[ -p /dev/stdin ]]; then
+		_SNAPDIR_MANIFEST="$(cat)"
+		_SNAPDIR_ID="$(snapdir_id)"
+	fi
+
+	_snapdir_export_remote_vars
+
+	# If _SNAPDIR_DEBUG=true we'll set -x for every command.
+	if [[ ${_SNAPDIR_DEBUG:-""} == "true" ]]; then
+		set -x
+		_SNAPDIR_VERBOSE=true
+	fi
+
+	export _SNAPDIR_CWD \
+		_SNAPDIR_CACHE_DIR \
+		_SNAPDIR_CONCURRENCY_LIMIT \
+		_SNAPDIR_VERBOSE \
+		_SNAPDIR_FORCE
+}
+
+_snapdir_export_remote_vars() {
+	set -eEuo pipefail
+	if [[ ${_SNAPDIR_REMOTE:-""} != "" ]]; then
+		# _SNAPDIR_REMOTE is formatted as protocol://bucket/base/dir
+		if [[ ${_SNAPDIR_REMOTE_BUCKET:-""} == "" ]]; then
+			_SNAPDIR_REMOTE_BUCKET="$(echo "$_SNAPDIR_REMOTE" | cut -d'/' -f3)"
+			export _SNAPDIR_REMOTE_BUCKET
+		fi
+		if [[ ${_SNAPDIR_REMOTE_BASE_DIR:-""} == "" ]]; then
+			_SNAPDIR_REMOTE_BASE_DIR="$(echo "$_SNAPDIR_REMOTE" | cut -d'/' -f4-)"
+			export _SNAPDIR_REMOTE_BASE_DIR
+		fi
+	fi
+}
+
+_snapdir_wait_for_batch() {
+	set -eEuo pipefail
+	local max_concurrency="${_SNAPDIR_CONCURRENCY_LIMIT:-$(grep -c ^processor /proc/cpuinfo)}"
+	local fg_count
+	fg_count=$(jobs | wc -l)
+	# If we have reached the max concurrency, wait for one to finish
+	if [ "$fg_count" -ge "$max_concurrency" ]; then
+		wait -n
+	fi
+}
+
+_snapdir_check_integrity() {
+	set -eEuo pipefail
+	local snapdir_id="${_SNAPDIR_ID:?Missing --id option when calling ${_SNAPDIR} checkout}"
+	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
+	local manifest_rel_path
+	manifest_rel_path="$(_snapdir_get_manifest_rel_path "${snapdir_id}")"
+	local manifest_cache_path="${cache_dir}/${manifest_rel_path}"
+
+	test -f "${manifest_cache_path}" || {
+		echo "Manifest not found locally. Did you forget to fetch ${snapdir_id} from the remote?" >&2
+		return 1
+	}
+
+	local verbose_flag="--quiet"
+	if [[ ${_SNAPDIR_VERBOSE:-""} == "true" ]]; then
+		verbose_flag=""
+	fi
+	# shellcheck disable=SC2086
+	{
+		echo "${snapdir_id}  ${manifest_cache_path}"
+		while read -r checksum; do
+			echo "${checksum}  ${cache_dir}/$(_snapdir_get_object_rel_path "${checksum}")"
+		done <<<"$(grep -v "/$" "${manifest_cache_path}" | cut -d' ' -f 3)"
+	} | b3sum --check $verbose_flag
+}
+
+# Read stdin and run concurrently using bash
+_snapdir_parallel_exec() {
+	set -eEuo pipefail
+	local commands=()
+	local command="${1:-"{}"}"
+	# Read stdin
+	while read -r line; do
+		# on command replace '{}' with '$line'
+		commands+=("$(echo "$command" | sed -E "s|\{\}|$line|g")")
+	done
+
+	# Iterate over commands and print $max_concurrency at a time
+	for command in "${commands[@]}"; do
+		_snapdir_wait_for_batch
+		# Run the command
+		bash -c "set -eEuo pipefail;$command" &
+	done
+	# wait for all processes to finish
+	wait -n
+}
+
+_snapdir_log() {
+	set -eEuo pipefail
+	if [ "${_SNAPDIR_VERBOSE:-""}" = "true" ]; then
+		echo "$1" | sed -E 's/^/# /g'
+	fi
+}
+
+#       ####### #######  #####  #######  #####
+#          #    #       #     #    #    #     #
+#          #    #       #          #    #
+#          #    #####    #####     #     #####
+#          #    #             #    #          #
+#          #    #       #     #    #    #     #
+#          #    #######  #####     #     #####
+
+snapdir_test() (
+	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	set -eEuo pipefail
+
+	setup() {
+		set -eEuo pipefail
+
+		rm -rf /tmp/"${_SNAPDIR}"_tests*
+		_SNAPDIR_TEST_TMP_DIR="$(mktemp -d -t "${_SNAPDIR}"_tests.XXXXXXXXXX)"
+		umask 077 "$_SNAPDIR_TEST_TMP_DIR"
+
+		export _SNAPDIR_TEST_TMP_DIR
+		export _SNAPDIR_CWD="$_SNAPDIR_TEST_TMP_DIR"
+		export _SNAPDIR_CACHE_DIR="${_SNAPDIR_TEST_TMP_DIR}/.cache/${_SNAPDIR}"
+
+		cd "$_SNAPDIR_TEST_TMP_DIR" || return 1
+	}
+	_SNAPDIR_TEST_TOTAL_CHECKS=$(grep -c 'check "[^"]*"' "${_SNAPDIR_BIN_PATH}")
+	# the previous grep will add one test to the total count when shfmt normalizes it
+	_SNAPDIR_TEST_TOTAL_CHECKS=$((_SNAPDIR_TEST_TOTAL_CHECKS - 1))
+	_SNAPDIR_TESTS_PENDING_CHECKS=$_SNAPDIR_TEST_TOTAL_CHECKS
+	_SNAPDIR_TEST_SUITE_DESCRIPTION="${_SNAPDIR}"
+	_SNAPDIR_TEST_DESCRIPTION=$_SNAPDIR_TEST_SUITE_DESCRIPTION
+
+	echo "1..${_SNAPDIR_TEST_TOTAL_CHECKS}"
+
+	_SNAPDIR_TEST_TEARDOWN_COMPLETE=false
+	teardown() {
+		set -eEuo pipefail
+		# return if _SNAPDIR_TEST_TEARDOWN_COMPLETE is already true
+		if [[ ${_SNAPDIR_TEST_TEARDOWN_COMPLETE} == true ]]; then
+			return 0
+		fi
+		_SNAPDIR_TEST_TEARDOWN_COMPLETE=true
+		# exit with not ok if _SNAPDIR_TEST_TOTAL_CHECKS is not zero
+		if [[ $_SNAPDIR_TESTS_PENDING_CHECKS -gt 0 ]]; then
+			echo "not ok ${_SNAPDIR_TESTS_PENDING_CHECKS}..${_SNAPDIR_TEST_TOTAL_CHECKS} - ${_SNAPDIR_TESTS_PENDING_CHECKS} ${_SNAPDIR_TEST_SUITE_DESCRIPTION} tests pending" >&2
+			exit 1
+		else
+			echo "ok - all $_SNAPDIR_TEST_SUITE_DESCRIPTION tests passed in $SECONDS seconds"
+			exit 0
+		fi
+	}
+
+	describe() {
+		set -eEuo pipefail
+		_SNAPDIR_TEST_DESCRIPTION="$1"
+	}
+
+	_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=false
+	check() {
+		set -eEuo pipefail
+		if [[ $_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS == true ]]; then
+			fail "calling check \"$1\" while pending pass is not allowed"
+		fi
+		_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=true
+		_SNAPDIR_TEST_CHECK_NAME="$1"
+	}
+
+	pass() {
+		set -eEuo pipefail
+		if [[ $_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS == true ]]; then
+			_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=false
+			_SNAPDIR_TEST_NUMBER=$((_SNAPDIR_TEST_TOTAL_CHECKS - _SNAPDIR_TESTS_PENDING_CHECKS + 1))
+			_SNAPDIR_TESTS_PENDING_CHECKS=$((_SNAPDIR_TESTS_PENDING_CHECKS - 1))
+		fi
+		echo "ok ${_SNAPDIR_TEST_NUMBER} - ${_SNAPDIR_TEST_DESCRIPTION} / $_SNAPDIR_TEST_CHECK_NAME"
+	}
+
+	skip() {
+		set -eEuo pipefail
+		_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=false
+		_SNAPDIR_TEST_NUMBER=$((_SNAPDIR_TEST_TOTAL_CHECKS - _SNAPDIR_TESTS_PENDING_CHECKS + 1))
+		_SNAPDIR_TESTS_PENDING_CHECKS=$((_SNAPDIR_TESTS_PENDING_CHECKS - 1))
+		echo "ok ${_SNAPDIR_TEST_NUMBER} - # skip ${_SNAPDIR_TEST_DESCRIPTION} / $_SNAPDIR_TEST_CHECK_NAME"
+	}
+
+	fail() {
+		set -eEuo pipefail
+		_SNAPDIR_TEST_NUMBER=$((_SNAPDIR_TEST_TOTAL_CHECKS - _SNAPDIR_TESTS_PENDING_CHECKS + 1))
+		echo "not ok ${_SNAPDIR_TEST_NUMBER} - ${_SNAPDIR_TEST_DESCRIPTION} / $*" >&2
+		echo "# fail called by: ${_SNAPDIR_BIN_PATH}:$(caller 0 | awk '{print $1}')" >&2
+		teardown
+		exit 1
+	}
+
+	generate_files() {
+		local dir=$_SNAPDIR_TEST_TMP_DIR
+		mkdir -p "$dir/files/"
+		echo "foo" >"$dir/files/foo"
+		echo "bar" >"$dir/files/bar"
+	}
+
+	generate_nested_files() {
+		local dir=$_SNAPDIR_TEST_TMP_DIR
+		mkdir -p "$dir/files/a/a1" "$dir/files/b/b1"
+		echo "foo" >"$dir/files/a/a1/foo"
+		echo "bar" >"$dir/files/b/b1/bar"
+	}
+
+	clean_files() {
+		rm -rf "$_SNAPDIR_TEST_TMP_DIR/files"
+	}
+
+	run() {
+		set -eEuo pipefail
+		local result=""
+		local expected=""
+		local _dir="${_SNAPDIR_TEST_TMP_DIR}/files"
+		local _cwd="$_SNAPDIR_CWD"
+		local snapshot="${_SNAPDIR_BIN_PATH}"
+		local bucket="${B2_TEST_BUCKET:-unit-testing}"
+		local remote="${_SNAPDIR_TEST_REMOTE:-b2://${bucket}/}"
+
+		local foo_checksum="49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
+		local foo_path="49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
+		local bar_checksum="b3199d36d434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
+		local bar_path="b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
+		local nested_manifest_id="709eb24c97350626cda3e1f8bf7ff80fb7635c50d5a038e72919556dbbc79fd1"
+		local simple_manifest_id="aa91e498f401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d"
+		local simple_manifest_path="aa9/1e4/98f/401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d"
+		local simple_manifest="D 700 e2b4329871fef9f50a20ba5d1475ee474f1df4091fe49002fd2bbcc42e6a04d5 8 ./
+F 600 $bar_checksum 4 ./bar
+F 600 $foo_checksum 4 ./foo"
+
+		# --------------------------------------------------------------------------------
+		# snapshot manifest
+		# --------------------------------------------------------------------------------
+		generate_files
+		describe "snapshot manifest"
+		check "should generate manifest"
+		result=$("${snapshot}" manifest "${_dir}" 2>&1 || echo "")
+		expected="$simple_manifest"
+		test "$result" == "$expected" || fail "Unexpected manifest '$result', expected '$expected'" && pass
+		clean_files
+
+		# --------------------------------------------------------------------------------
+		# snapshot id
+		# --------------------------------------------------------------------------------
+		generate_files
+		describe "snapshot id"
+		check "should generate snapshot id"
+		result=$("${snapshot}" id "${_dir}" 2>&1 || echo "")
+		test "$result" == "$simple_manifest_id" || fail "Unexpected snapshot id '$result'" && pass
+		clean_files
+
+		generate_nested_files
+		describe "snapshot nested id"
+		check "should generate snapshot id for nested files"
+		result=$("${snapshot}" id "${_dir}" 2>&1 || echo "")
+		test "$result" == "$nested_manifest_id" || fail "Unexpected nested snapshot id '$result'" && pass
+		clean_files
+
+		# --------------------------------------------------------------------------------
+		# snapshot id from stdin manifest
+		# --------------------------------------------------------------------------------
+		clean_files
+		describe "snapshot id from stdin manifest"
+		check "should generate snapshot id from a manifest provided on stdin, even when no  files are present"
+		result=$(echo "$simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
+		expected="$simple_manifest_id"
+		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
+
+		# --------------------------------------------------------------------------------
+		# snapshot stage
+		# --------------------------------------------------------------------------------
+		generate_files
+		describe "snapshot stage files"
+		check "should stage files in manifest"
+		result=$("${snapshot}" stage --keep "${_dir}" 2>&1 || echo "")
+		expected="${_SNAPDIR}_$simple_manifest_id"
+		grep -q "$expected" <<<"$result" || fail "Unexpected directory name '${result}'. Expected '${expected}'" && pass
+		check "should have created the staging directory"
+		test -d "$result" || fail "Missing staging directory '$result'" && pass
+		check "should stage file bar contents"
+		[[ "bar" == $(cat "$result/.objects/$bar_path") ]] || fail "Missing link to './bar'" && pass
+		check "should stage manifest"
+		[[ $simple_manifest == $(cat "$result/.manifests/$simple_manifest_path") ]] || fail "Missing manifest" && pass
+		rm -rf "$result"
+		clean_files
+
+		generate_files
+		describe "snapshot manifest should not include staged files"
+		check "should generate manifest without staged files"
+		"${snapshot}" stage "${_dir}" >/dev/null
+		result=$("${snapshot}" manifest "${_dir}" 2>&1 || echo "")
+		expected="$simple_manifest"
+		test "$result" == "$expected" || fail "Unexpected manifest '$result'" && pass
+		clean_files
+
+		generate_files
+		describe "snapshot stage idempotency"
+		check "should ignore .stage directories when generating manifest"
+		result=$(
+			"${snapshot}" stage --keep "${_dir}" >/dev/null || true
+			"${snapshot}" stage --keep "${_dir}" 2>&1 || echo ""
+		)
+		# There should only be one directory matching "${_dir}/.${_SNAPDIR}-"*
+		# shellcheck disable=SC2010
+		test "$(ls -1 -a "${result}/.objects" | grep -E -c "[a-f0-9]{3}")" == "2" || fail "Unexpected number of .object directories" && pass
+		rm -rf "${result}"
+		clean_files
+
+		generate_nested_files
+		describe "snapshot stage nested files"
+		check "should stage nested files in manifest"
+		result=$("${snapshot}" stage --keep "${_dir}" 2>&1 || echo "")
+		expected="${_SNAPDIR}_$nested_manifest_id"
+		grep -q "$expected" <<<"$result" || fail "Unexpected directory name '$result'" && pass
+		check "should have created the staging directory"
+		test -d "$result" || fail "Missing staging directory got: '$result'" && pass
+		check "should create a copy of the staged file foo"
+		[[ "foo" == $(cat "$result/.objects/$foo_path") ]] || fail "Missing cache to './foo'" && pass
+		rm -rf "${result}"
+		clean_files
+
+		generate_files
+		result=$("${snapshot}" stage "${_dir}" 2>&1 || echo "")
+		check "should return just the snapshot id when --keep is not specified"
+		test "$result" == "$simple_manifest_id" || fail "Unexpected snapshot id '$result'" && pass
+		clean_files
+
+		# Done with snapshot internals tests, clean them all, we should not see them in the future
+		rm -rf "${_dir}/.${_SNAPDIR}-"*
+
+		# --------------------------------------------------------------------------------
+		# snapshot checkout
+		# --------------------------------------------------------------------------------
+		describe "snapshot checkout files"
+		generate_files
+		"${snapshot}" stage "${_dir}" >/dev/null
+		clean_files
+
+		check "should not be able got generate an id for missing directory"
+		result=$("${snapshot}" id "${_dir}" 2>&1 || echo "")
+		expected="error: Base directory .* does not exist."
+		grep -q "$expected" <<<"$result" || fail "Expected error '$expected' but got '$result'" && pass
+
+		check "should checkout files from the local cache"
+		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
+		[[ "$(grep -c "# Checking out" <<<"$result")" == 2 ]] || fail "Expected two checkout messages, instead got ${result}" && pass
+
+		check "should not checkout up to date files"
+		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
+		[[ "$(grep -c "is up to date" <<<"$result")" == 2 ]] || fail "Expected two up to date messages, instead got '${result}'" && pass
+
+		check "should generate a consistent id for checkout data"
+		result=$("${snapshot}" id "${_dir}" 2>&1 || echo "")
+		expected="$simple_manifest_id"
+		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
+
+		check "should fail if file is modified"
+		echo "not foo" >"${_dir}/foo"
+		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
+		expected="File.*${_dir}/foo already exists. To override file, use the --force flag."
+		grep -q "not foo" "${_dir}/foo" || fail "Expected ${_dir}/foo to contain 'not foo', instead got '$(cat "${_dir}/foo")'"
+		grep -q "${expected}" <<<"${result}" || fail "Expected '${expected}', instead got '${result}'" && pass
+
+		check "should override modified files when --force is used"
+		echo "not foo" >"${_dir}/foo"
+		result=$("${snapshot}" checkout --verbose --force --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
+		expected="Existing.*${_dir}/foo file overwritten via --force flag."
+		grep -q "^foo$" "${_dir}/foo" || fail "Expected ${_dir}/foo to contain 'foo', instead got '$(cat "${_dir}/foo")'"
+		grep -q "${expected}" <<<"${result}" || fail "Expected '${expected}', instead got '${result}'" && pass
+
+		check "test should rollback if checkout fails"
+		clean_files
+		mkdir -p "${_dir}"
+		echo "only-foo-should-exist" >"${_dir}/foo"
+		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
+		! test -f "${_dir}/bar" || fail "Unexpected bar found on ${_dir}/. It should only contain 'foo' contents. Command output: '${result}'" && pass
+		clean_files
+
+		check "should checkout a single file with --path"
+		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} --path=foo "${_dir}" 2>&1 || echo "")
+		! test -f "${_dir}/bar" || fail "Unexpected bar found on ${_dir}/. It should only contain 'foo'. Command output: '${result}'"
+		test -f "${_dir}/foo" || fail "Failed to checkout ${_dir}/foo. Command output: '${result}'" && pass
+		clean_files
+
+		check "should checkout a single directory with --path"
+		clean_files
+		result=$("${snapshot}" checkout --verbose --id=${nested_manifest_id} --path=a "${_dir}" 2>&1 || echo "")
+		! test -f "${_dir}/b/b1/bar" || fail "Unexpected bar found on ${_dir}/b/b1/bar. It should only contain '${_dir}/a/a1/foo'. Command output: '${result}'"
+		test -f "${_dir}/a/a1/foo" || fail "Failed to checkout ${_dir}/a/a1/foo. Command output: '${result}'" && pass
+		clean_files
+
+		check "should ignore leading ./ on --path"
+		clean_files
+		result=$("${snapshot}" checkout --verbose --id=${nested_manifest_id} --path=./a "${_dir}" 2>&1 || echo "")
+		! test -f "${_dir}/b/b1/bar" || fail "Unexpected bar found on ${_dir}/b/b1/bar. It should only contain '${_dir}/a/a1/foo'. Command output: '${result}'"
+		test -f "${_dir}/a/a1/foo" || fail "Failed to checkout ${_dir}/a/a1/foo. Command output: '${result}'" && pass
+		clean_files
+
+		check "should ignore trailing / on --path"
+		clean_files
+		result=$("${snapshot}" checkout --verbose --id=${nested_manifest_id} --path=a/ "${_dir}" 2>&1 || echo "")
+		! test -f "${_dir}/b/b1/bar" || fail "Unexpected bar found on ${_dir}/b/b1/bar. It should only contain '${_dir}/a/a1/foo'. Command output: '${result}'"
+		test -f "${_dir}/a/a1/foo" || fail "Failed to checkout ${_dir}/a/a1/foo. Command output: '${result}'" && pass
+		clean_files
+
+		clean_files
+		check "should checkout files as links"
+		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} --linked "${_dir}" 2>&1 || echo "")
+		[[ "$(grep -c "# Checking out" <<<"$result")" == 2 ]] || fail "Expected two checkout messages, instead got ${result}"
+		grep -q "^foo$" "${_dir}/foo" || fail "Expected ${_dir}/foo to contain 'foo', instead got '$(cat "${_dir}/foo")'"
+		if [[ "$(uname -s)" == "Darwin" ]]; then
+			stat -x "${_dir}/foo" | grep -q "Links: " || fail "Expected foo to be a hardlink, instead got $(stat -x "${_dir}/foo")" && pass
+		else
+			stat "${_dir}/foo" | grep -q "Links: " || fail "Expected foo to be a hardlink, instead got $(stat "${_dir}/foo")" && pass
+		fi
+
+		check "should generate a consistent id for checkout data as links"
+		result=$("${snapshot}" id "${_dir}" 2>&1 || echo "")
+		expected="$simple_manifest_id"
+		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
+		clean_files
+
+		# --------------------------------------------------------------------------------
+		# snapshot verify --id=<id> --dir=<dir>
+		# --------------------------------------------------------------------------------
+
+		check "should verify manifest"
+		result=$("${snapshot}" verify --verbose --id=${simple_manifest_id} 2>&1 || echo "")
+		grep -q "${simple_manifest_path}: OK" <<<"${result}" || fail "Failed to verify manifest got: '${result}'" && pass
+
+		check "should verify objects"
+		grep -q "${foo_path}: OK" <<<"${result}" || fail "Failed to verify ${foo_path} got: '${result}'" && pass
+
+		check "should complain about a missing object"
+		rm -rf "${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
+		result=$("${snapshot}" verify --verbose --id=${simple_manifest_id} 2>&1 || echo "")
+		grep -q "${foo_path}: FAILED" <<<"${result}" || fail "Failed to verify ${foo_path} got: '${result}'" && pass
+
+		check "should complain about a corrupted object"
+		echo "corrupted" >"${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
+		result=$("${snapshot}" verify --verbose --id=${simple_manifest_id} 2>&1 || echo "")
+		grep -q "${foo_path}: FAILED" <<<"${result}" || fail "Failed to dectect tampered ${foo_path} got: '${result}'" && pass
+
+		check "should purge corrupted"
+		rm -rf "${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
+		echo "corrupted" >"${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
+		result=$("${snapshot}" verify --verbose --purge --id=${simple_manifest_id} 2>&1 || echo "")
+		grep -q "${foo_path}: FAILED" <<<"${result}" || fail "Failed to dectect tampered ${foo_path} got: '${result}'"
+		! test -f "${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}" || fail "Should have purged '${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}' command output: '${result}'" && pass
+		clean_files
+
+		rm -rf "${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
+		echo "corrupted" >"${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
+		generate_files
+		check "should warn about purged object"
+		result=$("${snapshot}" stage --verbose "${_dir}" 2>&1 || echo "")
+		grep -q "Warning: Purged tampered" <<<"${result}" || fail "Failed to warn about purged object got: '${result}'" && pass
+		check "should restore tampered after a new stage"
+		result=$("${snapshot}" verify --verbose --id=${simple_manifest_id} 2>&1 || echo "")
+		grep -q "${foo_path}: OK" <<<"${result}" || fail "Failed to verify ${foo_path} got: '${result}'" && pass
+		clean_files
+
+		# --------------------------------------------------------------------------------
+		# snapshot verify-cache
+		# --------------------------------------------------------------------------------
+
+		check "should complain about a corrupted object"
+		echo "corrupted" >"${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
+		result=$("${snapshot}" verify-cache 2>&1 || echo "")
+		grep -q "Checksum mismatch for ${foo_checksum}" <<<"${result}" || fail "Failed to dectect tampered ${foo_path} got: '${result}'" && pass
+
+		check "should purge corrupted"
+		echo "corrupted" >"${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
+		result=$("${snapshot}" verify-cache --purge 2>&1 || echo "")
+		grep -q "Checksum mismatch for ${foo_checksum}" <<<"${result}" || fail "Failed to dectect tampered ${foo_path} got: '${result}'"
+		! test -f "${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}" || fail "Should have purged '${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}' command output: '${result}'" && pass
+		clean_files
+		generate_files
+		"${snapshot}" stage "${_dir}" >/dev/null
+		clean_files
+
+		# --------------------------------------------------------------------------------
+		# snapshot flush-cache (cleans cache)
+		# --------------------------------------------------------------------------------
+		describe "snapshot flush-cache"
+		clean_files
+		${snapshot} checkout --force --id="${simple_manifest_id}" "${_dir}"
+		${snapshot} checkout --force --id="${nested_manifest_id}" "${_dir}"
+		check "should have cached files"
+		find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g' | grep -q "^4$" || fail "Expected 4 files in cache, instead got '$(find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g')'" && pass
+		check "should clear cache files"
+		result="$(${snapshot} flush-cache 2>&1 || echo "")"
+		! test -d "${_SNAPDIR_CACHE_DIR}/" || fail "Cache directory found after flushing cache ${_SNAPDIR_CACHE_DIR}/. Command output: '$result'" && pass
+		clean_files
+
+		# --------------------------------------------------------------------------------
+		# snapshot checkout without cache
+		# --------------------------------------------------------------------------------
+		describe "snapshot checkout without cache"
+		clean_files
+		${snapshot} flush-cache
+		check "should complain about missing cache"
+		result="$(${snapshot} checkout --verbose --id="${simple_manifest_id}" "${_dir}" 2>&1 || echo "")"
+		grep -q "Did you forget to fetch" <<<"${result}" || fail "Expected 'Did you forget to fetch...', instead got '${result}'" && pass
+		clean_files
+
+		# --------------------------------------------------------------------------------
+		# snapshot version
+		# --------------------------------------------------------------------------------
+		describe "snapshot version"
+		check "should output semver version"
+		result="$("${snapshot}" version)"
+		echo "${result}" | grep -q "^[0-9]*\.[0-9]*\.[0-9]*$" || fail "Expected semver version, got: ${result}" && pass
+	}
+
+	SECONDS=0
+	trap teardown EXIT
+	setup
+	run || {
+		teardown
+		return 1
+	}
+	teardown
+)
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+	# ensure at least bash 5.0 is available
+	if [[ ${BASH_VERSION:0:1} -lt "5" ]]; then
+		echo "Bash version 5.0 or higher is required. You have: ${BASH_VERSION}" >&2
+		exit 1
+	fi
+	_snapdir_readlink() {
+		echo "$(cd "$(dirname "$1")" || echo "" && pwd)/$(basename "$1")"
+	}
+	_snapdir_get_concurrency_limit() {
+		system_profiler SPHardwareDataType | grep " Cores: \d" | grep -o '\d*'
+	}
+	_snapdir_absolute_path() {
+		realpath -m "$1"
+	}
+else
+	shopt -s inherit_errexit
+	_snapdir_readlink() {
+		readlink -f "$1"
+	}
+	_snapdir_get_concurrency_limit() {
+		grep -c ^processor /proc/cpuinfo
+	}
+	# on alpine, realpath -m is not available
+	if realpath -m /dev/null 2>/dev/null >/dev/null; then
+		_snapdir_absolute_path() {
+			realpath -m "$1"
+		}
+	else
+		_snapdir_absolute_path() {
+			test -d "$1" || mkdir -p "$(dirname "$1")"
+			echo "$(cd "$(dirname "$1")" || echo "" && pwd)/$(basename "$1")"
+		}
+	fi
+fi
+
+#######
+#       #    # ##### #####  #   # #####   ####  # #    # #####
+#       ##   #   #   #    #  # #  #    # #    # # ##   #   #
+#####   # #  #   #   #    #   #   #    # #    # # # #  #   #
+#       #  # #   #   #####    #   #####  #    # # #  # #   #
+#       #   ##   #   #   #    #   #      #    # # #   ##   #
+####### #    #   #   #    #   #   #       ####  # #    #   #
+
+# Run if is not sourced
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	# Get the absolute path to ${BASH_SOURCE[0]}
+	_SNAPDIR_BIN_PATH="$(_snapdir_readlink "${BASH_SOURCE[0]}")"
+	snapdir_run "${@:1}"
+else
+	_snapdir_export_env_defaults
+fi

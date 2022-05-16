@@ -1,0 +1,6 @@
+{
+  "shellcheck.useWorkspaceRootAsCwd": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.shellcheck": true
+  }
+}

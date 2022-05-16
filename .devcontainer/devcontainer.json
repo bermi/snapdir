@@ -1,0 +1,21 @@
+{
+  "name": "bermi/snapdir-bash",
+  "build": {
+    "context": "./../",
+    "dockerfile": "./Dockerfile.ubuntu",
+    "cacheFrom": ["bermi/snapdir-bash:latest"]
+  },
+  "settings": {
+    "terminal.integrated.defaultProfile.linux": "bash"
+  },
+  "extensions": [
+    "timonwong.shellcheck",
+    "github.copilot",
+    "rogalmic.bash-debug"
+  ],
+  "hostRequirements": {
+    "cpus": 1,
+    "memory": "1gb",
+    "storage": "2gb"
+  }
+}
