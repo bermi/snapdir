@@ -17,9 +17,9 @@ Snapdir requires [dirfest] and [b3sum] for creating manifests.
 After installing the dependencies, download the [snapdir] script and save it somewhere in your `PATH`.
 
 ``` bash
-wget -p https://github.com/bermi/snapdir/releases/download/v0.1.0/snapdir -O snapdir
+wget -p https://github.com/bermi/snapdir-bash/releases/download/v0.1.1/snapdir -O snapdir
 chmod +x snapdir
-echo "33b378eb8d4de756a029771a3d5bb96e75ced4e79e6bcbb93ae6a4302f8b7eb2  snapdir" | b3sum -c
+echo "7350e268ecbfc0d03c37621480ba501862f8f9904eb28349136f5eea9251fb4f  snapdir" | b3sum -c
 mv dirfest /usr/local/bin/
 ```
 
@@ -30,7 +30,10 @@ You can try [snapdir] using the Docker image [bermi/snapdir]
 ``` bash
 target_dir=./ # specify a target directory
 # using -v to mount the target directory on the docker container
-docker run -it -v "$(realpath $target_dir):/target" --rm bermi/snapdir /target
+docker run -it --rm \
+    -v "$(realpath $target_dir):/target" \
+    -v "${HOME}/.cache/snapdir:/root/.cache/snapdir" \
+    bermi/snapdir /target
 ```
 
 ## Motivation
@@ -369,9 +372,9 @@ fi
 
 LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 
-  [verify status]: https://github.com/bermi/snapdir/actions/workflows/verify.yml/badge.svg
-  [Snapdir]: https://github.com/bermi/snapdir
-  [snapdir]: https://github.com/bermi/snapdir
+  [verify status]: https://github.com/bermi/snapdir-bash/actions/workflows/verify.yml/badge.svg
+  [Snapdir]: https://github.com/bermi/snapdir-bash
+  [snapdir]: https://github.com/bermi/snapdir-bash
   [dirfest]: https://github.com/bermi/dirfest
   [bermi/snapdir]: https://hub.docker.com/r/bermi/snapdir/tags
   [BermiLabs]: https://bermilabs.com

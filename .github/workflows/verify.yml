@@ -37,9 +37,9 @@ jobs:
           sudo apt-get install -y wget
           sudo wget -q "https://github.com/BLAKE3-team/BLAKE3/releases/download/1.3.1/b3sum_linux_x64_bin" -O /usr/local/bin/b3sum
           sudo chmod +x /usr/local/bin/b3sum
-          wget -p https://github.com/bermi/dirfest/releases/download/v0.1.0/dirfest -O dirfest && \
+          wget -p https://github.com/bermi/dirfest/releases/download/v0.1.1/dirfest -O dirfest && \
           chmod +x dirfest && \
-          echo "33b378eb8d4de756a029771a3d5bb96e75ced4e79e6bcbb93ae6a4302f8b7eb2  dirfest" | b3sum -c && \
+          echo "9867df2280d89d4880d5a1754696101e376e6f9600753a41a520da27e187fe95  dirfest" | b3sum -c && \
           sudo mv dirfest /usr/local/bin/
       - name: Check out the repo
         uses: actions/checkout@v3
@@ -54,9 +54,9 @@ jobs:
       - name: Install dependencies
         run: |
           brew install coreutils b3sum bash
-          wget -p https://github.com/bermi/dirfest/releases/download/v0.1.0/dirfest -O dirfest && \
+          wget -p https://github.com/bermi/dirfest/releases/download/v0.1.1/dirfest -O dirfest && \
           chmod +x dirfest && \
-          echo "33b378eb8d4de756a029771a3d5bb96e75ced4e79e6bcbb93ae6a4302f8b7eb2  dirfest" | b3sum -c && \
+          echo "9867df2280d89d4880d5a1754696101e376e6f9600753a41a520da27e187fe95  dirfest" | b3sum -c && \
           sudo mv dirfest /usr/local/bin/
       - name: Check out the repo
         uses: actions/checkout@v3

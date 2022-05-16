@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# # snapdir 0.1.0
+# # snapdir 0.1.1
 #
 # ## Description:
 #
@@ -15,7 +15,7 @@ _SNAPDIR="snapdir"
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	_SNAPDIR="$(basename "${BASH_SOURCE[0]}")"
 fi
-_SNAPDIR_VERSION="0.1.0"
+_SNAPDIR_VERSION="0.1.1"
 
 set -eEuo pipefail
 IFS=$'\n\t'
@@ -161,12 +161,17 @@ snapdir_manifest() {
 	snapdir_dir="$(_snapdir_get_snapdir_dir "$base_dir" "${2:-"."}")"
 	local snapdir_dir_abs_path
 	snapdir_dir_abs_path="$(realpath "${base_dir}/${snapdir_dir}")"
-	test -d "${snapdir_dir_abs_path}" || {
-		echo "error: Snapshot directory '${snapdir_dir_abs_path}' does not exist." >&2
-		return 1
-	}
-	_SNAPDIR_MANIFEST=$(dirfest "$snapdir_dir_abs_path")
-
+	if [[ ${snapdir_dir_abs_path%/} == "/" ]]; then
+		_SNAPDIR_MANIFEST=$(dirfest --exclude="system" "/")
+	else
+		_snapdir_log "Running: dirfest \"${base_dir}/${snapdir_dir}\""
+		test -d "${snapdir_dir_abs_path}" || {
+			echo "error: Snapshot directory '${snapdir_dir_abs_path}' does not exist." >&2
+			return 1
+		}
+		_snapdir_log "Running: dirfest \"$snapdir_dir_abs_path\""
+		_SNAPDIR_MANIFEST=$(dirfest "$snapdir_dir_abs_path")
+	fi
 	echo "${_SNAPDIR_MANIFEST}"
 }
 
@@ -210,13 +215,13 @@ snapdir_push() {
 	local snapdir_id
 	snapdir_id=$(snapdir_id "${1:-""}" "${2:-"."}")
 	export _SNAPDIR_ID="$snapdir_id"
-	export tmp_dir
+	export _snapdir_tmp_dir
 
 	# The user might be piping the snapshot or it might be based on an existing snapshot id
 	if [[ ${_SNAPDIR_MANIFEST:-""} != "" ]]; then
-		tmp_dir="$(mktemp -d -t "${_SNAPDIR}"_"${snapdir_id}".XXXXXXXXXX)"
-		snapdir checkout --id="$snapdir_id" --linked "$tmp_dir" >/dev/null
-		_SNAPDIR_DIR="$tmp_dir"
+		_snapdir_tmp_dir="$(mktemp -d -t "${_SNAPDIR}"_"${snapdir_id}".XXXXXXXXXX)"
+		snapdir checkout --id="$snapdir_id" --linked "$_snapdir_tmp_dir" >/dev/null
+		_SNAPDIR_DIR="$_snapdir_tmp_dir"
 	fi
 	local push_directory
 	push_directory=$(_SNAPDIR_KEEP=true _SNAPDIR_VERBOSE=false snapdir_stage "${_SNAPDIR_CWD}" "${_SNAPDIR_DIR:-${2:-"."}}")
@@ -237,8 +242,8 @@ snapdir_push() {
 		_snapdir_log "Nothing to push to '${remote}'."
 	fi
 	rm -rf "$push_directory"
-	if [[ ${tmp_dir} != "" ]]; then
-		rm -rf "${tmp_dir}"
+	if [[ ${_snapdir_tmp_dir} != "" ]]; then
+		rm -rf "${_snapdir_tmp_dir}"
 	fi
 	echo "${snapdir_id}"
 }
@@ -732,7 +737,16 @@ _snapdir_export_env_defaults() {
 	# Are we receiving a manifest via stdin?
 	if [[ ${_SNAPDIR_MANIFEST:-""} == "" ]] && [[ -p /dev/stdin ]]; then
 		_SNAPDIR_MANIFEST="$(cat)"
-		_SNAPDIR_ID="$(snapdir_id)"
+		# some callers like Docker RUN might provide an empty /dev/stdin
+		if [[ ${_SNAPDIR_MANIFEST} != "" ]]; then
+			# remove lines that don't match the manifest format
+			_SNAPDIR_MANIFEST="$(echo "${_SNAPDIR_MANIFEST}" | grep -E "(D|F) [0-9]+ [a-f0-9]+ [0-9]+ .*" || echo "")"
+			if [[ ${_SNAPDIR_MANIFEST} == "" ]]; then
+				echo "error: Manifest provided through stdin is not properly formatted." >&2
+				exit 1
+			fi
+			_SNAPDIR_ID="$(snapdir_id)"
+		fi
 	fi
 
 	_snapdir_export_remote_vars
@@ -826,7 +840,7 @@ _snapdir_parallel_exec() {
 _snapdir_log() {
 	set -eEuo pipefail
 	if [ "${_SNAPDIR_VERBOSE:-""}" = "true" ]; then
-		echo "$1" | sed -E 's/^/# /g'
+		echo "[$_SNAPDIR] $1" | sed -E 's/^/# /g'
 	fi
 }
 
@@ -967,7 +981,7 @@ F 600 $foo_checksum 4 ./foo"
 		# snapshot manifest
 		# --------------------------------------------------------------------------------
 		generate_files
-		describe "snapshot manifest"
+		describe "snapshot manifest for '${_dir}'"
 		check "should generate manifest"
 		result=$("${snapshot}" manifest "${_dir}" 2>&1 || echo "")
 		expected="$simple_manifest"
@@ -981,7 +995,7 @@ F 600 $foo_checksum 4 ./foo"
 		describe "snapshot id"
 		check "should generate snapshot id"
 		result=$("${snapshot}" id "${_dir}" 2>&1 || echo "")
-		test "$result" == "$simple_manifest_id" || fail "Unexpected snapshot id '$result'" && pass
+		test "$result" == "$simple_manifest_id" || fail "Unexpected snapshot id '$result', expected '$simple_manifest_id'" && pass
 		clean_files
 
 		generate_nested_files
@@ -999,6 +1013,11 @@ F 600 $foo_checksum 4 ./foo"
 		check "should generate snapshot id from a manifest provided on stdin, even when no  files are present"
 		result=$(echo "$simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		expected="$simple_manifest_id"
+		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
+
+		check "should prevent malformated stdin manifests"
+		result=$(echo "foo bar" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
+		expected="error: Manifest provided through stdin is not properly formatted."
 		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
 
 		# --------------------------------------------------------------------------------
@@ -1078,7 +1097,7 @@ F 600 $foo_checksum 4 ./foo"
 
 		check "should checkout files from the local cache"
 		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
-		[[ "$(grep -c "# Checking out" <<<"$result")" == 2 ]] || fail "Expected two checkout messages, instead got ${result}" && pass
+		[[ "$(grep -c "Checking out" <<<"$result")" == 2 ]] || fail "Expected two checkout messages, instead got ${result}" && pass
 
 		check "should not checkout up to date files"
 		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
@@ -1141,7 +1160,7 @@ F 600 $foo_checksum 4 ./foo"
 		clean_files
 		check "should checkout files as links"
 		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} --linked "${_dir}" 2>&1 || echo "")
-		[[ "$(grep -c "# Checking out" <<<"$result")" == 2 ]] || fail "Expected two checkout messages, instead got ${result}"
+		[[ "$(grep -c "Checking out" <<<"$result")" == 2 ]] || fail "Expected two checkout messages, instead got ${result}"
 		grep -q "^foo$" "${_dir}/foo" || fail "Expected ${_dir}/foo to contain 'foo', instead got '$(cat "${_dir}/foo")'"
 		if [[ "$(uname -s)" == "Darwin" ]]; then
 			stat -x "${_dir}/foo" | grep -q "Links: " || fail "Expected foo to be a hardlink, instead got $(stat -x "${_dir}/foo")" && pass
@@ -1222,7 +1241,7 @@ F 600 $foo_checksum 4 ./foo"
 		${snapshot} checkout --force --id="${simple_manifest_id}" "${_dir}"
 		${snapshot} checkout --force --id="${nested_manifest_id}" "${_dir}"
 		check "should have cached files"
-		find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g' | grep -q "^4$" || fail "Expected 4 files in cache, instead got '$(find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g')'" && pass
+		find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g' | grep -q "^5$" || fail "Expected 5 files in cache, instead got '$(find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g')'" && pass
 		check "should clear cache files"
 		result="$(${snapshot} flush-cache 2>&1 || echo "")"
 		! test -d "${_SNAPDIR_CACHE_DIR}/" || fail "Cache directory found after flushing cache ${_SNAPDIR_CACHE_DIR}/. Command output: '$result'" && pass

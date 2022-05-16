@@ -1,13 +1,12 @@
+FROM bermi/dirfest:0.1.1 as dirfest
 FROM ubuntu:22.04
 
 RUN apt-get update && \
-  apt-get install -y b3sum shellcheck wget shfmt git && \
-  wget -p https://github.com/bermi/dirfest/releases/download/v0.1.0/dirfest -O dirfest && \
-  chmod +x dirfest && \
-  echo "33b378eb8d4de756a029771a3d5bb96e75ced4e79e6bcbb93ae6a4302f8b7eb2  dirfest" | b3sum -c && \
-  mv dirfest /usr/local/bin/ && \
-  apt-get remove -y wget && \
+  apt-get install -y b3sum shellcheck shfmt git && \
   apt-get clean -y
+
+COPY --from=dirfest /bin/dirfest /bin/dirfest
+RUN chmod +x /bin/dirfest
 
 WORKDIR /workdir
 
