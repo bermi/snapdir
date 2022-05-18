@@ -4,7 +4,7 @@ Audit and distribute authenticated directory snapshots.
 
 ![verify status]
 
-[Snapdir] combines [dirfest] ability to capture the structure, integrity checksums and permissions of directories and their contents with remote backends like s3, ssh, HTTP, and [Backblaze b2] for persisting and distributing snapshots.
+[Snapdir] combines [dirfest] ability to capture the structure, integrity checksums and permissions of directories and their contents with remote backends like [ssh], [s3]/[b2] and [HTTP] for persisting and distributing snapshots.
 
 With [Snapdir] cli you can implement [content-addressable storage
 applications], [hierarchical storage management (HSM)] and
@@ -122,6 +122,38 @@ The following are the optional arguments and their defaults:
 - --verbose=false
 - --force=false
 
+
+## Remote adapters
+
+[Snapdir] delegates to remote adapters the task of persisting fetching files on long-term storage.
+
+When calling snapdir `fetch`, `pull` or `push` methods you must supply a valid `--remote` option which determines which adapter to use.
+The `--remote` argument is formatted as a URI, and the adapter name is taken from the protocol part of the URI.
+For example, `file://some/path` is a valid `--remote` argument that will use the `snapdir-file-adapter`.
+
+Adapters must be installed and available in the `PATH` of the calling process. They will emmit commands that the `snapdir` CLI will execute or display when running in `--dryrun` mode.
+
+The following methods must be implemented by the adapters.
+
+### get-manifest-command
+
+Emmit a manifest to stdout given a manifest id.
+
+    snapdir-${ADAPTER_NAME}-adapter get-manifest-command --id "${snapdir_id}" --remote "${remote}"
+
+### get-fetch-files-command
+
+Generates the command or commands required to download to the cache the files defined on a manifest that are not already available locally.
+
+    snapdir-${ADAPTER_NAME}-adapter get-fetch-files-command --manifest-"${manifest}" --remote "${remote}" --cache-dir "${cache_dir}"
+
+### get-push-command
+
+Gets the command for pushing the contents of the staging directory to the remote. The staging directory is a temporary directory that is used to hold files that are not yet available on the remote.
+
+    snapdir-${ADAPTER_NAME}-adapter get-push-command --staging-dir "${staging_directory}" --remote "${remote}"
+
+A testing `snapdir-file-adapter` is provided as an example implementation.
 
 ## Quickstart guide
 
@@ -378,3 +410,7 @@ LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
   [dirfest]: https://github.com/bermi/dirfest
   [bermi/snapdir]: https://hub.docker.com/r/bermi/snapdir/tags
   [BermiLabs]: https://bermilabs.com
+  [s3]: https://github.com/bermi/snapdir-s3-adapter
+  [Backblaze b2]: https://github.com/bermi/snapdir-b2-adapter
+  [ssh]: https://github.com/bermi/snapdir-ssh-adapter
+  [http]: https://github.com/bermi/snapdir-http-adapter

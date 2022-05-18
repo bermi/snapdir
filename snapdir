@@ -35,7 +35,7 @@ snapdir_run() (
 
 	set -eEuo pipefail
 	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults"
-	local boolean_args="debug|force|linked|keep|purge|verbose"
+	local boolean_args="debug|force|linked|keep|purge|verbose|dryrun"
 	local value_required_args="manifest|id|remote|cwd|script_path|cache_dir|concurrency_limit|path"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
 
@@ -216,11 +216,12 @@ snapdir_push() {
 	snapdir_id=$(snapdir_id "${1:-""}" "${2:-"."}")
 	export _SNAPDIR_ID="$snapdir_id"
 	export _snapdir_tmp_dir
+	local dryrun="${_SNAPDIR_DRYRUN:-false}"
 
 	# The user might be piping the snapshot or it might be based on an existing snapshot id
 	if [[ ${_SNAPDIR_MANIFEST:-""} != "" ]]; then
 		_snapdir_tmp_dir="$(mktemp -d -t "${_SNAPDIR}"_"${snapdir_id}".XXXXXXXXXX)"
-		snapdir checkout --id="$snapdir_id" --linked "$_snapdir_tmp_dir" >/dev/null
+		_SNAPDIR_ID="$snapdir_id" _SNAPDIR_LINKED=true snapdir_checkout "$_snapdir_tmp_dir" >/dev/null
 		_SNAPDIR_DIR="$_snapdir_tmp_dir"
 	fi
 	local push_directory
@@ -237,7 +238,12 @@ snapdir_push() {
 	fi
 	if [[ ${push_command} != "" ]]; then
 		_snapdir_log "Pushing snapshot to remote '${remote}' with command: '${push_command}'"
-		bash -c "set -eEuo pipefail;${verbose_flag}${push_command}"
+		if [[ ${dryrun} == "true" ]]; then
+			# prefix all lines with [dryrun]
+			echo "${verbose_flag}${push_command}" | sed -e "s/^/# [$_SNAPDIR][dryrun] /" >&2
+		else
+			bash -c "set -eEuo pipefail;${verbose_flag}${push_command}"
+		fi
 	else
 		_snapdir_log "Nothing to push to '${remote}'."
 	fi
@@ -290,13 +296,12 @@ snapdir_fetch() {
 
 	fetch_files_commands=$(_SNAPDIR_MANIFEST="${_SNAPDIR_MANIFEST}" _snapdir_get_fetch_snapdir_files_command)
 	if [[ ${fetch_files_commands} != "" ]]; then
-		echo "${fetch_files_commands}" | _snapdir_parallel_exec >"$_output_dest" || {
+		echo "${fetch_files_commands}" | _snapdir_concurrent_exec >"$_output_dest" || {
 			rm -rf "${manifest_cache_path}.tmp"
 			echo "error: Failed to fetch files for snapshot '${snapdir_id}' from remote '${remote}' when calling '${fetch_files_commands}'." >&2
 			return 1
 		}
 	fi
-
 	test -f "${manifest_cache_path}" || mv "${manifest_cache_path}.tmp" "${manifest_cache_path}"
 }
 
@@ -655,7 +660,14 @@ _snapdir_get_remote_adapter_bin_path() {
 	_snapdir_export_remote_vars
 	remote_protocol="$(echo "${remote}" | cut -d':' -f1)"
 	local remote_adapter_bin_path
-	remote_adapter_bin_path=$(which "snapdir-${remote_protocol}-adapter" || echo "")
+	local explicit_bin_path
+	explicit_bin_path="_SNAPDIR_${remote_protocol^^}_ADAPTER_BIN_PATH"
+	# if explicit_bin_path is defined, use it
+	if [[ ${!explicit_bin_path:-""} != "" ]] && test -f "${!explicit_bin_path}"; then
+		echo "${!explicit_bin_path}"
+		return 0
+	fi
+	remote_adapter_bin_path=$(which "snapdir-${remote_protocol}-adapter" || echo "" 2>/dev/null)
 	if [[ ${remote_adapter_bin_path} == "" ]]; then
 		echo "Unsupported remote protocol: ${remote_protocol}" >&2
 		echo "No 'snapdir-${remote_protocol}-adapter' could be found on your PATH" >&2
@@ -669,7 +681,10 @@ _snapdir_get_push_command() {
 	local remote="${2:?Missing remote}"
 	local remote_adapter_bin_path
 	remote_adapter_bin_path=$(_snapdir_get_remote_adapter_bin_path "${remote}")
-	$remote_adapter_bin_path get-push-command "${staging_directory}" "${remote}"
+	$remote_adapter_bin_path get-push-command \
+		--id "${_SNAPDIR_ID}" \
+		--staging-dir "${staging_directory}" \
+		--remote "${remote}"
 }
 
 _snapdir_get_manifest_rel_path() {
@@ -746,6 +761,7 @@ _snapdir_export_env_defaults() {
 				exit 1
 			fi
 			_SNAPDIR_ID="$(snapdir_id)"
+			_snapdir_save_manifest_on_cache
 		fi
 	fi
 
@@ -790,6 +806,21 @@ _snapdir_wait_for_batch() {
 	fi
 }
 
+_snapdir_save_manifest_on_cache() {
+	# when the cache is provided via STDIN we'll save it on the cache dir
+	set -eEuo pipefail
+	local manifest_rel_path
+	manifest_rel_path="$(_snapdir_get_manifest_rel_path "${_SNAPDIR_ID}")"
+	local manifest_cache_path="${_SNAPDIR_CACHE_DIR}/${manifest_rel_path}"
+	if ! test -f "${manifest_cache_path}"; then
+		mkdir -p "$(dirname "${manifest_cache_path}")"
+		echo "$_SNAPDIR_MANIFEST" >"${manifest_cache_path}.tmp"
+		_snapdir_log "Saving manifest ${_SNAPDIR_ID} as ${manifest_cache_path}"
+		mv "${manifest_cache_path}.tmp" "${manifest_cache_path}"
+		chmod 600 "${manifest_cache_path}"
+	fi
+}
+
 _snapdir_check_integrity() {
 	set -eEuo pipefail
 	local snapdir_id="${_SNAPDIR_ID:?Missing --id option when calling ${_SNAPDIR} checkout}"
@@ -817,7 +848,7 @@ _snapdir_check_integrity() {
 }
 
 # Read stdin and run concurrently using bash
-_snapdir_parallel_exec() {
+_snapdir_concurrent_exec() {
 	set -eEuo pipefail
 	local commands=()
 	local command="${1:-"{}"}"
@@ -844,17 +875,11 @@ _snapdir_log() {
 	fi
 }
 
-#       ####### #######  #####  #######  #####
-#          #    #       #     #    #    #     #
-#          #    #       #          #    #
-#          #    #####    #####     #     #####
-#          #    #             #    #          #
-#          #    #       #     #    #    #     #
-#          #    #######  #####     #     #####
-
-snapdir_test() (
+_snapdir_test_utils() {
 	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
 	set -eEuo pipefail
+	local target_file="${1:?Missing target file}"
+	export _TARGET_TEST_FILE="$target_file"
 
 	setup() {
 		set -eEuo pipefail
@@ -869,7 +894,7 @@ snapdir_test() (
 
 		cd "$_SNAPDIR_TEST_TMP_DIR" || return 1
 	}
-	_SNAPDIR_TEST_TOTAL_CHECKS=$(grep -c 'check "[^"]*"' "${_SNAPDIR_BIN_PATH}")
+	_SNAPDIR_TEST_TOTAL_CHECKS=$(grep -c 'check "[^"]*"' "${target_file}")
 	# the previous grep will add one test to the total count when shfmt normalizes it
 	_SNAPDIR_TEST_TOTAL_CHECKS=$((_SNAPDIR_TEST_TOTAL_CHECKS - 1))
 	_SNAPDIR_TESTS_PENDING_CHECKS=$_SNAPDIR_TEST_TOTAL_CHECKS
@@ -933,7 +958,7 @@ snapdir_test() (
 		set -eEuo pipefail
 		_SNAPDIR_TEST_NUMBER=$((_SNAPDIR_TEST_TOTAL_CHECKS - _SNAPDIR_TESTS_PENDING_CHECKS + 1))
 		echo "not ok ${_SNAPDIR_TEST_NUMBER} - ${_SNAPDIR_TEST_DESCRIPTION} / $*" >&2
-		echo "# fail called by: ${_SNAPDIR_BIN_PATH}:$(caller 0 | awk '{print $1}')" >&2
+		echo "# fail called by: ${_TARGET_TEST_FILE}:$(caller 0 | awk '{print $1}')" >&2
 		teardown
 		exit 1
 	}
@@ -956,16 +981,48 @@ snapdir_test() (
 		rm -rf "$_SNAPDIR_TEST_TMP_DIR/files"
 	}
 
-	run() {
+	run_tests() {
+		SECONDS=0
+		trap teardown EXIT
+		setup
+		test_suite || {
+			teardown
+			return 1
+		}
+		teardown
+	}
+	run_tests_without_teardown() {
+		SECONDS=0
+		setup
+		test_suite || {
+			echo "Left directory $_SNAPDIR_TEST_TMP_DIR untouched." >&2
+			return 1
+		}
+		echo "Left directory $_SNAPDIR_TEST_TMP_DIR untouched." >&2
+	}
+}
+
+#       ####### #######  #####  #######  #####
+#          #    #       #     #    #    #     #
+#          #    #       #          #    #
+#          #    #####    #####     #     #####
+#          #    #             #    #          #
+#          #    #       #     #    #    #     #
+#          #    #######  #####     #     #####
+
+snapdir_test() (
+	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	set -eEuo pipefail
+
+	_snapdir_test_utils "${_SNAPDIR_BIN_PATH}"
+
+	test_suite() {
 		set -eEuo pipefail
 		local result=""
 		local expected=""
 		local _dir="${_SNAPDIR_TEST_TMP_DIR}/files"
 		local _cwd="$_SNAPDIR_CWD"
 		local snapshot="${_SNAPDIR_BIN_PATH}"
-		local bucket="${B2_TEST_BUCKET:-unit-testing}"
-		local remote="${_SNAPDIR_TEST_REMOTE:-b2://${bucket}/}"
-
 		local foo_checksum="49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
 		local foo_path="49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
 		local bar_checksum="b3199d36d434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
@@ -1267,14 +1324,7 @@ F 600 $foo_checksum 4 ./foo"
 		echo "${result}" | grep -q "^[0-9]*\.[0-9]*\.[0-9]*$" || fail "Expected semver version, got: ${result}" && pass
 	}
 
-	SECONDS=0
-	trap teardown EXIT
-	setup
-	run || {
-		teardown
-		return 1
-	}
-	teardown
+	run_tests
 )
 
 if [[ "$(uname -s)" == "Darwin" ]]; then

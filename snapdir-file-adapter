@@ -1,0 +1,496 @@
+#!/usr/bin/env bash
+
+# # snapdir-file-adapter 0.1.1
+#
+# ## Description:
+#
+#     Reference implementation of snapdir remote adapter using the filesystem.
+#
+# ## License
+#
+# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
+
+set -eEuo pipefail
+IFS=$'\n\t'
+
+# By default this script will take the name of the current file
+_SNAPDIR_FILE_ADAPTER="snapdir-file-adapter"
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	_SNAPDIR_FILE_ADAPTER="$(basename "${BASH_SOURCE[0]}")"
+fi
+_SNAPDIR_FILE_ADAPTER_VERSION="0.1.1"
+
+snapdir_file_adapter_get_push_command() {
+	set -eEuo pipefail
+	local id="${_SNAPDIR_FILE_ADAPTER_ID:?Missing --id}"
+	local remote="${_SNAPDIR_FILE_ADAPTER_REMOTE:?Missing --remote}"
+	local manifest_rel_path
+	manifest_rel_path=$(_snapdir_get_manifest_rel_path "${id}")
+	local staging_dir="${_SNAPDIR_FILE_ADAPTER_STAGING_DIR:?Missing --staging-dir}"
+	# remove trailing slash
+	staging_dir="${staging_dir%/}"
+	local local_path
+	local_path="$(_snapdir_file_adapter_get_local_path "${remote}")"
+
+	local log_file
+	# creates a temporary file to log the output of the transaction
+	log_file="$(mktemp -t "snapdir-${id}".XXXXXXXXXX)"
+
+	echo "set -eEuo pipefail;"
+	# nothing to do if the manifest already exists
+	if test -f "${local_path}/${manifest_rel_path}"; then
+		echo "echo \"Manifest already exists on remote.\";"
+		return 0
+	fi
+
+	# we'll iterate over the files in the manifest and print copy commands
+	# for the files that are missing on the local path
+	local file_paths_on_manifest
+	local total_files=0
+	file_paths_on_manifest=$(grep '^F ' "${staging_dir}/${manifest_rel_path}")
+	for entry in $file_paths_on_manifest; do
+		IFS=' ' read -r -a entry_parts <<<"${entry}"
+		checksum="${entry_parts[2]}"
+		rel_file_path="$(_snapdir_get_object_rel_path "${checksum}")"
+		if ! test -f "${local_path}/${rel_file_path}"; then
+			# redirect stdout and stderr to the temporary file $log_file but also send stdout to stdout and stderr to stderr
+			echo "nice ${_SNAPDIR_FILE_ADAPTER_BIN_PATH} commit-object --checksum \"${checksum}\" --target-path \"${staging_dir}/${rel_file_path}\" --destination-path \"${local_path}/${rel_file_path}\" --log-file \"$log_file\" & "
+			total_files=$((total_files + 1))
+		elif ! cmp "${local_path}/${rel_file_path}" "${staging_dir}/${rel_file_path}" >/dev/null; then
+			echo "echo \"WARNING: ${local_path}/${rel_file_path} has been tampered with and will be removed.\" >> \"$log_file\";"
+			echo "nice ${_SNAPDIR_FILE_ADAPTER_BIN_PATH} commit-object --checksum \"${checksum}\" --target-path \"${staging_dir}/${rel_file_path}\" --destination-path \"${local_path}/${rel_file_path}\" --log-file \"$log_file\" & "
+			total_files=$((total_files + 1))
+		fi
+	done
+
+	if [[ $total_files -eq 0 ]]; then
+		echo "echo \"No new objects to save on remote.\";"
+	else
+		# wait for individual commit-object commands to finish
+		echo "wait;"
+	fi
+
+	echo "${_SNAPDIR_FILE_ADAPTER_BIN_PATH} commit-manifest --checksum \"${id}\" --target-path \"${staging_dir}/${manifest_rel_path}\" --destination-path \"${local_path}/${manifest_rel_path}\" --log-file \"$log_file\";"
+}
+
+snapdir_file_adapter_commit_manifest() {
+	set -eEuo pipefail
+	local checksum="${_SNAPDIR_FILE_ADAPTER_CHECKSUM:?Missing --checksum}"
+	local log_file="${_SNAPDIR_FILE_ADAPTER_LOG_FILE:?Missing --log-file}"
+
+	# only after all the files have been copied, and ided, we'll
+	# save the manifest
+	local errors
+	errors=$(grep -q '^ERROR: ' "$log_file" || echo "")
+	if [[ "${errors}" != "" ]]; then
+		echo "$errors" >&2
+		echo "ERROR: Failed to commit: ${checksum}" >&2
+		exit 1
+	else
+		_snapdir_file_adapter_persit | tee "$log_file" || {
+			echo "ERROR: Failed to commit: ${checksum}" >&2
+			cat "$log_file" >&2
+			rm -rf "$log_file"
+			exit 1
+		}
+		rm -rf "$log_file"
+	fi
+}
+
+snapdir_file_adapter_commit_object() {
+	set -eEuo pipefail
+	local log_file="${_SNAPDIR_FILE_ADAPTER_LOG_FILE:?Missing --log-file}"
+	_snapdir_file_adapter_persit | tee "$log_file"
+}
+
+_snapdir_file_adapter_persit() {
+	# This method will persist files to a local path and verify that the
+	# checksums match the ones in the manifest. The file is initially copied
+	# with a .tmp extension, and then renamed to the final name to commit the
+	# change.
+	set -eEuo pipefail
+	local target_path="${_SNAPDIR_FILE_ADAPTER_TARGET_PATH:?Missing --target-path}"
+	local destination_path="${_SNAPDIR_FILE_ADAPTER_DESTINATION_PATH:?Missing --destination-path}"
+	local checksum="${_SNAPDIR_FILE_ADAPTER_CHECKSUM:?Missing --checksum}"
+	local retries="${_SNAPDIR_FILE_ADAPTER_RETRIES:-5}"
+	local dir_on_remote
+	dir_on_remote="$(dirname "${destination_path}")"
+	mkdir -p "${dir_on_remote}"
+	cp -R --dereference -n "${target_path}" "${destination_path}".tmp
+	if [[ "$(b3sum "${destination_path}".tmp --no-names)" != "${checksum}" ]]; then
+		if [[ "$(b3sum "${target_path}" --no-names)" == "${checksum}" ]]; then
+			# retry when the target has a valid checksum
+			rm -rf "${destination_path}".tmp
+			# subtract 1 from _SNAPDIR_FILE_ADAPTER_RETRIES
+			retries=$((retries - 1))
+			if [[ "${retries}" -gt 0 ]]; then
+				echo "WARNING: Retrying saving ${target_path} to ${destination_path} ${retries} retries left." >&2
+				_SNAPDIR_FILE_ADAPTER_RETRIES=$retries snapdir_file_adapter_commit_manifest
+			else
+				# give up
+				echo "ERROR: Failed to commit file ${target_path} to ${destination_path} with checksum ${checksum}." >&2
+				exit 1
+			fi
+		else
+			echo "ERROR: Invalid target checksum for ${target_path}" >&2
+			exit 1
+		fi
+	else
+		mv "${destination_path}".tmp "${destination_path}"
+		echo "SAVED: saved ${destination_path}"
+	fi
+}
+
+_snapdir_file_adapter_get_local_path() {
+	set -eEuo pipefail
+	local remote="${1:?Missing remote}"
+	local local_path
+	local_path="$(echo "$remote" | sed -E 's|^file:/*(localhost/?)?|/|')"
+	# remove trailing slash
+	echo "${local_path%/}"
+}
+
+# ### get-manifest-command
+# Emmit a manifest to stdout given a manifest id.
+#     snapdir-${ADAPTER_NAME}-adapter get-manifest-command --id "${id}" --remote "${remote}"
+# ### get-fetch-files-command
+# Generates the command or commands required to download to the cache the files defined on a manifest that are not already available locally.
+#     snapdir-${ADAPTER_NAME}-adapter get-fetch-files-command --manifest-"${manifest}" --remote "${remote}" --cache-dir "${cache_dir}"
+# ### get-push-command
+# Gets the command for pushing the contents of the staging directory to the remote.
+#     snapdir-${ADAPTER_NAME}-adapter get-push-command --staging-dir "${staging_directory}" --remote "${remote}"
+
+snapdir_file_adapter_run() (
+	set -eEuo pipefail
+	local subcommands="get-manifest-command|get-fetch-files-command|get-push-command|test|version|commit-object|commit-manifest"
+	local boolean_args="debug|verbose"
+	local value_required_args="cache_dir|staging_dir|remote|manifest|id|target_path|destination_path|checksum|log_file"
+	local legal_argument_keys="${boolean_args}|${value_required_args}"
+
+	_snapdir_file_adapter_parse_argument_key() {
+		sed -E 's|^--?|_SNAPDIR_FILE_ADAPTER_|; s|-|_|g;' <<<"${1^^}"
+	}
+
+	_snapdir_file_adapter_validate_option() {
+		set -eEuo pipefail
+		grep -q -E "^_SNAPDIR_FILE_ADAPTER_(${legal_argument_keys^^})$" <<<"${1}" || {
+			echo "error: Unknown option: ${1//_SNAPDIR_FILE_ADAPTER_/}" | tr '[:upper:]' '[:lower:]' >&2
+			echo "Valid options are: --(${legal_argument_keys})" >&2
+			exit 1
+		}
+	}
+
+	_snapdir_file_adapter_help() {
+		_snapdir_file_adapter_export_env_defaults
+		sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_FILE_ADAPTER_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+		exit 0
+	}
+
+	local command=""
+	local positional_args=""
+	local key
+	local value
+	local is_boolean
+	local subcommand_candidate="${1:-"$command"}"
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		get-manifest-command | get-fetch-files-command | get-push-command | test | commit-object | commit-manifest)
+			command="$1"
+			shift
+			;;
+		help | -h | --help)
+			_snapdir_file_adapter_help
+			;;
+		version | -v | --version)
+			echo "${_SNAPDIR_FILE_ADAPTER_VERSION}"
+			exit 0
+			;;
+		# export all --*=* flags as _SNAPDIR_FILE_ADAPTER_* env vars
+		--*=* | -*=*)
+			key="$(_snapdir_file_adapter_parse_argument_key "${1%%=*}")"
+			_snapdir_file_adapter_validate_option "$key"
+			export "$key"="${1#*=}"
+			shift
+			;;
+		# export all --* * flags as _SNAPDIR_FILE_ADAPTER_* env vars
+		--*)
+			is_boolean=$(grep -q -E "^--?(${boolean_args})$" <<<"${1}" && echo true || echo false)
+			key="$(_snapdir_file_adapter_parse_argument_key "${1}")"
+			_snapdir_file_adapter_validate_option "$key"
+			shift
+			value="${1:-true}"
+			# if key is in boolean_args
+			if [[ ${is_boolean} == "false" ]] && [[ ${value:0:1} != "-" ]]; then
+				# since this might be the last arg, this will always be truthy
+				shift || true
+			else
+				value="true"
+			fi
+			export "${key}"="${value}"
+			;;
+		*)
+			positional_args="${positional_args}${1} "
+			shift
+			;;
+		esac
+	done
+
+	# if command is not set, show help
+	if [[ ${command:-""} == "" ]]; then
+		echo "Uknown command '$subcommand_candidate'. Valid commands are: ${subcommands}" >&2
+		echo "Try: ${_SNAPDIR_FILE_ADAPTER} --help" >&2
+		return 1
+	fi
+
+	_snapdir_file_adapter_export_env_defaults
+	# env | grep _snapdir_file_adapter_ | sort
+	eval "snapdir_file_adapter_${command//-/_} $positional_args ${*:2}"
+)
+
+_snapdir_file_adapter_export_env_defaults() {
+	# Environment variables
+	set -eEuo pipefail
+}
+
+snapdir_file_adapter_test() (
+	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	set -eEuo pipefail
+
+	_snapdir_test_utils "${_SNAPDIR_FILE_ADAPTER_BIN_PATH}"
+
+	test_suite() {
+		set -eEuo pipefail
+		local snapdir="$_SNAPDIR_BIN_PATH"
+		local result=""
+		local expected=""
+		local _dir="${_SNAPDIR_TEST_TMP_DIR}/files"
+		local _cwd="$_SNAPDIR_CWD"
+		local snapshot="${_SNAPDIR_BIN_PATH}"
+		local foo_checksum="49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
+		local foo_path="49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
+		local bar_checksum="b3199d36d434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
+		local bar_path="b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
+		local simple_manifest_id="aa91e498f401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d"
+		local simple_manifest_path="aa9/1e4/98f/401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d"
+		local simple_manifest="D 700 e2b4329871fef9f50a20ba5d1475ee474f1df4091fe49002fd2bbcc42e6a04d5 8 ./
+F 600 $bar_checksum 4 ./bar
+F 600 $foo_checksum 4 ./foo"
+		local remote="file://${_SNAPDIR_TEST_TMP_DIR}/remote"
+		local local_path
+		local_path="$(_snapdir_file_adapter_get_local_path "${remote}")"
+
+		# --------------------------------------------------------------------------------
+		# snapdir push
+		# --------------------------------------------------------------------------------
+		describe "snapdir push"
+		generate_files
+		echo "$simple_manifest" | "${snapdir}" stage "${_dir}" >/dev/null
+		# We only push if the manifest does not exist. We first push the objects and finally the manifest.
+		echo "# Running: \"${snapdir}\" push --dryrun --verbose --remote=\"${remote}\" \"${_dir}\""
+		result=$(echo "$simple_manifest" | "${snapdir}" push --dryrun --remote="${remote}" "${_dir}" 2>&1 | grep dryrun || echo "")
+
+		check "should run expensive method in the background and with nice"
+		grep -E -q "nice.+commit-object.+& " <<<"${result}" || fail "Expected 'nice.*commit-object.*& ' match on '$result'" && pass
+
+		check "should include 2 commit-object commands"
+		test "$(grep -E -c "commit-object" <<<"${result}")" == "2" || fail "Expected 2 commit messages but got '$(grep -E -c "commit-object" <<<"${result}")' on '$result'" && pass;
+
+		check "should include 1 commit-manifest command"
+		test "$(grep -E -c "commit-manifest.*log-file" <<<"${result}")" == "1" || fail "Expected 1 commit-manifest message but got '$(grep -E -c "commit-manifest" <<<"${result}")' on '$result'" && pass;
+
+		check "should have not committed anything when using --dryrun"
+		! test -f "${local_path}/.objects/${foo_path}" || fail "Unexpected '${local_path}/.objects/${foo_path}' file found when using --dryrun. Got result '$result'" && pass
+		! test -f "${local_path}/.objects/${bar_path}" || fail "Unexpected '${local_path}/.objects/${bar_path}' file found when using --dryrun. Got result '$result'"
+		! test -f "${local_path}/.manifests/${simple_manifest_path}" || fail "Unexpected '${local_path}/.manifests/${simple_manifest_path}' file found when using --dryrun. Got result '$result'"
+
+		# --------------------------------------------------------------------------------
+		describe "push --remote file"
+		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --remote="${remote}" 2>&1 || echo "")
+
+		check "should have committed the staged content"
+		grep -q foo "${local_path}/.objects/${foo_path}" || fail "Expected '${local_path}/.objects/${foo_path}' to exist. Got result '$result'"
+		grep -q bar "${local_path}/.objects/${bar_path}" || fail "Expected '${local_path}/.objects/${bar_path}' to exist. Got result '$result'" && pass
+
+		check "should have committed the manifest"
+		grep -q bar "${local_path}/.manifests/${simple_manifest_path}" || fail "Expected '${local_path}/.manifests/${simple_manifest_path}' to exist. Got result '$result'" && pass
+
+		check "manifest file contents should match the manifest id"
+		echo "${simple_manifest_id}  ${local_path}/.manifests/${simple_manifest_path}" | b3sum -c >/dev/null || fail "Expected '${local_path}/.manifests/${simple_manifest_path}' to and b3sum to match. Got result '$result'" && pass
+
+		# --------------------------------------------------------------------------------
+
+		check "should avoid pushing if the manifest already exists"
+		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --remote="${remote}" 2>&1 || echo "")
+		! grep -q "No new objects to save on remote" <<<"${result}" || fail "Expected 'No new objects to save on remote' but got '$result'"
+		grep -q "Manifest already exists on remote" <<<"${result}" || fail "Expected 'Manifest already exists on remote' but got '$result'" && pass
+
+		# --------------------------------------------------------------------------------
+
+		check "should not re-upload objects already on the remote"
+		rm "${local_path}/.manifests/${simple_manifest_path}"
+		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --remote="${remote}" 2>&1 || echo "")
+		! grep -q "Manifest already exists on remote" <<<"${result}" || fail "Expected 'Manifest already exists on remote' but got '$result'"
+		grep -q "No new objects to save on remote" <<<"${result}" || fail "Expected 'No new objects to save on remote' but got '$result'" && pass
+		
+		# --------------------------------------------------------------------------------
+
+		check "should add missing objects from the remote"
+		rm "${local_path}/.manifests/${simple_manifest_path}"
+		rm "${local_path}/.objects/${foo_path}"
+		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --remote="${remote}" 2>&1 || echo "")
+		! grep -q "No new objects to save on remote" <<<"${result}" || fail "Expected 'No new objects to save on remote' but got '$result'"
+		grep -E -q "SAVED:.*${foo_path}" <<<"${result}" || fail "Expected '${foo_path}' but got '$result'" && pass
+
+		# --------------------------------------------------------------------------------
+
+		check "should prevent committing the manifest if an object is tampered with"
+		rm "${local_path}/.manifests/${simple_manifest_path}"
+		echo "not foo" > "${local_path}/.objects/${foo_path}"
+		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --remote="${remote}" 2>&1 || echo "")
+		! grep -q "No new objects to save on remote" <<<"${result}" || fail "Expected 'No new objects to save on remote' but got '$result'"
+		grep -E -q "WARNING:.*${foo_path}.*has been tampered with and will be removed." <<<"${result}" || fail "Expected '${foo_path}' tampered warning message but got '$result'"
+		grep -E -q "SAVED:.*${foo_path}" <<<"${result}" || fail "Expected '${foo_path}' but got '$result'" && pass
+
+		clean_files
+		# # --------------------------------------------------------------------------------
+		# # _snapdir_get_fetch_snapdir_manifest_command
+		# # --------------------------------------------------------------------------------
+		# generate_files
+		# describe "_snapdir_get_fetch_snapdir_manifest_command"
+		# c__heck "should return the correct fetch command"
+		# result=$(_SNAPDIR_REMOTE="${remote}" _SNAPDIR_ID="${simple_manifest_id}" _SNAPDIR_REMOTE_BASE_DIR=$_SNAPDIR_TEST_TMP_DIR _snapdir_get_fetch_snapdir_manifest_command 2>&1 || echo "")
+		# expected="b2 download-file-by-name --noProgress \"${bucket}\" \"${_SNAPDIR_TEST_TMP_DIR}/.manifests/${simple_manifest_path}\" \"${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}.tmp\""
+		# test "$result" == "$expected" || fail "Unexpected fetch command '$result', expected: '$expected'" && pass
+
+		# describe "_snapdir_get_fetch_snapdir_manifest_command --verbose"
+		# c__heck "should return the correct fetch command with verbose"
+		# result=$(_SNAPDIR_VERBOSE=true _SNAPDIR_REMOTE="${remote}" _SNAPDIR_ID="${simple_manifest_id}" _SNAPDIR_REMOTE_BASE_DIR=$_SNAPDIR_TEST_TMP_DIR _snapdir_get_fetch_snapdir_manifest_command 2>&1 || echo "")
+		# expected="b2 download-file-by-name \"${bucket}\" \"${_SNAPDIR_TEST_TMP_DIR}/.manifests/${simple_manifest_path}\" \"${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}.tmp\""
+		# test "$result" == "$expected" || fail "Unexpected verbose push command '$result', expected: '$expected'" && pass
+		# clean_files
+
+		# # --------------------------------------------------------------------------------
+		# # _snapdir_get_fetch_snapdir_files_command
+		# # --------------------------------------------------------------------------------
+		# generate_files
+		# _tmp="$("${snapshot}" manifest "${_dir}")"
+		# clean_files
+
+		# describe "_snapdir_get_fetch_snapdir_files_command"
+		# c__heck "should not include fetch files command if objects are in the cache"
+		# result=$(_SNAPDIR_MANIFEST="${_tmp}" _SNAPDIR_REMOTE="${remote}" _SNAPDIR_REMOTE_BASE_DIR="$_SNAPDIR_TEST_TMP_DIR" _snapdir_get_fetch_snapdir_files_command 2>&1 || echo "")
+		# test "$result" == "" || fail "Unexpected fetch files command '$result' should be empty" && pass
+
+		# # remove one of the objects from the cache
+		# rm "${_SNAPDIR_CACHE_DIR}/.objects/${bar_path}"
+		# c__heck "should include missing file on fetch command"
+		# result=$(_SNAPDIR_MANIFEST="${_tmp}" _SNAPDIR_REMOTE="${remote}" _SNAPDIR_REMOTE_BASE_DIR="$_SNAPDIR_TEST_TMP_DIR" _snapdir_get_fetch_snapdir_files_command 2>&1 || echo "")
+		# expected="b2 download-file-by-name --noProgress \"${bucket}\" \"${_SNAPDIR_TEST_TMP_DIR}/.objects/${bar_path}\" \"${_SNAPDIR_CACHE_DIR}/.objects/${bar_path}\""
+		# test "$result" == "$expected" || fail "Unexpected fetch files command '$result', expected: '$expected'" && pass
+
+		# # remove all objects from the cache
+		# rm -rf "${_SNAPDIR_CACHE_DIR}/.objects/"
+		# c__heck "should include all files on fetch command"
+		# result=$(_SNAPDIR_MANIFEST="${_tmp}" _SNAPDIR_REMOTE="${remote}" _SNAPDIR_REMOTE_BASE_DIR="$_SNAPDIR_TEST_TMP_DIR" _snapdir_get_fetch_snapdir_files_command 2>&1 || echo "")
+		# result=$(echo "$result" | sort)
+		# expected=$({
+		# 	echo "$expected"
+		# 	echo "b2 download-file-by-name --noProgress \"${bucket}\" \"${_SNAPDIR_TEST_TMP_DIR}/.objects/${foo_path}\" \"${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}\""
+		# } | sort)
+		# test "$result" == "$expected" || fail "Unexpected fetch files command '$result', expected: '$expected'" && pass
+
+		# clean_files
+
+		# # Done with snapshot internals tests, clean them all, we should not see them in the future
+		# rm -rf "${_dir}/.${_SNAPDIR}-"*
+
+		# # --------------------------------------------------------------------------------
+		# # snapshot integration tests
+		# # --------------------------------------------------------------------------------
+		# describe "integration test, push"
+		# c__heck "should push staged files"
+		# generate_files
+		# echo "# Running: \"${snapshot}\" push --verbose --remote=\"${remote}\" \"${_dir}\""
+		# result=$(echo "$simple_manifest" | "${snapshot}" push --verbose --remote="${remote}" "${_dir}" 2>&1 || echo "")
+		# [[ $result =~ $simple_manifest_id ]] || fail "Unexpected verbose push output, got: '$result' expected '$simple_manifest_id' to be included" && pass
+		# clean_files
+
+		# c__heck "should have pushed staged files correctly"
+		# echo "# Running: b2 ls --json --recursive \"${B2_TEST_BUCKET}\" \"${remote_path}\""
+		# result=$(b2 ls --json --recursive "${B2_TEST_BUCKET}" "${remote_path}" | jq -r '.[] | .fileName + " " + .contentSha1' | sort)
+		# [[ $remote_ls_sha1 == "$result" ]] || fail "Unexpected remote ls, got: '$result' expected '$remote_ls_sha1'" && pass
+
+		# # c_heck "should push staged files by id"
+		# # if [[ "${_SNAPDIR_INTEGRATION_TEST:-false}" == "true" ]]; then
+		# # 	clean_files
+		# # 	generate_nested_files
+		# # 	"${snapshot}" id "${_dir}" >/dev/null
+		# # 	clean_files
+		# # 	echo "# Running: \"${snapshot}\" push --verbose --remote=\"${remote}\" --id=\"${nested_manifest_id}\""
+		# # 	result=$("${snapshot}" push --verbose --remote="${remote}" --id="${nested_manifest_id}" 2>&1 || echo "")
+		# # 	[[ "$result" =~ $nested_manifest_id ]] || fail "Unexpected verbose push output, got: '$result' expected '$nested_manifest_id' to be included"
+		# # 	result=$(b2 ls --json --recursive "${B2_TEST_BUCKET}" "${remote_path}" | jq -r '.[] | .fileName + " " + .contentSha1' | sort)
+		# # 	grep -q "$nested_manifest_sha1sum" <<<"$result" || fail "Unexpected remote ls, got: '$result' expected '$nested_manifest_sha1sum'" && pass
+		# # else
+		# # 	skip
+		# # fi
+
+		# describe "integration test, fetch"
+		# c__heck "should fetch remote manifest"
+		# clean_files
+		# ${snapshot} flush-cache
+		# echo "# Running: \"${snapshot}\" fetch --verbose --remote=\"${remote}\" --id=\"${simple_manifest_id}\""
+		# result=$("${snapshot}" fetch --verbose --remote="${remote}" --id="${simple_manifest_id}" 2>&1 || echo "")
+		# test -f "${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}" || fail "Failed to fetch ${foo_path}. Command output: '${result}'"
+		# test -f "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" || fail "Failed to fetch ${simple_manifest_path}. Command output: '${result}'"
+		# b3sum "${_SNAPDIR_CACHE_DIR}/.objects/${bar_path}" | grep -q "$bar_checksum" || fail "Unexpected fetch result. Expected ${_dir}/bar checksum to be '$bar_checksum'. Command output: ${result}" && pass
+		# clean_files
+
+		# describe "integration test, pull"
+		# c__heck "should pull remote manifest"
+		# clean_files
+		# ${snapshot} flush-cache
+		# echo "# Running: \"${snapshot}\" pull --verbose --remote=\"${remote}\" --id=\"${simple_manifest_id}\" \"${_dir}\""
+		# result=$("${snapshot}" pull --verbose --id="${simple_manifest_id}" --remote="${remote}" "${_dir}" 2>&1 || echo "")
+		# b3sum "${_dir}/foo" | grep -q "$foo_checksum" || fail "Unexpected pull result results: '${result}'. Expected ${_dir}/foo checksum to be '$foo_checksum'."
+		# b3sum "${_dir}/bar" | grep -q "$bar_checksum" || fail "Unexpected pull result results: '${result}'. Expected ${_dir}/bar checksum to be '$bar_checksum'." && pass
+		# clean_files
+	}
+
+	run_tests
+	# run_tests_without_teardown
+)
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+	_snapdir_file_adapter_readlink() {
+		echo "$(cd "$(dirname "$1")" || echo "" && pwd)/$(basename "$1")"
+	}
+else
+	shopt -s inherit_errexit
+	_snapdir_file_adapter_readlink() {
+		readlink -f "$1"
+	}
+fi
+
+#######
+#       #    # ##### #####  #   # #####   ####  # #    # #####
+#       ##   #   #   #    #  # #  #    # #    # # ##   #   #
+#####   # #  #   #   #    #   #   #    # #    # # # #  #   #
+#       #  # #   #   #####    #   #####  #    # # #  # #   #
+#       #   ##   #   #   #    #   #      #    # # #   ##   #
+####### #    #   #   #    #   #   #       ####  # #    #   #
+
+# Run if is not sourced
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	# Get the absolute path to ${BASH_SOURCE[0]}
+	export _SNAPDIR_FILE_ADAPTER_BIN_PATH="${_SNAPDIR_FILE_ADAPTER_BIN_PATH:-$(_snapdir_file_adapter_readlink "${BASH_SOURCE[0]}")}"
+	# import snapdir functions and environment variables,
+	# we'll need them to resolve directories, logging and testing.
+	_SNAPDIR_BIN_PATH="$(which snapdir || echo "$(dirname "${_SNAPDIR_FILE_ADAPTER_BIN_PATH}")/snapdir")"
+	export _SNAPDIR_BIN_PATH
+	# shellcheck disable=SC1090
+	. "$_SNAPDIR_BIN_PATH"
+	snapdir_file_adapter_run "${@:1}"
+else
+	_snapdir_file_adapter_export_env_defaults
+fi
