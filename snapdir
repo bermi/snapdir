@@ -36,7 +36,7 @@ snapdir_run() (
 	set -eEuo pipefail
 	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults"
 	local boolean_args="debug|force|linked|keep|purge|verbose|dryrun"
-	local value_required_args="manifest|id|remote|cwd|script_path|cache_dir|concurrency_limit|path"
+	local value_required_args="manifest|id|remote|cwd|script_path|cache_dir|path"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
 
 	parse_argument_key() {
@@ -296,7 +296,7 @@ snapdir_fetch() {
 
 	fetch_files_commands=$(_SNAPDIR_MANIFEST="${_SNAPDIR_MANIFEST}" _snapdir_get_fetch_snapdir_files_command)
 	if [[ ${fetch_files_commands} != "" ]]; then
-		echo "${fetch_files_commands}" | _snapdir_concurrent_exec >"$_output_dest" || {
+		bash -c "set -eEuo pipefail;${verbose_flag}${fetch_files_commands}" >"$_output_dest" || {
 			rm -rf "${manifest_cache_path}.tmp"
 			echo "error: Failed to fetch files for snapshot '${snapdir_id}' from remote '${remote}' when calling '${fetch_files_commands}'." >&2
 			return 1
@@ -651,7 +651,7 @@ _snapdir_get_fetch_snapdir_files_command() {
 	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
 	local remote_adapter_bin_path
 	remote_adapter_bin_path=$(_snapdir_get_remote_adapter_bin_path "${remote}")
-	$remote_adapter_bin_path get-fetch-files-command "${manifest}" "${remote}" "${cache_dir}"
+	echo "${manifest}" | $remote_adapter_bin_path get-fetch-files-command --remote "${remote}" --cache-dir "${cache_dir}"
 }
 
 _snapdir_get_remote_adapter_bin_path() {
@@ -731,16 +731,8 @@ _snapdir_get_snapdir_dir() {
 	echo "${relative_dir:-.}"
 }
 
-_snapdir_export_env_defaults() {
-	# Environment variables
+_snapdir_set_manifest_from_stdin_or_id() {
 	set -eEuo pipefail
-
-	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR:-"${HOME:-~}/.cache/${_SNAPDIR}/"}"
-	_SNAPDIR_VERBOSE=${_SNAPDIR_VERBOSE:-"false"}
-	_SNAPDIR_FORCE=${_SNAPDIR_FORCE:-"false"}
-	_SNAPDIR_CONCURRENCY_LIMIT=${_SNAPDIR_CONCURRENCY_LIMIT:-$(_snapdir_get_concurrency_limit)}
-	_SNAPDIR_CWD="${_SNAPDIR_CWD:-$(pwd)}"
-
 	if [[ ${_SNAPDIR_ID:-""} != "" ]]; then
 		local manifest_cache_path
 		manifest_cache_path="${_SNAPDIR_CACHE_DIR}/$(_snapdir_get_manifest_rel_path)"
@@ -761,10 +753,20 @@ _snapdir_export_env_defaults() {
 				exit 1
 			fi
 			_SNAPDIR_ID="$(snapdir_id)"
-			_snapdir_save_manifest_on_cache
 		fi
 	fi
+}
 
+_snapdir_export_env_defaults() {
+	# Environment variables
+	set -eEuo pipefail
+
+	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR:-"${HOME:-~}/.cache/${_SNAPDIR}/"}"
+	_SNAPDIR_VERBOSE=${_SNAPDIR_VERBOSE:-"false"}
+	_SNAPDIR_FORCE=${_SNAPDIR_FORCE:-"false"}
+	_SNAPDIR_CWD="${_SNAPDIR_CWD:-$(pwd)}"
+
+	_snapdir_set_manifest_from_stdin_or_id
 	_snapdir_export_remote_vars
 
 	# If _SNAPDIR_DEBUG=true we'll set -x for every command.
@@ -775,7 +777,6 @@ _snapdir_export_env_defaults() {
 
 	export _SNAPDIR_CWD \
 		_SNAPDIR_CACHE_DIR \
-		_SNAPDIR_CONCURRENCY_LIMIT \
 		_SNAPDIR_VERBOSE \
 		_SNAPDIR_FORCE
 }
@@ -792,17 +793,6 @@ _snapdir_export_remote_vars() {
 			_SNAPDIR_REMOTE_BASE_DIR="$(echo "$_SNAPDIR_REMOTE" | cut -d'/' -f4-)"
 			export _SNAPDIR_REMOTE_BASE_DIR
 		fi
-	fi
-}
-
-_snapdir_wait_for_batch() {
-	set -eEuo pipefail
-	local max_concurrency="${_SNAPDIR_CONCURRENCY_LIMIT:-$(grep -c ^processor /proc/cpuinfo)}"
-	local fg_count
-	fg_count=$(jobs | wc -l)
-	# If we have reached the max concurrency, wait for one to finish
-	if [ "$fg_count" -ge "$max_concurrency" ]; then
-		wait -n
 	fi
 }
 
@@ -846,28 +836,6 @@ _snapdir_check_integrity() {
 		done <<<"$(grep -v "/$" "${manifest_cache_path}" | cut -d' ' -f 3)"
 	} | b3sum --check $verbose_flag
 }
-
-# Read stdin and run concurrently using bash
-_snapdir_concurrent_exec() {
-	set -eEuo pipefail
-	local commands=()
-	local command="${1:-"{}"}"
-	# Read stdin
-	while read -r line; do
-		# on command replace '{}' with '$line'
-		commands+=("$(echo "$command" | sed -E "s|\{\}|$line|g")")
-	done
-
-	# Iterate over commands and print $max_concurrency at a time
-	for command in "${commands[@]}"; do
-		_snapdir_wait_for_batch
-		# Run the command
-		bash -c "set -eEuo pipefail;$command" &
-	done
-	# wait for all processes to finish
-	wait -n
-}
-
 _snapdir_log() {
 	set -eEuo pipefail
 	if [ "${_SNAPDIR_VERBOSE:-""}" = "true" ]; then
@@ -1336,9 +1304,6 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 	_snapdir_readlink() {
 		echo "$(cd "$(dirname "$1")" || echo "" && pwd)/$(basename "$1")"
 	}
-	_snapdir_get_concurrency_limit() {
-		system_profiler SPHardwareDataType | grep " Cores: \d" | grep -o '\d*'
-	}
 	_snapdir_absolute_path() {
 		realpath -m "$1"
 	}
@@ -1346,9 +1311,6 @@ else
 	shopt -s inherit_errexit
 	_snapdir_readlink() {
 		readlink -f "$1"
-	}
-	_snapdir_get_concurrency_limit() {
-		grep -c ^processor /proc/cpuinfo
 	}
 	# on alpine, realpath -m is not available
 	if realpath -m /dev/null 2>/dev/null >/dev/null; then
