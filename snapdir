@@ -781,6 +781,24 @@ _snapdir_get_snapdir_dir() {
 	echo "${relative_dir:-.}"
 }
 
+# _snapdir_get_relative_path() {
+# 	# implements realpath --relative-to= using pure bash
+# 	# without the need for GNU coreutils
+# 	set -eEuo pipefail
+# 	local source="${1:?Missing source path}"
+# 	local target="${1:?Missing target path}"
+
+# 	# resolve to absolute paths
+# 	source="$(realpath "${source}")"
+# 	target="$(realpath "${target}")"
+
+# 	local common_prefix="$source"
+# 	# shellcheck disable=SC2295
+# 	while [[ "${target#$common_prefix}" == "${target}" ]]; do
+# 		common_prefix="$(dirname "${common_prefix}")"
+# 	done
+# }
+
 _snapdir_set_manifest_from_stdin_or_id() {
 	set -eEuo pipefail
 	if [[ ${_SNAPDIR_ID:-""} != "" ]]; then

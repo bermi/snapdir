@@ -38,11 +38,11 @@ snapdir_file_adapter_get_push_command() {
 	local remote="${_SNAPDIR_FILE_ADAPTER_REMOTE:?Missing --remote}"
 	local manifest_rel_path
 	manifest_rel_path=$(_snapdir_get_manifest_rel_path "${id}")
-	local target_dir="${_SNAPDIR_FILE_ADAPTER_STAGING_DIR:?Missing --staging-dir}"
+	local source_dir="${_SNAPDIR_FILE_ADAPTER_STAGING_DIR:?Missing --staging-dir}"
 	# remove trailing slash
-	target_dir="${target_dir%/}"
-	local destination_dir
-	destination_dir="$(_snapdir_file_adapter_get_remote_dir "${remote}")"
+	source_dir="${source_dir%/}"
+	local target_dir
+	target_dir="$(_snapdir_file_adapter_get_remote_dir "${remote}")"
 
 	local log_file
 	# creates a temporary file to log the output of the transaction
@@ -50,19 +50,19 @@ snapdir_file_adapter_get_push_command() {
 
 	echo "set -eEuo pipefail;"
 	# nothing to do if the manifest already exists
-	if test -f "${destination_dir}/${manifest_rel_path}"; then
+	if test -f "${target_dir}/${manifest_rel_path}"; then
 		echo 'echo "Manifest already exists on remote.";'
 		return 0
 	fi
 
 	# pipe files on the manifest to a function that will print the commands
 	# required to commit the files. This function is the same for fetching
-	# but with target and destination swapped.
+	# but with source and target swapped.
 	{
-		grep '^F ' "${target_dir}/${manifest_rel_path}" || echo ""
-	} | _snapdir_get_transfer_objects_command "${target_dir}" "${destination_dir}" "commit" "${log_file}"
+		grep '^F ' "${source_dir}/${manifest_rel_path}" || echo ""
+	} | _snapdir_get_transfer_objects_command "${source_dir}" "${target_dir}" "commit" "${log_file}"
 
-	echo "${_SNAPDIR_FILE_ADAPTER_BIN_PATH} commit-manifest --checksum \"${id}\" --target-path \"${target_dir}/${manifest_rel_path}\" --destination-path \"${destination_dir}/${manifest_rel_path}\" --log-file \"$log_file\";"
+	echo "${_SNAPDIR_FILE_ADAPTER_BIN_PATH} commit-manifest --checksum \"${id}\" --source-path \"${source_dir}/${manifest_rel_path}\" --target-path \"${target_dir}/${manifest_rel_path}\" --log-file \"$log_file\";"
 }
 
 snapdir_file_adapter_get_manifest_command() {
@@ -114,11 +114,11 @@ snapdir_file_adapter_get_fetch_files_command() {
 	set -eEuo pipefail
 	local id="${_SNAPDIR_FILE_ADAPTER_ID:?Missing --id}"
 	local remote="${_SNAPDIR_FILE_ADAPTER_REMOTE:?Missing --remote}"
-	local target_dir
-	target_dir="$(_snapdir_file_adapter_get_remote_dir "${remote}")"
-	local destination_dir="${_SNAPDIR_FILE_ADAPTER_CACHE_DIR:?Missing --cache-dir}"
+	local source_dir
+	source_dir="$(_snapdir_file_adapter_get_remote_dir "${remote}")"
+	local target_dir="${_SNAPDIR_FILE_ADAPTER_CACHE_DIR:?Missing --cache-dir}"
 	# remove trailing slash
-	destination_dir="${destination_dir%/}"
+	target_dir="${target_dir%/}"
 
 	local log_file
 	# creates a temporary file to log the output of the transaction
@@ -126,7 +126,7 @@ snapdir_file_adapter_get_fetch_files_command() {
 
 	# pipe files on the manifest to a function that will print the commands
 	# required to fetch the files. This function is the same for committing
-	# but with target and destination swapped.
+	# but with source and target swapped.
 	{
 		if [[ ${_SNAPDIR_MANIFEST:-""} == "" ]]; then
 			# read manifest from stdin
@@ -135,7 +135,7 @@ snapdir_file_adapter_get_fetch_files_command() {
 			# read manifest from the environment variable
 			grep '^F ' <<<"${_SNAPDIR_MANIFEST}" || echo ""
 		fi
-	} | _snapdir_get_transfer_objects_command "${target_dir}" "${destination_dir}" "fetch" "${log_file}"
+	} | _snapdir_get_transfer_objects_command "${source_dir}" "${target_dir}" "fetch" "${log_file}"
 
 	echo "${_SNAPDIR_FILE_ADAPTER_BIN_PATH} ensure-no-errors --checksum \"${id}\" --log-file \"$log_file\";"
 }
@@ -183,8 +183,8 @@ snapdir_file_adapter_commit_manifest() {
 	#
 	#     commit-manifest \
 	#         --checksum "aa91e498f401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d" \
-	#         --target-path "/path/to/local/manifest_file" \
-	#         --destination-path "/path/to/long/term/manifest_file" \
+	#         --source-path "/path/to/local/manifest_file" \
+	#         --target-path "/path/to/long/term/manifest_file" \
 	#         --log-file "/log/file/for/the/transaction"
 	#
 	set -eEuo pipefail
@@ -225,8 +225,8 @@ _snapdir_get_transfer_objects_command() {
 	# and it will be printed to stderr and prevent the manifest from
 	# being committed.
 	set -eEuo pipefail
-	local target_dir="${1:?Missing target directory}"
-	local destination_dir="${2:?Missing destination directory}"
+	local source_dir="${1:?Missing source directory}"
+	local target_dir="${2:?Missing target directory}"
 	local operation_type="${3:?Missing operation type}"
 	local log_file="${4:?Missing log_file}"
 	local file_paths_on_manifest
@@ -246,13 +246,13 @@ _snapdir_get_transfer_objects_command() {
 		IFS=' ' read -r -a entry_parts <<<"${entry}"
 		checksum="${entry_parts[2]}"
 		rel_file_path="$(_snapdir_get_object_rel_path "${checksum}")"
-		if ! test -f "${destination_dir}/${rel_file_path}"; then
+		if ! test -f "${target_dir}/${rel_file_path}"; then
 			# redirect stdout and stderr to the temporary file $log_file but also send stdout to stdout and stderr to stderr
-			echo "nice ${_SNAPDIR_FILE_ADAPTER_BIN_PATH} ${operation_type}-object --checksum \"${checksum}\" --target-path \"${target_dir}/${rel_file_path}\" --destination-path \"${destination_dir}/${rel_file_path}\" --log-file \"$log_file\" & "
+			echo "nice ${_SNAPDIR_FILE_ADAPTER_BIN_PATH} ${operation_type}-object --checksum \"${checksum}\" --source-path \"${source_dir}/${rel_file_path}\" --target-path \"${target_dir}/${rel_file_path}\" --log-file \"$log_file\" & "
 			total_files=$((total_files + 1))
-		elif ! cmp "${destination_dir}/${rel_file_path}" "${target_dir}/${rel_file_path}" >/dev/null; then
-			echo "echo \"WARNING: ${destination_dir}/${rel_file_path} has been tampered with and will be removed.\" >> \"$log_file\";"
-			echo "nice ${_SNAPDIR_FILE_ADAPTER_BIN_PATH} ${operation_type}-object --checksum \"${checksum}\" --target-path \"${target_dir}/${rel_file_path}\" --destination-path \"${destination_dir}/${rel_file_path}\" --log-file \"$log_file\" & "
+		elif ! cmp "${target_dir}/${rel_file_path}" "${source_dir}/${rel_file_path}" >/dev/null; then
+			echo "echo \"WARNING: ${target_dir}/${rel_file_path} has been tampered with and will be removed.\" >> \"$log_file\";"
+			echo "nice ${_SNAPDIR_FILE_ADAPTER_BIN_PATH} ${operation_type}-object --checksum \"${checksum}\" --source-path \"${source_dir}/${rel_file_path}\" --target-path \"${target_dir}/${rel_file_path}\" --log-file \"$log_file\" & "
 			total_files=$((total_files + 1))
 		fi
 	done
@@ -266,7 +266,7 @@ _snapdir_get_transfer_objects_command() {
 }
 
 _snapdir_file_adapter_persit() {
-	# This method will persist files to a destination path and verify that the
+	# This method will persist files to a target path and verify that the
 	# checksums match the ones in the manifest. The file is initially copied
 	# with a .tmp extension, and then renamed to the final name to commit the
 	# change.
@@ -276,43 +276,43 @@ _snapdir_file_adapter_persit() {
 	# their checksums mismatch, in which case the existing object should be
 	# replaced.
 	set -eEuo pipefail
+	local source_path="${_SNAPDIR_FILE_ADAPTER_SOURCE_PATH:?Missing --source-path}"
 	local target_path="${_SNAPDIR_FILE_ADAPTER_TARGET_PATH:?Missing --target-path}"
-	local destination_path="${_SNAPDIR_FILE_ADAPTER_DESTINATION_PATH:?Missing --destination-path}"
 	local checksum="${_SNAPDIR_FILE_ADAPTER_CHECKSUM:?Missing --checksum}"
 	local retries="${_SNAPDIR_FILE_ADAPTER_RETRIES:-5}"
 	local dir_on_remote
-	dir_on_remote="$(dirname "${destination_path}")"
+	dir_on_remote="$(dirname "${target_path}")"
 	mkdir -p "${dir_on_remote}"
 	# To avoid concurrency errors, the file will be copied to a
 	# temporary location and then renamed to it's final location.
 	# We only perform integrity checks on the temporary file since
 	# the mv command does not afects the contents of the data on disk
 	# as long as the tmp file is on the same filesystem.
-	local tmp_destination_path
-	tmp_destination_path="${destination_path}.$(_snapdir_tmp_id)"
+	local tmp_target_path
+	tmp_target_path="${target_path}.$(_snapdir_tmp_id)"
 
-	cp -RL -n "${target_path}" "${tmp_destination_path}"
-	if [[ "$(b3sum "${tmp_destination_path}" --no-names)" != "${checksum}" ]]; then
-		if [[ "$(b3sum "${target_path}" --no-names)" == "${checksum}" ]]; then
-			# retry when the target has a valid checksum
-			rm -rf "${tmp_destination_path}"
+	cp -RL -n "${source_path}" "${tmp_target_path}"
+	if [[ "$(b3sum "${tmp_target_path}" --no-names)" != "${checksum}" ]]; then
+		if [[ "$(b3sum "${source_path}" --no-names)" == "${checksum}" ]]; then
+			# retry when the source has a valid checksum
+			rm -rf "${tmp_target_path}"
 			# subtract 1 from _SNAPDIR_FILE_ADAPTER_RETRIES
 			retries=$((retries - 1))
 			if [[ ${retries} -gt 0 ]]; then
-				echo "WARNING: Retrying saving ${target_path} to ${destination_path} ${retries} retries left." >&2
+				echo "WARNING: Retrying saving ${source_path} to ${target_path} ${retries} retries left." >&2
 				_SNAPDIR_FILE_ADAPTER_RETRIES=$retries snapdir_file_adapter_commit_manifest
 			else
 				# give up
-				echo "ERROR: Failed to commit file ${target_path} to ${destination_path} with checksum ${checksum}." >&2
+				echo "ERROR: Failed to commit file ${source_path} to ${target_path} with checksum ${checksum}." >&2
 				exit 1
 			fi
 		else
-			echo "ERROR: Invalid target checksum for ${target_path}" >&2
+			echo "ERROR: Invalid source checksum for ${source_path}" >&2
 			exit 1
 		fi
 	else
-		mv "${tmp_destination_path}" "${destination_path}"
-		echo "SAVED: saved ${destination_path}"
+		mv "${tmp_target_path}" "${target_path}"
+		echo "SAVED: saved ${target_path}"
 	fi
 }
 
@@ -329,7 +329,7 @@ snapdir_file_adapter_run() (
 	set -eEuo pipefail
 	local subcommands="get-manifest-command|get-fetch-files-command|get-push-command|test|version|commit-object|commit-manifest|ensure-no-errors|fetch-object"
 	local boolean_args="debug|verbose"
-	local value_required_args="cache_dir|staging_dir|remote|manifest|id|target_path|destination_path|checksum|log_file"
+	local value_required_args="cache_dir|staging_dir|remote|manifest|id|source_path|target_path|checksum|log_file"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
 
 	_snapdir_file_adapter_parse_argument_key() {
