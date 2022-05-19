@@ -65,6 +65,8 @@ While this project remains a prototype built for experimentation, we expect some
 
 ### Alternatives
 
+- [Git LFS](https://git-lfs.github.com/) Why not https://towardsdatascience.com/why-git-and-git-lfs-is-not-enough-to-solve-the-machine-learning-reproducibility-crisis-f733b49e96e8
+- DVC (md5sum)
 - Tar
 - ZFS
 - [ostree](https://ostreedev.github.io/ostree/introduction/), requires `ostree` to verify snapshots.
@@ -143,9 +145,9 @@ Emmit a manifest to stdout given a manifest id.
 
 ### get-fetch-files-command
 
-Generates the command or commands required to download to the cache the files defined on a manifest that are not already available locally.
+Generates the command or commands required to download to the cache the files defined on the manifest provided via stdin that are not already available locally.
 
-    snapdir-${ADAPTER_NAME}-adapter get-fetch-files-command --manifest-"${manifest}" --remote "${remote}" --cache-dir "${cache_dir}"
+    cat generate-manifest-somehow | snapdir-${ADAPTER_NAME}-adapter get-fetch-files-command --remote "${remote}" --cache-dir "${cache_dir}"
 
 ### get-push-command
 

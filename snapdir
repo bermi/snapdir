@@ -239,8 +239,7 @@ snapdir_push() {
 	if [[ ${push_command} != "" ]]; then
 		_snapdir_log "Pushing snapshot to remote '${remote}' with command: '${push_command}'"
 		if [[ ${dryrun} == "true" ]]; then
-			# prefix all lines with [dryrun]
-			echo "${verbose_flag}${push_command}" | sed -e "s/^/# [$_SNAPDIR][dryrun] /" >&2
+			_snapdir_dryrun_log "${verbose_flag}${push_command}"
 		else
 			bash -c "set -eEuo pipefail;${verbose_flag}${push_command}"
 		fi
@@ -268,25 +267,36 @@ snapdir_fetch() {
 	local remote="${_SNAPDIR_REMOTE:?Missing --remote option when calling ${_SNAPDIR} push}"
 	local manifest_rel_path
 	manifest_rel_path="$(_snapdir_get_manifest_rel_path "${snapdir_id}")"
+	local dryrun="${_SNAPDIR_DRYRUN:-false}"
 
 	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
 	local manifest_cache_path="$cache_dir/${manifest_rel_path}"
+	local tmp_id
+	tmp_id="$(_snapdir_tmp_id)"
+	local manifest_pipe_path
+
+	local verbose="${_SNAPDIR_VERBOSE:-false}"
+	local verbose_flag=""
+	if [[ ${verbose} == true ]]; then
+		verbose_flag="set -x;"
+	fi
+
 	if test -f "${manifest_cache_path}"; then
-		_SNAPDIR_MANIFEST="$(cat "${manifest_cache_path}")"
+		manifest_pipe_path="${manifest_cache_path}"
 	else
 		mkdir -p "$(dirname "${manifest_cache_path}")"
 		local fetch_manifest_command
 		fetch_manifest_command=$(_snapdir_get_fetch_snapdir_manifest_command "${snapdir_id}" "${remote}")
-		local verbose="${_SNAPDIR_VERBOSE:-false}"
-		local verbose_flag=""
-		if [[ ${verbose} == true ]]; then
-			verbose_flag="set -x;"
+		if [[ ${dryrun} == "true" ]]; then
+			_snapdir_dryrun_log "${verbose_flag}${fetch_manifest_command}"
 		fi
-		bash -c "set -eEuo pipefail;${verbose_flag}${fetch_manifest_command}" || {
+
+		bash -c "set -eEuo pipefail;${verbose_flag}${fetch_manifest_command}" >"${manifest_cache_path}.${tmp_id}" || {
 			echo "error: Failed to fetch manifest for snapshot '${snapdir_id}' from remote '${remote}' when calling '${fetch_manifest_command}'." >&2
+			rm -rf "${manifest_cache_path}.${tmp_id}"
 			return 1
 		}
-		_SNAPDIR_MANIFEST="$(cat "${manifest_cache_path}.tmp")"
+		manifest_pipe_path="${manifest_cache_path}.${tmp_id}"
 	fi
 
 	local _output_dest="/dev/stdout"
@@ -294,15 +304,33 @@ snapdir_fetch() {
 		_output_dest="/dev/null"
 	fi
 
-	fetch_files_commands=$(_SNAPDIR_MANIFEST="${_SNAPDIR_MANIFEST}" _snapdir_get_fetch_snapdir_files_command)
-	if [[ ${fetch_files_commands} != "" ]]; then
-		bash -c "set -eEuo pipefail;${verbose_flag}${fetch_files_commands}" >"$_output_dest" || {
-			rm -rf "${manifest_cache_path}.tmp"
-			echo "error: Failed to fetch files for snapshot '${snapdir_id}' from remote '${remote}' when calling '${fetch_files_commands}'." >&2
-			return 1
-		}
+	# TODO: verify the integrity of the manifest before moving forward
+	if [[ "$(b3sum "${manifest_pipe_path}" --no-names)" != "${snapdir_id}" ]]; then
+		echo "error: Manifest for snapshot '${snapdir_id}' does not match the snapshot id." >&2
+		rm -rf "${manifest_cache_path}.${tmp_id}"
+		return 1
 	fi
-	test -f "${manifest_cache_path}" || mv "${manifest_cache_path}.tmp" "${manifest_cache_path}"
+
+	fetch_files_commands=$(_snapdir_get_fetch_snapdir_files_command <"${manifest_pipe_path}")
+	if [[ ${fetch_files_commands} != "" ]]; then
+		if [[ ${dryrun} == "true" ]]; then
+			_snapdir_dryrun_log "${verbose_flag}${fetch_files_commands}"
+		else
+			bash -c "set -eEuo pipefail;${verbose_flag}${fetch_files_commands}" >"$_output_dest" || {
+				rm -rf "${manifest_cache_path}.${tmp_id}"
+				echo "error: Failed to fetch files for snapshot '${snapdir_id}' from remote '${remote}' when calling '${fetch_files_commands}'." >&2
+				return 1
+			}
+		fi
+	fi
+
+	if [[ ${dryrun} != "true" ]]; then
+		# if the manifest did not exist locally, use them tmp file
+		test -f "${manifest_cache_path}" || mv "${manifest_cache_path}.${tmp_id}" "${manifest_cache_path}"
+		_snapdir_log "SAVED: ${manifest_cache_path}"
+	fi
+
+	rm -rf "${manifest_cache_path}.${tmp_id}"
 }
 
 #       ######  #     # #       #
@@ -317,6 +345,7 @@ snapdir_pull() {
 	set -eEuo pipefail
 	local base_dir
 	base_dir="$(_snapdir_get_base_dir "${1:-"."}")"
+	local dryrun="${_SNAPDIR_DRYRUN:-false}"
 
 	if [[ ${_SNAPDIR_RETRIES:-} != "" ]]; then
 		echo "warning: snapdir_pull ${_SNAPDIR_RETRIES}/retries" >&2
@@ -351,6 +380,7 @@ snapdir_checkout() {
 	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
 	local manifest_rel_path
 	manifest_rel_path="$(_snapdir_get_manifest_rel_path "${snapdir_id}")"
+	local dryrun="${_SNAPDIR_DRYRUN:-false}"
 
 	local manifest_cache_path="$cache_dir/${manifest_rel_path}"
 	test -f "${manifest_cache_path}" || {
@@ -417,21 +447,40 @@ snapdir_checkout() {
 		fi
 	done <"${manifest_cache_path}"
 
-	for directory in "${directories[@]}"; do
-		mkdir -p "$directory"
-	done
+	if [[ ${dryrun} == "true" ]]; then
+		for directory in "${directories[@]}"; do
+			_snapdir_dryrun_log "mkdir -p \"$directory\""
+		done
 
-	if [[ ${_SNAPDIR_LINKED:-false} == true ]]; then
-		# link all files
-		for ((i = 0; i < ${#source_files[@]}; i++)); do
-			ln "${source_files[$i]}" "${target_files[$i]}"
-		done
+		if [[ ${_SNAPDIR_LINKED:-false} == true ]]; then
+			# link all files
+			for ((i = 0; i < ${#source_files[@]}; i++)); do
+				_snapdir_dryrun_log "ln \"${source_files[$i]}\" \"${target_files[$i]}\""
+			done
+		else
+			# copy all sources to targets and set permissions
+			for ((i = 0; i < ${#source_files[@]}; i++)); do
+				_snapdir_dryrun_log "cp -a \"${source_files[$i]}\" \"${target_files[$i]}\""
+				_snapdir_dryrun_log "chmod \"${source_perms[$i]}\" \"${target_files[$i]}\""
+			done
+		fi
 	else
-		# copy all sources to targets and set permissions
-		for ((i = 0; i < ${#source_files[@]}; i++)); do
-			cp -a "${source_files[$i]}" "${target_files[$i]}"
-			chmod "${source_perms[$i]}" "${target_files[$i]}"
+		for directory in "${directories[@]}"; do
+			mkdir -p "$directory"
 		done
+
+		if [[ ${_SNAPDIR_LINKED:-false} == true ]]; then
+			# link all files
+			for ((i = 0; i < ${#source_files[@]}; i++)); do
+				ln "${source_files[$i]}" "${target_files[$i]}"
+			done
+		else
+			# copy all sources to targets and set permissions
+			for ((i = 0; i < ${#source_files[@]}; i++)); do
+				cp -a "${source_files[$i]}" "${target_files[$i]}"
+				chmod "${source_perms[$i]}" "${target_files[$i]}"
+			done
+		fi
 	fi
 
 	if [[ ${_SNAPDIR_VERBOSE:-""} == "true" ]]; then
@@ -641,17 +690,18 @@ _snapdir_get_fetch_snapdir_manifest_command() {
 	local remote="${_SNAPDIR_REMOTE:?Missing --remote option}"
 	local remote_adapter_bin_path
 	remote_adapter_bin_path=$(_snapdir_get_remote_adapter_bin_path "${remote}")
-	$remote_adapter_bin_path get-manifest-command "${snapdir_id}" "${remote}"
+	$remote_adapter_bin_path get-manifest-command --id "${snapdir_id}" --remote "${remote}"
 }
 
 _snapdir_get_fetch_snapdir_files_command() {
+	# reads the manifest from stdin
 	set -eEuo pipefail
+	local snapdir_id="${_SNAPDIR_ID:?Missing --id option}"
 	local remote="${_SNAPDIR_REMOTE:?Missing --remote option}"
-	local manifest="${_SNAPDIR_MANIFEST:?Missing --manifest option}"
 	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
 	local remote_adapter_bin_path
 	remote_adapter_bin_path=$(_snapdir_get_remote_adapter_bin_path "${remote}")
-	echo "${manifest}" | $remote_adapter_bin_path get-fetch-files-command --remote "${remote}" --cache-dir "${cache_dir}"
+	$remote_adapter_bin_path get-fetch-files-command --id "${snapdir_id}" --remote "${remote}" --cache-dir "${cache_dir}"
 }
 
 _snapdir_get_remote_adapter_bin_path() {
@@ -781,6 +831,12 @@ _snapdir_export_env_defaults() {
 		_SNAPDIR_FORCE
 }
 
+_snapdir_tmp_id() {
+	# Caveat: in macOS the resolution is not nanoseconds but in seconds, therefore
+	# we include a random suffix to reduce the chance of collisions.
+	echo "${RANDOM:-""}$(date +%s%N).tmp"
+}
+
 _snapdir_export_remote_vars() {
 	set -eEuo pipefail
 	if [[ ${_SNAPDIR_REMOTE:-""} != "" ]]; then
@@ -804,9 +860,11 @@ _snapdir_save_manifest_on_cache() {
 	local manifest_cache_path="${_SNAPDIR_CACHE_DIR}/${manifest_rel_path}"
 	if ! test -f "${manifest_cache_path}"; then
 		mkdir -p "$(dirname "${manifest_cache_path}")"
-		echo "$_SNAPDIR_MANIFEST" >"${manifest_cache_path}.tmp"
+		local tmp_id
+		tmp_id="$(_snapdir_tmp_id)"
+		echo "$_SNAPDIR_MANIFEST" >"${manifest_cache_path}.${tmp_id}"
 		_snapdir_log "Saving manifest ${_SNAPDIR_ID} as ${manifest_cache_path}"
-		mv "${manifest_cache_path}.tmp" "${manifest_cache_path}"
+		mv "${manifest_cache_path}.${tmp_id}" "${manifest_cache_path}"
 		chmod 600 "${manifest_cache_path}"
 	fi
 }
@@ -841,6 +899,13 @@ _snapdir_log() {
 	if [ "${_SNAPDIR_VERBOSE:-""}" = "true" ]; then
 		echo "[$_SNAPDIR] $1" | sed -E 's/^/# /g'
 	fi
+}
+
+_snapdir_dryrun_log() {
+	set -eEuo pipefail
+	while read -r line; do
+		echo "# [$_SNAPDIR][dryrun] $line"
+	done <<<"$1"
 }
 
 _snapdir_test_utils() {
@@ -925,7 +990,7 @@ _snapdir_test_utils() {
 	fail() {
 		set -eEuo pipefail
 		_SNAPDIR_TEST_NUMBER=$((_SNAPDIR_TEST_TOTAL_CHECKS - _SNAPDIR_TESTS_PENDING_CHECKS + 1))
-		echo "not ok ${_SNAPDIR_TEST_NUMBER} - ${_SNAPDIR_TEST_DESCRIPTION} / $*" >&2
+		echo "not ok ${_SNAPDIR_TEST_NUMBER} - ${_SNAPDIR_TEST_DESCRIPTION} / $_SNAPDIR_TEST_CHECK_NAME: $*" >&2
 		echo "# fail called by: ${_TARGET_TEST_FILE}:$(caller 0 | awk '{print $1}')" >&2
 		teardown
 		exit 1
