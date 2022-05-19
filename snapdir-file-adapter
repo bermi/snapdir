@@ -51,7 +51,7 @@ snapdir_file_adapter_get_push_command() {
 	echo "set -eEuo pipefail;"
 	# nothing to do if the manifest already exists
 	if test -f "${destination_dir}/${manifest_rel_path}"; then
-		echo "echo \"Manifest already exists on remote.\";"
+		echo 'echo "Manifest already exists on remote.";'
 		return 0
 	fi
 
@@ -112,7 +112,7 @@ snapdir_file_adapter_get_fetch_files_command() {
 	#       --cache-dir "/tmp/snapdir-cache"
 	#
 	set -eEuo pipefail
- 	local id="${_SNAPDIR_FILE_ADAPTER_ID:?Missing --id}"
+	local id="${_SNAPDIR_FILE_ADAPTER_ID:?Missing --id}"
 	local remote="${_SNAPDIR_FILE_ADAPTER_REMOTE:?Missing --remote}"
 	local target_dir
 	target_dir="$(_snapdir_file_adapter_get_remote_dir "${remote}")"
@@ -128,7 +128,7 @@ snapdir_file_adapter_get_fetch_files_command() {
 	# required to fetch the files. This function is the same for committing
 	# but with target and destination swapped.
 	{
-		if [[ "${_SNAPDIR_MANIFEST:-""}" == "" ]]; then
+		if [[ ${_SNAPDIR_MANIFEST:-""} == "" ]]; then
 			# read manifest from stdin
 			grep '^F ' || echo ""
 		else
@@ -163,7 +163,7 @@ snapdir_file_adapter_ensure_no_errors() {
 	# save the manifest
 	local errors
 	errors=$(grep -q '^ERROR: ' "$log_file" || echo "")
-	if [[ "${errors}" != "" ]]; then
+	if [[ ${errors} != "" ]]; then
 		echo "$errors" >&2
 		echo "ERROR: Transaction with id: '${checksum}' failed." >&2
 		rm -rf "$log_file"
@@ -237,7 +237,7 @@ _snapdir_get_transfer_objects_command() {
 	local rel_file_path
 
 	# fail if operation_type is not fetch|commit
-	if [[ "${operation_type}" != "fetch" && "${operation_type}" != "commit" ]]; then
+	if [[ ${operation_type} != "fetch" && ${operation_type} != "commit" ]]; then
 		echo "Invalid operation type: ${operation_type}. Only fetch and commit are supported." >&2
 		exit 1
 	fi
@@ -291,14 +291,14 @@ _snapdir_file_adapter_persit() {
 	local tmp_destination_path
 	tmp_destination_path="${destination_path}.$(_snapdir_tmp_id)"
 
-	cp -R --dereference -n "${target_path}" "${tmp_destination_path}"
+	cp -RL -n "${target_path}" "${tmp_destination_path}"
 	if [[ "$(b3sum "${tmp_destination_path}" --no-names)" != "${checksum}" ]]; then
 		if [[ "$(b3sum "${target_path}" --no-names)" == "${checksum}" ]]; then
 			# retry when the target has a valid checksum
 			rm -rf "${tmp_destination_path}"
 			# subtract 1 from _SNAPDIR_FILE_ADAPTER_RETRIES
 			retries=$((retries - 1))
-			if [[ "${retries}" -gt 0 ]]; then
+			if [[ ${retries} -gt 0 ]]; then
 				echo "WARNING: Retrying saving ${target_path} to ${destination_path} ${retries} retries left." >&2
 				_SNAPDIR_FILE_ADAPTER_RETRIES=$retries snapdir_file_adapter_commit_manifest
 			else
@@ -416,7 +416,7 @@ _snapdir_file_adapter_export_env_defaults() {
 	# Environment variables
 	set -eEuo pipefail
 	_snapdir_set_manifest_from_stdin_or_id
-	if [[ "${_SNAPDIR_ID:-""}" != "" ]]; then
+	if [[ ${_SNAPDIR_ID:-""} != "" ]]; then
 		_SNAPDIR_FILE_ADAPTER_ID="${_SNAPDIR_ID}"
 	fi
 }
@@ -456,9 +456,10 @@ F 600 $foo_checksum 4 ./foo"
 		describe "snapdir push"
 		generate_files
 		echo "$simple_manifest" | "${snapdir}" stage "${_dir}" >/dev/null
+
 		# We only push if the manifest does not exist. We first push the objects and finally the manifest.
 		# echo "# Running: \"${snapdir}\" push --dryrun --verbose --remote=\"${remote}\" \"${_dir}\""
-		result=$(echo "$simple_manifest" | "${snapdir}" push --dryrun --remote="${remote}" "${_dir}" 2>&1 | grep dryrun || echo "")
+		result=$(echo "$simple_manifest" | "${snapdir}" push --verbose --dryrun --remote="${remote}" "${_dir}" 2>&1 | grep dryrun || echo "")
 
 		check "should run expensive method in the background and with nice"
 		grep -E -q "nice.+commit-object.+& " <<<"${result}" || fail "Expected 'nice.*commit-object.*& ' match on '$result'" && pass
@@ -476,7 +477,8 @@ F 600 $foo_checksum 4 ./foo"
 
 		# --------------------------------------------------------------------------------
 		describe "push --remote file"
-		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --remote="${remote}" 2>&1 || echo "")
+		result=$("${snapdir}" push --id ${simple_manifest_id} --debug --verbose --remote="${remote}" 2>&1 || echo "")
+		# tree -a "${_SNAPDIR_TEST_TMP_DIR}"
 
 		check "should have committed the staged content"
 		grep -q foo "${remote_dir}/.objects/${foo_path}" || fail "Expected '${remote_dir}/.objects/${foo_path}' to exist. Got result '$result'"
@@ -555,7 +557,7 @@ F 600 $foo_checksum 4 ./foo"
 
 		check "should fail when the manifest has been tampered with"
 		cp "${remote_dir}/.manifests/${simple_manifest_path}" "${remote_dir}/.manifests/${simple_manifest_path}.original"
-		echo "tampered" > "${remote_dir}/.manifests/${simple_manifest_path}"
+		echo "tampered" >"${remote_dir}/.manifests/${simple_manifest_path}"
 		result=$("${snapdir}" fetch --dryrun --remote="${remote}" --id "${simple_manifest_id}" 2>&1 || echo "")
 		# restore tampered file
 		mv "${remote_dir}/.manifests/${simple_manifest_path}.original" "${remote_dir}/.manifests/${simple_manifest_path}"
@@ -580,7 +582,6 @@ F 600 $foo_checksum 4 ./foo"
 		check "non existing manifest should fail"
 		result=$("${snapdir}" fetch --remote="${remote}" --id "bogus" --verbose 2>&1 || echo "")
 		grep -q "ID 'bogus' not found on --remote='${remote}'" <<<"${result}" || fail "Expected 'ID 'bogus' not found on --remote='${remote}' but got '$result'" && pass
-
 
 		# --------------------------------------------------------------------------------
 		# snapdir pull
