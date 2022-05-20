@@ -47,7 +47,7 @@
 #
 #     SNAPDIR_MANIFEST_BIN_PATH   Test-only path to a snapdir-manifest binary.
 #     SNAPDIR_MANIFEST_CONTEXT    Context string for deriving key in keyed mode.
-#                           This only works with b3sum.
+#                                 This only works with b3sum.
 #     SNAPDIR_MANIFEST_EXCLUDE    Default grep -v rule for --exclude="system".
 #
 # ### Examples
@@ -88,7 +88,8 @@
 #   the `--checksum-binary=<name>` option. By default, `b3sum`. For
 #   directories, we sort the checksum of the objects in the directory
 #   and then concatenate them without spaces or newlines between them to
-#   compute the checksum. Check the manual example below.
+#   compute the checksum. Check the manual example in the [understanding
+#   manifests guide](docs/understanding-manifests.md).
 # - *`SIZE`*: The size of the file or directory contents in bytes. It
 #   does not include the size for the directory metadata as reported by
 #   `stat`; it is only the sum of all the elements in the directory.

@@ -30,8 +30,8 @@ manifests.
 After installing the dependencies, download the [snapdir] script and
 save it somewhere in your `PATH`.
 
-``` bash
-wget -p https://github.com/bermi/snapdir-bash/releases/download/v0.1.1/snapdir -O snapdir
+```bash
+wget -p https://github.com/bermi/snapdir/releases/download/v0.1.1/snapdir -O snapdir
 chmod +x snapdir
 echo "7350e268ecbfc0d03c37621480ba501862f8f9904eb28349136f5eea9251fb4f  snapdir" | b3sum -c
 mv snapdir-manifest /usr/local/bin/
@@ -41,7 +41,7 @@ mv snapdir-manifest /usr/local/bin/
 
 You can try [snapdir] using the Docker image [bermi/snapdir]
 
-``` bash
+```bash
 target_dir=./ # specify a target directory
 # using -v to mount the target directory on the docker container
 docker run -it --rm \
@@ -473,7 +473,7 @@ We can now push snapshots off-process.
 
 ### Push a --id=ab5f25e59925e01a58a05ac41437c90d6e0cefabd3bf2f6d53489d5467183f17
 
-``` bash
+```bash
 #!/bin/bash
 
 set -eEuo pipefail
@@ -497,11 +497,11 @@ fi
 
 LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 
-  [verify status]: https://github.com/bermi/snapdir-bash/actions/workflows/verify.yml/badge.svg
-  [Snapdir]: https://github.com/bermi/snapdir-bash
+  [verify status]: https://github.com/bermi/snapdir/actions/workflows/verify.yml/badge.svg
+  [Snapdir]: https://github.com/bermi/snapdir
   [conflict-free replicated data type]: https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type
-  [documentation for more information]: https://github.com/bermi/snapdir-bash/tree/main/docs/
-  [snapdir-manifest]: https://github.com/bermi/snapdir-manifest
+  [documentation for more information]: https://github.com/bermi/snapdir/tree/main/docs/
+  [snapdir-manifest]: https://github.com/bermi/snapdir/tree/main/snapdir-manifest-README.md
   [bermi/snapdir]: https://hub.docker.com/r/bermi/snapdir/tags
   [BermiLabs]: https://bermilabs.com
   [Git LFS]: https://git-lfs.github.com/

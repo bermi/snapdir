@@ -1,9 +1,9 @@
 {
-  "name": "bermi/snapdir-bash",
+  "name": "bermi/snapdir",
   "build": {
     "context": "./../",
     "dockerfile": "./Dockerfile.ubuntu",
-    "cacheFrom": ["bermi/snapdir-bash:latest"]
+    "cacheFrom": ["bermi/snapdir:latest"]
   },
   "settings": {
     "terminal.integrated.defaultProfile.linux": "bash"
