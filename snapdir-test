@@ -1,10 +1,61 @@
 #!/usr/bin/env bash
 
-# # snapdir 0.1.1
+# # snapdir-test 0.1.1
 #
 # ## Description:
 #
 #     Test utilities and runner for snapdir commands.
+#
+# ## Usage:
+#
+#     # runs all tests for snapdir
+#		  snapdir-test
+#
+#		  # soucing into an existing script
+#     . snapdir-test [sourced-test-file]
+#
+# This script is intended to be sourced by other scripts to expose the
+#	following functions.
+#
+# - describe: Describes a group of checks.
+# - check: Using a check will instruct the test runner to expect
+#          a fail/pass. The test runner with grep for "check " entries
+#          to guess how many tests are expected to be implemented.
+# - fail: Fail the test, shows the message and runs the tear down.
+# - pass: Decrement the number of pending tests as tracked by check.
+# - run_tests: Runs the tests.
+# - run_tests_without_teardown: Runs the tests without tear down.
+#
+# A temporary directory is created for each test run and can be accessed
+# via _SNAPDIR_TEST_TMP_DIR. This directory is removed when the test
+# finishes unless tests are run with `run_tests_without_teardown`.
+#
+#
+# ## Options:
+#
+#     sourced-test-file  When specified, the test file is sourced and
+#                        the thest suite will take the basename of the
+#                        file as the name of the test suite.
+#
+# ## Examples:
+#
+#
+#      # Import test utilities
+#      # shellcheck disable=SC1091
+#      . "$(dirname "${BASH_SOURCE[0]}")/snapdir-test" "${BASH_SOURCE[0]}"
+#
+#      test_suite() {
+#        local result
+#
+#        describe "group of checks description"
+#
+#        check "check a"
+#        result=$(echo "a" 2>&1 || true)
+#        test "$result" == "a" || fail "expected '${result}' to be a" && pass
+#
+#      }
+#
+#      run_tests
 #
 # ## License
 #
@@ -13,17 +64,16 @@
 set -eEuo pipefail
 IFS=$'\n\t'
 
-snapdir_test_run() (
-	# run in a subshell to avoid polluting the environment with helper functions
-	# You can call this function when sourcing this script if you want to expose it as
-	# a sub-command
+snapdir_test_run() {
 	set -eEuo pipefail
 	local dir
 	dir="$(dirname "${BASH_SOURCE[0]}")"
+	SECONDS=0
 	"$dir/snapdir-manifest" test
 	"$dir/snapdir" test
 	"$dir/snapdir-file-adapter" test
-)
+	echo "# test suite completed in ${SECONDS} seconds"
+}
 
 _snapdir_test_utils() {
 	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
@@ -153,6 +203,16 @@ _snapdir_test_utils() {
 		echo "Left directory $_SNAPDIR_TEST_TMP_DIR untouched." >&2
 	}
 }
+
+_snapdir_test_help() {
+	sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "${BASH_SOURCE[0]}" | sed -E 's|^# ?||g; $d' | more
+	exit 0
+}
+
+# is any of the arguments -h or --help?
+if [[ ${1:-} == -h || ${1:-} == --help ]]; then
+	_snapdir_test_help
+fi
 
 # Run if is not sourced
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
