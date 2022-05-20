@@ -22,10 +22,10 @@ jobs:
         uses: actions/checkout@v3
       - name: shellcheck
         run: |
-          find . -name "snapdir*" | xargs shellcheck
+          find . -maxdepth 1 -name "snapdir*" | xargs shellcheck
       - name: checking format
         run: |
-          find . -name "snapdir*" | xargs shfmt -w -s
+          find . -maxdepth 1 -name "snapdir*" | xargs shfmt -w -s
           git diff --exit-code
 
   test-ubuntu-latest:
