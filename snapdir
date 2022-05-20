@@ -711,7 +711,7 @@ _snapdir_get_store_store_bin_path() {
 	store_protocol="$(echo "${store}" | cut -d':' -f1)"
 	local store_store_bin_path
 	local explicit_bin_path
-	explicit_bin_path="_SNAPDIR_${store_protocol^^}_store_BIN_PATH"
+	explicit_bin_path="_SNAPDIR_${store_protocol^^}_STORE_BIN_PATH"
 	# if explicit_bin_path is defined, use it
 	if [[ ${!explicit_bin_path:-""} != "" ]] && test -f "${!explicit_bin_path}"; then
 		echo "${!explicit_bin_path}"
