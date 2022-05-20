@@ -20,24 +20,13 @@ jobs:
           sudo apt-get install -y shellcheck shfmt
       - name: Check out the repo
         uses: actions/checkout@v3
-      - name: shellcheck ./snapdir-manifest
+      - name: shellcheck
         run: |
-          shellcheck ./snapdir-manifest
-      - name: checking ./snapdir-manifest format
+          find . -name "snapdir*" | xargs shellcheck
+      - name: checking format
         run: |
-          shfmt -w -s ./snapdir-manifest
-      - name: shellcheck ./snapdir
-        run: |
-          shellcheck ./snapdir
-      - name: checking ./snapdir format
-        run: |
-          shfmt -w -s ./snapdir
-      - name: shellcheck ./snapdir-file-adapter
-        run: |
-          shellcheck ./snapdir-file-adapter
-      - name: checking ./snapdir-file-adapter format
-        run: |
-          shfmt -w -s ./snapdir-file-adapter
+          find . -name "snapdir*" | xargs shfmt -w -s
+          git diff --exit-code
 
   test-ubuntu-latest:
     runs-on: ubuntu-latest
@@ -51,15 +40,9 @@ jobs:
           sudo chmod +x /usr/local/bin/b3sum
       - name: Check out the repo
         uses: actions/checkout@v3
-      - name: Test snapdir-manifest
-        run: |
-          ./snapdir-manifest test
       - name: Test snapdir
         run: |
-          ./snapdir test
-      - name: Test snapdir-file-adapter
-        run: |
-          ./snapdir-file-adapter test
+          ./snapdir-test
 
   test-macos:
     runs-on: macos-latest
@@ -70,12 +53,6 @@ jobs:
           brew install coreutils b3sum bash
       - name: Check out the repo
         uses: actions/checkout@v3
-      - name: Test snapdir-manifest
-        run: |
-          ./snapdir-manifest test
       - name: Test snapdir
         run: |
-          ./snapdir test
-      - name: Test snapdir-file-adapter
-        run: |
-          ./snapdir-file-adapter test
+          ./snapdir-test

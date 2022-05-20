@@ -621,22 +621,27 @@ snapdir_manifest_test() (
 	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
 	set -eEuo pipefail
 
-	# Allow testing other implementations of snapdir-manifest against these tests
-	local snapdir_manifest
-	snapdir_manifest="${SNAPDIR_MANIFEST_BIN_PATH:-$_SNAPDIR_MANIFEST_BIN_PATH}"
+	# Import test utilities
+	# shellcheck disable=SC1091
+	. "$(dirname "${_SNAPDIR_MANIFEST_BIN_PATH}")/snapdir-test" "${_SNAPDIR_MANIFEST_BIN_PATH}"
 
-	SECONDS=0
-	echo "# running snapdir-manifest tests using ${_SNAPDIR_MANIFEST_CHECKSUM_BIN}"
+	test_suite() {
+		# Allow testing other implementations of snapdir-manifest against these tests
+		local snapdir_manifest
+		snapdir_manifest="${SNAPDIR_MANIFEST_BIN_PATH:-$_SNAPDIR_MANIFEST_BIN_PATH}"
 
-	local expected="${_SNAPDIR_MANIFEST_CHECKSUM_BIN} is missing test fixtures"
-	local expected_manifest="${expected}"
-	local expected_excluding_a="$expected"
-	local expected_absolute="$expected"
-	local expected_secret="$expected"
-	local expected_cached="$expected"
+		SECONDS=0
+		echo "# running snapdir-manifest tests using ${_SNAPDIR_MANIFEST_CHECKSUM_BIN}"
 
-	if [[ ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} == "b3sum" ]]; then
-		expected_manifest="D 700 207d090daf06217a0920593ee642a90fcad85b9dccec02725e85311005f64327 43 ./
+		local expected="${_SNAPDIR_MANIFEST_CHECKSUM_BIN} is missing test fixtures"
+		local expected_manifest="${expected}"
+		local expected_excluding_a="$expected"
+		local expected_absolute="$expected"
+		local expected_secret="$expected"
+		local expected_cached="$expected"
+
+		if [[ ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} == "b3sum" ]]; then
+			expected_manifest="D 700 207d090daf06217a0920593ee642a90fcad85b9dccec02725e85311005f64327 43 ./
 D 700 ed23cfd2037d23cf8c6b67497425e7a06d5e40ea2bd8e43fc434006022dafe86 21 ./a/
 F 600 3c9cb8b8c8f3588f8e59e18d284330b0a951be644fbef2b9784b56e15d1c6096 4 ./a/a1f
 D 700 ee795476bff6c1816b4c7558a74ee0b44ec600c3cde6b02564508f67d536a656 17 ./a/aa/
@@ -654,12 +659,12 @@ D 700 e711f4e76ae9b3e25ad9a32b5f115cc9a81e55a428c552aa0bcab8543967f51a 6 ./c/cc/
 D 700 31a1955d5a65328f31014650cf79b5c0c3d9b82de19352ade8d299cc22f6ec40 6 ./c/cc/ccc/
 F 600 24f0cf3553e0dac0ce8aead4279e0fc368899e89ef776999d0d7e812b5ca0f3b 6 ./c/cc/ccc/ccc1f
 F 600 27a55588c59999fd686667c4b186af08161b95c287216f0cde723f0e191d1974 4 ./r1f"
-		expected_absolute="207d090daf06217a0920593ee642a90fcad85b9dccec02725e85311005f64327"
-		expected_secret="b64e60321e94894fe9e23522c527a9326521389944198910a3801987c2ab1a19"
-		expected_excluding_a="5f6e000c90cec184fce4c0b959961b368ce7137ccbb86aac67ab4a0a15c5563c"
-		expected_cached="f9044a3c2a9fedc17f14d9f0e52e97b4c684ba954d8819b3b0ef6afa27c9974f"
-	elif [[ ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} == "md5sum" ]]; then
-		expected_manifest="D 700 3d2919213b827d03a840f2f4f10b650f 43 ./
+			expected_absolute="207d090daf06217a0920593ee642a90fcad85b9dccec02725e85311005f64327"
+			expected_secret="b64e60321e94894fe9e23522c527a9326521389944198910a3801987c2ab1a19"
+			expected_excluding_a="5f6e000c90cec184fce4c0b959961b368ce7137ccbb86aac67ab4a0a15c5563c"
+			expected_cached="f9044a3c2a9fedc17f14d9f0e52e97b4c684ba954d8819b3b0ef6afa27c9974f"
+		elif [[ ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} == "md5sum" ]]; then
+			expected_manifest="D 700 3d2919213b827d03a840f2f4f10b650f 43 ./
 D 700 fe679b1e550126f778384d604eb449b9 21 ./a/
 F 600 211bf370898efea4774211c8f0994cde 4 ./a/a1f
 D 700 8c03559b1d00cadc393b87565842bbb5 17 ./a/aa/
@@ -677,12 +682,12 @@ D 700 fe735a93b6ba6042b3287bf33c708f75 6 ./c/cc/
 D 700 e35bc2c03dd33c7d9731d5f31f3eee9a 6 ./c/cc/ccc/
 F 600 4c9aebfeebfb83aa09b300bd269d5c0a 6 ./c/cc/ccc/ccc1f
 F 600 c5dd28cee110196c30c88f011d248303 4 ./r1f"
-		expected_absolute="3d2919213b827d03a840f2f4f10b650f"
-		expected_secret="3d2919213b827d03a840f2f4f10b650f"
-		expected_excluding_a="8a53d475db5cbe669dc2ffce5df06ef3"
-		expected_cached="750541e72dcafadb8a0abbd57284589e"
-	elif [[ ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} == "sha256sum" ]]; then
-		expected_manifest="D 700 cccc00189fbf090fad108d378e1edc31b36e6310ea9259ee652d66bc8b87f3ff 43 ./
+			expected_absolute="3d2919213b827d03a840f2f4f10b650f"
+			expected_secret="3d2919213b827d03a840f2f4f10b650f"
+			expected_excluding_a="8a53d475db5cbe669dc2ffce5df06ef3"
+			expected_cached="750541e72dcafadb8a0abbd57284589e"
+		elif [[ ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} == "sha256sum" ]]; then
+			expected_manifest="D 700 cccc00189fbf090fad108d378e1edc31b36e6310ea9259ee652d66bc8b87f3ff 43 ./
 D 700 38cf6b62f29410557d1d0d1160388a250f70a05724bc0f7428792adcfe0cf0be 21 ./a/
 F 600 adef5dfb4e0a8963271432c2d6dce851688928a95882ed42d4698d50de0782c3 4 ./a/a1f
 D 700 0e25e8a54c10b3a1d12e610806d25eb3ff2e94c189e4818af06af3aa4b1099ef 17 ./a/aa/
@@ -700,142 +705,151 @@ D 700 be79949abf75424072d7c9a41a549d4ebde1e2657635f3d3841dfc0418c09d09 6 ./c/cc/
 D 700 0ded97d157bf8265baa996842df4675ff15074d446d4af1a6d44abbabfc75eb3 6 ./c/cc/ccc/
 F 600 875d075473fffe0ece21589ad45690d49c8ec5bcf4258fd5b20efce346031888 6 ./c/cc/ccc/ccc1f
 F 600 67117d2a91c432d4db173671029b61d7ff437f7f87d153db1bf83b34b5833743 4 ./r1f"
-		expected_absolute="cccc00189fbf090fad108d378e1edc31b36e6310ea9259ee652d66bc8b87f3ff"
-		expected_secret="cccc00189fbf090fad108d378e1edc31b36e6310ea9259ee652d66bc8b87f3ff"
-		expected_excluding_a="99d921d4212e7c00925ec42cc178385f2d2ab1efece5cf9a11ed7a91ca0e712f"
-		expected_cached="e4c69a2deb2010c6582ef0d8c1aa57538c86313e9ee83bfa42c455b2f0ab3e9a"
-	fi
+			expected_absolute="cccc00189fbf090fad108d378e1edc31b36e6310ea9259ee652d66bc8b87f3ff"
+			expected_secret="cccc00189fbf090fad108d378e1edc31b36e6310ea9259ee652d66bc8b87f3ff"
+			expected_excluding_a="99d921d4212e7c00925ec42cc178385f2d2ab1efece5cf9a11ed7a91ca0e712f"
+			expected_cached="e4c69a2deb2010c6582ef0d8c1aa57538c86313e9ee83bfa42c455b2f0ab3e9a"
+		fi
 
-	local testing_dir
-	testing_dir="$(_snapdir_manifest_readlink "$(mktemp -d -t "${_SNAPDIR_MANIFEST}"_tests.XXXXXXXXXX)")"
-	umask 077 "$testing_dir"
+		local testing_dir="$_SNAPDIR_TEST_TMP_DIR"
 
-	echo "# created $testing_dir for testing"
+		echo "# created $testing_dir for testing"
 
-	mkdir -p "${testing_dir}/files"
-	mkdir -p "${testing_dir}/cache"
+		mkdir -p "${testing_dir}/files"
+		mkdir -p "${testing_dir}/cache"
 
-	mkdir -p "${testing_dir}"/files/a/aa/aaa "${testing_dir}"/files/b/bb/bbb "${testing_dir}"/files/c/cc/ccc
-	echo "aaa1f" >"${testing_dir}"/files/a/aa/aaa/aaa1f
-	echo "aaa2f" >"${testing_dir}"/files/a/aa/aaa/aaa2f
-	echo "aa1f" >"${testing_dir}"/files/a/aa/aa1f
-	echo "a1f" >"${testing_dir}"/files/a/a1f
-	echo "r1f" >"${testing_dir}"/files/r1f
-	echo "bbb1f" >"${testing_dir}"/files/b/bb/bbb/bbb1f
-	echo "bbb2f" >"${testing_dir}"/files/b/bb/bbb/bbb2f
-	echo "ccc1f" >"${testing_dir}"/files/c/cc/ccc/ccc1f
+		mkdir -p "${testing_dir}"/files/a/aa/aaa "${testing_dir}"/files/b/bb/bbb "${testing_dir}"/files/c/cc/ccc
+		echo "aaa1f" >"${testing_dir}"/files/a/aa/aaa/aaa1f
+		echo "aaa2f" >"${testing_dir}"/files/a/aa/aaa/aaa2f
+		echo "aa1f" >"${testing_dir}"/files/a/aa/aa1f
+		echo "a1f" >"${testing_dir}"/files/a/a1f
+		echo "r1f" >"${testing_dir}"/files/r1f
+		echo "bbb1f" >"${testing_dir}"/files/b/bb/bbb/bbb1f
+		echo "bbb2f" >"${testing_dir}"/files/b/bb/bbb/bbb2f
+		echo "ccc1f" >"${testing_dir}"/files/c/cc/ccc/ccc1f
 
-	_cleanup() {
-		rm -rf "${testing_dir}"
-	}
-	_fail() {
-		_cleanup
-		echo "# snapdir-manifest@${_SNAPDIR_MANIFEST_VERSION} $(bash --version | head -1)" >&2
-		echo "not ok. With result: '${result:-""}'" >&2
-		exit 1
-	}
-	_verify_manifest() {
-		test "$1" = "$expected_manifest" || {
-			echo "not ok - Failed to generate correct ${_SNAPDIR_MANIFEST}" >&2
-			diff -u <(echo "$expected_manifest") <(echo "$1") >&2
-			_fail
+		_verify_manifest() {
+			test "$1" = "$expected_manifest" || {
+				echo "not ok - Failed to generate correct ${_SNAPDIR_MANIFEST}" >&2
+				diff -u <(echo "$expected_manifest") <(echo "$1") >&2
+				fail
+			}
+			pass
 		}
+		local result
+
+		# --------------------------------------------------------------------------------
+		describe "snapdir-manifest generate"
+		check "snapdir-manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} ${testing_dir}/files"
+		_verify_manifest "$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" || true)"
+
+		# --------------------------------------------------------------------------------
+		describe "generate with excluded files"
+		check "snapdir-manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} --exclude=files/a ${testing_dir}/files"
+		$snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --exclude=files/a "${testing_dir}/files" | grep -q "$expected_excluding_a" || fail "Expected to exclude files/a" && pass
+
+		check "snapdir-manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} ../files"
+		cd "${testing_dir}/files"
+		_verify_manifest "$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "../files" || true)"
+		cd ".."
+
+		# --------------------------------------------------------------------------------
+		describe "generate with absolute paths"
+		check "snapdir-manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} --absolute ${testing_dir}/files"
+		result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --absolute "${testing_dir}/files" 2>&1 || true)
+		grep -E -q "$expected_absolute [0-9]* ${testing_dir}/files/$" <<<"$result" || fail "expected absolute path to be included" && pass
+
+		# --------------------------------------------------------------------------------
+		describe "generate with secrets"
+		check "SNAPDIR_MANIFEST_CONTEXT=secret snapdir-manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} ${testing_dir}/files"
+		result=$(SNAPDIR_MANIFEST_CONTEXT=secret $snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" 2>&1 || true)
+		grep -E -q "$expected_secret" <<<"$result" || fail "Expected secret to be included" && pass
+
+		# --------------------------------------------------------------------------------
+		describe "using 300MB file"
+		local start end uncached_duration cached_duration
+
+		# creates a 300mb file using mkfile on MacOS or dd on Linux
+		if [[ "$(uname -s)" == "Darwin" ]]; then
+			# macOS requires lowercase units
+			dd if=/dev/zero of="${testing_dir}"/files/large bs=300m count=1 2>/dev/null
+		else
+			dd if=/dev/zero of="${testing_dir}"/files/large bs=300M count=1 2>/dev/null
+		fi
+
+		start=$(date +%s)
+		result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --cache --verbose --cache-dir "${testing_dir}/cache" "${testing_dir}/files" 2>&1 || true)
+		grep -q "${expected_cached} 314572843" <<<"$result" || fail
+		end=$(date +%s)
+		uncached_duration=$((end - start))
+		start=$(date +%s)
+		result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --cache --verbose --cache-dir "${testing_dir}/cache" "${testing_dir}/files" 2>&1 || true)
+		grep -q "${expected_cached} 314572843" <<<"$result" || fail
+		end=$(date +%s)
+		cached_duration=$((end - start))
+		local cache_diff=$((uncached_duration - cached_duration))
+		check "cache"
+		if [[ ${cache_diff} -lt -1 ]]; then
+			fail "Failed to use cache. cache_diff=${cache_diff}"
+		else
+			pass
+		fi
+
+		check "cache misses"
+		test "$(grep -c "cache miss" <<<"$result")" == "0" || fail "unexpected cache misses" && pass
+
+		check "cache hits"
+		test "$(grep -c "cache hit" <<<"$result")" == "9" || fail "expected 9 cache hits" && pass
+
+		rm -rf "${testing_dir}"/files/large
+
+		# --------------------------------------------------------------------------------
+		describe "cache verification"
+
+		check "cache id verification"
+		result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" cache-id --cache-dir "${testing_dir}/cache" || true)
+		_verify_manifest "$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --cache --cache-id "${result}" --cache-dir "${testing_dir}/cache" "${testing_dir}/files" || true)"
+
+		# --------------------------------------------------------------------------------
+		check "invalid id detection"
+		result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --cache --cache-id "bogus" --cache-dir "${testing_dir}/cache" "${testing_dir}/files" 2>&1 || true)
+		grep -q "Cache id 'bogus' does not match the current cache id '" <<<"$result" || fail "failed to detect invalid cache id" && pass
+
+		# --------------------------------------------------------------------------------
+		describe "symlinks"
+
+		check "symlinks followed by default"
+		ln -s "${testing_dir}/files/a" "${testing_dir}/files/a_link"
+		result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" 2>&1 || true)
+		expected=$(echo "$result" | grep -o "[^ ]* 21 ./a/$" | sed -e "s|a/$|a_link/|")
+		grep -q "$expected" <<<"$result" || fail "expected to find a symlink" && pass
+
+		# --------------------------------------------------------------------------------
+		check " --no-follow"
+		result=$($snapdir_manifest --no-follow --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" 2>&1 || true)
+		expected="link"
+		grep -v -q "$expected" <<<"$result" || fail "expected to not find a symlink" && pass
+
+		# --------------------------------------------------------------------------------
+		check "loops"
+		ln -s "${testing_dir}/files/a_link" "${testing_dir}/files/a_link/a_link"
+		result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" 2>&1 || true)
+
+		if grep -q "loop" <<<"$result"; then
+			pass
+		else
+			# some environments break symlink loops instead of halting
+			# this should be made more robust in the future by implementing
+			# a symlink loop detection algorithm that's consistent across
+			# all platforms
+			expected=" ./a/a_link/$" >&2
+			grep -q "$expected" <<<"$result" || fail "expected not to fall on a symlink loop" && pass
+		fi
+
 	}
-	local result
-	echo "# running: $snapdir_manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} ${testing_dir}/files"
-	_verify_manifest "$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" || true)"
-	echo "ok - output verified"
 
-	echo "# running: $snapdir_manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} --exclude=files/a ${testing_dir}/files"
-	$snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --exclude=files/a "${testing_dir}/files" | grep -q "$expected_excluding_a" || _fail
-	echo "ok - excluded files"
+	run_tests
 
-	echo "# running: $snapdir_manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} ../files"
-	cd "${testing_dir}/files"
-	_verify_manifest "$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "../files" || true)"
-	cd ".."
-	echo "ok - output verified"
-
-	echo "# running: $snapdir_manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} --absolute ${testing_dir}/files"
-	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --absolute "${testing_dir}/files" 2>&1 || true)
-	grep -E -q "$expected_absolute [0-9]* ${testing_dir}/files/$" <<<"$result" || _fail
-	echo "ok - absolute paths"
-
-	echo "# running: SNAPDIR_MANIFEST_CONTEXT=secret $snapdir_manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} ${testing_dir}/files"
-	result=$(SNAPDIR_MANIFEST_CONTEXT=secret $snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" 2>&1 || true)
-	grep -E -q "$expected_secret" <<<"$result" || _fail
-	echo "ok - using secrets"
-
-	echo "# testing caching, generating 300MB file"
-	local start end uncached_duration cached_duration
-
-	# creates a 300mb file using mkfile on MacOS or dd on Linux
-	if [[ "$(uname -s)" == "Darwin" ]]; then
-		# macOS requires lowercase units
-		dd if=/dev/zero of="${testing_dir}"/files/large bs=300m count=1 2>/dev/null
-	else
-		dd if=/dev/zero of="${testing_dir}"/files/large bs=300M count=1 2>/dev/null
-	fi
-
-	start=$(date +%s)
-	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --cache --verbose --cache-dir "${testing_dir}/cache" "${testing_dir}/files" 2>&1 || true)
-	grep -q "${expected_cached} 314572843" <<<"$result" || _fail
-	end=$(date +%s)
-	uncached_duration=$((end - start))
-	start=$(date +%s)
-	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --cache --verbose --cache-dir "${testing_dir}/cache" "${testing_dir}/files" 2>&1 || true)
-	grep -q "${expected_cached} 314572843" <<<"$result" || _fail
-	end=$(date +%s)
-	cached_duration=$((end - start))
-	local cache_diff=$((uncached_duration - cached_duration))
-	if [[ ${cache_diff} -lt -1 ]]; then
-		echo "Failed to use cache. cache_diff=${cache_diff}" >&2
-		_fail
-	fi
-	echo "ok - cache"
-
-	echo "# checking cache misses"
-	test "$(grep -c "cache miss" <<<"$result")" == "0" || _fail
-
-	echo "# checking cache hits"
-	test "$(grep -c "cache hit" <<<"$result")" == "9" || _fail
-
-	rm -rf "${testing_dir}"/files/large
-
-	echo "# testing cache id"
-	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" cache-id --cache-dir "${testing_dir}/cache" || true)
-	_verify_manifest "$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --cache --cache-id "${result}" --cache-dir "${testing_dir}/cache" "${testing_dir}/files" || true)"
-	echo "ok - cache id verified"
-
-	echo "# testing cache id"
-	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --cache --cache-id "bogus" --cache-dir "${testing_dir}/cache" "${testing_dir}/files" 2>&1 || true)
-	grep -q "Cache id 'bogus' does not match the current cache id '" <<<"$result" || _fail
-	echo "ok - invalid cache id detected"
-
-	echo "# testing symlinks"
-	ln -s "${testing_dir}/files/a" "${testing_dir}/files/a_link"
-	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" 2>&1 || true)
-	expected=$(echo "$result" | grep -o "[^ ]* 21 ./a/$" | sed -e "s|a/$|a_link/|")
-	grep -q "$expected" <<<"$result" || _fail
-
-	echo "# testing symlinks --no-follow"
-	result=$($snapdir_manifest --no-follow --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" 2>&1 || true)
-	expected="link"
-	grep -v -q "$expected" <<<"$result" || _fail
-
-	echo "# testing symlink loops"
-	ln -s "${testing_dir}/files/a_link" "${testing_dir}/files/a_link/a_link"
-	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" 2>&1 || true)
-
-	if grep -q "loop" <<<"$result"; then
-		echo "ok - symlink loop detected"
-	else
-		expected=" ./a/a_link/$" >&2
-		grep -q "$expected" <<<"$result" || _fail
-	fi
-
-	echo "ok - all tests passed in $SECONDS seconds"
-	_cleanup
 )
 
 #######

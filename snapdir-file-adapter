@@ -425,7 +425,9 @@ snapdir_file_adapter_test() (
 	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
 	set -eEuo pipefail
 
-	_snapdir_test_utils "${_SNAPDIR_FILE_ADAPTER_BIN_PATH}"
+	# Import test utilities
+	# shellcheck disable=SC1091
+	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_FILE_ADAPTER_BIN_PATH}"
 
 	clean_remote() {
 		rm -rf "$_SNAPDIR_TEST_TMP_DIR/remote"

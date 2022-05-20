@@ -950,133 +950,6 @@ _snapdir_dryrun_log() {
 	done <<<"$1"
 }
 
-_snapdir_test_utils() {
-	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
-	set -eEuo pipefail
-	local target_file="${1:?Missing target file}"
-	export _TARGET_TEST_FILE="$target_file"
-
-	setup() {
-		set -eEuo pipefail
-
-		rm -rf /tmp/"${_SNAPDIR}"_tests*
-		_SNAPDIR_TEST_TMP_DIR="$(mktemp -d -t "${_SNAPDIR}"_tests.XXXXXXXXXX)"
-		umask 077 "$_SNAPDIR_TEST_TMP_DIR"
-
-		export _SNAPDIR_TEST_TMP_DIR
-		export _SNAPDIR_CWD="$_SNAPDIR_TEST_TMP_DIR"
-		export _SNAPDIR_CACHE_DIR="${_SNAPDIR_TEST_TMP_DIR}/.cache/${_SNAPDIR}"
-
-		cd "$_SNAPDIR_TEST_TMP_DIR" || return 1
-	}
-	_SNAPDIR_TEST_TOTAL_CHECKS=$(grep -c 'check "[^"]*"' "${target_file}")
-	# the previous grep will add one test to the total count when shfmt normalizes it
-	_SNAPDIR_TEST_TOTAL_CHECKS=$((_SNAPDIR_TEST_TOTAL_CHECKS - 1))
-	_SNAPDIR_TESTS_PENDING_CHECKS=$_SNAPDIR_TEST_TOTAL_CHECKS
-	_SNAPDIR_TEST_SUITE_DESCRIPTION="${_SNAPDIR}"
-	_SNAPDIR_TEST_DESCRIPTION=$_SNAPDIR_TEST_SUITE_DESCRIPTION
-
-	echo "1..${_SNAPDIR_TEST_TOTAL_CHECKS}"
-
-	_SNAPDIR_TEST_TEARDOWN_COMPLETE=false
-	teardown() {
-		set -eEuo pipefail
-		# return if _SNAPDIR_TEST_TEARDOWN_COMPLETE is already true
-		if [[ ${_SNAPDIR_TEST_TEARDOWN_COMPLETE} == true ]]; then
-			return 0
-		fi
-		_SNAPDIR_TEST_TEARDOWN_COMPLETE=true
-		# exit with not ok if _SNAPDIR_TEST_TOTAL_CHECKS is not zero
-		if [[ $_SNAPDIR_TESTS_PENDING_CHECKS -gt 0 ]]; then
-			echo "not ok ${_SNAPDIR_TESTS_PENDING_CHECKS}..${_SNAPDIR_TEST_TOTAL_CHECKS} - ${_SNAPDIR_TESTS_PENDING_CHECKS} ${_SNAPDIR_TEST_SUITE_DESCRIPTION} tests pending" >&2
-			exit 1
-		else
-			echo "ok - all $_SNAPDIR_TEST_SUITE_DESCRIPTION tests passed in $SECONDS seconds"
-			exit 0
-		fi
-	}
-
-	describe() {
-		set -eEuo pipefail
-		_SNAPDIR_TEST_DESCRIPTION="$1"
-	}
-
-	_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=false
-	check() {
-		set -eEuo pipefail
-		if [[ $_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS == true ]]; then
-			fail "calling check \"$1\" while pending pass is not allowed"
-		fi
-		_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=true
-		_SNAPDIR_TEST_CHECK_NAME="$1"
-	}
-
-	pass() {
-		set -eEuo pipefail
-		if [[ $_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS == true ]]; then
-			_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=false
-			_SNAPDIR_TEST_NUMBER=$((_SNAPDIR_TEST_TOTAL_CHECKS - _SNAPDIR_TESTS_PENDING_CHECKS + 1))
-			_SNAPDIR_TESTS_PENDING_CHECKS=$((_SNAPDIR_TESTS_PENDING_CHECKS - 1))
-		fi
-		echo "ok ${_SNAPDIR_TEST_NUMBER} - ${_SNAPDIR_TEST_DESCRIPTION} / $_SNAPDIR_TEST_CHECK_NAME"
-	}
-
-	skip() {
-		set -eEuo pipefail
-		_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=false
-		_SNAPDIR_TEST_NUMBER=$((_SNAPDIR_TEST_TOTAL_CHECKS - _SNAPDIR_TESTS_PENDING_CHECKS + 1))
-		_SNAPDIR_TESTS_PENDING_CHECKS=$((_SNAPDIR_TESTS_PENDING_CHECKS - 1))
-		echo "ok ${_SNAPDIR_TEST_NUMBER} - # skip ${_SNAPDIR_TEST_DESCRIPTION} / $_SNAPDIR_TEST_CHECK_NAME"
-	}
-
-	fail() {
-		set -eEuo pipefail
-		_SNAPDIR_TEST_NUMBER=$((_SNAPDIR_TEST_TOTAL_CHECKS - _SNAPDIR_TESTS_PENDING_CHECKS + 1))
-		echo "not ok ${_SNAPDIR_TEST_NUMBER} - ${_SNAPDIR_TEST_DESCRIPTION} / $_SNAPDIR_TEST_CHECK_NAME: $*" >&2
-		echo "# fail called by: ${_TARGET_TEST_FILE}:$(caller 0 | awk '{print $1}')" >&2
-		teardown
-		exit 1
-	}
-
-	generate_files() {
-		local dir=$_SNAPDIR_TEST_TMP_DIR
-		mkdir -p "$dir/files/"
-		echo "foo" >"$dir/files/foo"
-		echo "bar" >"$dir/files/bar"
-	}
-
-	generate_nested_files() {
-		local dir=$_SNAPDIR_TEST_TMP_DIR
-		mkdir -p "$dir/files/a/a1" "$dir/files/b/b1"
-		echo "foo" >"$dir/files/a/a1/foo"
-		echo "bar" >"$dir/files/b/b1/bar"
-	}
-
-	clean_files() {
-		rm -rf "$_SNAPDIR_TEST_TMP_DIR/files"
-	}
-
-	run_tests() {
-		SECONDS=0
-		trap teardown EXIT
-		setup
-		test_suite || {
-			teardown
-			return 1
-		}
-		teardown
-	}
-	run_tests_without_teardown() {
-		SECONDS=0
-		setup
-		test_suite || {
-			echo "Left directory $_SNAPDIR_TEST_TMP_DIR untouched." >&2
-			return 1
-		}
-		echo "Left directory $_SNAPDIR_TEST_TMP_DIR untouched." >&2
-	}
-}
-
 #       ####### #######  #####  #######  #####
 #          #    #       #     #    #    #     #
 #          #    #       #          #    #
@@ -1089,7 +962,9 @@ snapdir_test() (
 	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
 	set -eEuo pipefail
 
-	_snapdir_test_utils "${_SNAPDIR_BIN_PATH}"
+	# Import test utilities
+	# shellcheck disable=SC1091
+	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_BIN_PATH}"
 
 	test_suite() {
 		set -eEuo pipefail
