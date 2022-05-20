@@ -1,0 +1,404 @@
+#!/usr/bin/env bash
+
+#       #    ######     #    ######  ####### ####### ######   #####
+#      # #   #     #   # #   #     #    #    #       #     # #     #
+#     #   #  #     #  #   #  #     #    #    #       #     # #
+#    #     # #     # #     # ######     #    #####   ######   #####
+#    ####### #     # ####### #          #    #       #   #         #
+#    #     # #     # #     # #          #    #       #    #  #     #
+#    #     # ######  #     # #          #    ####### #     #  #####
+
+
+_snapdir_get_push_command() {
+	set -eEuo pipefail
+	local staging_directory="${1:?Missing staging directory}"
+	local store="${2:?Missing store}"
+	_snapdir_export_store_vars
+
+	local verbosity="--noProgress "
+	if [[ "${_SNAPDIR_VERBOSE:-false}" = true ]]; then
+		verbosity=""
+	fi
+	local manifest_rel_base
+	manifest_rel_base=$(_snapdir_get_manifest_rel_base)
+	local command="if [[ \"\$(b2 ls --json \"${_SNAPDIR_STORE_BUCKET}\" \"${_SNAPDIR_STORE_BASE_DIR}/${manifest_rel_base}\")\" == '[]' ]]; then "
+	command="${command}b2 sync ${verbosity}--skipNewer --compareVersions none \"$staging_directory/.objects/\" \"${store}/.objects/\";"
+	command="${command}b2 sync ${verbosity}--skipNewer --compareVersions none \"$staging_directory/.manifests/\" \"${store}/.manifests/\";"
+	echo "${command} fi;"
+}
+
+_snapdir_get_fetch_snapdir_manifest_command() {
+	set -eEuo pipefail
+	local snapdir_id="${_SNAPDIR_ID:?Missing --id option}"
+	local store="${_SNAPDIR_STORE:?Missing --store option}"
+	_snapdir_export_store_vars
+	local manifest_rel_path
+	manifest_rel_path=$(_snapdir_get_manifest_rel_path)
+
+	# local store_store_bin_path
+	# store_store_bin_path=$(_snapdir_get_store_store_bin_path "${store}")
+	# $store_store_bin_path get-manifest-command "${staging_directory}" "${store}"
+
+
+	# if store starts with b2://, use b2
+	if [[ "${store}" =~ ^b2:\/\/ ]]; then
+		local verbosity="--noProgress "
+		if [[ "${_SNAPDIR_VERBOSE:-false}" = true ]]; then
+			verbosity=""
+		fi
+		# TODO: Move b2 to an store function
+		echo "b2 download-file-by-name ${verbosity}\"${_SNAPDIR_STORE_BUCKET}\" \"${_SNAPDIR_STORE_BASE_DIR}/${manifest_rel_path}\" \"${_SNAPDIR_CACHE_DIR}/${manifest_rel_path}.tmp\""
+	else
+		echo "error: unknown store $store" >&2
+		return 1
+	fi
+}
+
+_snapdir_get_manifest_rel_path() {
+	set -eEuo pipefail
+	local snapdir_id="${1:-${_SNAPDIR_ID:?Missing --id option}}"
+	echo ".manifests/${snapdir_id:0:3}/${snapdir_id:3:3}/${snapdir_id:6:3}/${snapdir_id:9}"
+}
+
+_snapdir_get_object_rel_path() {
+	set -eEuo pipefail
+	local checksum="${1:?Missing object checksum}"
+	echo ".objects/${checksum:0:3}/${checksum:3:3}/${checksum:6:3}/${checksum:9}"
+}
+
+_snapdir_get_fetch_snapdir_files_command() {
+	set -eEuo pipefail
+	local store="${_SNAPDIR_STORE:?Missing --store option}"
+	local manifest="${_SNAPDIR_MANIFEST:?Missing --manifest option}"
+	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
+	local store
+	store=$(echo "$store" | cut -d: -f1)
+	local generator_fn="_snapdir_store_${store}_fetch_file_command"
+	_snapdir_export_store_vars
+	# fail if there's no store for the store
+	type "$generator_fn" >/dev/null 2>&1 || {
+		echo "error: unknown store $store" >&2
+		return 1
+	}
+	# remove directories from manifest (lines ending in /)
+	manifest="$(echo "$manifest" | grep -v '/$')"
+	local checksum=""
+	local object_rel_path=""
+	for line in $manifest; do
+		checksum="$(echo "$line" | cut -d' ' -f2)"
+		object_rel_path=$(_snapdir_get_object_rel_path "${checksum}")
+		mkdir -p "$_SNAPDIR_CACHE_DIR/$(dirname "${object_rel_path}")"
+		# Caches the object and verifies the checksum
+		test -f "${cache_dir}/${object_rel_path}" || {
+			_snapdir_store_b2_fetch_file_command "${_SNAPDIR_STORE_BASE_DIR}/${object_rel_path}" "${cache_dir}/${object_rel_path}"
+		}
+	done
+}
+
+# Backblaze B2 store
+_snapdir_store_b2_fetch_file_command() {
+	set -eEuo pipefail
+	local store_path="${1:?Missing store path}"
+	local local_path="${2:?Missing local path}"
+	local verbosity=""
+	if [[ "${_SNAPDIR_VERBOSE:-false}" = false ]]; then
+		verbosity="--noProgress "
+	fi
+	echo "b2 download-file-by-name ${verbosity}\"${_SNAPDIR_STORE_BUCKET}\" \"${store_path}\" \"${local_path}\""
+}
+
+
+snapdir_test() (
+	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	set -eEuo pipefail
+
+	setup() {
+		set -eEuo pipefail
+
+		rm -rf /tmp/"${_SNAPDIR}"_tests*
+		_SNAPDIR_TEST_TMP_DIR="$(mktemp -d -t "${_SNAPDIR}"_tests.XXXXXXXXXX)"
+		umask 077 "$_SNAPDIR_TEST_TMP_DIR"
+
+		export _SNAPDIR_TEST_TMP_DIR
+		export _SNAPDIR_CWD="$_SNAPDIR_TEST_TMP_DIR"
+		export _SNAPDIR_CACHE_DIR="${_SNAPDIR_TEST_TMP_DIR}/.cache/${_SNAPDIR}"
+
+    local env_path=deploy/inventory/development/local/secrets/testing/b2.env
+    # shellcheck disable=SC1090
+    test -f "$env_path" && source "$env_path"
+    : "${B2_TEST_BUCKET:?Missing B2_TEST_BUCKET, did you source ${env_path}?}"
+    : "${B2_APPLICATION_KEY_ID:?Missing B2_APPLICATION_KEY_ID}"
+    : "${B2_APPLICATION_KEY:?Missing B2_APPLICATION_KEY}"
+    _SNAPDIR_TEST_STORE="b2://${B2_TEST_BUCKET}${_SNAPDIR_TEST_TMP_DIR}"
+
+		cd "$_SNAPDIR_TEST_TMP_DIR" || return 1
+  }
+
+  which b2 >/dev/null || {
+    mkdir -p "${_SNAPDIR_TEST_TMP_DIR}/bin"
+    wget -q "https://github.com/Backblaze/B2_Command_Line_Tool/releases/latest/checkout/b2-linux" -O "${_SNAPDIR_TEST_TMP_DIR}/bin/b2"
+    chmod +x "${_SNAPDIR_TEST_TMP_DIR}/bin/b2"
+    export PATH="${_SNAPDIR_TEST_TMP_DIR}/bin:$PATH"
+  }
+
+  echo "# authorizing b2 account"
+  echo "# this integration test requires network connectivity and valid b2 credentials"
+  b2 authorize-account "${B2_APPLICATION_KEY_ID}" "${B2_APPLICATION_KEY}" >/dev/null
+
+	_SNAPDIR_TEST_TOTAL_CHECKS=$(grep -c "check \"[^\"]*\"" "${_SNAPDIR_BIN_PATH}")
+	_SNAPDIR_TESTS_PENDING_CHECKS=$_SNAPDIR_TEST_TOTAL_CHECKS
+	_SNAPDIR_TEST_SUITE_DESCRIPTION="${_SNAPDIR}"
+	_SNAPDIR_TEST_DESCRIPTION=$_SNAPDIR_TEST_SUITE_DESCRIPTION
+
+	echo "1..${_SNAPDIR_TEST_TOTAL_CHECKS}"
+
+	_SNAPDIR_TEST_TEARDOWN_COMPLETE=false
+	teardown() {
+		set -eEuo pipefail
+		# return if _SNAPDIR_TEST_TEARDOWN_COMPLETE is already true
+		if [[ "${_SNAPDIR_TEST_TEARDOWN_COMPLETE}" = true ]]; then
+			return 0
+		fi
+		_SNAPDIR_TEST_TEARDOWN_COMPLETE=true
+		{
+      echo "cleaning up store b2 temporary test data"
+      mkdir -p /tmp/empty-dir
+      b2 sync --skipNewer --noProgress --allowEmptySource --delete --compareVersions none "/tmp/empty-dir/" "${_SNAPDIR_TEST_STORE}/"
+      rmdir /tmp/empty-dir
+		} 2>&1 | sed 's|^|# |' || true
+		# exit with not ok if _SNAPDIR_TEST_TOTAL_CHECKS is not zero
+		if [[ "$_SNAPDIR_TESTS_PENDING_CHECKS" -gt 0 ]]; then
+			echo "not ok ${_SNAPDIR_TESTS_PENDING_CHECKS}..${_SNAPDIR_TEST_TOTAL_CHECKS} - ${_SNAPDIR_TESTS_PENDING_CHECKS} ${_SNAPDIR_TEST_SUITE_DESCRIPTION} tests pending" >&2
+			exit 1
+		else
+			echo "ok - all $_SNAPDIR_TEST_SUITE_DESCRIPTION tests passed in $SECONDS seconds"
+			exit 0
+		fi
+	}
+
+	describe() {
+		set -eEuo pipefail
+		_SNAPDIR_TEST_DESCRIPTION="$1"
+	}
+
+	_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=false
+	check() {
+		set -eEuo pipefail
+		if [[ "$_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS" = true ]]; then
+			fail "calling check \"$1\" while pending pass is not allowed"
+		fi
+		_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=true
+		_SNAPDIR_TEST_CHECK_NAME="$1"
+	}
+
+	pass() {
+		set -eEuo pipefail
+		if [[ "$_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS" = true ]]; then
+			_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=false
+			_SNAPDIR_TEST_NUMBER=$((_SNAPDIR_TEST_TOTAL_CHECKS - _SNAPDIR_TESTS_PENDING_CHECKS + 1))
+			_SNAPDIR_TESTS_PENDING_CHECKS=$((_SNAPDIR_TESTS_PENDING_CHECKS - 1))
+		fi
+		echo "ok ${_SNAPDIR_TEST_NUMBER} - ${_SNAPDIR_TEST_DESCRIPTION} / $_SNAPDIR_TEST_CHECK_NAME"
+	}
+
+	skip() {
+		set -eEuo pipefail
+		_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=false
+		_SNAPDIR_TEST_NUMBER=$((_SNAPDIR_TEST_TOTAL_CHECKS - _SNAPDIR_TESTS_PENDING_CHECKS + 1))
+		_SNAPDIR_TESTS_PENDING_CHECKS=$((_SNAPDIR_TESTS_PENDING_CHECKS - 1))
+		echo "ok ${_SNAPDIR_TEST_NUMBER} - # skip ${_SNAPDIR_TEST_DESCRIPTION} / $_SNAPDIR_TEST_CHECK_NAME"
+	}
+
+	fail() {
+		set -eEuo pipefail
+		_SNAPDIR_TEST_NUMBER=$((_SNAPDIR_TEST_TOTAL_CHECKS - _SNAPDIR_TESTS_PENDING_CHECKS + 1))
+		echo "not ok ${_SNAPDIR_TEST_NUMBER} - ${_SNAPDIR_TEST_DESCRIPTION} / $*" >&2
+		echo "# fail called by: ${_SNAPDIR_BIN_PATH}:$(caller 0 | awk '{print $1}')" >&2
+		teardown
+		exit 1
+	}
+
+	generate_files() {
+		local dir=$_SNAPDIR_TEST_TMP_DIR
+		mkdir -p "$dir/files/"
+		echo "foo" >"$dir/files/foo"
+		echo "bar" >"$dir/files/bar"
+	}
+
+	generate_nested_files() {
+		local dir=$_SNAPDIR_TEST_TMP_DIR
+		mkdir -p "$dir/files/a/a1" "$dir/files/b/b1"
+		echo "foo" >"$dir/files/a/a1/foo"
+		echo "bar" >"$dir/files/b/b1/bar"
+	}
+
+	clean_files() {
+		rm -rf "$_SNAPDIR_TEST_TMP_DIR/files"
+	}
+
+	run() {
+		set -eEuo pipefail
+		local result=""
+		local expected=""
+		local _dir="${_SNAPDIR_TEST_TMP_DIR}/files"
+		local _cwd="$_SNAPDIR_CWD"
+		local snapshot="${_SNAPDIR_BIN_PATH}"
+		local bucket="${B2_TEST_BUCKET:-unit-testing}"
+		local store="${_SNAPDIR_TEST_STORE:-b2://${bucket}/}"
+
+		local store_path="${_SNAPDIR_TEST_TMP_DIR#/}"
+		local foo_checksum="49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
+		local foo_path="49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
+		local foo_sha1sum="f1d2d2f924e986ac86fdf7b36c94bcdf32beec15"
+		local bar_checksum="b3199d36d434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
+		local bar_path="b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
+		local bar_sha1sum="e242ed3bffccdf271b7fbaf34ed72d089537b42f"
+		local nested_manifest_id="7c6160adc5c93ced08a6960539fb256c7d2848ce94afb9bbd777b68acab424dc"
+		local simple_manifest_id="b1b451c1e38844d7a6657c28733d0f3ff888bb1e905da4e321bbba00ed9a1dd1"
+		local simple_manifest_path_prefix="b1b/451/c1e/"
+		local simple_manifest_path="b1b/451/c1e/38844d7a6657c28733d0f3ff888bb1e905da4e321bbba00ed9a1dd1"
+		local simple_manifest_sha1sum="478204ff826e9516ae12848cf0e1bcafcada5a62"
+		local nested_manifest_sha1sum="f0fa3d8a97a52bf87ed840e18489463e52144a69"
+		local simple_manifest="700 e08d9dbcfd56492ce0e0c8625516690226b7c64a564c490b941b88e9166699ab 0 ./
+600 $bar_checksum 4 ./bar
+600 $foo_checksum 4 ./foo"
+		local store_ls_sha1
+		store_ls_sha1=$(echo "${store_path}/.manifests/${simple_manifest_path} ${simple_manifest_sha1sum}
+${store_path}/.objects/${foo_path} ${foo_sha1sum}
+${store_path}/.objects/${bar_path} ${bar_sha1sum}" | sort)
+
+		# --------------------------------------------------------------------------------
+		# snapdir_get_push_command
+		# --------------------------------------------------------------------------------
+		generate_files
+		describe "snapdir_get_push_command"
+		check "should return the correct push command"
+		# For b2 we first only push if the manifest does not exist. Then we first push the objects and finally the manifest.
+		result=$(_SNAPDIR_STORE="${store}" _SNAPDIR_STORE_BASE_DIR=$_SNAPDIR_TEST_TMP_DIR _SNAPDIR_ID="${simple_manifest_id}" _snapdir_get_push_command "${_dir}/.${_SNAPDIR}-$simple_manifest_id" "${store}" 2>&1 || echo "")
+		expected="if [[ \"\$(b2 ls --json \"${bucket}\" \"${_SNAPDIR_TEST_TMP_DIR}/.manifests/${simple_manifest_path_prefix}\")\" == '[]' ]]; then b2 sync --noProgress --skipNewer --compareVersions none \"${_dir}/.${_SNAPDIR}-${simple_manifest_id}/.objects/\" \"${store}/.objects/\";b2 sync --noProgress --skipNewer --compareVersions none \"${_dir}/.${_SNAPDIR}-${simple_manifest_id}/.manifests/\" \"${store}/.manifests/\"; fi;"
+		test "$result" == "$expected" || fail "Unexpected push command
+      '$result',
+       expected:
+      '$expected'" && pass
+		describe "snapdir_get_push_command --verbose"
+		check "should return the correct push command with verbose"
+		result=$(_SNAPDIR_VERBOSE=true _SNAPDIR_STORE="${store}" _SNAPDIR_STORE_BASE_DIR=$_SNAPDIR_TEST_TMP_DIR _SNAPDIR_ID="${simple_manifest_id}" _snapdir_get_push_command "${_dir}/.${_SNAPDIR}-$simple_manifest_id" "${store}" 2>&1 || echo "")
+		expected="$(echo "$expected" | sed -E 's/--noProgress //g')"
+		test "$result" == "$expected" || fail "Unexpected verbose push command '$result', expected: '$expected'" && pass
+		clean_files
+
+		# --------------------------------------------------------------------------------
+		# _snapdir_get_fetch_snapdir_manifest_command
+		# --------------------------------------------------------------------------------
+		generate_files
+		describe "_snapdir_get_fetch_snapdir_manifest_command"
+		check "should return the correct fetch command"
+		result=$(_SNAPDIR_STORE="${store}" _SNAPDIR_ID="${simple_manifest_id}" _SNAPDIR_STORE_BASE_DIR=$_SNAPDIR_TEST_TMP_DIR _snapdir_get_fetch_snapdir_manifest_command 2>&1 || echo "")
+		expected="b2 download-file-by-name --noProgress \"${bucket}\" \"${_SNAPDIR_TEST_TMP_DIR}/.manifests/${simple_manifest_path}\" \"${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}.tmp\""
+		test "$result" == "$expected" || fail "Unexpected fetch command '$result', expected: '$expected'" && pass
+
+		describe "_snapdir_get_fetch_snapdir_manifest_command --verbose"
+		check "should return the correct fetch command with verbose"
+		result=$(_SNAPDIR_VERBOSE=true _SNAPDIR_STORE="${store}" _SNAPDIR_ID="${simple_manifest_id}" _SNAPDIR_STORE_BASE_DIR=$_SNAPDIR_TEST_TMP_DIR _snapdir_get_fetch_snapdir_manifest_command 2>&1 || echo "")
+		expected="b2 download-file-by-name \"${bucket}\" \"${_SNAPDIR_TEST_TMP_DIR}/.manifests/${simple_manifest_path}\" \"${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}.tmp\""
+		test "$result" == "$expected" || fail "Unexpected verbose push command '$result', expected: '$expected'" && pass
+		clean_files
+
+		# --------------------------------------------------------------------------------
+		# _snapdir_get_fetch_snapdir_files_command
+		# --------------------------------------------------------------------------------
+		generate_files
+		_tmp="$("${snapshot}" manifest "${_dir}")"
+		clean_files
+
+		describe "_snapdir_get_fetch_snapdir_files_command"
+		check "should not include fetch files command if objects are in the cache"
+		result=$(_SNAPDIR_MANIFEST="${_tmp}" _SNAPDIR_STORE="${store}" _SNAPDIR_STORE_BASE_DIR="$_SNAPDIR_TEST_TMP_DIR" _snapdir_get_fetch_snapdir_files_command 2>&1 || echo "")
+		test "$result" == "" || fail "Unexpected fetch files command '$result' should be empty" && pass
+
+		# remove one of the objects from the cache
+		rm "${_SNAPDIR_CACHE_DIR}/.objects/${bar_path}"
+		check "should include missing file on fetch command"
+		result=$(_SNAPDIR_MANIFEST="${_tmp}" _SNAPDIR_STORE="${store}" _SNAPDIR_STORE_BASE_DIR="$_SNAPDIR_TEST_TMP_DIR" _snapdir_get_fetch_snapdir_files_command 2>&1 || echo "")
+		expected="b2 download-file-by-name --noProgress \"${bucket}\" \"${_SNAPDIR_TEST_TMP_DIR}/.objects/${bar_path}\" \"${_SNAPDIR_CACHE_DIR}/.objects/${bar_path}\""
+		test "$result" == "$expected" || fail "Unexpected fetch files command '$result', expected: '$expected'" && pass
+
+		# remove all objects from the cache
+		rm -rf "${_SNAPDIR_CACHE_DIR}/.objects/"
+		check "should include all files on fetch command"
+		result=$(_SNAPDIR_MANIFEST="${_tmp}" _SNAPDIR_STORE="${store}" _SNAPDIR_STORE_BASE_DIR="$_SNAPDIR_TEST_TMP_DIR" _snapdir_get_fetch_snapdir_files_command 2>&1 || echo "")
+		result=$(echo "$result" | sort)
+		expected=$({
+			echo "$expected"
+			echo "b2 download-file-by-name --noProgress \"${bucket}\" \"${_SNAPDIR_TEST_TMP_DIR}/.objects/${foo_path}\" \"${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}\""
+		} | sort)
+		test "$result" == "$expected" || fail "Unexpected fetch files command '$result', expected: '$expected'" && pass
+
+		clean_files
+
+		# Done with snapshot internals tests, clean them all, we should not see them in the future
+		rm -rf "${_dir}/.${_SNAPDIR}-"*
+
+
+		# --------------------------------------------------------------------------------
+		# snapshot integration tests
+		# --------------------------------------------------------------------------------
+		describe "integration test, push"
+		check "should push staged files"
+    generate_files
+    echo "# Running: \"${snapshot}\" push --verbose --store=\"${store}\" \"${_dir}\""
+    result=$(echo "$simple_manifest" | "${snapshot}" push --verbose --store="${store}" "${_dir}" 2>&1 || echo "")
+    [[ "$result" =~ $simple_manifest_id ]] || fail "Unexpected verbose push output, got: '$result' expected '$simple_manifest_id' to be included" && pass
+    clean_files
+
+		check "should have pushed staged files correctly"
+    echo "# Running: b2 ls --json --recursive \"${B2_TEST_BUCKET}\" \"${store_path}\""
+    result=$(b2 ls --json --recursive "${B2_TEST_BUCKET}" "${store_path}" | jq -r '.[] | .fileName + " " + .contentSha1' | sort)
+    [[ "$store_ls_sha1" == "$result" ]] || fail "Unexpected store ls, got: '$result' expected '$store_ls_sha1'" && pass
+
+		# c_heck "should push staged files by id"
+		# if [[ "${_SNAPDIR_INTEGRATION_TEST:-false}" == "true" ]]; then
+		# 	clean_files
+		# 	generate_nested_files
+		# 	"${snapshot}" id "${_dir}" >/dev/null
+		# 	clean_files
+		# 	echo "# Running: \"${snapshot}\" push --verbose --store=\"${store}\" --id=\"${nested_manifest_id}\""
+		# 	result=$("${snapshot}" push --verbose --store="${store}" --id="${nested_manifest_id}" 2>&1 || echo "")
+		# 	[[ "$result" =~ $nested_manifest_id ]] || fail "Unexpected verbose push output, got: '$result' expected '$nested_manifest_id' to be included"
+		# 	result=$(b2 ls --json --recursive "${B2_TEST_BUCKET}" "${store_path}" | jq -r '.[] | .fileName + " " + .contentSha1' | sort)
+		# 	grep -q "$nested_manifest_sha1sum" <<<"$result" || fail "Unexpected store ls, got: '$result' expected '$nested_manifest_sha1sum'" && pass
+		# else
+		# 	skip
+		# fi
+
+		describe "integration test, fetch"
+		check "should fetch store manifest"
+    clean_files
+    ${snapshot} flush-cache
+    echo "# Running: \"${snapshot}\" fetch --verbose --store=\"${store}\" --id=\"${simple_manifest_id}\""
+    result=$("${snapshot}" fetch --verbose --store="${store}" --id="${simple_manifest_id}" 2>&1 || echo "")
+    test -f "${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}" || fail "Failed to fetch ${foo_path}. Command output: '${result}'"
+    test -f "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" || fail "Failed to fetch ${simple_manifest_path}. Command output: '${result}'"
+    b3sum "${_SNAPDIR_CACHE_DIR}/.objects/${bar_path}" | grep -q "$bar_checksum" || fail "Unexpected fetch result. Expected ${_dir}/bar checksum to be '$bar_checksum'. Command output: ${result}" && pass
+    clean_files
+
+		describe "integration test, pull"
+		check "should pull store manifest"
+    clean_files
+    ${snapshot} flush-cache
+    echo "# Running: \"${snapshot}\" pull --verbose --store=\"${store}\" --id=\"${simple_manifest_id}\" \"${_dir}\""
+    result=$("${snapshot}" pull --verbose --id="${simple_manifest_id}" --store="${store}" "${_dir}" 2>&1 || echo "")
+    b3sum "${_dir}/foo" | grep -q "$foo_checksum" || fail "Unexpected pull result results: '${result}'. Expected ${_dir}/foo checksum to be '$foo_checksum'."
+    b3sum "${_dir}/bar" | grep -q "$bar_checksum" || fail "Unexpected pull result results: '${result}'. Expected ${_dir}/bar checksum to be '$bar_checksum'." && pass
+    clean_files
+	}
+
+	SECONDS=0
+	trap teardown EXIT
+	setup
+	run || {
+		teardown
+		return 1
+	}
+	teardown
+)

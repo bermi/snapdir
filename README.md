@@ -10,11 +10,15 @@ directories and their contents.
 Built as a set of independent and well tested bash scripts, [Snapdir]
 provides the following functionality:
 
--   that can be versioned controlled. A building block for
-    \[content-addressable storage applications\] and \[conflict-free
-    replicated data type (CRDT)\] strategies.
--   
--   
+-   `snapdir-manifest`: Standalone tool for creating and verifying
+    directory snapshot manifests that can be versioned controlled. A
+    building block for \[content-addressable storage applications\] and
+    [conflict-free replicated data type]
+    ([CRDT][conflict-free replicated data type]) strategies.
+-   `snapdir`: Snapshotting, verification and sharing of directories
+    with pluggable storage backends.
+-   `snapdir-file-store`: Reference implementation of a storage backend
+    using the filesystem.
 
 Check the [documentation for more information].
 
@@ -54,7 +58,7 @@ consuming and generating files in ephemeral environments. At
 pipelines and our distributed ETL workflows.
 
 We decided to open source it could be used by others to implement
-\[conflict-free replicated data type (CRDT)\] strategies on eventually
+[CRDT][conflict-free replicated data type] strategies on eventually
 consistent read-heavy applications.
 
 ### Design goals
@@ -495,6 +499,7 @@ LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 
   [verify status]: https://github.com/bermi/snapdir-bash/actions/workflows/verify.yml/badge.svg
   [Snapdir]: https://github.com/bermi/snapdir-bash
+  [conflict-free replicated data type]: https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type
   [documentation for more information]: https://github.com/bermi/snapdir-bash/tree/main/docs/
   [snapdir-manifest]: https://github.com/bermi/snapdir-manifest
   [bermi/snapdir]: https://hub.docker.com/r/bermi/snapdir/tags
