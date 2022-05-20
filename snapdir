@@ -36,7 +36,7 @@ snapdir_run() (
 	set -eEuo pipefail
 	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults"
 	local boolean_args="debug|force|linked|keep|purge|verbose|dryrun"
-	local value_required_args="manifest|id|remote|cwd|script_path|cache_dir|path"
+	local value_required_args="manifest|id|store|cwd|script_path|cache_dir|path"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
 
 	parse_argument_key() {
@@ -227,24 +227,24 @@ snapdir_push() {
 	local push_directory
 	push_directory=$(_SNAPDIR_KEEP=true _SNAPDIR_VERBOSE=false snapdir_stage "${_SNAPDIR_CWD}" "${_SNAPDIR_DIR:-${2:-"."}}")
 
-	local remote="${_SNAPDIR_REMOTE:?Missing --remote option when calling ${_SNAPDIR} push}"
-	_snapdir_log "Pushing snapshot '${snapdir_id}' by copying '${push_directory}' to '${remote}'."
+	local store="${_SNAPDIR_STORE:?Missing --store option when calling ${_SNAPDIR} push}"
+	_snapdir_log "Pushing snapshot '${snapdir_id}' by copying '${push_directory}' to '${store}'."
 	local push_command
-	push_command="$(_SNAPDIR_VERBOSE=false _snapdir_get_push_command "${push_directory}" "${remote}")"
+	push_command="$(_SNAPDIR_VERBOSE=false _snapdir_get_push_command "${push_directory}" "${store}")"
 	local verbose="${_SNAPDIR_VERBOSE:-false}"
 	local verbose_flag=""
 	if [[ ${verbose} == true ]]; then
 		verbose_flag="set -x;"
 	fi
 	if [[ ${push_command} != "" ]]; then
-		_snapdir_log "Pushing snapshot to remote '${remote}' with command: '${push_command}'"
+		_snapdir_log "Pushing snapshot to store '${store}' with command: '${push_command}'"
 		if [[ ${dryrun} == "true" ]]; then
 			_snapdir_dryrun_log "${verbose_flag}${push_command}"
 		else
 			bash -c "set -eEuo pipefail;${verbose_flag}${push_command}"
 		fi
 	else
-		_snapdir_log "Nothing to push to '${remote}'."
+		_snapdir_log "Nothing to push to '${store}'."
 	fi
 	rm -rf "$push_directory"
 	if [[ ${_snapdir_tmp_dir} != "" ]]; then
@@ -264,7 +264,7 @@ snapdir_push() {
 snapdir_fetch() {
 	set -eEuo pipefail
 	local snapdir_id="${_SNAPDIR_ID:?Missing --id option when calling ${_SNAPDIR} fetch}"
-	local remote="${_SNAPDIR_REMOTE:?Missing --remote option when calling ${_SNAPDIR} push}"
+	local store="${_SNAPDIR_STORE:?Missing --store option when calling ${_SNAPDIR} push}"
 	local manifest_rel_path
 	manifest_rel_path="$(_snapdir_get_manifest_rel_path "${snapdir_id}")"
 	local dryrun="${_SNAPDIR_DRYRUN:-false}"
@@ -286,13 +286,13 @@ snapdir_fetch() {
 	else
 		mkdir -p "$(dirname "${manifest_cache_path}")"
 		local fetch_manifest_command
-		fetch_manifest_command=$(_snapdir_get_fetch_snapdir_manifest_command "${snapdir_id}" "${remote}")
+		fetch_manifest_command=$(_snapdir_get_fetch_snapdir_manifest_command "${snapdir_id}" "${store}")
 		if [[ ${dryrun} == "true" ]]; then
 			_snapdir_dryrun_log "${verbose_flag}${fetch_manifest_command}"
 		fi
 
 		bash -c "set -eEuo pipefail;${verbose_flag}${fetch_manifest_command}" >"${manifest_cache_path}.${tmp_id}" || {
-			echo "error: Failed to fetch manifest for snapshot '${snapdir_id}' from remote '${remote}' when calling '${fetch_manifest_command}'." >&2
+			echo "error: Failed to fetch manifest for snapshot '${snapdir_id}' from store '${store}' when calling '${fetch_manifest_command}'." >&2
 			rm -rf "${manifest_cache_path}.${tmp_id}"
 			return 1
 		}
@@ -318,7 +318,7 @@ snapdir_fetch() {
 		else
 			bash -c "set -eEuo pipefail;${verbose_flag}${fetch_files_commands}" >"$_output_dest" || {
 				rm -rf "${manifest_cache_path}.${tmp_id}"
-				echo "error: Failed to fetch files for snapshot '${snapdir_id}' from remote '${remote}' when calling '${fetch_files_commands}'." >&2
+				echo "error: Failed to fetch files for snapshot '${snapdir_id}' from store '${store}' when calling '${fetch_files_commands}'." >&2
 				return 1
 			}
 		fi
@@ -384,7 +384,7 @@ snapdir_checkout() {
 
 	local manifest_cache_path="$cache_dir/${manifest_rel_path}"
 	test -f "${manifest_cache_path}" || {
-		echo "Manifest not found locally. Did you forget to fetch ${snapdir_id} from the remote?" >&2
+		echo "Manifest not found locally. Did you forget to fetch ${snapdir_id} from the store?" >&2
 		return 1
 	}
 	local only_path=""
@@ -420,7 +420,7 @@ snapdir_checkout() {
 			local cache_path="$cache_dir/${object_rel_path}"
 			test -f "$cache_path" || {
 				# Fatal error
-				echo "${absolute_path} with checksum ${checksum} not found on cache. Did you forget to fetch ${snapdir_id} from the remote?" >&2
+				echo "${absolute_path} with checksum ${checksum} not found on cache. Did you forget to fetch ${snapdir_id} from the store?" >&2
 				return 1
 			}
 			local parent_dir
@@ -687,44 +687,44 @@ snapdir_defaults() {
 _snapdir_get_fetch_snapdir_manifest_command() {
 	set -eEuo pipefail
 	local snapdir_id="${_SNAPDIR_ID:?Missing --id option}"
-	local remote="${_SNAPDIR_REMOTE:?Missing --remote option}"
-	local remote_adapter_bin_path
-	remote_adapter_bin_path=$(_snapdir_get_remote_adapter_bin_path "${remote}")
-	$remote_adapter_bin_path get-manifest-command --id "${snapdir_id}" --remote "${remote}"
+	local store="${_SNAPDIR_STORE:?Missing --store option}"
+	local store_store_bin_path
+	store_store_bin_path=$(_snapdir_get_store_store_bin_path "${store}")
+	$store_store_bin_path get-manifest-command --id "${snapdir_id}" --store "${store}"
 }
 
 _snapdir_get_fetch_snapdir_files_command() {
 	# reads the manifest from stdin
 	set -eEuo pipefail
 	local snapdir_id="${_SNAPDIR_ID:?Missing --id option}"
-	local remote="${_SNAPDIR_REMOTE:?Missing --remote option}"
+	local store="${_SNAPDIR_STORE:?Missing --store option}"
 	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
-	local remote_adapter_bin_path
-	remote_adapter_bin_path=$(_snapdir_get_remote_adapter_bin_path "${remote}")
-	$remote_adapter_bin_path get-fetch-files-command --id "${snapdir_id}" --remote "${remote}" --cache-dir "${cache_dir}"
+	local store_store_bin_path
+	store_store_bin_path=$(_snapdir_get_store_store_bin_path "${store}")
+	$store_store_bin_path get-fetch-files-command --id "${snapdir_id}" --store "${store}" --cache-dir "${cache_dir}"
 }
 
-_snapdir_get_remote_adapter_bin_path() {
-	local remote_protocol
-	local remote="${1:?Missing remote}"
-	_snapdir_export_remote_vars
-	remote_protocol="$(echo "${remote}" | cut -d':' -f1)"
-	local remote_adapter_bin_path
+_snapdir_get_store_store_bin_path() {
+	local store_protocol
+	local store="${1:?Missing store}"
+	_snapdir_export_store_vars
+	store_protocol="$(echo "${store}" | cut -d':' -f1)"
+	local store_store_bin_path
 	local explicit_bin_path
-	explicit_bin_path="_SNAPDIR_${remote_protocol^^}_ADAPTER_BIN_PATH"
+	explicit_bin_path="_SNAPDIR_${store_protocol^^}_store_BIN_PATH"
 	# if explicit_bin_path is defined, use it
 	if [[ ${!explicit_bin_path:-""} != "" ]] && test -f "${!explicit_bin_path}"; then
 		echo "${!explicit_bin_path}"
 		return 0
 	fi
-	remote_adapter_bin_path=$(which "snapdir-${remote_protocol}-adapter" || echo "" 2>/dev/null)
-	if [[ ${remote_adapter_bin_path} == "" ]]; then
-		if test -f "${_SNAPDIR_BIN_DIR}/snapdir-${remote_protocol}-adapter"; then
-			echo "${_SNAPDIR_BIN_DIR}/snapdir-${remote_protocol}-adapter"
+	store_store_bin_path=$(which "snapdir-${store_protocol}-store" || echo "" 2>/dev/null)
+	if [[ ${store_store_bin_path} == "" ]]; then
+		if test -f "${_SNAPDIR_BIN_DIR}/snapdir-${store_protocol}-store"; then
+			echo "${_SNAPDIR_BIN_DIR}/snapdir-${store_protocol}-store"
 			return 0
 		fi
-		echo "Unsupported remote protocol: ${remote_protocol}" >&2
-		echo "No 'snapdir-${remote_protocol}-adapter' could be found on your PATH" >&2
+		echo "Unsupported store protocol: ${store_protocol}" >&2
+		echo "No 'snapdir-${store_protocol}-store' could be found on your PATH" >&2
 		return 1
 	fi
 }
@@ -732,13 +732,13 @@ _snapdir_get_remote_adapter_bin_path() {
 _snapdir_get_push_command() {
 	set -eEuo pipefail
 	local staging_directory="${1:?Missing staging directory}"
-	local remote="${2:?Missing remote}"
-	local remote_adapter_bin_path
-	remote_adapter_bin_path=$(_snapdir_get_remote_adapter_bin_path "${remote}")
-	$remote_adapter_bin_path get-push-command \
+	local store="${2:?Missing store}"
+	local store_store_bin_path
+	store_store_bin_path=$(_snapdir_get_store_store_bin_path "${store}")
+	$store_store_bin_path get-push-command \
 		--id "${_SNAPDIR_ID}" \
 		--staging-dir "${staging_directory}" \
-		--remote "${remote}"
+		--store "${store}"
 }
 
 _snapdir_get_manifest_rel_path() {
@@ -858,7 +858,7 @@ _snapdir_export_env_defaults() {
 	_SNAPDIR_BIN_DIR="$(dirname "${_SNAPDIR_BIN_PATH}")"
 
 	_snapdir_set_manifest_from_stdin_or_id
-	_snapdir_export_remote_vars
+	_snapdir_export_store_vars
 
 	# If _SNAPDIR_DEBUG=true we'll set -x for every command.
 	if [[ ${_SNAPDIR_DEBUG:-""} == "true" ]]; then
@@ -879,17 +879,17 @@ _snapdir_tmp_id() {
 	echo "${RANDOM:-""}$(date +%s%N).tmp"
 }
 
-_snapdir_export_remote_vars() {
+_snapdir_export_store_vars() {
 	set -eEuo pipefail
-	if [[ ${_SNAPDIR_REMOTE:-""} != "" ]]; then
-		# _SNAPDIR_REMOTE is formatted as protocol://bucket/base/dir
-		if [[ ${_SNAPDIR_REMOTE_BUCKET:-""} == "" ]]; then
-			_SNAPDIR_REMOTE_BUCKET="$(echo "$_SNAPDIR_REMOTE" | cut -d'/' -f3)"
-			export _SNAPDIR_REMOTE_BUCKET
+	if [[ ${_SNAPDIR_STORE:-""} != "" ]]; then
+		# _SNAPDIR_STORE is formatted as protocol://bucket/base/dir
+		if [[ ${_SNAPDIR_STORE_BUCKET:-""} == "" ]]; then
+			_SNAPDIR_STORE_BUCKET="$(echo "$_SNAPDIR_STORE" | cut -d'/' -f3)"
+			export _SNAPDIR_STORE_BUCKET
 		fi
-		if [[ ${_SNAPDIR_REMOTE_BASE_DIR:-""} == "" ]]; then
-			_SNAPDIR_REMOTE_BASE_DIR="$(echo "$_SNAPDIR_REMOTE" | cut -d'/' -f4-)"
-			export _SNAPDIR_REMOTE_BASE_DIR
+		if [[ ${_SNAPDIR_STORE_BASE_DIR:-""} == "" ]]; then
+			_SNAPDIR_STORE_BASE_DIR="$(echo "$_SNAPDIR_STORE" | cut -d'/' -f4-)"
+			export _SNAPDIR_STORE_BASE_DIR
 		fi
 	fi
 }
@@ -920,7 +920,7 @@ _snapdir_check_integrity() {
 	local manifest_cache_path="${cache_dir}/${manifest_rel_path}"
 
 	test -f "${manifest_cache_path}" || {
-		echo "Manifest not found locally. Did you forget to fetch ${snapdir_id} from the remote?" >&2
+		echo "Manifest not found locally. Did you forget to fetch ${snapdir_id} from the store?" >&2
 		return 1
 	}
 

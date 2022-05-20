@@ -71,7 +71,7 @@ snapdir_test_run() {
 	SECONDS=0
 	"$dir/snapdir-manifest" test
 	"$dir/snapdir" test
-	"$dir/snapdir-file-adapter" test
+	"$dir/snapdir-file-store" test
 	echo "# test suite completed in ${SECONDS} seconds"
 }
 
