@@ -20,6 +20,12 @@ jobs:
           sudo apt-get install -y shellcheck shfmt
       - name: Check out the repo
         uses: actions/checkout@v3
+      - name: shellcheck ./snapdir-manifest
+        run: |
+          shellcheck ./snapdir-manifest
+      - name: checking ./snapdir-manifest format
+        run: |
+          shfmt -w -s ./snapdir-manifest
       - name: shellcheck ./snapdir
         run: |
           shellcheck ./snapdir
@@ -49,6 +55,9 @@ jobs:
           sudo mv dirfest /usr/local/bin/
       - name: Check out the repo
         uses: actions/checkout@v3
+      - name: Test snapdir-manifest
+        run: |
+          ./snapdir-manifest test
       - name: Test snapdir
         run: |
           ./snapdir test
@@ -69,6 +78,9 @@ jobs:
           sudo mv dirfest /usr/local/bin/
       - name: Check out the repo
         uses: actions/checkout@v3
+      - name: Test snapdir-manifest
+        run: |
+          ./snapdir-manifest test
       - name: Test snapdir
         run: |
           ./snapdir test

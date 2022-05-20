@@ -1,0 +1,856 @@
+#!/usr/bin/env bash
+
+# snapdir-manifest 0.1.1
+#
+# Description:
+#
+#     Generate authenticated directory structure manifests using Merkle trees.
+#
+# ## Usage
+#
+#     snapdir-manifest [OPTIONS] [SUBCOMMAND] [ARGUMENTS]
+#
+# ### Options
+#
+#     --absolute               Uses absolute paths.
+#     --cache                  Enables caching.
+#     --cache-dir=DIR          Sets cache directory.
+#     --cache-id=ID            Ensures the cache has a specific
+#                              ID before trusting it.
+#     --checksum-bin=NAME      Sets the name of the checksum
+#                              binary (default: b3sum).
+#     --debug                  Prints debug messages.
+#     --exclude=PATTERN        Excludes paths matching PATTERN.
+#                              set to "system" to default to
+#                              $SNAPDIR_MANIFEST_EXCLUDE
+#     -h, --help               Prints help message.
+#     --no-follow              Prevents following symlinks.
+#     --verbose                Prints verbose messages.
+#     -v, --version            Prints version.
+#
+# ### Subcommands
+#
+#     cache-id           Gets the id for the cache.
+#     flush-cache        Flushes the cache.
+#     defaults           Prints default options and env variables.
+#     generate <PATH>    Generates a manifest for a directory (default
+#                        when no other sub-command is provided).
+#     help               Prints help information.
+#     test               Tests the snapdir-manifest module.
+#     version            Prints the version.
+#
+# ### Arguments
+#
+#     <PATH>    The path to the directory to generate a manifest.
+#
+# ### Environment variables
+#
+#     SNAPDIR_MANIFEST_BIN_PATH   Test-only path to a snapdir-manifest binary.
+#     SNAPDIR_MANIFEST_CONTEXT    Context string for deriving key in keyed mode.
+#                           This only works with b3sum.
+#     SNAPDIR_MANIFEST_EXCLUDE    Default grep -v rule for --exclude="system".
+#
+# ### Examples
+#
+#     # generates a manifest for the current directory
+#     snapdir-manifest ./
+#
+#     # excludes files and directories matching the pattern
+#     snapdir-manifest --exclude=".git|.DS_Store" ./some-dir/
+#
+#     # uses cache and shows details
+#     snapdir-manifest --cache --verbose ./
+#
+#     # gets the integrity checksum for the cache directory
+#     snapdir-manifest cache-id
+#
+#     # uses the cache integrity checksum to verify the cache
+#     trusted_cache_id=$(snapdir-manifest cache-id)
+#     snapdir-manifest --cache --cache-id "$trusted_cache_id" ./
+#
+#     # generates a manifest for a whole system, excluding system files
+#     snapdir-manifest --absolute --exclude=system --no-follow /
+#
+# ## Manifest specification
+#
+# The manifest is a plain text file UTF-8 encoded list of files and
+# directories sorted in their paths. It contains the following columns
+# separated by spaces:
+#
+#     PATH_TYPE PERMISSIONS CHECKSUM SIZE PATH
+#
+# Where:
+#
+# - *`PATH_TYPE`*: "*F*" for files, "*D*" for directories. Symbolic
+#   links include the type of the target.
+# - *`PERMISSIONS`*: The permissions of the file or directory in octal.
+# - *`CHECKSUM`*: The checksum of the file or directory, according to
+#   the `--checksum-binary=<name>` option. By default, `b3sum`. For
+#   directories, we sort the checksum of the objects in the directory
+#   and then concatenate them without spaces or newlines between them to
+#   compute the checksum. Check the manual example below.
+# - *`SIZE`*: The size of the file or directory contents in bytes. It
+#   does not include the size for the directory metadata as reported by
+#   `stat`; it is only the sum of all the elements in the directory.
+# - *`PATH`*: The file or directory path. When using `--absolute` will
+#   resolve to the absolute path.
+#
+# ### Source code and issues
+#
+# https://github.com/bermi/snapdir-manifest
+#
+# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
+
+set -eEuo pipefail
+IFS=$'\n\t'
+
+#     #    #    #     # ### ####### #######  #####  #######
+##   ##   # #   ##    #  #  #       #       #     #    #
+# # # #  #   #  # #   #  #  #       #       #          #
+#  #  # #     # #  #  #  #  #####   #####    #####     #
+#     # ####### #   # #  #  #       #             #    #
+#     # #     # #    ##  #  #       #       #     #    #
+#     # #     # #     # ### #       #######  #####     #
+
+snapdir_manifest_generate() {
+	# Generate a manifest for a directory.
+	set -eEuo pipefail
+	local root_dir
+	# get absolute path to root_dir
+	root_dir="$(_snapdir_manifest_readlink "${1:-$(pwd)}")"
+	local absolute="${_SNAPDIR_MANIFEST_ABSOLUTE:-false}"
+	local dirs
+	dirs=$(_snapdir_manifest_find_dirs_with_level "$root_dir")
+	if [[ $root_dir == "/" ]]; then
+		absolute="true"
+		# handle special case where / is level 0
+		# replacing the last line with '0 /'
+		dirs="$(echo "$dirs" | sed -E 's|^1 /$|0 /|')"
+	fi
+
+	local result=""
+	local dir_entry=""
+	local dir_checksum
+	local dir_checksums=""
+	local dir_member_size
+	local files_in_dir_manifest=""
+	local dir_manifest=""
+	local _level_accumulator=""
+	local level=0
+	local _previous_level=0
+	local _previous_level_dir_memory=""
+	local candidate_dirs=""
+
+	for dir in $dirs; do
+		level=${dir%% *}
+		# extract everything on the left side of the first space from dir
+		dir=${dir#* }
+		if [[ $level != "$_previous_level" ]]; then
+			candidate_dirs="$_previous_level_dir_memory"
+			_previous_level_dir_memory=""
+		fi
+
+		files_in_dir_manifest=$(_snapdir_manifest_for_files_in_dir "${dir}" || echo "")
+		dir_manifest_candidates="$candidate_dirs
+$files_in_dir_manifest"
+		dir_manifest=$(echo -n "$dir_manifest_candidates" | grep -E "^(D|F) [0-9]+ [a-f0-9]+ [0-9]+ (${dir%/}/[^/]+/?|/)$" || echo "")
+		dir_checksums="$(echo "$dir_manifest" | cut -d' ' -f3 | sort | tr -d '\n')"
+		dir_checksum="$(echo -n "$dir_checksums" | _snapdir_manifest_checksum)"
+		# sum the size of all the files in the directory
+		dir_member_size="$(_snapdir_manifest_sum_lines "$(echo "$dir_manifest" | cut -d' ' -f4)")"
+		if [[ ${_SNAPDIR_MANIFEST_VERBOSE} == "true" ]]; then
+			_snapdir_manifest_log "directory=$dir checksum=$dir_checksum sources=\"$dir_checksums\" size=${dir_member_size} path-sources=\"$(echo "$dir_manifest" | cut -d' ' -f5 | sort | tr '\n' ' ' | sed 's/ $//')\" checksum=$_SNAPDIR_MANIFEST_CHECKSUM_BIN"
+		fi
+
+		dir_entry="$(_snapdir_manifest_format_dir_manifest_line "${dir}" "${dir_checksum}" "${dir_member_size}")"
+
+		result="$_level_accumulator
+$files_in_dir_manifest
+$dir_entry"
+
+		_level_accumulator="$dir_entry
+$files_in_dir_manifest
+$_level_accumulator"
+		_previous_level_dir_memory="$_previous_level_dir_memory
+$dir_entry"
+		_previous_level=$level
+	done
+
+	if [[ $absolute == "false" ]]; then
+		# Remove empty lines from the result and sort by file name
+		echo "$result" | grep -v '^$' | sed -E "s| \.?${root_dir}| .|" | sort -k5
+	else
+		# Remove empty lines from the result and sort by file name
+		echo "$result" | grep -v '^$' | sort -k5
+	fi
+
+}
+
+######  #     # #     #
+#     # #     # ##    #
+#     # #     # # #   #
+######  #     # #  #  #
+#   #   #     # #   # #
+#    #  #     # #    ##
+#     #  #####  #     #
+
+snapdir_manifest_run() (
+	# Using ( for the function body instead of { to run in a subshell
+	# in order to avoid polluting the environment with helper functions
+	# You can call this function when sourcing this script if you want to expose it as
+	# a sub-command
+
+	set -eEuo pipefail
+	local subcommands="generate|cache-id|defaults|flush-cache|test|version"
+	local boolean_args="absolute|cache|debug|no_follow|verbose"
+	local value_required_args="exclude|cache_dir|cache_id|checksum_bin"
+	local legal_argument_keys="${boolean_args}|${value_required_args}"
+
+	_snapdir_manifest_parse_argument_key() {
+		sed -E 's|^--?|_SNAPDIR_MANIFEST_|; s|-|_|g;' <<<"${1^^}"
+	}
+
+	_snapdir_manifest_validate_option() {
+		set -eEuo pipefail
+		grep -q -E "^_SNAPDIR_MANIFEST_(${legal_argument_keys^^})$" <<<"${1}" || {
+			echo "error: Unknown option: ${1//_SNAPDIR_MANIFEST_/}" | tr '[:upper:]' '[:lower:]' >&2
+			echo "Valid options are: --(${legal_argument_keys})" >&2
+			exit 1
+		}
+	}
+
+	_snapdir_manifest_help() {
+		_snapdir_manifest_export_env_defaults
+		sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_MANIFEST_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+		exit 0
+	}
+
+	local command="generate"
+	local positional_args=""
+	local key
+	local value
+	local is_boolean
+	local explicit_default_command=false
+	local subcommand_candidate="${1:-"$command"}"
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		generate | cache-id | test | flush-cache | defaults)
+			# calling 'snapdir-manifest manifest test' should run the manifest
+			# on the test directory instead of running the test command
+			if [[ $explicit_default_command == "true" ]]; then
+				positional_args="${positional_args}${1} "
+			else
+				command="$1"
+			fi
+			if [[ $1 == "generate" ]]; then
+				explicit_default_command=true
+			fi
+			shift
+			;;
+		help | -h | --help)
+			_snapdir_manifest_help
+			;;
+		version | -v | --version)
+			echo "${_SNAPDIR_MANIFEST_VERSION}"
+			exit 0
+			;;
+		# export all --*=* flags as _SNAPDIR_MANIFEST_* env vars
+		--*=* | -*=*)
+			key="$(_snapdir_manifest_parse_argument_key "${1%%=*}")"
+			_snapdir_manifest_validate_option "$key"
+			export "$key"="${1#*=}"
+			shift
+			;;
+		# export all --* * flags as _SNAPDIR_MANIFEST_* env vars
+		--*)
+			is_boolean=$(grep -q -E "^--?(${boolean_args})$" <<<"${1}" && echo true || echo false)
+			key="$(_snapdir_manifest_parse_argument_key "${1}")"
+			_snapdir_manifest_validate_option "$key"
+			shift
+			value="${1:-true}"
+			# if key is in boolean_args
+			if [[ ${is_boolean} == "false" ]] && [[ ${value:0:1} != "-" ]]; then
+				# since this might be the last arg, this will always be truthy
+				shift || true
+			else
+				value="true"
+			fi
+			export "${key}"="${value}"
+			;;
+		*)
+			positional_args="${positional_args}${1} "
+			shift
+			;;
+		esac
+	done
+
+	# if command is not set, show help
+	if [ -z "$command" ]; then
+		echo "Uknown command '$subcommand_candidate'. Valid commands are: ${subcommands}" >&2
+		echo "Try: ${_SNAPDIR_MANIFEST} --help" >&2
+		return 1
+	fi
+
+	_snapdir_manifest_export_env_defaults
+	# env | grep _snapdir_manifest_ | sort
+	eval "snapdir_manifest_${command//-/_} $positional_args ${*:2}"
+)
+
+####### #       #     #  #####  #     #     #####     #     #####  #     # #######
+#       #       #     # #     # #     #    #     #   # #   #     # #     # #
+#       #       #     # #       #     #    #        #   #  #       #     # #
+#####   #       #     #  #####  #######    #       #     # #       ####### #####
+#       #       #     #       # #     #    #       ####### #       #     # #
+#       #       #     # #     # #     #    #     # #     # #     # #     # #
+#       #######  #####   #####  #     #     #####  #     #  #####  #     # #######
+
+snapdir_manifest_flush_cache() {
+	set -eEuo pipefail
+	local cache_dir="${_SNAPDIR_MANIFEST_CACHE_DIR:?Missing --cache-dir option}"
+	_snapdir_manifest_log "Flushing cache_dir: $cache_dir"
+	rm -rf "${cache_dir}"
+}
+
+#        #####     #     #####  #     # #######    ### ######
+#       #     #   # #   #     # #     # #           #  #     #
+#       #        #   #  #       #     # #           #  #     #
+#       #       #     # #       ####### #####       #  #     #
+#       #       ####### #       #     # #           #  #     #
+#       #     # #     # #     # #     # #           #  #     #
+#        #####  #     #  #####  #     # #######    ### ######
+
+snapdir_manifest_cache_id() {
+	set -eEuo pipefail
+	local cache_dir="${_SNAPDIR_MANIFEST_CACHE_DIR:?Missing --cache-dir option}"
+	_snapdir_manifest_log "Checking cache_dir: $cache_dir"
+	{
+		echo -n "${SNAPDIR_MANIFEST_CONTEXT:-""}"
+		$_SNAPDIR_MANIFEST_CHECKSUM_BIN "${cache_dir}"/* 2>/dev/null
+	} | _snapdir_manifest_checksum
+}
+
+######  ####### #######    #    #     # #       #######  #####
+#     # #       #         # #   #     # #          #    #     #
+#     # #       #        #   #  #     # #          #    #
+#     # #####   #####   #     # #     # #          #     #####
+#     # #       #       ####### #     # #          #          #
+#     # #       #       #     # #     # #          #    #     #
+######  ####### #       #     #  #####  #######    #     #####
+
+snapdir_manifest_defaults() {
+	env | grep _SNAPDIR_MANIFEST | grep -v VERSION | sed -E 's|^_SNAPDIR_MANIFEST_|--|; s|_|-|g;' | tr '[:upper:]' '[:lower:]' | sort
+	echo "SNAPDIR_MANIFEST_BIN_PATH=${SNAPDIR_MANIFEST_BIN_PATH:-$_SNAPDIR_MANIFEST_BIN_PATH}"
+	echo "SNAPDIR_MANIFEST_CONTEXT=${SNAPDIR_MANIFEST_CONTEXT:-""}"
+	echo "SNAPDIR_MANIFEST_EXCLUDE=${SNAPDIR_MANIFEST_EXCLUDE:-$_SNAPDIR_MANIFEST_EXCLUDE}"
+}
+
+######  ######  ### #     #    #    ####### #######    ####### #     #  #####
+#     # #     #  #  #     #   # #      #    #          #       ##    # #     #
+#     # #     #  #  #     #  #   #     #    #          #       # #   # #
+######  ######   #  #     # #     #    #    #####      #####   #  #  #  #####
+#       #   #    #   #   #  #######    #    #          #       #   # #       #
+#       #    #   #    # #   #     #    #    #          #       #    ## #     #
+#       #     # ###    #    #     #    #    #######    #       #     #  #####
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+
+	# ensure at least bash 5.0 is available
+	if [[ ${BASH_VERSION:0:1} -lt "5" ]]; then
+		echo "Bash version 5.0 or higher is required. You have: ${BASH_VERSION}" >&2
+		exit 1
+	fi
+
+	_snapdir_manifest_readlink() {
+		echo "$(cd "$(dirname "$1")" || echo "" && pwd)/$(basename "$1")"
+	}
+
+	_snapdir_manifest_format_dir_manifest_line() {
+		local dir="$1"
+		local dir_checksum="$2"
+		local dir_member_size="$3"
+		echo "D $(stat -f '%A' "$dir") ${dir_checksum} ${dir_member_size} ${dir%/}/"
+	}
+	_snapdir_manifest_format_file_manifest_line() {
+		local file="$1"
+		local file_checksum="$2"
+		stat -f "F %A ${file_checksum} %z $file" "$file"
+	}
+	_snapdir_manifest_get_path_for_file_cache() {
+		set -eEuo pipefail
+		local file_path=$1
+		echo "$_SNAPDIR_MANIFEST_CACHE_DIR/$(echo "${file_path} ${SNAPDIR_MANIFEST_CONTEXT:-""}$(stat -f '%i %A %z %Sm' "$file_path")" | _snapdir_manifest_checksum)"
+	}
+else
+	shopt -s inherit_errexit
+
+	_snapdir_manifest_readlink() {
+		readlink -f "$1"
+	}
+	_snapdir_manifest_format_dir_manifest_line() {
+		local dir="$1"
+		local dir_checksum="$2"
+		local dir_member_size="$3"
+		stat -c "D %a ${dir_checksum} ${dir_member_size} ${dir%/}/" "$dir"
+	}
+	_snapdir_manifest_format_file_manifest_line() {
+		local file="$1"
+		local file_checksum="$2"
+		stat -c "F %a ${file_checksum} %s $file" "$file"
+	}
+	_snapdir_manifest_get_path_for_file_cache() {
+		set -eEuo pipefail
+		local file_path=$1
+		echo "$_SNAPDIR_MANIFEST_CACHE_DIR/$(echo "$file_path $(stat -c '%i %a %s %Y' "$file_path")" | _snapdir_manifest_checksum)"
+	}
+fi
+
+_snapdir_manifest_find_dirs_with_level() {
+	set -eEuo pipefail
+	_snapdir_manifest_find_dirs "$1" | _snapdir_manifest_add_dir_level | sort -nrk1
+}
+
+_snapdir_manifest_define_find_fn() {
+	set -eEuo pipefail
+	_snapdir_manifest_find_flags="-L"
+	if [[ ${_SNAPDIR_MANIFEST_NO_FOLLOW:-"false"} == "true" ]]; then
+		_snapdir_manifest_find_flags=""
+	fi
+	if [[ ${_SNAPDIR_MANIFEST_EXCLUDE:-""} != "" ]]; then
+		_snapdir_manifest_find_dirs() {
+			set -eEuo pipefail
+			# shellcheck disable=SC2086
+			find $_snapdir_manifest_find_flags "$1" -type d | grep -E -v "$_SNAPDIR_MANIFEST_EXCLUDE"
+		}
+		_snapdir_manifest_find_files() {
+			set -eEuo pipefail
+			# shellcheck disable=SC2086
+			find $_snapdir_manifest_find_flags "$1" -maxdepth 1 -type f | grep -E -v "$_SNAPDIR_MANIFEST_EXCLUDE"
+		}
+	else
+		_snapdir_manifest_find_dirs() {
+			set -eEuo pipefail
+			# shellcheck disable=SC2086
+			find $_snapdir_manifest_find_flags "$1" -type d
+		}
+		_snapdir_manifest_find_files() {
+			set -eEuo pipefail
+			# shellcheck disable=SC2086
+			find $_snapdir_manifest_find_flags "$1" -maxdepth 1 -type f
+		}
+	fi
+}
+
+_snapdir_manifest_add_dir_level() {
+	set -eEuo pipefail
+	# read stdin and output "level dir"
+	awk -F"/" '{print NF-1, $0}'
+}
+
+_snapdir_manifest_sum_lines() {
+	local sum=0
+	for number in $1; do
+		sum=$((sum + number))
+	done
+	echo $sum
+}
+
+_snapdir_manifest_log() {
+	if [[ ${_SNAPDIR_MANIFEST_VERBOSE} == "true" ]]; then
+		echo "[${_SNAPDIR_MANIFEST}] $1" >&2
+	fi
+}
+
+_snapdir_manifest_file_manifest() {
+	# returns a line of the form:
+	# directory_depth permission_bits checksum size filename
+	set -eEuo pipefail
+	local checksum
+	SECONDS=0
+	_snapdir_manifest_log "computing checksum for: $1"
+	local cache_path
+	if [[ ${_SNAPDIR_MANIFEST_CACHE} == "true" ]]; then
+		cache_path="$(_snapdir_manifest_get_path_for_file_cache "$1")"
+		if ! test -f "$cache_path"; then
+			_snapdir_manifest_log "cache miss for $1"
+			checksum=$(_snapdir_manifest_checksum "$1")
+			_snapdir_manifest_format_file_manifest_line "$1" "$checksum" | tee "$cache_path"
+		else
+			_snapdir_manifest_log "cache hit for $1"
+			cat "$cache_path"
+		fi
+	else
+		checksum=$(_snapdir_manifest_checksum "$1")
+		_snapdir_manifest_format_file_manifest_line "$1" "$checksum"
+	fi
+	_snapdir_manifest_log "$1 checksum duration=${SECONDS}s"
+}
+
+_snapdir_manifest_for_files_in_dir() {
+	set -eEuo pipefail
+	local dir="$1"
+	_snapdir_manifest_log "_snapdir_manifest_for_files_in_dir '${dir}'"
+	local files
+	files=$(_snapdir_manifest_find_files "$1")
+	if [[ $files == "" ]]; then
+		return
+	fi
+	# find only files directly in the directory
+	# Get manifest checksums for files in the background
+	# only files directly in the directory are included in the manifest
+	while read -r file; do
+		_snapdir_manifest_log "_snapdir_manifest_for_files_in_dir '${dir}' '${file}'"
+		# run the command in the background but send stdout to stderr in the foreground
+		_snapdir_manifest_file_manifest "$file" &
+	done <<<"$files"
+	wait
+}
+
+_snapdir_manifest_define_checksum_fn() {
+	if [[ ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} == "b3sum" ]]; then
+		if [[ ${SNAPDIR_MANIFEST_CONTEXT:-""} == "" ]]; then
+			_snapdir_manifest_checksum() {
+				if [[ ${1:-""} == "" ]]; then
+					b3sum --no-names
+				else
+					b3sum --no-names "$1"
+				fi
+			}
+		else
+			_snapdir_manifest_checksum() {
+				if [[ ${1:-""} == "" ]]; then
+					b3sum --derive-key="${SNAPDIR_MANIFEST_CONTEXT}" --no-names
+				else
+					b3sum --derive-key="${SNAPDIR_MANIFEST_CONTEXT}" --no-names "$1"
+				fi
+			}
+		fi
+	else
+		_snapdir_manifest_checksum() {
+			if [[ ${1:-""} == "" ]]; then
+				$_SNAPDIR_MANIFEST_CHECKSUM_BIN | cut -d' ' -f1
+			else
+				$_SNAPDIR_MANIFEST_CHECKSUM_BIN "$1" | cut -d' ' -f1
+			fi
+		}
+	fi
+}
+
+_snapdir_manifest_export_env_defaults() {
+	# Environment variables
+	set -eEuo pipefail
+
+	_SNAPDIR_MANIFEST_CHECKSUM_BIN="${_SNAPDIR_MANIFEST_CHECKSUM_BIN:-b3sum}"
+	which "$_SNAPDIR_MANIFEST_CHECKSUM_BIN" >/dev/null || {
+		echo "Could not find '$_SNAPDIR_MANIFEST_CHECKSUM_BIN', please install it or specify an alternative --checksum-bin" >&2
+		exit 1
+	}
+	_snapdir_manifest_define_checksum_fn
+
+	_SNAPDIR_MANIFEST="snapdir-manifest"
+	if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+		_SNAPDIR_MANIFEST="$(basename "${BASH_SOURCE[0]}")"
+	fi
+	_SNAPDIR_MANIFEST_VERSION="0.1.1"
+
+	_SNAPDIR_MANIFEST_CACHE=${_SNAPDIR_MANIFEST_CACHE:-false}
+	_SNAPDIR_MANIFEST_CACHE_DIR="${_SNAPDIR_MANIFEST_CACHE_DIR:-"${HOME:-~}/.cache/${_SNAPDIR_MANIFEST}/"}"
+	_SNAPDIR_MANIFEST_VERBOSE=${_SNAPDIR_MANIFEST_VERBOSE:-"false"}
+	_SNAPDIR_MANIFEST_CACHE_ID="${_SNAPDIR_MANIFEST_CACHE_ID:-""}"
+
+	# global exclude from environment variable SNAPDIR_MANIFEST_EXCLUDE
+	SNAPDIR_MANIFEST_EXCLUDE="${SNAPDIR_MANIFEST_EXCLUDE:-"^(/vscode/|/dev/|/proc/|/sys/|/tmp/|/var/run/|/run/|/mnt/|/media/|/lost+found/|/var/snap/lxd/common/ns/shmounts/|/var/snap/lxd/common/ns/mntns/|/var/lib/lxcfs/|${HOME:-~}/.cache/|${_SNAPDIR_MANIFEST_CACHE_DIR})"}"
+
+	# user-defined exclude from --exclude
+	_SNAPDIR_MANIFEST_EXCLUDE="${_SNAPDIR_MANIFEST_EXCLUDE:-""}"
+	if [[ ${_SNAPDIR_MANIFEST_EXCLUDE} == "system" ]]; then
+		_SNAPDIR_MANIFEST_EXCLUDE="${SNAPDIR_MANIFEST_EXCLUDE}"
+		_SNAPDIR_MANIFEST_NO_FOLLOW=true
+	fi
+
+	export _SNAPDIR_MANIFEST_CACHE_DIR \
+		_SNAPDIR_MANIFEST_CACHE_ID \
+		_SNAPDIR_MANIFEST_DEBUG \
+		_SNAPDIR_MANIFEST_EXCLUDE \
+		SNAPDIR_MANIFEST_EXCLUDE \
+		_SNAPDIR_MANIFEST_NO_FOLLOW \
+		_SNAPDIR_MANIFEST_CHECKSUM_BIN \
+		_SNAPDIR_MANIFEST_VERBOSE \
+		_SNAPDIR_MANIFEST_VERSION
+
+	# If _SNAPDIR_MANIFEST_DEBUG=true we'll set -x for every command.
+	if [[ ${_SNAPDIR_MANIFEST_DEBUG:-""} == "true" ]]; then
+		set -x
+		_SNAPDIR_MANIFEST_VERBOSE=true
+		export _SNAPDIR_MANIFEST_VERBOSE
+	fi
+
+	if [[ ${_SNAPDIR_MANIFEST_VERBOSE} == "true" ]]; then
+		_snapdir_manifest_log "settings: $(env | grep '^_SNAPDIR_MANIFEST_' | tr '\n' ' ')"
+	fi
+
+	_snapdir_manifest_define_find_fn
+	_snapdir_manifest_ensure_cache
+}
+
+_snapdir_manifest_ensure_cache() {
+	set -eEuo pipefail
+	if [[ ${_SNAPDIR_MANIFEST_CACHE} == "true" ]]; then
+		mkdir -p "${_SNAPDIR_MANIFEST_CACHE_DIR}"
+		# If a _SNAPDIR_MANIFEST_CACHE_ID is provided compare it with the current cache id
+		if [[ ${_SNAPDIR_MANIFEST_CACHE_ID} != "" ]]; then
+			local cache_id
+			cache_id="$(snapdir_manifest_cache_id "${_SNAPDIR_MANIFEST_CACHE_DIR}")"
+			test "${cache_id}" = "${_SNAPDIR_MANIFEST_CACHE_ID}" || {
+				echo "Cache id '${_SNAPDIR_MANIFEST_CACHE_ID}' does not match the current cache id '${cache_id}'" >&2
+				echo "Remember to capture your cache id with '${_SNAPDIR_MANIFEST} cache-id' after running with the --cache flag." >&2
+				exit 1
+			}
+		fi
+	fi
+}
+
+#       ####### #######  #####  #######  #####
+#          #    #       #     #    #    #     #
+#          #    #       #          #    #
+#          #    #####    #####     #     #####
+#          #    #             #    #          #
+#          #    #       #     #    #    #     #
+#          #    #######  #####     #     #####
+
+snapdir_manifest_test() (
+	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	set -eEuo pipefail
+
+	# Allow testing other implementations of snapdir-manifest against these tests
+	local snapdir_manifest
+	snapdir_manifest="${SNAPDIR_MANIFEST_BIN_PATH:-$_SNAPDIR_MANIFEST_BIN_PATH}"
+
+	SECONDS=0
+	echo "# running snapdir-manifest tests using ${_SNAPDIR_MANIFEST_CHECKSUM_BIN}"
+
+	local expected="${_SNAPDIR_MANIFEST_CHECKSUM_BIN} is missing test fixtures"
+	local expected_manifest="${expected}"
+	local expected_excluding_a="$expected"
+	local expected_absolute="$expected"
+	local expected_secret="$expected"
+	local expected_cached="$expected"
+
+	if [[ ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} == "b3sum" ]]; then
+		expected_manifest="D 700 207d090daf06217a0920593ee642a90fcad85b9dccec02725e85311005f64327 43 ./
+D 700 ed23cfd2037d23cf8c6b67497425e7a06d5e40ea2bd8e43fc434006022dafe86 21 ./a/
+F 600 3c9cb8b8c8f3588f8e59e18d284330b0a951be644fbef2b9784b56e15d1c6096 4 ./a/a1f
+D 700 ee795476bff6c1816b4c7558a74ee0b44ec600c3cde6b02564508f67d536a656 17 ./a/aa/
+F 600 a2951028421deef48d1ba185f4c497c2d986f1dd76079baf2f5eb8479f132b5a 5 ./a/aa/aa1f
+D 700 8aed4caf45b22aa4c8a195945136e3a01f77864e91fabe2d9272feeee87ae334 12 ./a/aa/aaa/
+F 600 5cfee4fb4074748633b4ccbddb6b184a9b5e2f5ce74df6d2803f5fea0392a197 6 ./a/aa/aaa/aaa1f
+F 600 3791f11a017feedffd24c2656e18d5c4ca9d6c404c8f40ccc511b6351c8575a6 6 ./a/aa/aaa/aaa2f
+D 700 9a8b0e35c000df69893648b91d15cc30ab88ae5a40af48228caf5fa443dafc9b 12 ./b/
+D 700 d41c2090167e6f546a510f0da98d8a8355d6bd2b61666644604c73b3a8f5b5d9 12 ./b/bb/
+D 700 3b9023fa454aa22466feeb8cbf55a2c764dd79de0e93c9a793e8b54caec227da 12 ./b/bb/bbb/
+F 600 8d18b7f3aabbef192a524fa2549d1d36b48c9030d234c9bdf87caa267fb09933 6 ./b/bb/bbb/bbb1f
+F 600 2e16e172b6e337325f271d4eae00bc1ea20e41609ef78665710cada1477005cc 6 ./b/bb/bbb/bbb2f
+D 700 15eb2657c1e6f5a24023c10429bb6f1b7d81b2cc2057eedee2192fbf3e7b892c 6 ./c/
+D 700 e711f4e76ae9b3e25ad9a32b5f115cc9a81e55a428c552aa0bcab8543967f51a 6 ./c/cc/
+D 700 31a1955d5a65328f31014650cf79b5c0c3d9b82de19352ade8d299cc22f6ec40 6 ./c/cc/ccc/
+F 600 24f0cf3553e0dac0ce8aead4279e0fc368899e89ef776999d0d7e812b5ca0f3b 6 ./c/cc/ccc/ccc1f
+F 600 27a55588c59999fd686667c4b186af08161b95c287216f0cde723f0e191d1974 4 ./r1f"
+		expected_absolute="207d090daf06217a0920593ee642a90fcad85b9dccec02725e85311005f64327"
+		expected_secret="b64e60321e94894fe9e23522c527a9326521389944198910a3801987c2ab1a19"
+		expected_excluding_a="5f6e000c90cec184fce4c0b959961b368ce7137ccbb86aac67ab4a0a15c5563c"
+		expected_cached="f9044a3c2a9fedc17f14d9f0e52e97b4c684ba954d8819b3b0ef6afa27c9974f"
+	elif [[ ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} == "md5sum" ]]; then
+		expected_manifest="D 700 3d2919213b827d03a840f2f4f10b650f 43 ./
+D 700 fe679b1e550126f778384d604eb449b9 21 ./a/
+F 600 211bf370898efea4774211c8f0994cde 4 ./a/a1f
+D 700 8c03559b1d00cadc393b87565842bbb5 17 ./a/aa/
+F 600 afce24b8e5478be9313f8be421961a61 5 ./a/aa/aa1f
+D 700 a37ac1ce6753fe3c754e2fb3f33f5f1b 12 ./a/aa/aaa/
+F 600 eea8617ef8caf620af501f038be65a50 6 ./a/aa/aaa/aaa1f
+F 600 4c08abab3091f2287b9c6f887f8e9901 6 ./a/aa/aaa/aaa2f
+D 700 db4f31aa5128514245015c5607424545 12 ./b/
+D 700 fe1a38e66c1b1ca90a1d9338e1193dda 12 ./b/bb/
+D 700 06f874e56e061d1b9c5e053b71a27588 12 ./b/bb/bbb/
+F 600 3faff48c847c904c462bfdaab7c538bf 6 ./b/bb/bbb/bbb1f
+F 600 38e5332b8b646bce8ea00235a220f7a0 6 ./b/bb/bbb/bbb2f
+D 700 a868eb9cd765927c9d75c4fe85c1c8a6 6 ./c/
+D 700 fe735a93b6ba6042b3287bf33c708f75 6 ./c/cc/
+D 700 e35bc2c03dd33c7d9731d5f31f3eee9a 6 ./c/cc/ccc/
+F 600 4c9aebfeebfb83aa09b300bd269d5c0a 6 ./c/cc/ccc/ccc1f
+F 600 c5dd28cee110196c30c88f011d248303 4 ./r1f"
+		expected_absolute="3d2919213b827d03a840f2f4f10b650f"
+		expected_secret="3d2919213b827d03a840f2f4f10b650f"
+		expected_excluding_a="8a53d475db5cbe669dc2ffce5df06ef3"
+		expected_cached="750541e72dcafadb8a0abbd57284589e"
+	elif [[ ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} == "sha256sum" ]]; then
+		expected_manifest="D 700 cccc00189fbf090fad108d378e1edc31b36e6310ea9259ee652d66bc8b87f3ff 43 ./
+D 700 38cf6b62f29410557d1d0d1160388a250f70a05724bc0f7428792adcfe0cf0be 21 ./a/
+F 600 adef5dfb4e0a8963271432c2d6dce851688928a95882ed42d4698d50de0782c3 4 ./a/a1f
+D 700 0e25e8a54c10b3a1d12e610806d25eb3ff2e94c189e4818af06af3aa4b1099ef 17 ./a/aa/
+F 600 eaff072bea4c1144aea7230a9256931cd93c1f96d8b1dee703c4cb8187e516fc 5 ./a/aa/aa1f
+D 700 65049fd2a8de1ac5e021d678cf7f270a32502d21671be8fc23ea3eafd6eb6026 12 ./a/aa/aaa/
+F 600 6fcbbaab37002e81f09e5f5d03d91a6670002daa3ab5e12c118f19b9a1243cc6 6 ./a/aa/aaa/aaa1f
+F 600 67c8222ca7d9c5d44a6ffd95671d0a51a938e838619930439759d26d33d73a1a 6 ./a/aa/aaa/aaa2f
+D 700 ec52e20969a5e9efb5cae6c79a2945cef5eed0397d5d5f13aa2660f23e89a83d 12 ./b/
+D 700 d261bce70e26a1c73d4b1beb1a680261f5b5982e33b758057edbafcc9849853c 12 ./b/bb/
+D 700 9b947c868140dae4182a0e6d50779a60b3f28053887e522118ba6038a2a781cf 12 ./b/bb/bbb/
+F 600 25c93f4241f69cd13408d55ebe4fc5bc4d09a4d13eee48fb0303a46b5d316533 6 ./b/bb/bbb/bbb1f
+F 600 e9e91dedc987399558afcee1cdf8f1a980b3dbe8b40140f4b5b293dc7922cd35 6 ./b/bb/bbb/bbb2f
+D 700 86ed687dd9238a5c4d1058d8b293c437db5d4441a4ab72d42680802c95b340fe 6 ./c/
+D 700 be79949abf75424072d7c9a41a549d4ebde1e2657635f3d3841dfc0418c09d09 6 ./c/cc/
+D 700 0ded97d157bf8265baa996842df4675ff15074d446d4af1a6d44abbabfc75eb3 6 ./c/cc/ccc/
+F 600 875d075473fffe0ece21589ad45690d49c8ec5bcf4258fd5b20efce346031888 6 ./c/cc/ccc/ccc1f
+F 600 67117d2a91c432d4db173671029b61d7ff437f7f87d153db1bf83b34b5833743 4 ./r1f"
+		expected_absolute="cccc00189fbf090fad108d378e1edc31b36e6310ea9259ee652d66bc8b87f3ff"
+		expected_secret="cccc00189fbf090fad108d378e1edc31b36e6310ea9259ee652d66bc8b87f3ff"
+		expected_excluding_a="99d921d4212e7c00925ec42cc178385f2d2ab1efece5cf9a11ed7a91ca0e712f"
+		expected_cached="e4c69a2deb2010c6582ef0d8c1aa57538c86313e9ee83bfa42c455b2f0ab3e9a"
+	fi
+
+	local testing_dir
+	testing_dir="$(_snapdir_manifest_readlink "$(mktemp -d -t "${_SNAPDIR_MANIFEST}"_tests.XXXXXXXXXX)")"
+	umask 077 "$testing_dir"
+
+	echo "# created $testing_dir for testing"
+
+	mkdir -p "${testing_dir}/files"
+	mkdir -p "${testing_dir}/cache"
+
+	mkdir -p "${testing_dir}"/files/a/aa/aaa "${testing_dir}"/files/b/bb/bbb "${testing_dir}"/files/c/cc/ccc
+	echo "aaa1f" >"${testing_dir}"/files/a/aa/aaa/aaa1f
+	echo "aaa2f" >"${testing_dir}"/files/a/aa/aaa/aaa2f
+	echo "aa1f" >"${testing_dir}"/files/a/aa/aa1f
+	echo "a1f" >"${testing_dir}"/files/a/a1f
+	echo "r1f" >"${testing_dir}"/files/r1f
+	echo "bbb1f" >"${testing_dir}"/files/b/bb/bbb/bbb1f
+	echo "bbb2f" >"${testing_dir}"/files/b/bb/bbb/bbb2f
+	echo "ccc1f" >"${testing_dir}"/files/c/cc/ccc/ccc1f
+
+	_cleanup() {
+		rm -rf "${testing_dir}"
+	}
+	_fail() {
+		_cleanup
+		echo "# snapdir-manifest@${_SNAPDIR_MANIFEST_VERSION} $(bash --version | head -1)" >&2
+		echo "not ok. With result: '${result:-""}'" >&2
+		exit 1
+	}
+	_verify_manifest() {
+		test "$1" = "$expected_manifest" || {
+			echo "not ok - Failed to generate correct ${_SNAPDIR_MANIFEST}" >&2
+			diff -u <(echo "$expected_manifest") <(echo "$1") >&2
+			_fail
+		}
+	}
+	local result
+	echo "# running: $snapdir_manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} ${testing_dir}/files"
+	_verify_manifest "$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" || true)"
+	echo "ok - output verified"
+
+	echo "# running: $snapdir_manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} --exclude=files/a ${testing_dir}/files"
+	$snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --exclude=files/a "${testing_dir}/files" | grep -q "$expected_excluding_a" || _fail
+	echo "ok - excluded files"
+
+	echo "# running: $snapdir_manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} ../files"
+	cd "${testing_dir}/files"
+	_verify_manifest "$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "../files" || true)"
+	cd ".."
+	echo "ok - output verified"
+
+	echo "# running: $snapdir_manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} --absolute ${testing_dir}/files"
+	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --absolute "${testing_dir}/files" 2>&1 || true)
+	grep -E -q "$expected_absolute [0-9]* ${testing_dir}/files/$" <<<"$result" || _fail
+	echo "ok - absolute paths"
+
+	echo "# running: SNAPDIR_MANIFEST_CONTEXT=secret $snapdir_manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} ${testing_dir}/files"
+	result=$(SNAPDIR_MANIFEST_CONTEXT=secret $snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" 2>&1 || true)
+	grep -E -q "$expected_secret" <<<"$result" || _fail
+	echo "ok - using secrets"
+
+	echo "# testing caching, generating 300MB file"
+	local start end uncached_duration cached_duration
+
+	# creates a 300mb file using mkfile on MacOS or dd on Linux
+	if [[ "$(uname -s)" == "Darwin" ]]; then
+		# macOS requires lowercase units
+		dd if=/dev/zero of="${testing_dir}"/files/large bs=300m count=1 2>/dev/null
+	else
+		dd if=/dev/zero of="${testing_dir}"/files/large bs=300M count=1 2>/dev/null
+	fi
+
+	start=$(date +%s)
+	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --cache --verbose --cache-dir "${testing_dir}/cache" "${testing_dir}/files" 2>&1 || true)
+	grep -q "${expected_cached} 314572843" <<<"$result" || _fail
+	end=$(date +%s)
+	uncached_duration=$((end - start))
+	start=$(date +%s)
+	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --cache --verbose --cache-dir "${testing_dir}/cache" "${testing_dir}/files" 2>&1 || true)
+	grep -q "${expected_cached} 314572843" <<<"$result" || _fail
+	end=$(date +%s)
+	cached_duration=$((end - start))
+	local cache_diff=$((uncached_duration - cached_duration))
+	if [[ ${cache_diff} -lt -1 ]]; then
+		echo "Failed to use cache. cache_diff=${cache_diff}" >&2
+		_fail
+	fi
+	echo "ok - cache"
+
+	echo "# checking cache misses"
+	test "$(grep -c "cache miss" <<<"$result")" == "0" || _fail
+
+	echo "# checking cache hits"
+	test "$(grep -c "cache hit" <<<"$result")" == "9" || _fail
+
+	rm -rf "${testing_dir}"/files/large
+
+	echo "# testing cache id"
+	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" cache-id --cache-dir "${testing_dir}/cache" || true)
+	_verify_manifest "$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --cache --cache-id "${result}" --cache-dir "${testing_dir}/cache" "${testing_dir}/files" || true)"
+	echo "ok - cache id verified"
+
+	echo "# testing cache id"
+	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --cache --cache-id "bogus" --cache-dir "${testing_dir}/cache" "${testing_dir}/files" 2>&1 || true)
+	grep -q "Cache id 'bogus' does not match the current cache id '" <<<"$result" || _fail
+	echo "ok - invalid cache id detected"
+
+	echo "# testing symlinks"
+	ln -s "${testing_dir}/files/a" "${testing_dir}/files/a_link"
+	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" 2>&1 || true)
+	expected=$(echo "$result" | grep -o "[^ ]* 21 ./a/$" | sed -e "s|a/$|a_link/|")
+	grep -q "$expected" <<<"$result" || _fail
+
+	echo "# testing symlinks --no-follow"
+	result=$($snapdir_manifest --no-follow --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" 2>&1 || true)
+	expected="link"
+	grep -v -q "$expected" <<<"$result" || _fail
+
+	echo "# testing symlink loops"
+	ln -s "${testing_dir}/files/a_link" "${testing_dir}/files/a_link/a_link"
+	result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "${testing_dir}/files" 2>&1 || true)
+
+	if grep -q "loop" <<<"$result"; then
+		echo "ok - symlink loop detected"
+	else
+		expected=" ./a/a_link/$" >&2
+		grep -q "$expected" <<<"$result" || _fail
+	fi
+
+	echo "ok - all tests passed in $SECONDS seconds"
+	_cleanup
+)
+
+#######
+#       #    # ##### #####  #   # #####   ####  # #    # #####
+#       ##   #   #   #    #  # #  #    # #    # # ##   #   #
+#####   # #  #   #   #    #   #   #    # #    # # # #  #   #
+#       #  # #   #   #####    #   #####  #    # # #  # #   #
+#       #   ##   #   #   #    #   #      #    # # #   ##   #
+####### #    #   #   #    #   #   #       ####  # #    #   #
+
+# Run if is not sourced
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	# Get the absolute path to ${BASH_SOURCE[0]}
+	_SNAPDIR_MANIFEST_BIN_PATH="${_SNAPDIR_MANIFEST_BIN_PATH:-$(_snapdir_manifest_readlink "${BASH_SOURCE[0]}")}"
+	snapdir_manifest_run "${@:1}"
+else
+	_snapdir_manifest_export_env_defaults
+fi

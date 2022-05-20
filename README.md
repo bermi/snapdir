@@ -4,7 +4,7 @@ Audit and distribute authenticated directory snapshots.
 
 ![verify status]
 
-[Snapdir] combines [dirfest] ability to capture the structure, integrity checksums and permissions of directories and their contents with remote backends like [ssh], [s3]/[b2] and [HTTP] for persisting and distributing snapshots.
+[Snapdir] combines [snapdir-manifest] ability to capture the structure, integrity checksums and permissions of directories and their contents with remote backends like [ssh], [s3]/[b2] and [HTTP] for persisting and distributing snapshots.
 
 With [Snapdir] cli you can implement [content-addressable storage
 applications], [hierarchical storage management (HSM)] and
@@ -12,7 +12,7 @@ applications], [hierarchical storage management (HSM)] and
 
 ## Installation
 
-Snapdir requires [dirfest] and [b3sum] for creating manifests.
+Snapdir requires [snapdir-manifest] and [b3sum] for creating manifests.
 
 After installing the dependencies, download the [snapdir] script and save it somewhere in your `PATH`.
 
@@ -20,7 +20,7 @@ After installing the dependencies, download the [snapdir] script and save it som
 wget -p https://github.com/bermi/snapdir-bash/releases/download/v0.1.1/snapdir -O snapdir
 chmod +x snapdir
 echo "7350e268ecbfc0d03c37621480ba501862f8f9904eb28349136f5eea9251fb4f  snapdir" | b3sum -c
-mv dirfest /usr/local/bin/
+mv snapdir-manifest /usr/local/bin/
 ```
 
 ## Try without installing
@@ -409,7 +409,7 @@ LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
   [verify status]: https://github.com/bermi/snapdir-bash/actions/workflows/verify.yml/badge.svg
   [Snapdir]: https://github.com/bermi/snapdir-bash
   [snapdir]: https://github.com/bermi/snapdir-bash
-  [dirfest]: https://github.com/bermi/dirfest
+  [snapdir-manifest]: https://github.com/bermi/snapdir-manifest
   [bermi/snapdir]: https://hub.docker.com/r/bermi/snapdir/tags
   [BermiLabs]: https://bermilabs.com
   [s3]: https://github.com/bermi/snapdir-s3-adapter

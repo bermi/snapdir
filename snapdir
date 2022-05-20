@@ -162,15 +162,15 @@ snapdir_manifest() {
 	local snapdir_dir_abs_path
 	snapdir_dir_abs_path="$(realpath "${base_dir}/${snapdir_dir}")"
 	if [[ ${snapdir_dir_abs_path%/} == "/" ]]; then
-		_SNAPDIR_MANIFEST=$(dirfest --exclude="system" "/")
+		_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" --exclude="system" "/")
 	else
-		_snapdir_log "Running: dirfest \"${base_dir}/${snapdir_dir}\""
+		_snapdir_log "Running: ${_SNAPDIR_BIN_DIR}/snapdir-manifest \"${base_dir}/${snapdir_dir}\""
 		test -d "${snapdir_dir_abs_path}" || {
 			echo "error: Snapshot directory '${snapdir_dir_abs_path}' does not exist." >&2
 			return 1
 		}
-		_snapdir_log "Running: dirfest \"$snapdir_dir_abs_path\""
-		_SNAPDIR_MANIFEST=$(dirfest "$snapdir_dir_abs_path")
+		_snapdir_log "Running: ${_SNAPDIR_BIN_DIR}/snapdir-manifest \"$snapdir_dir_abs_path\""
+		_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" "$snapdir_dir_abs_path")
 	fi
 	echo "${_SNAPDIR_MANIFEST}"
 }
@@ -671,7 +671,7 @@ snapdir_flush_cache() {
 ######  ####### #       #     #  #####  #######    #     #####
 
 snapdir_defaults() {
-	dirfest_defaults
+	snapdir_manifest_defaults
 	env | grep _SNAPDIR | grep -v VERSION | sed -E 's|^_SNAPDIR_|--|; s|_|-|g;' | tr '[:upper:]' '[:lower:]' | sort
 	echo "SNAPDIR_BIN_PATH=${SNAPDIR_BIN_PATH:-$_SNAPDIR_BIN_PATH}"
 }
@@ -719,6 +719,10 @@ _snapdir_get_remote_adapter_bin_path() {
 	fi
 	remote_adapter_bin_path=$(which "snapdir-${remote_protocol}-adapter" || echo "" 2>/dev/null)
 	if [[ ${remote_adapter_bin_path} == "" ]]; then
+		if test -f "${_SNAPDIR_BIN_DIR}/snapdir-${remote_protocol}-adapter"; then
+			echo "${_SNAPDIR_BIN_DIR}/snapdir-${remote_protocol}-adapter"
+			return 0
+		fi
 		echo "Unsupported remote protocol: ${remote_protocol}" >&2
 		echo "No 'snapdir-${remote_protocol}-adapter' could be found on your PATH" >&2
 		return 1
@@ -851,6 +855,7 @@ _snapdir_export_env_defaults() {
 	_SNAPDIR_VERBOSE=${_SNAPDIR_VERBOSE:-"false"}
 	_SNAPDIR_FORCE=${_SNAPDIR_FORCE:-"false"}
 	_SNAPDIR_CWD="${_SNAPDIR_CWD:-$(pwd)}"
+	_SNAPDIR_BIN_DIR="$(dirname "${_SNAPDIR_BIN_PATH}")"
 
 	_snapdir_set_manifest_from_stdin_or_id
 	_snapdir_export_remote_vars
@@ -864,6 +869,7 @@ _snapdir_export_env_defaults() {
 	export _SNAPDIR_CWD \
 		_SNAPDIR_CACHE_DIR \
 		_SNAPDIR_VERBOSE \
+		_SNAPDIR_BIN_DIR \
 		_SNAPDIR_FORCE
 }
 

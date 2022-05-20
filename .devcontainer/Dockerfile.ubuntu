@@ -1,12 +1,8 @@
-FROM bermi/dirfest:0.1.1 as dirfest
 FROM ubuntu:22.04
 
 RUN apt-get update && \
   apt-get install -y b3sum shellcheck shfmt git && \
   apt-get clean -y
-
-COPY --from=dirfest /bin/dirfest /bin/dirfest
-RUN chmod +x /bin/dirfest
 
 WORKDIR /workdir
 
