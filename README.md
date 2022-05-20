@@ -4,6 +4,7 @@ Audit and distribute authenticated directory snapshots.
 
 ![verify status]
 
+<img class="logo" width=150 height=150 src="docs/images/snapdir-logo-squared.svg" style="background-color: white;float: left; margin: 0 30px 30px 0">
 [Snapdir] combines [snapdir-manifest] ability to capture the structure, integrity checksums and permissions of directories and their contents with remote backends like [ssh], [s3]/[b2] and [HTTP] for persisting and distributing snapshots.
 
 With [Snapdir] cli you can implement [content-addressable storage
