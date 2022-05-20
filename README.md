@@ -4,18 +4,27 @@ Audit and distribute authenticated directory snapshots.
 
 ![verify status]
 
-<img class="logo" width=150 height=150 src="docs/images/snapdir-logo-squared.svg" style="background-color: white;float: left; margin: 0 30px 30px 0">
-[Snapdir] combines [snapdir-manifest] ability to capture the structure, integrity checksums and permissions of directories and their contents with store backends like [ssh], [s3]/[b2] and [HTTP] for persisting and distributing snapshots.
+[Snapdir] enables creating, sharing and verifying snapshots of
+directories and their contents.
 
-With [Snapdir] cli you can implement [content-addressable storage
-applications], [hierarchical storage management (HSM)] and
-[conflict-free replicated data type (CRDT)] strategies on eventually consistent read-heavy applications.
+Built as a set of independent and well tested bash scripts, [Snapdir]
+provides the following functionality:
+
+-   that can be versioned controlled. A building block for
+    \[content-addressable storage applications\] and \[conflict-free
+    replicated data type (CRDT)\] strategies.
+-   
+-   
+
+Check the [documentation for more information].
 
 ## Installation
 
-Snapdir requires [snapdir-manifest] and [b3sum] for creating manifests.
+Snapdir requires [snapdir-manifest] and \[b3sum\] for creating
+manifests.
 
-After installing the dependencies, download the [snapdir] script and save it somewhere in your `PATH`.
+After installing the dependencies, download the [snapdir] script and
+save it somewhere in your `PATH`.
 
 ``` bash
 wget -p https://github.com/bermi/snapdir-bash/releases/download/v0.1.1/snapdir -O snapdir
@@ -39,46 +48,72 @@ docker run -it --rm \
 
 ## Motivation
 
-This tool was created as a prototype to explore an optimal workflow for consuming and generating files in ephemeral environments. At [BermiLabs], we used it to replicate parquet files in our analytics pipelines and our distributed ETL workflows.
+This tool was created as a prototype to explore an optimal workflow for
+consuming and generating files in ephemeral environments. At
+[BermiLabs], we used it to replicate parquet files in our analytics
+pipelines and our distributed ETL workflows.
+
+We decided to open source it could be used by others to implement
+\[conflict-free replicated data type (CRDT)\] strategies on eventually
+consistent read-heavy applications.
 
 ### Design goals
 
-- Manifest format and specification should be simple to understand by humans and simple to implement.
-- Manifest format should be auditable and suitable for tracking under version control.
-- Simple and intuitive CLI interface for working with files and directories with UNIX-style composability and no configuration required.
-- Use external object backends like s3 or Backblaze b2 for persistence and sharing, and structure simple to expose via HTTP.
-- Allow files to be replicated and updated concurrently without coordination.
-- Optimized for fast initialization on read-only environments.
-- Optional deduplication of files by using links to cached files.
-- Allow balancing performance and correctness by offering off-process integrity checks and deduplication.
-- Allow verifying snapshots using cryptographic hashes and standard UNIX tools.
-- Use of deterministic `id's to replicate and share snapshots.
-- Performant and efficient v1.0.0 release using a compiled language.
+-   Manifest format and specification should be simple to understand by
+    humans and simple to implement.
+-   Manifest format should be auditable and suitable for tracking under
+    version control.
+-   Simple and intuitive CLI interface for working with files and
+    directories with UNIX-style composability and no configuration
+    required.
+-   Use external object backends like s3 or Backblaze b2 for persistence
+    and sharing, and structure simple to expose via HTTP.
+-   Allow files to be replicated and updated concurrently without
+    coordination.
+-   Optimized for fast initialization on read-only environments.
+-   Optional deduplication of files by using links to cached files.
+-   Allow balancing performance and correctness by offering off-process
+    integrity checks and deduplication.
+-   Allow verifying snapshots using cryptographic hashes and standard
+    UNIX tools.
+-   Use of deterministic \`id's to replicate and share snapshots.
+-   Performant and efficient v1.0.0 release using a compiled language.
 
 ### Non-goals
 
-While this project remains a prototype built for experimentation, we expect some features to be missing from the `bash` version.
+While this project remains a prototype built for experimentation, we
+expect some features to be missing from the `bash` version.
 
-- Multiple Operating Systems support. Only Linux and macOS (with bash >5) are supported.
-- Compression or encryption of files at rest. While this might be desirable, it will complicate the `snapdir` manifests spec.
-- Real-time or streaming files are not efficient targets for [snapdir], as it assumes files are immutable and the format needs to be human-readable.
-- ACL's and authentication. Remote object backends are well suited for this.
+-   Multiple Operating Systems support. Only Linux and macOS (with bash
+    \>5) are supported.
+-   Compression or encryption of files at rest. While this might be
+    desirable, it will complicate the `snapdir` manifests spec.
+-   Real-time or streaming files are not efficient targets for
+    [snapdir], as it assumes files are immutable and the format needs to
+    be human-readable.
+-   ACL's and authentication. Remote object backends are well suited for
+    this.
 
 ### Alternatives
 
-- [Git LFS](https://git-lfs.github.com/) Why not https://towardsdatascience.com/why-git-and-git-lfs-is-not-enough-to-solve-the-machine-learning-reproducibility-crisis-f733b49e96e8
-- DVC (md5sum)
-- Tar
-- ZFS
-- [ostree](https://ostreedev.github.io/ostree/introduction/), requires `ostree` to verify snapshots.
-- manifest generations: mtree (`mtree -p <dir> -c -k mode,size,time,link,sha256`)
-- IPFS
-- Perkeep, SeaweedFS
-- upspin sharing via email
-- Keybase Filesystem (signing manifests)
-- Sigstore
+-   [Git LFS] Why not
+    https://towardsdatascience.com/why-git-and-git-lfs-is-not-enough-to-solve-the-machine-learning-reproducibility-crisis-f733b49e96e8
+-   DVC (md5sum)
+-   Tar
+-   ZFS
+-   [ostree], requires `ostree` to verify snapshots.
+-   manifest generations: mtree
+    (`mtree -p <dir> -c -k mode,size,time,link,sha256`)
+-   IPFS
+-   Perkeep, SeaweedFS
+-   upspin sharing via email
+-   Keybase Filesystem (signing manifests)
+-   Sigstore
 
-Why not use git? We want to optimize download speed and deduplication performance to avoid cold starts. We don't care about history, just the latest state, and we want to be able to leverage CDNs and HTTP caches for sharing snapshots.
+Why not use git? We want to optimize download speed and deduplication
+performance to avoid cold starts. We don't care about history, just the
+latest state, and we want to be able to leverage CDNs and HTTP caches
+for sharing snapshots.
 
 ## **Integrity**: Snapshots are generated from a directory, and their contents are verified against a manifest.
 
@@ -117,24 +152,28 @@ Why not use git? We want to optimize download speed and deduplication performanc
 
 The following are the optional arguments and their defaults:
 
-- --store=b2://${B2_BUCKET_NAME}
-- --cwd=$(pwd)
-- --path
-- --debug=false
-- --script_path=path to this script
-- --verbose=false
-- --force=false
-
+-   --store=b2://\${B2_BUCKET_NAME}
+-   --cwd=\$(pwd)
+-   --path
+-   --debug=false
+-   --script_path=path to this script
+-   --verbose=false
+-   --force=false
 
 ## Stores
 
-[Snapdir] delegates to stores the task of persisting fetching files on long-term storage.
+[Snapdir] delegates to stores the task of persisting fetching files on
+long-term storage.
 
-When calling snapdir `fetch`, `pull` or `push` methods you must supply a valid `--store` option which determines which store to use.
-The `--store` argument is formatted as a URI, and the store name is taken from the protocol part of the URI.
-For example, `file://some/path` is a valid `--store` argument that will use the `snapdir-file-store`.
+When calling snapdir `fetch`, `pull` or `push` methods you must supply a
+valid `--store` option which determines which store to use. The
+`--store` argument is formatted as a URI, and the store name is taken
+from the protocol part of the URI. For example, `file://some/path` is a
+valid `--store` argument that will use the `snapdir-file-store`.
 
-stores must be installed and available in the `PATH` of the calling process. They will emmit commands that the `snapdir` CLI will execute or display when running in `--dryrun` mode.
+stores must be installed and available in the `PATH` of the calling
+process. They will emmit commands that the `snapdir` CLI will execute or
+display when running in `--dryrun` mode.
 
 The following methods must be implemented by the stores.
 
@@ -146,13 +185,17 @@ Emmit a manifest to stdout given a manifest id.
 
 ### get-fetch-files-command
 
-Generates the command or commands required to download to the cache the files defined on the manifest provided via stdin that are not already available locally.
+Generates the command or commands required to download to the cache the
+files defined on the manifest provided via stdin that are not already
+available locally.
 
     cat generate-manifest-somehow | snapdir-${store_NAME}-store get-fetch-files-command --store "${store}" --cache-dir "${cache_dir}"
 
 ### get-push-command
 
-Gets the command for pushing the contents of the staging directory to the store. The staging directory is a temporary directory that is used to hold files that are not yet available on the store.
+Gets the command for pushing the contents of the staging directory to
+the store. The staging directory is a temporary directory that is used
+to hold files that are not yet available on the store.
 
     snapdir-${store_NAME}-store get-push-command --staging-dir "${staging_directory}" --store "${store}"
 
@@ -162,20 +205,23 @@ A testing `snapdir-file-store` is provided as an example implementation.
 
 ### Prerequisites
 
-This guide assumes you are on a Linux machine with the following packages installed: b3sum, bash.
+This guide assumes you are on a Linux machine with the following
+packages installed: b3sum, bash.
 
 Download `snapdir` and save it somewhere in your PATH.
 
     curl https://raw.githubusercontent.com/bermi/snapdir/main/snapdir | sudo tee /usr/local/bin/snapdir >/dev/null
     sudo chmod +x /usr/local/bin/snapdir
 
-Run the test suite to ensure everything is working and install any missing dependencies.
+Run the test suite to ensure everything is working and install any
+missing dependencies.
 
     snapdir test
 
 ### Exploring the manifest
 
-You should now be able to use the `snapdir`, move to a clean directory and create a new directory with some files on it:
+You should now be able to use the `snapdir`, move to a clean directory
+and create a new directory with some files on it:
 
     mkdir -p tutorial/
     umask 077 tutorial/
@@ -189,72 +235,98 @@ You can see a manifest of the files in the directory by calling:
     # 600 af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 ./bar.txt
     # 600 af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 ./foo.txt
 
-You should see the same output as long as the directory and file permissions are the same on your machine.
+You should see the same output as long as the directory and file
+permissions are the same on your machine.
 
-At this point, foo.txt and bar.txt are empty files, so their `b3sum` matches.
+At this point, foo.txt and bar.txt are empty files, so their `b3sum`
+matches.
 
-`b3sum tutorial/*` generates a similar output; this is not a coincidence as we are using `b3sum` under the hood for checking the integrity of the files.
+`b3sum tutorial/*` generates a similar output; this is not a coincidence
+as we are using `b3sum` under the hood for checking the integrity of the
+files.
 
 The columns on the previous output are:
 
-- The permissions of the file or directory
-- The BLAKE3 message diggest (`b3sum`) of the file or directory contents.
-- The path to the file or directory. Directories always end with a slash.
+-   The permissions of the file or directory
+-   The BLAKE3 message diggest (`b3sum`) of the file or directory
+    contents.
+-   The path to the file or directory. Directories always end with a
+    slash.
 
-The directory checksum is computed by computing the combined checksums of the files. You can compute it manually by running:
+The directory checksum is computed by computing the combined checksums
+of the files. You can compute it manually by running:
 
     b3sum tutorial/* | cut -d ' ' -f1 | sort -u | b3sum | cut -d ' ' -f1
     # Outputs: 267293022c4e5c1a6110b9e28ca6d51bf524f432d8e42811f1c76a3455595bfe
 
-Directory checksums only look at the files directly contained in the directory and will not recurse into subdirectories.
+Directory checksums only look at the files directly contained in the
+directory and will not recurse into subdirectories.
 
-Now that we have an understanding of the manifest format, let's create an ID for the manifest itself by calling:
+Now that we have an understanding of the manifest format, let's create
+an ID for the manifest itself by calling:
 
     snapdir manifest tutorial | b3sum | cut -d ' ' -f1
     # Outputs: 01093205c4c8fe5f9ad365871b6b0aa844ba6b9f010a5d68e466838d42091326
 
-The `id` we just generated is now a reference to the directory at its current state.
+The `id` we just generated is now a reference to the directory at its
+current state.
 
-Since writting the previous command is a little tedious, we can use the `snapdir id` command instead:
+Since writting the previous command is a little tedious, we can use the
+`snapdir id` command instead:
 
     snapdir id tutorial
     # Outputs: 01093205c4c8fe5f9ad365871b6b0aa844ba6b9f010a5d68e466838d42091326
 
-After staging them locally, we can reference the snapshot `id` to create copies of the directory contents.
+After staging them locally, we can reference the snapshot `id` to create
+copies of the directory contents.
 
 ### Caching snapshots
 
-So far, we have not done anything with the `snapdir` that could not be done with `b3sum` directly. To capture the state of the directory, we can use the `state` command.
+So far, we have not done anything with the `snapdir` that could not be
+done with `b3sum` directly. To capture the state of the directory, we
+can use the `state` command.
 
 #### staging changes
 
-The `stage` command saves to `${HOME}/.cache/snapdir` the objects and manifests we want to keep track of. You can change the default location by setting the `--cache-dir` option.
+The `stage` command saves to `${HOME}/.cache/snapdir` the objects and
+manifests we want to keep track of. You can change the default location
+by setting the `--cache-dir` option.
 
-You won't use the stage command manually, but it's essential to understand how it works, so we'll go over it here.
+You won't use the stage command manually, but it's essential to
+understand how it works, so we'll go over it here.
 
 Run the following command to stage the files locally:
 
     snapdir stage tutorial --keep
     # Outputs: $(pwd)/tutorial/.snapdir-01093205c4c8fe5f9ad365871b6b0aa844ba6b9f010a5d68e466838d42091326
 
-if we inspect the directory on the previous output, we can see a copy of the manifest and the files we want to keep track of:
+if we inspect the directory on the previous output, we can see a copy of
+the manifest and the files we want to keep track of:
 
     find tutorial/.snapdir-* ! -type d
     # Outputs:
     # tutorial/.snapdir-01093205c4c8fe5f9ad365871b6b0aa844ba6b9f010a5d68e466838d42091326/.manifests/010/932/05c/4c8fe5f9ad365871b6b0aa844ba6b9f010a5d68e466838d42091326
     # tutorial/.snapdir-01093205c4c8fe5f9ad365871b6b0aa844ba6b9f010a5d68e466838d42091326/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
 
-While the manifest content is copied verbatim and the files are linked to `${HOME}/.cache/snapdir/.objects/` as we can see in the following command:
+While the manifest content is copied verbatim and the files are linked
+to `${HOME}/.cache/snapdir/.objects/` as we can see in the following
+command:
 
     find tutorial/.snapdir-* -type l -ls | sed 's|.*tutorial|tutorial|'
     # Outputs:
     # tutorial/.snapdir-01093205c4c8fe5f9ad365871b6b0aa844ba6b9f010a5d68e466838d42091326/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 -> ${HOME}/.cache/snapdir/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
 
-The first nine characters of the `b3sum` are used to create a folder structure that allows us to list manifests and objects more efficiently on storage engines.
+The first nine characters of the `b3sum` are used to create a folder
+structure that allows us to list manifests and objects more efficiently
+on storage engines.
 
-The cache directory is used globally for all snapshots. As we'll see later, the `fetch` command also brings store snapshots into the cache directory. Files must be placed on the local cache before being checked out into directories or persisted on store storage engines.
+The cache directory is used globally for all snapshots. As we'll see
+later, the `fetch` command also brings store snapshots into the cache
+directory. Files must be placed on the local cache before being checked
+out into directories or persisted on store storage engines.
 
-Let's remove the staging directory since it is no longer for the rest of the tutorial.
+Let's remove the staging directory since it is no longer for the rest of
+the tutorial.
 
     rm -rf tutorial/.staging-*
 
@@ -264,7 +336,8 @@ Lets add some content to the files and stage a new snapshot.
     snapdir stage tutorial
     # Outputs: 73cbae2435e785fa657f1690651ed0a9987332c3d3632e6edc56f7fa46477d12
 
-Since we didn't include the `--keep` flag, the output now shows the `id` of the manifest and there's no `tutorial/.staging-*` directory.
+Since we didn't include the `--keep` flag, the output now shows the `id`
+of the manifest and there's no `tutorial/.staging-*` directory.
 
 Lets inspect the manifest that has been added to the cache:
 
@@ -288,13 +361,14 @@ and `checkout` the snapshot by using the previous `id`:
     cat tutorial/foo.txt
     # Outputs: foo
 
-We can still checkout the id of the original snapshot, which will bring back the empty files.
+We can still checkout the id of the original snapshot, which will bring
+back the empty files.
 
     snapdir checkout --id=01093205c4c8fe5f9ad365871b6b0aa844ba6b9f010a5d68e466838d42091326 tutorial
     # Outputs: File $(pwd)/tutorial/foo.txt already exists. To override file, use the --force flag.
 
-as you can see, it has refused to override `foo.txt` unless `--force` is provided. We don't need to do
-that to continue with this guide.
+as you can see, it has refused to override `foo.txt` unless `--force` is
+provided. We don't need to do that to continue with this guide.
 
 Now lets add some content for the bar.txt file and stage it.
 
@@ -304,7 +378,10 @@ Now lets add some content for the bar.txt file and stage it.
 
 #### Linking objects
 
-A way to save space is to checkout snapshots using the `--linked` flag, which will create a hard link to the objects. We'll not cover this mode in this guide since it's only useful if your use case can ensure that the linked objects will not be modified.
+A way to save space is to checkout snapshots using the `--linked` flag,
+which will create a hard link to the objects. We'll not cover this mode
+in this guide since it's only useful if your use case can ensure that
+the linked objects will not be modified.
 
 ### Verifying snapshots
 
@@ -316,9 +393,11 @@ We can verify the integrity of a snapshot by calling:
     # ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f: OK
     # ${HOME}/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92: OK
 
-This uses `b3sum --check` to verify the integrity of the snapshot stored on the cache.
+This uses `b3sum --check` to verify the integrity of the snapshot stored
+on the cache.
 
-Lets tamper one of the objects in the cache and verify the integrity of the snapshot again:
+Lets tamper one of the objects in the cache and verify the integrity of
+the snapshot again:
 
     echo "tampered" > ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f
     snapdir verify --verbose --id ab5f25e59925e01a58a05ac41437c90d6e0cefabd3bf2f6d53489d5467183f17
@@ -329,11 +408,13 @@ Lets tamper one of the objects in the cache and verify the integrity of the snap
 
 There are three ways to remove tampered objects from the cache.
 
-1. Using the `--purge` option when calling the verify command: `snapdir verify --purge --id ab5f25e59925e01a58a05ac41437c90d6e0cefabd3bf2f6d53489d5467183f17`
-2. Stage the tutorial directory again: `snapdir stage tutorial`
-3. Run a global cleanup command via: `snapdir verify-cache --purge`
+1.  Using the `--purge` option when calling the verify command:
+    `snapdir verify --purge --id ab5f25e59925e01a58a05ac41437c90d6e0cefabd3bf2f6d53489d5467183f17`
+2.  Stage the tutorial directory again: `snapdir stage tutorial`
+3.  Run a global cleanup command via: `snapdir verify-cache --purge`
 
-We'll use the second option to remove the tampered object since it will re-generate the object in the cache.
+We'll use the second option to remove the tampered object since it will
+re-generate the object in the cache.
 
     snapdir stage tutorial
     # Outputs:
@@ -342,21 +423,26 @@ We'll use the second option to remove the tampered object since it will re-gener
 
 ### Pushing snapshots
 
-So far, we've learned how to keep a snapshot in sync with the files on your local system. Let's now push the snapshot to the store repository.
+So far, we've learned how to keep a snapshot in sync with the files on
+your local system. Let's now push the snapshot to the store repository.
 
-Right now only backblaze b2 is supported, so you'll need to install the b2cli tool.
+Right now only backblaze b2 is supported, so you'll need to install the
+b2cli tool.
 
     which b2 >/dev/null || {
         wget -q "https://github.com/Backblaze/B2_Command_Line_Tool/releases/latest/checkout/b2-linux" | sudo tee "/usr/local/bin/b2" >/dev/null
         sudo chmod +x /usr/local/bin/b2
     }
 
-Authenticate by exposing B2_APPLICATION_KEY_ID B2_APPLICATION_KEY in your environment and then run the following command:
+Authenticate by exposing B2_APPLICATION_KEY_ID B2_APPLICATION_KEY in
+your environment and then run the following command:
 
     b2 authorize-account "${B2_APPLICATION_KEY_ID}" "${B2_APPLICATION_KEY}"
 
-Create a bucket with the name "snapdir-tutorial". We recommend that you setup a bucket policy that prevents files from being deleted.
-Since you might choose a different name for your bucket, we'll save the store as an environment variable for the rest of the tutorial.
+Create a bucket with the name "snapdir-tutorial". We recommend that you
+setup a bucket policy that prevents files from being deleted. Since you
+might choose a different name for your bucket, we'll save the store as
+an environment variable for the rest of the tutorial.
 
     B2_TEST_BUCKET=snapdir-tutorial
 
@@ -365,24 +451,25 @@ We will now push the contents of `tutorial` to the store repository.
     snapdir push --store "b2://${B2_TEST_BUCKET}/tutorial" tutorial
     # Outputs: ab5f25e59925e01a58a05ac41437c90d6e0cefabd3bf2f6d53489d5467183f17
 
-If you run into issues, you can use the `--verbose` and `--debug` options to get more information about the push.
+If you run into issues, you can use the `--verbose` and `--debug`
+options to get more information about the push.
 
-Let's clear our local cache and verify that we can pull the snapdir from the store repository.
+Let's clear our local cache and verify that we can pull the snapdir from
+the store repository.
 
     rm -rf ${HOME}/.cache/snapdir tutorial && \
     snapdir pull --id=ab5f25e59925e01a58a05ac41437c90d6e0cefabd3bf2f6d53489d5467183f17 --store "b2://${B2_TEST_BUCKET}/tutorial" tutorial
 
 ## Pushing all snapshots
 
-We can now make sure that all the local manifests exist on the store by calling:
+We can now make sure that all the local manifests exist on the store by
+calling:
 
 We can now push snapshots off-process.
 
 ### Push a --id=ab5f25e59925e01a58a05ac41437c90d6e0cefabd3bf2f6d53489d5467183f17
 
-
-
-```bash
+``` bash
 #!/bin/bash
 
 set -eEuo pipefail
@@ -402,18 +489,15 @@ if git diff --name-only HEAD | grep -q snapdir; then
 fi
 ```
 
-
 ## License
 
 LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 
   [verify status]: https://github.com/bermi/snapdir-bash/actions/workflows/verify.yml/badge.svg
   [Snapdir]: https://github.com/bermi/snapdir-bash
-  [snapdir]: https://github.com/bermi/snapdir-bash
+  [documentation for more information]: https://github.com/bermi/snapdir-bash/tree/main/docs/
   [snapdir-manifest]: https://github.com/bermi/snapdir-manifest
   [bermi/snapdir]: https://hub.docker.com/r/bermi/snapdir/tags
   [BermiLabs]: https://bermilabs.com
-  [s3]: https://github.com/bermi/snapdir-s3-store
-  [Backblaze b2]: https://github.com/bermi/snapdir-b2-store
-  [ssh]: https://github.com/bermi/snapdir-ssh-store
-  [http]: https://github.com/bermi/snapdir-http-store
+  [Git LFS]: https://git-lfs.github.com/
+  [ostree]: https://ostreedev.github.io/ostree/introduction/
