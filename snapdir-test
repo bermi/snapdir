@@ -72,6 +72,11 @@ snapdir_test_run() {
 	"$dir/snapdir-manifest" test
 	"$dir/snapdir" test
 	"$dir/snapdir-file-store" test
+
+	# if [[ "${SNAPDIR_B2_STORE_TEST_BUCKET:-}" != "" ]]; then
+	# 	"$dir/snapdir-b2-store" test --remote "b2://${SNAPDIR_B2_STORE_TEST_BUCKET}"
+	# fi
+
 	echo "# test suite completed in ${SECONDS} seconds"
 }
 
@@ -95,11 +100,19 @@ _snapdir_test_utils() {
 		export _SNAPDIR_CACHE_DIR="${_SNAPDIR_TEST_TMP_DIR}/.cache/${_SNAPDIR_MODULE_NAME}"
 
 		cd "$_SNAPDIR_TEST_TMP_DIR" || return 1
+
+		setup_suite
 	}
 	_SNAPDIR_TEST_TOTAL_CHECKS=$(grep -c 'check "[^"]*"' "${target_file}" || echo "-1")
 	_SNAPDIR_TESTS_PENDING_CHECKS=$_SNAPDIR_TEST_TOTAL_CHECKS
 	_SNAPDIR_TEST_SUITE_DESCRIPTION="${_SNAPDIR_MODULE_NAME}"
 	_SNAPDIR_TEST_DESCRIPTION=$_SNAPDIR_TEST_SUITE_DESCRIPTION
+
+	if [[ $_SNAPDIR_TESTS_PENDING_CHECKS -lt 0 ]]; then
+		echo "not ok 0..0 - no tests found for $_SNAPDIR_TEST_SUITE_DESCRIPTION" >&2
+		echo "# could not find 'check \"some test description\"' in '$target_file'." >&2
+		exit 1
+	fi
 
 	echo "# running tests for ${_SNAPDIR_MODULE_NAME}"
 	echo "1..${_SNAPDIR_TEST_TOTAL_CHECKS}"
@@ -112,6 +125,7 @@ _snapdir_test_utils() {
 			return 0
 		fi
 		_SNAPDIR_TEST_TEARDOWN_COMPLETE=true
+		teardown_suite
 		# exit with not ok if _SNAPDIR_TEST_TOTAL_CHECKS is not zero
 		if [[ $_SNAPDIR_TESTS_PENDING_CHECKS -gt 0 ]]; then
 			echo "not ok ${_SNAPDIR_TESTS_PENDING_CHECKS}..${_SNAPDIR_TEST_TOTAL_CHECKS} - ${_SNAPDIR_TESTS_PENDING_CHECKS} ${_SNAPDIR_TEST_SUITE_DESCRIPTION} tests pending" >&2
@@ -136,6 +150,15 @@ _snapdir_test_utils() {
 		fi
 		_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=true
 		_SNAPDIR_TEST_CHECK_NAME="$1"
+	}
+
+	# suites can override setup function to prepare the test environment
+	setup_suite() {
+		set -eEuo pipefail
+	}
+	# suites can override teardown function to clean up after tests finished
+	teardown_suite() {
+		set -eEuo pipefail
 	}
 
 	pass() {

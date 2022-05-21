@@ -1,0 +1,672 @@
+#!/usr/bin/env bash
+
+# # snapdir-b2-store 0.1.1
+#
+# ## Description:
+#
+#     Snapdir store backed by Backblaze B2.
+#
+# ## License
+#
+# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
+
+set -eEuo pipefail
+IFS=$'\n\t'
+
+# By default this script will take the name of the current file
+_SNAPDIR_B2_STORE="snapdir-b2-store"
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	_SNAPDIR_B2_STORE="$(basename "${BASH_SOURCE[0]}")"
+fi
+_SNAPDIR_B2_STORE_VERSION="0.1.1"
+
+# snapdir interface functions
+
+snapdir_b2_store_get_push_command() {
+	# Gets the command for pushing the contents of the staging directory
+	# Backblaze b2.
+	# The staging directory is a temporary directory that is used sync
+	# the contents of a specific manifest to the b2 bucket.
+	# We rely on 'b2 sync' tool to do the actual push and integrity
+	# check.
+	#
+	#     snapdir-b2-store get-push-command \
+	#         --staging-dir "${staging_directory}" \
+	#         --store "${store}"
+	#
+	set -eEuo pipefail
+	local id="${_SNAPDIR_B2_STORE_ID:?Missing --id}"
+	local store="${_SNAPDIR_B2_STORE_STORE:?Missing --store}"
+	local source_dir="${_SNAPDIR_B2_STORE_STAGING_DIR:?Missing --staging-dir}"
+	# remove trailing slash
+	source_dir="${source_dir%/}"
+
+	local manifest_rel_base
+	manifest_rel_base=$(_snapdir_get_manifest_rel_base "${id}")
+
+	# only push when the manifest does not exist
+	# first push objects then the manifest
+	cat <<-EOF
+		set -eEuo pipefail;
+		if [[ "\$(b2 ls --json "${_SNAPDIR_STORE_BUCKET}" "${_SNAPDIR_STORE_BASE_DIR}/${manifest_rel_base}")" == '[]' ]]; then
+			b2 sync --noProgress --skipNewer --compareVersions none "$source_dir/.objects/" "${store}/.objects/";
+			b2 sync --noProgress --skipNewer --compareVersions none "$source_dir/.manifests/" "${store}/.manifests/";
+		fi
+	EOF
+}
+
+snapdir_b2_store_get_manifest_command() {
+	# Gets the command for echoing the contents of a manifest given its ID.
+	# This method does not save the manifest on the cache (that's done by
+	# snapdir), it just prints the contents of the manifest.
+	#
+	# All
+	#
+	# Example:
+	#
+	#			snapdir-b2-store get-manifest-command --id "${id}" --store "${store}"
+	#
+	set -eEuo pipefail
+	local id="${_SNAPDIR_B2_STORE_ID:?Missing --id}"
+	local manifest_rel_path
+	manifest_rel_path=$(_snapdir_get_manifest_rel_path "${id}")
+
+	local log_file
+	# creates a temporary file to log the output of the transaction
+	log_file="$(mktemp -t "snapdir-${id}".XXXXXXXXXX)"
+	local tmp_manifest_path
+	# creates a temporary file to log the output of the transaction
+	tmp_manifest_path="$(mktemp -t "snapdir-manifest-${id}".XXXXXXXXXX)"
+
+	cat <<-EOF
+		set -eEuo pipefail;
+		${_SNAPDIR_B2_STORE_BIN_PATH} fetch --checksum "${checksum}" --source-path "${_SNAPDIR_STORE_BASE_DIR}/${manifest_rel_path}" --target-path "${tmp_manifest_path}" --log-file "$log_file";
+		${_SNAPDIR_B2_STORE_BIN_PATH} ensure-no-errors --checksum "${id}" --log-file "$log_file" || {
+			rm -f "${log_file}" "${tmp_manifest_path}";
+			exit 1;
+		}
+		cat "${tmp_manifest_path}";
+		rm -f "${log_file}" "${tmp_manifest_path}";
+	EOF
+}
+
+snapdir_b2_store_get_fetch_files_command() {
+	# Generates the command or commands required to download
+	# to the cache the files defined on a manifest.
+	# In order to mantain consistency when reading manifests
+	# manifests will not exist on the local cache until
+	# all the objects have been fetched. Therefore this
+	# function will read the manifest contents from stdin.
+	#
+	# Example:
+	#
+	# 	cat some_manifest_file | \
+	#       snapdir-b2-store get-fetch-files-command \
+	#       --id "${id}" \
+	#       --store "b2://long/term/storage/" \
+	#       --cache-dir "/tmp/snapdir-cache"
+	#
+	set -eEuo pipefail
+	local id="${_SNAPDIR_B2_STORE_ID:?Missing --id}"
+	local store="${_SNAPDIR_B2_STORE_STORE:?Missing --store}"
+	local source_dir
+	source_dir="$(_snapdir_b2_store_get_remote_prefix "${store}")"
+	local target_dir="${_SNAPDIR_B2_STORE_CACHE_DIR:?Missing --cache-dir}"
+	# remove trailing slash
+	target_dir="${target_dir%/}"
+
+	local log_file
+	# creates a temporary file to log the output of the transaction
+	log_file="$(mktemp -t "snapdir-${id}".XXXXXXXXXX)"
+
+	# pipe files on the manifest to a function that will print the commands
+	# required to fetch the files. This function is the same for committing
+	# but with source and target swapped.
+	{
+		if [[ ${_SNAPDIR_MANIFEST:-""} == "" ]]; then
+			# read manifest from stdin
+			grep '^F ' || echo ""
+		else
+			# read manifest from the environment variable
+			grep '^F ' <<<"${_SNAPDIR_MANIFEST}" || echo ""
+		fi
+	} | _snapdir_get_transfer_objects_command "${source_dir}" "${target_dir}" "fetch" "${log_file}"
+
+	echo "${_SNAPDIR_B2_STORE_BIN_PATH} ensure-no-errors --checksum \"${id}\" --log-file \"$log_file\";"
+}
+
+snapdir_b2_store_fetch() {
+	set -eEuo pipefail
+	local log_file="${_SNAPDIR_FILE_STORE_LOG_FILE:?Missing --log-file}"
+	_snapdir_b2_fetch_to_cache | tee "$log_file"
+}
+
+snapdir_b2_store_ensure_no_errors() {
+	# This method is called once all the .objects in the manifest have been
+	# transferred to or from the store.
+	# Errors will be sent to stderr and the process will exit with
+	# a non-zero status.
+	#
+	# Example:
+	#
+	#     snapdir-b2-store verify-transactions \
+	#         --checksum "aa91e498f401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d" \
+	#         --log-file "/log/file/for/the/transaction"
+	#
+	set -eEuo pipefail
+	local checksum="${_SNAPDIR_FILE_STORE_CHECKSUM:?Missing --checksum}"
+	local log_file="${_SNAPDIR_FILE_STORE_LOG_FILE:?Missing --log-file}"
+
+	# only after all the files have been copied, and ided, we'll
+	# save the manifest
+	local errors
+	errors=$(grep -q '^ERROR: ' "$log_file" || echo "")
+	if [[ ${errors} != "" ]]; then
+		echo "$errors" >&2
+		echo "ERROR: Transaction with id: '${checksum}' failed." >&2
+		rm -rf "$log_file"
+		exit 1
+	else
+		rm -rf "$log_file"
+	fi
+}
+
+# TODO: Add a method for verifying the integrity of the files for a given manifest on
+# b2. We can leverage something like _snapdir_b2_store_get_remote_sha1sums
+# but targeted at individual manifest ids instead of the entire store.
+
+snapdir_b2_store_run() (
+	set -eEuo pipefail
+	local subcommands="get-manifest-command|get-fetch-files-command|get-push-command|test|version|ensure-no-errors|fetch"
+	local boolean_args="debug"
+	local value_required_args="cache_dir|staging_dir|store|manifest|id|source_path|target_path|checksum|log_file"
+	local legal_argument_keys="${boolean_args}|${value_required_args}"
+
+	_snapdir_b2_store_parse_argument_key() {
+		sed -E 's|^--?|_SNAPDIR_B2_STORE_|; s|-|_|g;' <<<"${1^^}"
+	}
+
+	_snapdir_b2_store_validate_option() {
+		set -eEuo pipefail
+		grep -q -E "^_SNAPDIR_B2_STORE_(${legal_argument_keys^^})$" <<<"${1}" || {
+			echo "error: Unknown option: ${1//_SNAPDIR_B2_STORE_/}" | tr '[:upper:]' '[:lower:]' >&2
+			echo "Valid options are: --(${legal_argument_keys})" >&2
+			exit 1
+		}
+	}
+
+	_snapdir_b2_store_help() {
+		sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_B2_STORE_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+		exit 0
+	}
+
+	local command=""
+	local positional_args=""
+	local key
+	local value
+	local is_boolean
+	local subcommand_candidate="${1:-"$command"}"
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		get-manifest-command | get-fetch-files-command | get-push-command | test | fetch | ensure-no-errors)
+			command="$1"
+			shift
+			;;
+		help | -h | --help)
+			_snapdir_b2_store_help
+			;;
+		version | -v | --version)
+			echo "${_SNAPDIR_B2_STORE_VERSION}"
+			exit 0
+			;;
+		# export all --*=* flags as _SNAPDIR_B2_STORE_* env vars
+		--*=* | -*=*)
+			key="$(_snapdir_b2_store_parse_argument_key "${1%%=*}")"
+			_snapdir_b2_store_validate_option "$key"
+			echo "export ${key}=\"${1#*=}\"" 1>&2
+			export "$key"="${1#*=}"
+			shift
+			;;
+		# export all --* * flags as _SNAPDIR_B2_STORE_* env vars
+		--*)
+			is_boolean=$(grep -q -E "^--?(${boolean_args})$" <<<"${1}" && echo true || echo false)
+			key="$(_snapdir_b2_store_parse_argument_key "${1}")"
+			_snapdir_b2_store_validate_option "$key"
+			shift
+			value="${1:-true}"
+			# if key is in boolean_args
+			if [[ ${is_boolean} == "false" ]] && [[ ${value:0:1} != "-" ]]; then
+				# since this might be the last arg, this will always be truthy
+				shift || true
+			else
+				value="true"
+			fi
+			export "${key}"="${value}"
+			;;
+		*)
+			positional_args="${positional_args}${1} "
+			shift
+			;;
+		esac
+	done
+
+	# if command is not set, show help
+	if [[ ${command:-""} == "" ]]; then
+		echo "Uknown command '$subcommand_candidate'. Valid commands are: ${subcommands}" >&2
+		echo "Try: ${_SNAPDIR_B2_STORE_STORE} --help" >&2
+		return 1
+	fi
+
+	_snapdir_b2_store_export_env_defaults
+	# env | grep _snapdir_b2_store_ | sort
+	eval "snapdir_b2_store_${command//-/_} $positional_args ${*:2}"
+)
+
+_snapdir_get_transfer_objects_command() {
+	# Since this store works with the filesystem we can reuse the same
+	# function for both fetch and commit.
+	# Implementations of these slow methods should be implemented in
+	# using non-blocking I/O and should be able to handle large files
+	# in a concurrent manner.
+	# For simplicity we've relied on `nice` to schedule the commands
+	# in a way that will not cause the system to thrash.
+	# The log file should be unique for each transaction and it will
+	# be scanned for errors. An error is a line that starts with "ERROR: "
+	# and it will be printed to stderr and prevent the manifest from
+	# being committed.
+	set -eEuo pipefail
+	local source_dir="${1:?Missing source directory}"
+	local target_dir="${2:?Missing target directory}"
+	local log_file="${4:?Missing log_file}"
+	local file_paths_on_manifest
+	file_paths_on_manifest="$(cat)"
+	local total_files=0
+	local entry_parts=()
+	local checksum
+	local rel_file_path
+
+	for entry in $file_paths_on_manifest; do
+		IFS=' ' read -r -a entry_parts <<<"${entry}"
+		checksum="${entry_parts[2]}"
+		rel_file_path="$(_snapdir_get_object_rel_path "${checksum}")"
+		if ! test -f "${target_dir}/${rel_file_path}"; then
+			# redirect stdout and stderr to the temporary file $log_file but also send stdout to stdout and stderr to stderr
+			echo "nice ${_SNAPDIR_B2_STORE_BIN_PATH} fetch --checksum \"${checksum}\" --source-path \"${rel_file_path}\" --target-path \"${target_dir}/${rel_file_path}\" --log-file \"$log_file\" & "
+			total_files=$((total_files + 1))
+		fi
+	done
+
+	if [[ $total_files -eq 0 ]]; then
+		echo 'echo "No new objects to fetch.";'
+	else
+		# wait for individual commands to finish
+		echo "wait -n;"
+	fi
+}
+
+_snapdir_b2_fetch_to_cache() {
+	# This method will persist files from b2 to a target local path and verify
+	# that the checksums match the --checksum argument.
+	# The file is downloaded from b2 to a temporary location renamed to the
+	# final location once the integrity has been checked.
+	# We can use the same logic for objects and manifests.
+	set -eEuo pipefail
+	local source_path="${_SNAPDIR_FILE_STORE_SOURCE_PATH:?Missing --source-path}"
+	local target_path="${_SNAPDIR_FILE_STORE_TARGET_PATH:?Missing --target-path}"
+	local checksum="${_SNAPDIR_FILE_STORE_CHECKSUM:?Missing --checksum}"
+	local retries="${_SNAPDIR_FILE_STORE_RETRIES:-5}"
+	local dir_on_store
+	dir_on_store="$(dirname "${target_path}")"
+	mkdir -p "${dir_on_store}"
+	# To avoid concurrency errors, the b2 will be copied to a
+	# temporary location and then renamed to it's final location.
+	# We only perform integrity checks on the temporary b2 since
+	# the mv command does not afects the contents of the data on disk
+	# as long as the tmp b2 is on the same b2.
+	local tmp_target_path
+	tmp_target_path="${target_path}.$(_snapdir_tmp_id)"
+
+	_snapdir_b2_store_export_env_defaults
+
+	# download the file from b2
+	# shellcheck disable=SC2086
+	b2 download-file-by-name --noProgress "${_SNAPDIR_STORE_BUCKET}" "${source_path}" "${tmp_target_path}" || {
+		echo "WARNING: Failed b2 download-file-by-name  ${_SNAPDIR_STORE_BUCKET} ${source_path}" >&2
+	}
+
+	if ! test -f "${tmp_target_path}" || [[ "$(b3sum "${tmp_target_path}" --no-names)" != "${checksum}" ]]; then
+		# retry when the source has a valid checksum
+		rm -rf "${tmp_target_path}"
+		# subtract 1 from _SNAPDIR_FILE_STORE_RETRIES
+		retries=$((retries - 1))
+		if [[ ${retries} -gt 0 ]]; then
+			echo "WARNING: Retrying saving b2://${_SNAPDIR_STORE_BUCKET}${source_path} to ${target_path} ${retries} retries left." >&2
+			_SNAPDIR_FILE_STORE_RETRIES=$retries _snapdir_b2_fetch_to_cache
+		else
+			# give up
+			echo "ERROR: Failed to commit b2://${_SNAPDIR_STORE_BUCKET}${source_path} to ${target_path} with checksum ${checksum}." >&2
+			exit 1
+		fi
+	else
+		mv "${tmp_target_path}" "${target_path}"
+		echo "SAVED: saved ${target_path}"
+	fi
+}
+
+_snapdir_b2_store_get_remote_prefix() {
+	set -eEuo pipefail
+	local store="${1:?Missing store}"
+	local store_dir
+	store_dir="$(echo "$store" | sed -E 's|^b2:/*[^/]*/?||')"
+	# remove trailing slash
+	echo "${store_dir%/}"
+}
+
+_snapdir_b2_store_export_env_defaults() {
+	# Environment variables
+	set -eEuo pipefail
+	_snapdir_set_manifest_from_stdin_or_id
+	if [[ ${_SNAPDIR_ID:-""} != "" ]]; then
+		_SNAPDIR_B2_STORE_ID="${_SNAPDIR_ID}"
+	fi
+	: "${_SNAPDIR_B2_STORE_STORE:?Missing --store required for b2 store}"
+	_SNAPDIR_STORE="${_SNAPDIR_B2_STORE_STORE}"
+	_snapdir_export_store_vars
+	# Exposes the credentials required by the b2 command line tool.
+	# SNAPDIR_B2_APPLICATION_KEY and SNAPDIR_B2_APPLICATION_KEY_ID can
+	# override the B2_APPLICATION_KEY and B2_APPLICATION_KEY_ID environment
+	# variables.
+	export B2_APPLICATION_KEY="${SNAPDIR_B2_APPLICATION_KEY:-${B2_APPLICATION_KEY:?Missing SNAPDIR_B2_APPLICATION_KEY}}"
+	export B2_APPLICATION_KEY_ID="${SNAPDIR_B2_APPLICATION_KEY_ID:-${B2_APPLICATION_KEY_ID:?Missing SNAPDIR_B2_APPLICATION_KEY_ID}}"
+	: "${_SNAPDIR_STORE_BUCKET:?Missing _SNAPDIR_STORE_BUCKET}"
+}
+
+_snapdir_b2_store_get_remote_sha1sums() {
+	# Runs a slow list of sha1sums on the remote store.
+	# You should not rely on this method for anything other than testing
+	# since it is very slow and does not support pagination.
+	set -eEuo pipefail
+	b2 ls --json --recursive "${_SNAPDIR_STORE_BUCKET}" "${1:?Missing remote directory}" |
+		grep -E '(fileName|Sha1)' |
+		cut -d':' -f2 |
+		sed 's|[," ]||g' |
+		while read -r id; do
+			read -r file
+			echo "$id  $file"
+		done |
+		sort -k2
+}
+
+snapdir_b2_store_test() (
+	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	set -eEuo pipefail
+
+	# Import test utilities
+	# shellcheck disable=SC1091
+	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_B2_STORE_BIN_PATH}"
+
+	setup_suite() {
+		set -eEuo pipefail
+		_SNAPDIR_TEST_STORE="${_SNAPDIR_B2_STORE_STORE}${_SNAPDIR_TEST_TMP_DIR}"
+
+		{
+			which b2 >/dev/null || {
+				mkdir -p "${_SNAPDIR_TEST_TMP_DIR}/bin"
+				wget -q "https://github.com/Backblaze/B2_Command_Line_Tool/releases/latest/checkout/b2-linux" -O "${_SNAPDIR_TEST_TMP_DIR}/bin/b2"
+				chmod +x "${_SNAPDIR_TEST_TMP_DIR}/bin/b2"
+				export PATH="${_SNAPDIR_TEST_TMP_DIR}/bin:$PATH"
+			}
+
+			echo "authorizing b2 account"
+			echo "this integration test requires network connectivity and valid b2 credentials"
+			b2 authorize-account "${SNAPDIR_B2_APPLICATION_KEY_ID}" "${SNAPDIR_B2_APPLICATION_KEY}"
+		} 2>&1 | sed 's|^|# |' || return 1
+	}
+
+	teardown_suite() {
+		set -eEuo pipefail
+		if [[ ${_SNAPDIR_TEST_STORE:-""} == "" ]]; then
+			return 0
+		fi
+		{
+			echo "cleaning up remote b2 temporary test data"
+			mkdir -p /tmp/empty-dir
+			b2 sync --skipNewer --noProgress --allowEmptySource --delete --compareVersions none "/tmp/empty-dir/" "${_SNAPDIR_TEST_STORE}/"
+			rmdir /tmp/empty-dir
+		} 2>&1 | sed 's|^|# |' || true
+	}
+
+	test_suite() {
+		set -eEuo pipefail
+		local snapdir="$_SNAPDIR_BIN_PATH"
+		local result=""
+		local _dir="${_SNAPDIR_TEST_TMP_DIR}/files"
+		local _cwd="$_SNAPDIR_CWD"
+		local foo_checksum="49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
+		local foo_path="49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
+		local bar_checksum="b3199d36d434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
+		local bar_path="b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
+		local simple_manifest_id="aa91e498f401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d"
+		local simple_manifest_path="aa9/1e4/98f/401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d"
+		local simple_manifest="D 700 e2b4329871fef9f50a20ba5d1475ee474f1df4091fe49002fd2bbcc42e6a04d5 8 ./
+F 600 $bar_checksum 4 ./bar
+F 600 $foo_checksum 4 ./foo"
+		local store="${_SNAPDIR_B2_STORE_STORE}${_SNAPDIR_TEST_TMP_DIR}"
+		local store_dir
+		store_dir="$(_snapdir_b2_store_get_remote_prefix "${store}")"
+
+		local foo_sha1sum="f1d2d2f924e986ac86fdf7b36c94bcdf32beec15"
+		local bar_sha1sum="e242ed3bffccdf271b7fbaf34ed72d089537b42f"
+		local simple_manifest_sha1sum="79e4eaf321878facb19213b33885b00ad2e5bbe3"
+		local store_ls_sha1
+		store_ls_sha1=$(echo "${simple_manifest_sha1sum}  ${store_dir}/.manifests/${simple_manifest_path}
+${foo_sha1sum}  ${store_dir}/.objects/${foo_path}
+${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
+
+		echo "# running integration tests against ${store}"
+		# --------------------------------------------------------------------------------
+		# snapdir push
+		# --------------------------------------------------------------------------------
+		describe "snapdir push --dryrun"
+		generate_files
+		echo "$simple_manifest" | "${snapdir}" stage "${_dir}" >/dev/null
+
+		# --------------------------------------------------------------------------------
+		# We only push if the manifest does not exist. We first push the objects and finally the manifest.
+		# echo "# Running: \"${snapdir}\" push --dryrun --verbose --store=\"${store}\" \"${_dir}\""
+		result=$(echo "$simple_manifest" | "${snapdir}" push --verbose --dryrun --store="${store}" "${_dir}" 2>&1 | grep dryrun || echo "")
+
+		# --------------------------------------------------------------------------------
+		check "should sync objects before manifests"
+		echo "${result}" | tr '\n' ' ' | grep -E -q ".objects.*.manifests" || fail "Expected to find 'objects' before 'manifests' in '$result'" && pass
+
+		# --------------------------------------------------------------------------------
+		check "should issue valid sync command "
+		grep -q 'b2 sync .*--skipNewer --compareVersions none "[^"]*/.objects/" "b2://[^"]*/.objects/"' <<<"${result}" || fail "Expected to find 'b2 sync --skipNewer --compareVersions none \"${_dir}/.objects/\" \"b2://.*/.objects/\"' in '$result'" && pass
+
+		# --------------------------------------------------------------------------------
+		check "should try to fetch the manifest"
+		grep -q 'b2 ls --json ".*" ".*/.manifests/' <<<"${result}" || fail "Expected to find 'b2 ls --json' in '$result'" && pass
+
+		# --------------------------------------------------------------------------------
+		check "should include --noProgress"
+		grep -q "noProgress" <<<"${result}" || fail "Expected '--noProgress' in '$result'" && pass
+
+		# --------------------------------------------------------------------------------
+		echo "# slow integration test ahead"
+		echo "# ${snapdir}" push --verbose --store="${store}" "${_dir}"
+
+		describe "snapdir push"
+		result=$(echo "$simple_manifest" | "${snapdir}" push --verbose --store="${store}" "${_dir}" 2>&1 || echo "")
+		[[ $result =~ $simple_manifest_id ]] || fail "Unexpected verbose push output, got: '$result' expected '$simple_manifest_id' to be included" && pass
+
+		check "should have pushed staged files correctly"
+		result=$(_snapdir_b2_store_get_remote_sha1sums "${store_dir}")
+		[[ $store_ls_sha1 == "$result" ]] || fail "Unexpected store ls, got: '$result' expected '$store_ls_sha1'" && pass
+
+		# c_heck "should have committed the staged content"
+		# grep -q foo "${store_dir}/.objects/${foo_path}" || fail "Expected '${store_dir}/.objects/${foo_path}' to exist. Got result '$result'"
+		# grep -q bar "${store_dir}/.objects/${bar_path}" || fail "Expected '${store_dir}/.objects/${bar_path}' to exist. Got result '$result'" && pass
+
+		# c_heck "should have committed the manifest"
+		# grep -q bar "${store_dir}/.manifests/${simple_manifest_path}" || fail "Expected '${store_dir}/.manifests/${simple_manifest_path}' to exist. Got result '$result'" && pass
+
+		# c_heck "manifest file contents should match the manifest id"
+		# echo "${simple_manifest_id}  ${store_dir}/.manifests/${simple_manifest_path}" | b3sum -c >/dev/null || fail "Expected '${store_dir}/.manifests/${simple_manifest_path}' to and b3sum to match. Got result '$result'" && pass
+
+		# # --------------------------------------------------------------------------------
+
+		# c_heck "should avoid pushing if the manifest already exists"
+		# result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store="${store}" 2>&1 || echo "")
+		# ! grep -q "No new objects to commit" <<<"${result}" || fail "Expected 'No new objects to commit' but got '$result'"
+		# grep -q "Manifest already exists on store" <<<"${result}" || fail "Expected 'Manifest already exists on store' but got '$result'" && pass
+
+		# # --------------------------------------------------------------------------------
+
+		# c_heck "should not re-upload objects already on the store"
+		# rm "${store_dir}/.manifests/${simple_manifest_path}"
+		# result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store="${store}" 2>&1 || echo "")
+		# ! grep -q "Manifest already exists on store" <<<"${result}" || fail "Expected 'Manifest already exists on store' but got '$result'"
+		# grep -q "No new objects to commit" <<<"${result}" || fail "Expected 'No new objects to commit' but got '$result'" && pass
+
+		# # --------------------------------------------------------------------------------
+
+		# c_heck "should add missing objects from the store"
+		# rm "${store_dir}/.manifests/${simple_manifest_path}"
+		# rm "${store_dir}/.objects/${foo_path}"
+		# result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store="${store}" 2>&1 || echo "")
+		# ! grep -q "No new objects to commit" <<<"${result}" || fail "Expected 'No new objects to commit' but got '$result'"
+		# grep -E -q "SAVED:.*${foo_path}" <<<"${result}" || fail "Expected '${foo_path}' but got '$result'" && pass
+
+		# # --------------------------------------------------------------------------------
+
+		# c_heck "should revert tamprered objects"
+		# rm "${store_dir}/.manifests/${simple_manifest_path}"
+		# echo "not foo" >"${store_dir}/.objects/${foo_path}"
+		# result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store="${store}" 2>&1 || echo "")
+		# ! grep -q "No new objects to commit" <<<"${result}" || fail "Expected 'No new objects to commit' but got '$result'"
+		# grep -E -q "WARNING:.*${foo_path}.*has been tampered with and will be removed." <<<"${result}" || fail "Expected '${foo_path}' tampered warning message but got '$result'"
+		# grep -E -q "SAVED:.*${foo_path}" <<<"${result}" || fail "Expected '${foo_path}' but got '$result'" && pass
+
+		# # To understand this test, and the files involved check the structure of:
+		# # tree -a "$_SNAPDIR_TEST_TMP_DIR"
+
+		# # --------------------------------------------------------------------------------
+		# # snapdir fetch
+		# # --------------------------------------------------------------------------------
+
+		# describe "snapdir fetch"
+		# # tree -a "$_SNAPDIR_TEST_TMP_DIR"
+		# clean_files
+		# test -f "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" || fail "Expected '${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}' to exist"
+		# rm -rf "${_SNAPDIR_CACHE_DIR}"
+
+		# # --------------------------------------------------------------------------------
+		# # echo "# Running: \"${snapdir}\" fetch --dryrun --verbose --store=\"${store}\" --id \"${simple_manifest_id}\""
+		# result=$("${snapdir}" fetch --dryrun --store="${store}" --id "${simple_manifest_id}" 2>&1 | grep dryrun || echo "")
+
+		# # --------------------------------------------------------------------------------
+		# c_heck "should cat the contents of the manifest to stdout"
+		# grep -q "cat.*${simple_manifest_path}" <<<"${result}" || fail "Expected 'cat*${simple_manifest_path}' but got '$result'" && pass
+
+		# # --------------------------------------------------------------------------------
+		# c_heck "should have not persisted the manifest on the cache"
+		# ! test -f "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" || fail "Unexpected '${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}' file found when using --dryrun. Got result '$result'" && pass
+
+		# # --------------------------------------------------------------------------------
+		# c_heck "should have not persisted objects on the cache"
+		# ! test -f "${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}" || fail "Unexpected '${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}' file found when using --dryrun. Got result '$result'" && pass
+
+		# # --------------------------------------------------------------------------------
+
+		# c_heck "should fail when the manifest has been tampered with"
+		# cp "${store_dir}/.manifests/${simple_manifest_path}" "${store_dir}/.manifests/${simple_manifest_path}.original"
+		# echo "tampered" >"${store_dir}/.manifests/${simple_manifest_path}"
+		# result=$("${snapdir}" fetch --dryrun --store="${store}" --id "${simple_manifest_id}" 2>&1 || echo "")
+		# # restore tampered file
+		# mv "${store_dir}/.manifests/${simple_manifest_path}.original" "${store_dir}/.manifests/${simple_manifest_path}"
+		# grep -q "error: Manifest for snapshot '${simple_manifest_id}' does not match the snapshot id." <<<"${result}" || fail "Expected 'error: Manifest for snapshot '${simple_manifest_id}' does not match the snapshot id.' but got '$result'" && pass
+
+		# # --------------------------------------------------------------------------------
+		# result=$("${snapdir}" fetch --store="${store}" --id "${simple_manifest_id}" --verbose 2>&1 || echo "")
+
+		# # --------------------------------------------------------------------------------
+		# c_heck "should fetch the manifest"
+		# echo "${simple_manifest_id}  ${store_dir}/.manifests/${simple_manifest_path}" | b3sum -c >/dev/null || fail "Expected '${simple_manifest_id} ${store_dir}/.manifests/${simple_manifest_path}' to be valid."
+		# grep -q "SAVED:.*${simple_manifest_path}" <<<"${result}" || fail "Expected '${simple_manifest_path}' to be SAVED but got '$result'" && pass
+
+		# # --------------------------------------------------------------------------------
+		# c_heck "should fetch the objects"
+		# echo "${bar_checksum}  ${store_dir}/.objects/${bar_path}" | b3sum -c >/dev/null || fail "Expected '${bar_checksum} ${store_dir}/.objects/${bar_path}' to be valid."
+		# grep -E -q "SAVED:.*${bar_path}" <<<"${result}" || fail "Expected '${bar_path}' but got '$result'"
+		# echo "${foo_checksum}  ${store_dir}/.objects/${foo_path}" | b3sum -c >/dev/null || fail "Expected '${foo_checksum} ${store_dir}/.objects/${foo_path}' to be valid."
+		# grep -E -q "SAVED:.*${foo_path}" <<<"${result}" || fail "Expected '${foo_path}' but got '$result'" && pass
+
+		# # --------------------------------------------------------------------------------
+		# c_heck "non existing manifest should fail"
+		# result=$("${snapdir}" fetch --store="${store}" --id "bogus" --verbose 2>&1 || echo "")
+		# grep -q "ID 'bogus' not found on --store='${store}'" <<<"${result}" || fail "Expected 'ID 'bogus' not found on --store='${store}' but got '$result'" && pass
+
+		# # --------------------------------------------------------------------------------
+		# # snapdir pull
+		# # --------------------------------------------------------------------------------
+		# describe "snapdir fetch"
+		# clean_files
+		# mkdir "${_dir}" || fail "Expected '${_dir}' to not exist"
+
+		# # --------------------------------------------------------------------------------
+		# # echo "# Running: \"${snapdir}\" pull --dryrun --verbose --store=\"${store}\" --id \"${simple_manifest_id}\" \"${_dir}\""
+		# result=$("${snapdir}" pull --dryrun --verbose --store="${store}" --id "${simple_manifest_id}" "${_dir}" 2>&1 || echo "")
+
+		# # --------------------------------------------------------------------------------
+		# c_heck "no files should have been pulled in --dryrun mode"
+		# ! test -f "${_dir}/foo" || fail "Unexpected '${_dir}/foo' file found. With result '$result'"
+		# ! test -f "${_dir}/bar" || fail "Unexpected '${_dir}/bar' file found. With result '$result'" && pass
+
+		# # --------------------------------------------------------------------------------
+		# result=$("${snapdir}" pull --verbose --store="${store}" --id "${simple_manifest_id}" "${_dir}" 2>&1 || echo "")
+
+		# # --------------------------------------------------------------------------------
+		# c_heck "should pull the files"
+		# grep -q foo "${_dir}/foo" || fail "Expected '${_dir}/foo' to contain 'foo'. With result '$result'"
+		# grep -q bar "${_dir}/bar" || fail "Expected '${_dir}/bar' to contain 'bar'. With result '$result'" && pass
+
+	}
+
+	run_tests
+	# run_tests_without_teardown
+)
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+	_snapdir_b2_store_readlink() {
+		echo "$(cd "$(dirname "$1")" || echo "" && pwd)/$(basename "$1")"
+	}
+else
+	shopt -s inherit_errexit
+	_snapdir_b2_store_readlink() {
+		readlink -f "$1"
+	}
+fi
+
+#######
+#       #    # ##### #####  #   # #####   ####  # #    # #####
+#       ##   #   #   #    #  # #  #    # #    # # ##   #   #
+#####   # #  #   #   #    #   #   #    # #    # # # #  #   #
+#       #  # #   #   #####    #   #####  #    # # #  # #   #
+#       #   ##   #   #   #    #   #      #    # # #   ##   #
+####### #    #   #   #    #   #   #       ####  # #    #   #
+
+# Run if is not sourced
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	# Get the absolute path to ${BASH_SOURCE[0]}
+	export _SNAPDIR_B2_STORE_BIN_PATH="${_SNAPDIR_B2_STORE_BIN_PATH:-$(_snapdir_b2_store_readlink "${BASH_SOURCE[0]}")}"
+	# import snapdir functions and environment variables,
+	# we'll need them to resolve directories, logging and testing.
+	_SNAPDIR_BIN_PATH="$(which snapdir || echo "$(dirname "${_SNAPDIR_B2_STORE_BIN_PATH}")/snapdir")"
+	export _SNAPDIR_BIN_PATH
+	# shellcheck disable=SC1090
+	. "$_SNAPDIR_BIN_PATH"
+	snapdir_b2_store_run "${@:1}"
+else
+	_snapdir_b2_store_export_env_defaults
+fi

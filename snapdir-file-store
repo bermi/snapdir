@@ -260,7 +260,7 @@ _snapdir_get_transfer_objects_command() {
 	if [[ $total_files -eq 0 ]]; then
 		echo "echo \"No new objects to ${operation_type}.\";"
 	else
-		# wait for individual commit-object commands to finish
+		# wait for individual object commands to finish
 		echo "wait -n;"
 	fi
 }
@@ -300,7 +300,7 @@ _snapdir_file_store_persit() {
 			retries=$((retries - 1))
 			if [[ ${retries} -gt 0 ]]; then
 				echo "WARNING: Retrying saving ${source_path} to ${target_path} ${retries} retries left." >&2
-				_SNAPDIR_FILE_STORE_RETRIES=$retries snapdir_file_store_commit_manifest
+				_SNAPDIR_FILE_STORE_RETRIES=$retries _snapdir_file_store_persit
 			else
 				# give up
 				echo "ERROR: Failed to commit file ${source_path} to ${target_path} with checksum ${checksum}." >&2
@@ -429,7 +429,7 @@ snapdir_file_store_test() (
 	# shellcheck disable=SC1091
 	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_FILE_STORE_BIN_PATH}"
 
-	clean_store() {
+	teardown_suite() {
 		rm -rf "$_SNAPDIR_TEST_TMP_DIR/store"
 	}
 

@@ -688,9 +688,9 @@ _snapdir_get_fetch_snapdir_manifest_command() {
 	set -eEuo pipefail
 	local snapdir_id="${_SNAPDIR_ID:?Missing --id option}"
 	local store="${_SNAPDIR_STORE:?Missing --store option}"
-	local store_store_bin_path
-	store_store_bin_path=$(_snapdir_get_store_store_bin_path "${store}")
-	$store_store_bin_path get-manifest-command --id "${snapdir_id}" --store "${store}"
+	local store_bin_path
+	store_bin_path=$(_snapdir_get_store_bin_path "${store}")
+	$store_bin_path get-manifest-command --id "${snapdir_id}" --store "${store}"
 }
 
 _snapdir_get_fetch_snapdir_files_command() {
@@ -699,17 +699,17 @@ _snapdir_get_fetch_snapdir_files_command() {
 	local snapdir_id="${_SNAPDIR_ID:?Missing --id option}"
 	local store="${_SNAPDIR_STORE:?Missing --store option}"
 	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
-	local store_store_bin_path
-	store_store_bin_path=$(_snapdir_get_store_store_bin_path "${store}")
-	$store_store_bin_path get-fetch-files-command --id "${snapdir_id}" --store "${store}" --cache-dir "${cache_dir}"
+	local store_bin_path
+	store_bin_path=$(_snapdir_get_store_bin_path "${store}")
+	$store_bin_path get-fetch-files-command --id "${snapdir_id}" --store "${store}" --cache-dir "${cache_dir}"
 }
 
-_snapdir_get_store_store_bin_path() {
+_snapdir_get_store_bin_path() {
 	local store_protocol
 	local store="${1:?Missing store}"
 	_snapdir_export_store_vars
 	store_protocol="$(echo "${store}" | cut -d':' -f1)"
-	local store_store_bin_path
+	local store_bin_path
 	local explicit_bin_path
 	explicit_bin_path="_SNAPDIR_${store_protocol^^}_STORE_BIN_PATH"
 	# if explicit_bin_path is defined, use it
@@ -717,8 +717,8 @@ _snapdir_get_store_store_bin_path() {
 		echo "${!explicit_bin_path}"
 		return 0
 	fi
-	store_store_bin_path=$(which "snapdir-${store_protocol}-store" || echo "" 2>/dev/null)
-	if [[ ${store_store_bin_path} == "" ]]; then
+	store_bin_path=$(which "snapdir-${store_protocol}-store" || echo "" 2>/dev/null)
+	if [[ ${store_bin_path} == "" ]]; then
 		if test -f "${_SNAPDIR_BIN_DIR}/snapdir-${store_protocol}-store"; then
 			echo "${_SNAPDIR_BIN_DIR}/snapdir-${store_protocol}-store"
 			return 0
@@ -733,9 +733,9 @@ _snapdir_get_push_command() {
 	set -eEuo pipefail
 	local staging_directory="${1:?Missing staging directory}"
 	local store="${2:?Missing store}"
-	local store_store_bin_path
-	store_store_bin_path=$(_snapdir_get_store_store_bin_path "${store}")
-	$store_store_bin_path get-push-command \
+	local store_bin_path
+	store_bin_path=$(_snapdir_get_store_bin_path "${store}")
+	$store_bin_path get-push-command \
 		--id "${_SNAPDIR_ID}" \
 		--staging-dir "${staging_directory}" \
 		--store "${store}"
