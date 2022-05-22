@@ -156,7 +156,7 @@ for sharing snapshots.
 
 The following are the optional arguments and their defaults:
 
--   --store=b2://\${SNAPDIR_B2_BUCKET_NAME}
+-   --store=b2://\${SNAPDIR_B2_STORE_BUCKET_NAME}
 -   --cwd=\$(pwd)
 -   --path
 -   --debug=false
@@ -438,21 +438,21 @@ b2cli tool.
         sudo chmod +x /usr/local/bin/b2
     }
 
-Authenticate by exposing SNAPDIR_B2_APPLICATION_KEY_ID SNAPDIR_B2_APPLICATION_KEY in
+Authenticate by exposing SNAPDIR_B2_STORE_APPLICATION_KEY_ID SNAPDIR_B2_STORE_APPLICATION_KEY in
 your environment and then run the following command:
 
-    b2 authorize-account "${SNAPDIR_B2_APPLICATION_KEY_ID}" "${SNAPDIR_B2_APPLICATION_KEY}"
+    b2 authorize-account "${SNAPDIR_B2_STORE_APPLICATION_KEY_ID}" "${SNAPDIR_B2_STORE_APPLICATION_KEY}"
 
 Create a bucket with the name "snapdir-tutorial". We recommend that you
 setup a bucket policy that prevents files from being deleted. Since you
 might choose a different name for your bucket, we'll save the store as
 an environment variable for the rest of the tutorial.
 
-    SNAPDIR_B2_BUCKET=snapdir-tutorial
+    SNAPDIR_B2_STORE_BUCKET_NAME=snapdir-tutorial
 
 We will now push the contents of `tutorial` to the store repository.
 
-    snapdir push --store "b2://${SNAPDIR_B2_BUCKET}/tutorial" tutorial
+    snapdir push --store "b2://${SNAPDIR_B2_STORE_BUCKET_NAME}/tutorial" tutorial
     # Outputs: ab5f25e59925e01a58a05ac41437c90d6e0cefabd3bf2f6d53489d5467183f17
 
 If you run into issues, you can use the `--verbose` and `--debug`
@@ -462,7 +462,7 @@ Let's clear our local cache and verify that we can pull the snapdir from
 the store repository.
 
     rm -rf ${HOME}/.cache/snapdir tutorial && \
-    snapdir pull --id=ab5f25e59925e01a58a05ac41437c90d6e0cefabd3bf2f6d53489d5467183f17 --store "b2://${SNAPDIR_B2_BUCKET}/tutorial" tutorial
+    snapdir pull --id=ab5f25e59925e01a58a05ac41437c90d6e0cefabd3bf2f6d53489d5467183f17 --store "b2://${SNAPDIR_B2_STORE_BUCKET_NAME}/tutorial" tutorial
 
 ## Pushing all snapshots
 
