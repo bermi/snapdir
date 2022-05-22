@@ -445,9 +445,6 @@ snapdir_file_store_test() (
 		local bar_path="b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
 		local simple_manifest_id="aa91e498f401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d"
 		local simple_manifest_path="aa9/1e4/98f/401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d"
-		local simple_manifest="D 700 e2b4329871fef9f50a20ba5d1475ee474f1df4091fe49002fd2bbcc42e6a04d5 8 ./
-F 600 $bar_checksum 4 ./bar
-F 600 $foo_checksum 4 ./foo"
 		local store="file://${_SNAPDIR_TEST_TMP_DIR}/store"
 		local store_dir
 		store_dir="$(_snapdir_file_store_get_store_dir "${store}")"
@@ -518,7 +515,7 @@ F 600 $foo_checksum 4 ./foo"
 
 		# --------------------------------------------------------------------------------
 
-		check "should revert tamprered objects"
+		check "should revert tampered objects"
 		rm "${store_dir}/.manifests/${simple_manifest_path}"
 		echo "not foo" >"${store_dir}/.objects/${foo_path}"
 		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store "${store}" 2>&1 || echo "")
