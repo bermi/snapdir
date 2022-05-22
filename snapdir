@@ -921,12 +921,14 @@ _snapdir_check_integrity() {
 
 _snapdir_log() {
 	set -eEuo pipefail
-	if [[ ${_SNAPDIR_VERBOSE:-""} == "true" ]]; then
-		if [[ ${1:-"_piped"} == "_piped" ]]; then
+	if [[ ${1:-"_piped"} == "_piped" ]]; then
+		if [[ ${_SNAPDIR_VERBOSE:-""} == "true" ]]; then
 			sed -E "s/^/# [$_SNAPDIR] /g" >&2
 		else
-			echo "$1" | sed -E "s/^/# [$_SNAPDIR] /g" >&2
+			cat >/dev/null
 		fi
+	elif [[ ${_SNAPDIR_VERBOSE:-""} == "true" ]]; then
+		echo "$1" | sed -E "s/^/# [$_SNAPDIR] /g" >&2
 	fi
 }
 

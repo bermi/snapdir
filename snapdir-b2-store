@@ -41,16 +41,18 @@ snapdir_b2_store_get_push_command() {
 	# remove trailing slash
 	source_dir="${source_dir%/}"
 
-	local manifest_rel_base
-	manifest_rel_base=$(_snapdir_get_manifest_rel_base "${id}")
-
 	# only push when the manifest does not exist
 	# first push objects then the manifest
 	cat <<-EOF
 		set -eEuo pipefail;
-		if [[ "\$(b2 ls --json "${_SNAPDIR_STORE_BUCKET}" "${_SNAPDIR_STORE_BASE_DIR}/${manifest_rel_base}")" == '[]' ]]; then
+		_existing_manifest=\$(${_SNAPDIR_B2_STORE_BIN_PATH} get-manifest --id "${id}" --store "${store}" --retries 0 2>&1 | head -1 || echo "");
+		if [[ \$_existing_manifest =~ ^D.*/ ]]; then
+			echo "Manifest already exists, skipping push";
+		else
+			SECONDS=0
 			b2 sync --noProgress --skipNewer --compareVersions none "$source_dir/.objects/" "${store}/.objects/";
 			b2 sync --noProgress --skipNewer --compareVersions none "$source_dir/.manifests/" "${store}/.manifests/";
+			echo "Done pushing ${id} after \$SECONDS seconds";
 		fi
 	EOF
 }
@@ -68,6 +70,26 @@ snapdir_b2_store_get_manifest_command() {
 	#
 	set -eEuo pipefail
 	local id="${_SNAPDIR_B2_STORE_ID:?Missing --id}"
+	local store="${_SNAPDIR_B2_STORE_STORE:?Missing --store}"
+	cat <<-EOF
+		set -eEuo pipefail;
+		${_SNAPDIR_B2_STORE_BIN_PATH} get-manifest --id "${id}" --store "${store}";
+	EOF
+}
+
+snapdir_b2_store_get_manifest() {
+	# Pipes a manifest given its ID to stdout.
+	#
+	# All
+	#
+	# Example:
+	#
+	#			snapdir-b2-store get-manifest --id "${id}" --store "${store}"
+	#
+	set -eEuo pipefail
+	local id="${_SNAPDIR_B2_STORE_ID:?Missing --id}"
+	local store="${_SNAPDIR_B2_STORE_STORE:?Missing --store}"
+	local retries="${_SNAPDIR_B2_STORE_RETRIES:-5}"
 	local manifest_rel_path
 	manifest_rel_path=$(_snapdir_get_manifest_rel_path "${id}")
 
@@ -78,16 +100,13 @@ snapdir_b2_store_get_manifest_command() {
 	# creates a temporary file to log the output of the transaction
 	tmp_manifest_path="$(mktemp -t "snapdir-manifest-${id}".XXXXXXXXXX)"
 
-	cat <<-EOF
-		set -eEuo pipefail;
-		${_SNAPDIR_B2_STORE_BIN_PATH} fetch --checksum "${checksum}" --source-path "${_SNAPDIR_STORE_BASE_DIR}/${manifest_rel_path}" --target-path "${tmp_manifest_path}" --log-file "$log_file";
-		${_SNAPDIR_B2_STORE_BIN_PATH} ensure-no-errors --checksum "${id}" --log-file "$log_file" || {
-			rm -f "${log_file}" "${tmp_manifest_path}";
-			exit 1;
-		}
-		cat "${tmp_manifest_path}";
-		rm -f "${log_file}" "${tmp_manifest_path}";
-	EOF
+	${_SNAPDIR_B2_STORE_BIN_PATH} fetch --checksum "${id}" --source-path "${_SNAPDIR_STORE_BASE_DIR}/${manifest_rel_path}" --target-path "${tmp_manifest_path}" --log-file "$log_file" --store "${store}" --retries "${retries}" >/dev/null
+	${_SNAPDIR_B2_STORE_BIN_PATH} ensure-no-errors --checksum "${id}" --log-file "$log_file" || {
+		rm -f "${log_file}" "${tmp_manifest_path}"
+		exit 1
+	}
+	cat "${tmp_manifest_path}"
+	rm -f "${log_file}" "${tmp_manifest_path}"
 }
 
 snapdir_b2_store_get_fetch_files_command() {
@@ -137,7 +156,7 @@ snapdir_b2_store_get_fetch_files_command() {
 
 snapdir_b2_store_fetch() {
 	set -eEuo pipefail
-	local log_file="${_SNAPDIR_FILE_STORE_LOG_FILE:?Missing --log-file}"
+	local log_file="${_SNAPDIR_B2_STORE_LOG_FILE:?Missing --log-file}"
 	_snapdir_b2_fetch_to_cache | tee "$log_file"
 }
 
@@ -154,8 +173,8 @@ snapdir_b2_store_ensure_no_errors() {
 	#         --log-file "/log/file/for/the/transaction"
 	#
 	set -eEuo pipefail
-	local checksum="${_SNAPDIR_FILE_STORE_CHECKSUM:?Missing --checksum}"
-	local log_file="${_SNAPDIR_FILE_STORE_LOG_FILE:?Missing --log-file}"
+	local checksum="${_SNAPDIR_B2_STORE_CHECKSUM:?Missing --checksum}"
+	local log_file="${_SNAPDIR_B2_STORE_LOG_FILE:?Missing --log-file}"
 
 	# only after all the files have been copied, and ided, we'll
 	# save the manifest
@@ -177,9 +196,9 @@ snapdir_b2_store_ensure_no_errors() {
 
 snapdir_b2_store_run() (
 	set -eEuo pipefail
-	local subcommands="get-manifest-command|get-fetch-files-command|get-push-command|test|version|ensure-no-errors|fetch"
+	local subcommands="get-manifest|get-manifest-command|get-fetch-files-command|get-push-command|test|version|ensure-no-errors|fetch"
 	local boolean_args="debug"
-	local value_required_args="cache_dir|staging_dir|store|manifest|id|source_path|target_path|checksum|log_file"
+	local value_required_args="cache_dir|staging_dir|store|manifest|id|source_path|target_path|checksum|log_file|retries"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
 
 	_snapdir_b2_store_parse_argument_key() {
@@ -208,7 +227,7 @@ snapdir_b2_store_run() (
 	local subcommand_candidate="${1:-"$command"}"
 	while [ $# -gt 0 ]; do
 		case "$1" in
-		get-manifest-command | get-fetch-files-command | get-push-command | test | fetch | ensure-no-errors)
+		fetch | get-manifest | get-manifest-command | get-fetch-files-command | get-push-command | test | ensure-no-errors)
 			command="$1"
 			shift
 			;;
@@ -311,10 +330,10 @@ _snapdir_b2_fetch_to_cache() {
 	# final location once the integrity has been checked.
 	# We can use the same logic for objects and manifests.
 	set -eEuo pipefail
-	local source_path="${_SNAPDIR_FILE_STORE_SOURCE_PATH:?Missing --source-path}"
-	local target_path="${_SNAPDIR_FILE_STORE_TARGET_PATH:?Missing --target-path}"
-	local checksum="${_SNAPDIR_FILE_STORE_CHECKSUM:?Missing --checksum}"
-	local retries="${_SNAPDIR_FILE_STORE_RETRIES:-5}"
+	local source_path="${_SNAPDIR_B2_STORE_SOURCE_PATH:?Missing --source-path}"
+	local target_path="${_SNAPDIR_B2_STORE_TARGET_PATH:?Missing --target-path}"
+	local checksum="${_SNAPDIR_B2_STORE_CHECKSUM:?Missing --checksum}"
+	local retries="${_SNAPDIR_B2_STORE_RETRIES:-5}"
 	local dir_on_store
 	dir_on_store="$(dirname "${target_path}")"
 	mkdir -p "${dir_on_store}"
@@ -337,14 +356,14 @@ _snapdir_b2_fetch_to_cache() {
 	if ! test -f "${tmp_target_path}" || [[ "$(b3sum "${tmp_target_path}" --no-names)" != "${checksum}" ]]; then
 		# retry when the source has a valid checksum
 		rm -rf "${tmp_target_path}"
-		# subtract 1 from _SNAPDIR_FILE_STORE_RETRIES
+		# subtract 1 from _SNAPDIR_B2_STORE_RETRIES
 		retries=$((retries - 1))
 		if [[ ${retries} -gt 0 ]]; then
-			echo "WARNING: Retrying saving b2://${_SNAPDIR_STORE_BUCKET}${source_path} to ${target_path} ${retries} retries left." >&2
-			_SNAPDIR_FILE_STORE_RETRIES=$retries _snapdir_b2_fetch_to_cache
+			echo "WARNING: Retrying fetch b2://${_SNAPDIR_STORE_BUCKET}${source_path} to ${target_path} ${retries} retries left." >&2
+			_SNAPDIR_B2_STORE_RETRIES=$retries _snapdir_b2_fetch_to_cache
 		else
 			# give up
-			echo "ERROR: Failed to commit b2://${_SNAPDIR_STORE_BUCKET}${source_path} to ${target_path} with checksum ${checksum}." >&2
+			echo "ERROR: Failed to fetch b2://${_SNAPDIR_STORE_BUCKET}${source_path} to ${target_path} with checksum ${checksum}." >&2
 			exit 1
 		fi
 	else
@@ -439,6 +458,7 @@ snapdir_b2_store_test() (
 	test_suite() {
 		set -eEuo pipefail
 		local snapdir="$_SNAPDIR_BIN_PATH"
+		local b2store="$_SNAPDIR_B2_STORE_BIN_PATH"
 		local result=""
 		local _dir="${_SNAPDIR_TEST_TMP_DIR}/files"
 		local _cwd="$_SNAPDIR_CWD"
@@ -469,12 +489,12 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 		# --------------------------------------------------------------------------------
 		describe "snapdir push --dryrun"
 		generate_files
-		echo "$simple_manifest" | "${snapdir}" stage "${_dir}" >/dev/null
+		"${snapdir}" stage "${_dir}" >/dev/null
 
 		# --------------------------------------------------------------------------------
 		# We only push if the manifest does not exist. We first push the objects and finally the manifest.
 		# echo "# Running: \"${snapdir}\" push --dryrun --verbose --store=\"${store}\" \"${_dir}\""
-		result=$(echo "$simple_manifest" | "${snapdir}" push --verbose --dryrun --store="${store}" "${_dir}" 2>&1 | grep dryrun || echo "")
+		result=$("${snapdir}" push --verbose --dryrun --store "${store}" "${_dir}" 2>&1 || echo "")
 
 		# --------------------------------------------------------------------------------
 		check "should sync objects before manifests"
@@ -486,7 +506,7 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 
 		# --------------------------------------------------------------------------------
 		check "should try to fetch the manifest"
-		grep -q 'b2 ls --json ".*" ".*/.manifests/' <<<"${result}" || fail "Expected to find 'b2 ls --json' in '$result'" && pass
+		grep -q 'get-manifest --id ' <<<"${result}" || fail "Expected to find 'get-manifest --id ' in '$result'" && pass
 
 		# --------------------------------------------------------------------------------
 		check "should include --noProgress"
@@ -494,38 +514,43 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 
 		# --------------------------------------------------------------------------------
 		echo "# slow integration test ahead"
-		echo "# ${snapdir}" push --verbose --store="${store}" "${_dir}"
+		echo "# ${snapdir}" push --verbose --store "${store}" "${_dir}"
 
 		describe "snapdir push"
-		result=$(echo "$simple_manifest" | "${snapdir}" push --verbose --store="${store}" "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" push --verbose --store "${store}" "${_dir}" 2>&1 || echo "")
 		[[ $result =~ $simple_manifest_id ]] || fail "Unexpected verbose push output, got: '$result' expected '$simple_manifest_id' to be included" && pass
 
+		# --------------------------------------------------------------------------------
 		check "should have pushed staged files correctly"
 		result=$(_snapdir_b2_store_get_remote_sha1sums "${store_dir}")
-		[[ $store_ls_sha1 == "$result" ]] || fail "Unexpected store ls, got: '$result' expected '$store_ls_sha1'" && pass
+		[[ $store_ls_sha1 == "$result" ]] || fail "Unexpected remote sha1sums, got: '$result' expected '$store_ls_sha1'" && pass
 
-		# c_heck "should have committed the staged content"
-		# grep -q foo "${store_dir}/.objects/${foo_path}" || fail "Expected '${store_dir}/.objects/${foo_path}' to exist. Got result '$result'"
-		# grep -q bar "${store_dir}/.objects/${bar_path}" || fail "Expected '${store_dir}/.objects/${bar_path}' to exist. Got result '$result'" && pass
+		# --------------------------------------------------------------------------------
+		check "should fetch manifest correctly"
+		result=$(_snapdir_b2_store_get_remote_sha1sums "${store_dir}")
+		[[ $store_ls_sha1 == "$result" ]] || fail "Unexpected remote sha1sums, got: '$result' expected '$store_ls_sha1'" && pass
 
-		# c_heck "should have committed the manifest"
-		# grep -q bar "${store_dir}/.manifests/${simple_manifest_path}" || fail "Expected '${store_dir}/.manifests/${simple_manifest_path}' to exist. Got result '$result'" && pass
+		describe "snapdir-b2-store get-manifest"
+		check "should get manifest from remote"
+		result=$("$b2store" get-manifest --id "$simple_manifest_id" --store "${store}" 2>&1 || echo "")
+		[[ $simple_manifest == "$result" ]] || fail "Unexpected manifest, got: '$result' expected '$simple_manifest'" && pass
 
-		# c_heck "manifest file contents should match the manifest id"
-		# echo "${simple_manifest_id}  ${store_dir}/.manifests/${simple_manifest_path}" | b3sum -c >/dev/null || fail "Expected '${store_dir}/.manifests/${simple_manifest_path}' to and b3sum to match. Got result '$result'" && pass
+		# --------------------------------------------------------------------------------
 
-		# # --------------------------------------------------------------------------------
+		check "should avoid pushing if the manifest already exists"
+		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store "${store}" 2>&1 || echo "")
+		! grep -q "Pushing snapshot to store" <<<"${result}" || fail "Unxpected 'Pushing snapshot to store' found on '$result'" && pass
 
-		# c_heck "should avoid pushing if the manifest already exists"
-		# result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store="${store}" 2>&1 || echo "")
-		# ! grep -q "No new objects to commit" <<<"${result}" || fail "Expected 'No new objects to commit' but got '$result'"
-		# grep -q "Manifest already exists on store" <<<"${result}" || fail "Expected 'Manifest already exists on store' but got '$result'" && pass
+		# echo "NO VERBOSE"
+		# "${snapdir}" push --id ${simple_manifest_id} --store "${store}"
+		# echo "VERBOSE"
+		# "${snapdir}" push --id ${simple_manifest_id} --verbose --store "${store}"
 
 		# # --------------------------------------------------------------------------------
 
 		# c_heck "should not re-upload objects already on the store"
 		# rm "${store_dir}/.manifests/${simple_manifest_path}"
-		# result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store="${store}" 2>&1 || echo "")
+		# result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store "${store}" 2>&1 || echo "")
 		# ! grep -q "Manifest already exists on store" <<<"${result}" || fail "Expected 'Manifest already exists on store' but got '$result'"
 		# grep -q "No new objects to commit" <<<"${result}" || fail "Expected 'No new objects to commit' but got '$result'" && pass
 
@@ -534,7 +559,7 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 		# c_heck "should add missing objects from the store"
 		# rm "${store_dir}/.manifests/${simple_manifest_path}"
 		# rm "${store_dir}/.objects/${foo_path}"
-		# result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store="${store}" 2>&1 || echo "")
+		# result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store "${store}" 2>&1 || echo "")
 		# ! grep -q "No new objects to commit" <<<"${result}" || fail "Expected 'No new objects to commit' but got '$result'"
 		# grep -E -q "SAVED:.*${foo_path}" <<<"${result}" || fail "Expected '${foo_path}' but got '$result'" && pass
 
@@ -543,7 +568,7 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 		# c_heck "should revert tamprered objects"
 		# rm "${store_dir}/.manifests/${simple_manifest_path}"
 		# echo "not foo" >"${store_dir}/.objects/${foo_path}"
-		# result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store="${store}" 2>&1 || echo "")
+		# result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store "${store}" 2>&1 || echo "")
 		# ! grep -q "No new objects to commit" <<<"${result}" || fail "Expected 'No new objects to commit' but got '$result'"
 		# grep -E -q "WARNING:.*${foo_path}.*has been tampered with and will be removed." <<<"${result}" || fail "Expected '${foo_path}' tampered warning message but got '$result'"
 		# grep -E -q "SAVED:.*${foo_path}" <<<"${result}" || fail "Expected '${foo_path}' but got '$result'" && pass
@@ -563,7 +588,7 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 
 		# # --------------------------------------------------------------------------------
 		# # echo "# Running: \"${snapdir}\" fetch --dryrun --verbose --store=\"${store}\" --id \"${simple_manifest_id}\""
-		# result=$("${snapdir}" fetch --dryrun --store="${store}" --id "${simple_manifest_id}" 2>&1 | grep dryrun || echo "")
+		# result=$("${snapdir}" fetch --dryrun --store "${store}" --id "${simple_manifest_id}" 2>&1|| echo "")
 
 		# # --------------------------------------------------------------------------------
 		# c_heck "should cat the contents of the manifest to stdout"
@@ -582,13 +607,13 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 		# c_heck "should fail when the manifest has been tampered with"
 		# cp "${store_dir}/.manifests/${simple_manifest_path}" "${store_dir}/.manifests/${simple_manifest_path}.original"
 		# echo "tampered" >"${store_dir}/.manifests/${simple_manifest_path}"
-		# result=$("${snapdir}" fetch --dryrun --store="${store}" --id "${simple_manifest_id}" 2>&1 || echo "")
+		# result=$("${snapdir}" fetch --dryrun --store "${store}" --id "${simple_manifest_id}" 2>&1 || echo "")
 		# # restore tampered file
 		# mv "${store_dir}/.manifests/${simple_manifest_path}.original" "${store_dir}/.manifests/${simple_manifest_path}"
 		# grep -q "error: Manifest for snapshot '${simple_manifest_id}' does not match the snapshot id." <<<"${result}" || fail "Expected 'error: Manifest for snapshot '${simple_manifest_id}' does not match the snapshot id.' but got '$result'" && pass
 
 		# # --------------------------------------------------------------------------------
-		# result=$("${snapdir}" fetch --store="${store}" --id "${simple_manifest_id}" --verbose 2>&1 || echo "")
+		# result=$("${snapdir}" fetch --store "${store}" --id "${simple_manifest_id}" --verbose 2>&1 || echo "")
 
 		# # --------------------------------------------------------------------------------
 		# c_heck "should fetch the manifest"
@@ -604,7 +629,7 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 
 		# # --------------------------------------------------------------------------------
 		# c_heck "non existing manifest should fail"
-		# result=$("${snapdir}" fetch --store="${store}" --id "bogus" --verbose 2>&1 || echo "")
+		# result=$("${snapdir}" fetch --store "${store}" --id "bogus" --verbose 2>&1 || echo "")
 		# grep -q "ID 'bogus' not found on --store='${store}'" <<<"${result}" || fail "Expected 'ID 'bogus' not found on --store='${store}' but got '$result'" && pass
 
 		# # --------------------------------------------------------------------------------
@@ -616,7 +641,7 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 
 		# # --------------------------------------------------------------------------------
 		# # echo "# Running: \"${snapdir}\" pull --dryrun --verbose --store=\"${store}\" --id \"${simple_manifest_id}\" \"${_dir}\""
-		# result=$("${snapdir}" pull --dryrun --verbose --store="${store}" --id "${simple_manifest_id}" "${_dir}" 2>&1 || echo "")
+		# result=$("${snapdir}" pull --dryrun --verbose --store "${store}" --id "${simple_manifest_id}" "${_dir}" 2>&1 || echo "")
 
 		# # --------------------------------------------------------------------------------
 		# c_heck "no files should have been pulled in --dryrun mode"
@@ -624,7 +649,7 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 		# ! test -f "${_dir}/bar" || fail "Unexpected '${_dir}/bar' file found. With result '$result'" && pass
 
 		# # --------------------------------------------------------------------------------
-		# result=$("${snapdir}" pull --verbose --store="${store}" --id "${simple_manifest_id}" "${_dir}" 2>&1 || echo "")
+		# result=$("${snapdir}" pull --verbose --store "${store}" --id "${simple_manifest_id}" "${_dir}" 2>&1 || echo "")
 
 		# # --------------------------------------------------------------------------------
 		# c_heck "should pull the files"

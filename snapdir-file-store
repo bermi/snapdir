@@ -457,7 +457,7 @@ F 600 $foo_checksum 4 ./foo"
 		# --------------------------------------------------------------------------------
 		describe "snapdir push"
 		generate_files
-		echo "$simple_manifest" | "${snapdir}" stage "${_dir}" >/dev/null
+		"${snapdir}" stage "${_dir}" >/dev/null
 
 		# We only push if the manifest does not exist. We first push the objects and finally the manifest.
 		# echo "# Running: \"${snapdir}\" push --dryrun --verbose --store \"${store}\" \"${_dir}\""
