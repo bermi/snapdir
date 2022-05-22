@@ -64,7 +64,7 @@
 set -eEuo pipefail
 IFS=$'\n\t'
 
-snapdir_test_run() {
+snapdir_test_run_unit_tests() {
 	set -eEuo pipefail
 	local dir
 	dir="$(dirname "${BASH_SOURCE[0]}")"
@@ -72,12 +72,21 @@ snapdir_test_run() {
 	"$dir/snapdir-manifest" test
 	"$dir/snapdir" test
 	"$dir/snapdir-file-store" test
+	echo "# unit tests completed in ${SECONDS} seconds"
+}
 
-	# if [[ "${SNAPDIR_B2_STORE_TEST_BUCKET:-}" != "" ]]; then
-	# 	"$dir/snapdir-b2-store" test --remote "b2://${SNAPDIR_B2_STORE_TEST_BUCKET}"
-	# fi
-
-	echo "# test suite completed in ${SECONDS} seconds"
+snapdir_test_run_integration_tests() {
+	set -eEuo pipefail
+	local dir
+	dir="$(dirname "${BASH_SOURCE[0]}")"
+	echo "# integration tests"
+	SECONDS=0
+	if [[ "${SNAPDIR_B2_STORE_TEST_BUCKET:-}" != "" ]]; then
+		"$dir/snapdir-b2-store" test --store "b2://${SNAPDIR_B2_STORE_TEST_BUCKET}"
+	else
+		echo "# skipping snapdir-b2-store test. No SNAPDIR_B2_STORE_TEST_BUCKET provided." >&2
+	fi
+	echo "# integration tests completed in ${SECONDS} seconds"
 }
 
 _snapdir_test_utils() {
@@ -239,7 +248,11 @@ fi
 
 # Run if is not sourced
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
-	snapdir_test_run
+	snapdir_test_run_unit_tests
+	# was integration passed?
+	if [[ ${1:-} == integration ]]; then
+		snapdir_test_run_integration_tests
+	fi
 elif [[ ${1:-""} != "" ]]; then
 	_snapdir_test_utils "${1}"
 fi

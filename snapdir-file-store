@@ -88,7 +88,7 @@ snapdir_file_store_get_manifest_command() {
 	cat <<-EOF
 		set -eEuo pipefail;
 		if ! test -f "${long_term_dir}/${manifest_rel_path}"; then
-			echo "ID '${id}' not found on --store='${store}'." >&2;
+			echo "ID '${id}' not found on --store '${store}'." >&2;
 			exit 1;
 		fi;
 		cat "${long_term_dir}/${manifest_rel_path}";
@@ -460,8 +460,8 @@ F 600 $foo_checksum 4 ./foo"
 		echo "$simple_manifest" | "${snapdir}" stage "${_dir}" >/dev/null
 
 		# We only push if the manifest does not exist. We first push the objects and finally the manifest.
-		# echo "# Running: \"${snapdir}\" push --dryrun --verbose --store=\"${store}\" \"${_dir}\""
-		result=$(echo "$simple_manifest" | "${snapdir}" push --verbose --dryrun --store="${store}" "${_dir}" 2>&1 | grep dryrun || echo "")
+		# echo "# Running: \"${snapdir}\" push --dryrun --verbose --store \"${store}\" \"${_dir}\""
+		result=$("${snapdir}" push --verbose --dryrun --store "${store}" "${_dir}" 2>&1 | grep dryrun || echo "")
 
 		check "should run expensive method in the background and with nice"
 		grep -E -q "nice.+commit-object.+& " <<<"${result}" || fail "Expected 'nice.*commit-object.*& ' match on '$result'" && pass
@@ -479,7 +479,7 @@ F 600 $foo_checksum 4 ./foo"
 
 		# --------------------------------------------------------------------------------
 		describe "push --store file"
-		result=$("${snapdir}" push --id ${simple_manifest_id} --debug --verbose --store="${store}" 2>&1 || echo "")
+		result=$("${snapdir}" push --id ${simple_manifest_id} --debug --verbose --store "${store}" 2>&1 || echo "")
 		# tree -a "${_SNAPDIR_TEST_TMP_DIR}"
 
 		check "should have committed the staged content"
@@ -495,7 +495,7 @@ F 600 $foo_checksum 4 ./foo"
 		# --------------------------------------------------------------------------------
 
 		check "should avoid pushing if the manifest already exists"
-		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store="${store}" 2>&1 || echo "")
+		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store "${store}" 2>&1 || echo "")
 		! grep -q "No new objects to commit" <<<"${result}" || fail "Expected 'No new objects to commit' but got '$result'"
 		grep -q "Manifest already exists on store" <<<"${result}" || fail "Expected 'Manifest already exists on store' but got '$result'" && pass
 
@@ -503,7 +503,7 @@ F 600 $foo_checksum 4 ./foo"
 
 		check "should not re-upload objects already on the store"
 		rm "${store_dir}/.manifests/${simple_manifest_path}"
-		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store="${store}" 2>&1 || echo "")
+		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store "${store}" 2>&1 || echo "")
 		! grep -q "Manifest already exists on store" <<<"${result}" || fail "Expected 'Manifest already exists on store' but got '$result'"
 		grep -q "No new objects to commit" <<<"${result}" || fail "Expected 'No new objects to commit' but got '$result'" && pass
 
@@ -512,7 +512,7 @@ F 600 $foo_checksum 4 ./foo"
 		check "should add missing objects from the store"
 		rm "${store_dir}/.manifests/${simple_manifest_path}"
 		rm "${store_dir}/.objects/${foo_path}"
-		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store="${store}" 2>&1 || echo "")
+		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store "${store}" 2>&1 || echo "")
 		! grep -q "No new objects to commit" <<<"${result}" || fail "Expected 'No new objects to commit' but got '$result'"
 		grep -E -q "SAVED:.*${foo_path}" <<<"${result}" || fail "Expected '${foo_path}' but got '$result'" && pass
 
@@ -521,7 +521,7 @@ F 600 $foo_checksum 4 ./foo"
 		check "should revert tamprered objects"
 		rm "${store_dir}/.manifests/${simple_manifest_path}"
 		echo "not foo" >"${store_dir}/.objects/${foo_path}"
-		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store="${store}" 2>&1 || echo "")
+		result=$("${snapdir}" push --id ${simple_manifest_id} --verbose --store "${store}" 2>&1 || echo "")
 		! grep -q "No new objects to commit" <<<"${result}" || fail "Expected 'No new objects to commit' but got '$result'"
 		grep -E -q "WARNING:.*${foo_path}.*has been tampered with and will be removed." <<<"${result}" || fail "Expected '${foo_path}' tampered warning message but got '$result'"
 		grep -E -q "SAVED:.*${foo_path}" <<<"${result}" || fail "Expected '${foo_path}' but got '$result'" && pass
@@ -540,8 +540,8 @@ F 600 $foo_checksum 4 ./foo"
 		rm -rf "${_SNAPDIR_CACHE_DIR}"
 
 		# --------------------------------------------------------------------------------
-		# echo "# Running: \"${snapdir}\" fetch --dryrun --verbose --store=\"${store}\" --id \"${simple_manifest_id}\""
-		result=$("${snapdir}" fetch --dryrun --store="${store}" --id "${simple_manifest_id}" 2>&1 | grep dryrun || echo "")
+		# echo "# Running: \"${snapdir}\" fetch --dryrun --verbose --store \"${store}\" --id \"${simple_manifest_id}\""
+		result=$("${snapdir}" fetch --dryrun --store "${store}" --id "${simple_manifest_id}" 2>&1 | grep dryrun || echo "")
 
 		# --------------------------------------------------------------------------------
 		check "should cat the contents of the manifest to stdout"
@@ -560,13 +560,13 @@ F 600 $foo_checksum 4 ./foo"
 		check "should fail when the manifest has been tampered with"
 		cp "${store_dir}/.manifests/${simple_manifest_path}" "${store_dir}/.manifests/${simple_manifest_path}.original"
 		echo "tampered" >"${store_dir}/.manifests/${simple_manifest_path}"
-		result=$("${snapdir}" fetch --dryrun --store="${store}" --id "${simple_manifest_id}" 2>&1 || echo "")
+		result=$("${snapdir}" fetch --dryrun --store "${store}" --id "${simple_manifest_id}" 2>&1 || echo "")
 		# restore tampered file
 		mv "${store_dir}/.manifests/${simple_manifest_path}.original" "${store_dir}/.manifests/${simple_manifest_path}"
 		grep -q "error: Manifest for snapshot '${simple_manifest_id}' does not match the snapshot id." <<<"${result}" || fail "Expected 'error: Manifest for snapshot '${simple_manifest_id}' does not match the snapshot id.' but got '$result'" && pass
 
 		# --------------------------------------------------------------------------------
-		result=$("${snapdir}" fetch --store="${store}" --id "${simple_manifest_id}" --verbose 2>&1 || echo "")
+		result=$("${snapdir}" fetch --store "${store}" --id "${simple_manifest_id}" --verbose 2>&1 || echo "")
 
 		# --------------------------------------------------------------------------------
 		check "should fetch the manifest"
@@ -582,8 +582,8 @@ F 600 $foo_checksum 4 ./foo"
 
 		# --------------------------------------------------------------------------------
 		check "non existing manifest should fail"
-		result=$("${snapdir}" fetch --store="${store}" --id "bogus" --verbose 2>&1 || echo "")
-		grep -q "ID 'bogus' not found on --store='${store}'" <<<"${result}" || fail "Expected 'ID 'bogus' not found on --store='${store}' but got '$result'" && pass
+		result=$("${snapdir}" fetch --store "${store}" --id "bogus" --verbose 2>&1 || echo "")
+		grep -q "ID 'bogus' not found on --store '${store}'" <<<"${result}" || fail "Expected 'ID 'bogus' not found on --store '${store}' but got '$result'" && pass
 
 		# --------------------------------------------------------------------------------
 		# snapdir pull
@@ -593,8 +593,8 @@ F 600 $foo_checksum 4 ./foo"
 		mkdir "${_dir}" || fail "Expected '${_dir}' to not exist"
 
 		# --------------------------------------------------------------------------------
-		# echo "# Running: \"${snapdir}\" pull --dryrun --verbose --store=\"${store}\" --id \"${simple_manifest_id}\" \"${_dir}\""
-		result=$("${snapdir}" pull --dryrun --verbose --store="${store}" --id "${simple_manifest_id}" "${_dir}" 2>&1 || echo "")
+		# echo "# Running: \"${snapdir}\" pull --dryrun --verbose --store \"${store}\" --id \"${simple_manifest_id}\" \"${_dir}\""
+		result=$("${snapdir}" pull --dryrun --verbose --store "${store}" --id "${simple_manifest_id}" "${_dir}" 2>&1 || echo "")
 
 		# --------------------------------------------------------------------------------
 		check "no files should have been pulled in --dryrun mode"
@@ -602,7 +602,7 @@ F 600 $foo_checksum 4 ./foo"
 		! test -f "${_dir}/bar" || fail "Unexpected '${_dir}/bar' file found. With result '$result'" && pass
 
 		# --------------------------------------------------------------------------------
-		result=$("${snapdir}" pull --verbose --store="${store}" --id "${simple_manifest_id}" "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" pull --verbose --store "${store}" --id "${simple_manifest_id}" "${_dir}" 2>&1 || echo "")
 
 		# --------------------------------------------------------------------------------
 		check "should pull the files"

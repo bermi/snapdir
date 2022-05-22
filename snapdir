@@ -152,19 +152,15 @@ snapdir_manifest() {
 		echo "$_SNAPDIR_MANIFEST"
 		return 0
 	fi
-
 	# Returns a list of files and the directories that should be part of the snapshot in the following format
 	# <file_path> <b3sum|-> <mode>
 	local base_dir
 	base_dir="$(_snapdir_get_base_dir "${1:-""}")"
-	local snapdir_dir
-	snapdir_dir="$(_snapdir_get_snapdir_dir "$base_dir" "${2:-"."}")"
 	local snapdir_dir_abs_path
-	snapdir_dir_abs_path="$(realpath "${base_dir}/${snapdir_dir}")"
+	snapdir_dir_abs_path="$(realpath "${base_dir}")"
 	if [[ ${snapdir_dir_abs_path%/} == "/" ]]; then
 		_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" --exclude="system" "/")
 	else
-		_snapdir_log "Running: ${_SNAPDIR_BIN_DIR}/snapdir-manifest \"${base_dir}/${snapdir_dir}\""
 		test -d "${snapdir_dir_abs_path}" || {
 			echo "error: Snapshot directory '${snapdir_dir_abs_path}' does not exist." >&2
 			return 1
@@ -194,9 +190,7 @@ snapdir_id() {
 	if [[ ${manifest} == "" ]]; then
 		local base_dir
 		base_dir="$(_snapdir_get_base_dir "${1:-""}")"
-		local snapdir_dir
-		snapdir_dir="$(_snapdir_get_snapdir_dir "$base_dir" "${2:-"."}")"
-		manifest="$(snapdir_manifest "${base_dir}" "${snapdir_dir}")"
+		manifest="$(snapdir_manifest "${base_dir}")"
 	fi
 	_SNAPDIR_ID="$(echo "$manifest" | b3sum --no-names -)"
 	echo "$_SNAPDIR_ID"
@@ -212,36 +206,39 @@ snapdir_id() {
 
 snapdir_push() {
 	set -eEuo pipefail
-	local snapdir_id
-	snapdir_id=$(snapdir_id "${1:-""}" "${2:-"."}")
-	export _SNAPDIR_ID="$snapdir_id"
-	export _snapdir_tmp_dir
+	local store="${_SNAPDIR_STORE:?Missing --store option when calling ${_SNAPDIR} push}"
 	local dryrun="${_SNAPDIR_DRYRUN:-false}"
+	local _snapdir_tmp_dir=""
+	local push_directory
 
 	# The user might be piping the snapshot or it might be based on an existing snapshot id
 	if [[ ${_SNAPDIR_MANIFEST:-""} != "" ]]; then
-		_snapdir_tmp_dir="$(mktemp -d -t "${_SNAPDIR}"_"${snapdir_id}".XXXXXXXXXX)"
-		_SNAPDIR_ID="$snapdir_id" _SNAPDIR_LINKED=true snapdir_checkout "$_snapdir_tmp_dir" >/dev/null
-		_SNAPDIR_DIR="$_snapdir_tmp_dir"
+		# providing both a stdin manifest or via --id and a directory is not allowed
+		if [[ ${1:-""} != "" ]]; then
+			echo "error: Cannot provide both a manifest and a directory to push." >&2
+			return 1
+		fi
+		# If this is the case, we'll checkout the manifest to a temporary directory as symlinks
+		_snapdir_tmp_dir="$(mktemp -d -t "${_SNAPDIR}"_"${_SNAPDIR_ID}".XXXXXXXXXX)"
+		_SNAPDIR_LINKED=true snapdir_checkout "$_snapdir_tmp_dir" >/dev/null
+		_SNAPDIR_ID=$(_SNAPDIR_VERBOSE=false snapdir_id "${_snapdir_tmp_dir}")
+		push_directory=$(_SNAPDIR_KEEP=true _SNAPDIR_VERBOSE=false snapdir_stage "$_snapdir_tmp_dir")
+	else
+		# Expecting a directory
+		_SNAPDIR_ID=$(_SNAPDIR_VERBOSE=false snapdir_id "${1:-"."}")
+		push_directory=$(_SNAPDIR_KEEP=true _SNAPDIR_VERBOSE=false snapdir_stage "${1:-"."}")
 	fi
-	local push_directory
-	push_directory=$(_SNAPDIR_KEEP=true _SNAPDIR_VERBOSE=false snapdir_stage "${_SNAPDIR_CWD}" "${_SNAPDIR_DIR:-${2:-"."}}")
+	export _SNAPDIR_ID
 
-	local store="${_SNAPDIR_STORE:?Missing --store option when calling ${_SNAPDIR} push}"
-	_snapdir_log "Pushing snapshot '${snapdir_id}' by copying '${push_directory}' to '${store}'."
+	_snapdir_log "Pushing snapshot '${_SNAPDIR_ID}' by copying '${push_directory}' to '${store}'."
 	local push_command
 	push_command="$(_SNAPDIR_VERBOSE=false _snapdir_get_push_command "${push_directory}" "${store}")"
-	local verbose="${_SNAPDIR_VERBOSE:-false}"
-	local verbose_flag=""
-	if [[ ${verbose} == true ]]; then
-		verbose_flag="set -x;"
-	fi
 	if [[ ${push_command} != "" ]]; then
 		_snapdir_log "Pushing snapshot to store '${store}' with command: '${push_command}'"
 		if [[ ${dryrun} == "true" ]]; then
-			_snapdir_dryrun_log "${verbose_flag}${push_command}"
+			_snapdir_dryrun_log "${push_command}"
 		else
-			bash -c "set -eEuo pipefail;${verbose_flag}${push_command}"
+			bash -c "set -eEuo pipefail;${push_command}" | _snapdir_log
 		fi
 	else
 		_snapdir_log "Nothing to push to '${store}'."
@@ -250,7 +247,7 @@ snapdir_push() {
 	if [[ ${_snapdir_tmp_dir} != "" ]]; then
 		rm -rf "${_snapdir_tmp_dir}"
 	fi
-	echo "${snapdir_id}"
+	echo "${_SNAPDIR_ID}"
 }
 
 ####### ####### #######  #####  #     #
@@ -288,10 +285,10 @@ snapdir_fetch() {
 		local fetch_manifest_command
 		fetch_manifest_command=$(_snapdir_get_fetch_snapdir_manifest_command "${snapdir_id}" "${store}")
 		if [[ ${dryrun} == "true" ]]; then
-			_snapdir_dryrun_log "${verbose_flag}${fetch_manifest_command}"
+			_snapdir_dryrun_log "${fetch_manifest_command}"
 		fi
 
-		bash -c "set -eEuo pipefail;${verbose_flag}${fetch_manifest_command}" >"${manifest_cache_path}.${tmp_id}" || {
+		bash -c "set -eEuo pipefail;${fetch_manifest_command}" >"${manifest_cache_path}.${tmp_id}" || {
 			echo "error: Failed to fetch manifest for snapshot '${snapdir_id}' from store '${store}' when calling '${fetch_manifest_command}'." >&2
 			rm -rf "${manifest_cache_path}.${tmp_id}"
 			return 1
@@ -314,9 +311,9 @@ snapdir_fetch() {
 	fetch_files_commands=$(_snapdir_get_fetch_snapdir_files_command <"${manifest_pipe_path}")
 	if [[ ${fetch_files_commands} != "" ]]; then
 		if [[ ${dryrun} == "true" ]]; then
-			_snapdir_dryrun_log "${verbose_flag}${fetch_files_commands}"
+			_snapdir_dryrun_log "${fetch_files_commands}"
 		else
-			bash -c "set -eEuo pipefail;${verbose_flag}${fetch_files_commands}" >"$_output_dest" || {
+			bash -c "set -eEuo pipefail;${fetch_files_commands}" >"$_output_dest" || {
 				rm -rf "${manifest_cache_path}.${tmp_id}"
 				echo "error: Failed to fetch files for snapshot '${snapdir_id}' from store '${store}' when calling '${fetch_files_commands}'." >&2
 				return 1
@@ -503,11 +500,9 @@ snapdir_stage() {
 	set -eEuo pipefail
 	local base_dir
 	base_dir="$(_snapdir_get_base_dir "${1:-""}")"
-	local snapdir_dir
-	snapdir_dir="$(_snapdir_get_snapdir_dir "$base_dir" "${2:-"."}")"
-	local manifest="${_SNAPDIR_MANIFEST:-$(snapdir_manifest "${base_dir}" "${snapdir_dir}")}"
+	local manifest="${_SNAPDIR_MANIFEST:-$(snapdir_manifest "${base_dir}")}"
 	local snapdir_id
-	snapdir_id="$(snapdir_manifest "$base_dir" "${snapdir_dir}" | b3sum --no-names -)"
+	snapdir_id="$(snapdir_manifest "$base_dir" | b3sum --no-names -)"
 	local staging_directory
 	staging_directory="$(mktemp -d -t "${_SNAPDIR}"_"${snapdir_id}".XXXXXXXXXX)"
 
@@ -772,19 +767,6 @@ _snapdir_get_base_dir() {
 	echo "${base_dir}"
 }
 
-_snapdir_get_snapdir_dir() {
-	set -eEuo pipefail
-	local base_dir="${1:-${_SNAPDIR_CWD}}"
-	local snapdir_dir="${2:-${_SNAPDIR_DIR}}"
-	if [[ ${snapdir_dir} == "." ]] || [[ ${base_dir} == "${snapdir_dir}" ]]; then
-		echo .
-		return 0
-	fi
-	local relative_dir
-	relative_dir=$(_snapdir_get_relative_path "${base_dir}" "${snapdir_dir}")
-	echo "${relative_dir:-.}"
-}
-
 # shellcheck disable=SC2295
 _snapdir_get_relative_path() {
 	# implements 'realpath --relative-to='' using pure bash
@@ -936,10 +918,15 @@ _snapdir_check_integrity() {
 		done <<<"$(grep -v "/$" "${manifest_cache_path}" | cut -d' ' -f 3)"
 	} | b3sum --check $verbose_flag
 }
+
 _snapdir_log() {
 	set -eEuo pipefail
-	if [ "${_SNAPDIR_VERBOSE:-""}" = "true" ]; then
-		echo "[$_SNAPDIR] $1" | sed -E 's/^/# /g'
+	if [[ ${_SNAPDIR_VERBOSE:-""} == "true" ]]; then
+		if [[ ${1:-"_piped"} == "_piped" ]]; then
+			sed -E "s/^/# [$_SNAPDIR] /g" >&2
+		else
+			echo "$1" | sed -E "s/^/# [$_SNAPDIR] /g" >&2
+		fi
 	fi
 }
 
@@ -1248,7 +1235,7 @@ F 600 $foo_checksum 4 ./foo"
 		${snapshot} checkout --force --id="${simple_manifest_id}" "${_dir}"
 		${snapshot} checkout --force --id="${nested_manifest_id}" "${_dir}"
 		check "should have cached files"
-		find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g' | grep -q "^5$" || fail "Expected 5 files in cache, instead got '$(find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g')'" && pass
+		find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g' | grep -q "^4$" || fail "Expected 4 files in cache, instead got '$(find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g')'" && pass
 		check "should clear cache files"
 		result="$(${snapshot} flush-cache 2>&1 || echo "")"
 		! test -d "${_SNAPDIR_CACHE_DIR}/" || fail "Cache directory found after flushing cache ${_SNAPDIR_CACHE_DIR}/. Command output: '$result'" && pass
