@@ -438,8 +438,8 @@ snapdir_b2_store_test() (
 				if [[ "$(uname -s)" == "Darwin" ]]; then
 					bin_path="b2-darwin"
 				fi
-				wget -q "https://github.com/Backblaze/B2_Command_Line_Tool/releases/latest/checkout/${bin_path}" -O "$HOME/.cache/snapdir/bin"
-				chmod +x "$HOME/.cache/snapdir/bin"
+				wget -q "https://github.com/Backblaze/B2_Command_Line_Tool/releases/latest/checkout/${bin_path}" -O "$HOME/.cache/snapdir/bin/b2"
+				chmod +x "$HOME/.cache/snapdir/bin/b2"
 			}
 			echo "authorizing b2 account"
 			echo "this integration test requires network connectivity and valid b2 credentials"
