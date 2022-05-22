@@ -1,4 +1,4 @@
-name: Verify
+name: Unit tests
 on:
   schedule:
     # Once a month to ensure future
