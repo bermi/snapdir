@@ -2,7 +2,7 @@
 
 Audit and distribute authenticated directory snapshots.
 
-![verify status] ![integration status]
+![unit tests status] ![integration status]
 
 [Snapdir] enables creating, sharing and verifying snapshots of
 directories and their contents.
@@ -497,7 +497,7 @@ fi
 
 LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 
-  [verify status]: https://github.com/bermi/snapdir/actions/workflows/verify.yml/badge.svg
+  [unit tests status]: https://github.com/bermi/snapdir/actions/workflows/unit_tests.yml/badge.svg
   [integration status]: https://github.com/bermi/snapdir/actions/workflows/integration.yml/badge.svg
   [Snapdir]: https://github.com/bermi/snapdir
   [conflict-free replicated data type]: https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type
