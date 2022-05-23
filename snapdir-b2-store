@@ -20,8 +20,25 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 fi
 _SNAPDIR_B2_STORE_VERSION="0.1.1"
 
-# snapdir interface functions
+#       ### #     # ####### ####### ######  #######    #     #####  #######
+#        #  ##    #    #    #       #     # #         # #   #     # #
+#        #  # #   #    #    #       #     # #        #   #  #       #
+#        #  #  #  #    #    #####   ######  #####   #     # #       #####
+#        #  #   # #    #    #       #   #   #       ####### #       #
+#        #  #    ##    #    #       #    #  #       #     # #     # #
+#       ### #     #    #    ####### #     # #       #     #  #####  #######
 
+# Snapdir interface functions do not perform actual work. They just print
+# the command that would be executed, these are the only functions
+# store adapters must implement.
+
+######  #     #  #####  #     #
+#     # #     # #     # #     #
+#     # #     # #       #     #
+######  #     #  #####  #######
+#       #     #       # #     #
+#       #     # #     # #     #
+#        #####   #####  #     #
 snapdir_b2_store_get_push_command() {
 	# Gets the command for pushing the contents of the staging directory
 	# Backblaze b2.
@@ -61,6 +78,13 @@ snapdir_b2_store_get_push_command() {
 	EOF
 }
 
+#     #    #    #     # ### ####### #######  #####  #######
+##   ##   # #   ##    #  #  #       #       #     #    #
+# # # #  #   #  # #   #  #  #       #       #          #
+#  #  # #     # #  #  #  #  #####   #####    #####     #
+#     # ####### #   # #  #  #       #             #    #
+#     # #     # #    ##  #  #       #       #     #    #
+#     # #     # #     # ### #       #######  #####     #
 snapdir_b2_store_get_manifest_command() {
 	# Gets the command for echoing the contents of a manifest given its ID.
 	# This method does not save the manifest on the cache (that's done by
@@ -81,38 +105,13 @@ snapdir_b2_store_get_manifest_command() {
 	EOF
 }
 
-snapdir_b2_store_get_manifest() {
-	# Pipes a manifest given its ID to stdout.
-	#
-	# All
-	#
-	# Example:
-	#
-	#			snapdir-b2-store get-manifest --id "${id}" --store "${store}"
-	#
-	set -eEuo pipefail
-	local id="${_SNAPDIR_B2_STORE_ID:?Missing --id}"
-	local store="${_SNAPDIR_B2_STORE_STORE:?Missing --store}"
-	local retries="${_SNAPDIR_B2_STORE_RETRIES:-5}"
-	local manifest_rel_path
-	manifest_rel_path=$(_snapdir_get_manifest_rel_path "${id}")
-
-	local log_file
-	# creates a temporary file to log the output of the transaction
-	log_file="$(mktemp -t "snapdir-${id}".XXXXXXXXXX)"
-	local tmp_manifest_path
-	# creates a temporary file to log the output of the transaction
-	tmp_manifest_path="$(mktemp -t "snapdir-manifest-${id}".XXXXXXXXXX)"
-
-	${_SNAPDIR_B2_STORE_BIN_PATH} fetch --checksum "${id}" --source-path "${manifest_rel_path}" --target-path "${tmp_manifest_path}" --log-file "$log_file" --store "${store}" --retries "${retries}" >/dev/null
-	${_SNAPDIR_B2_STORE_BIN_PATH} ensure-no-errors --checksum "${id}" --log-file "$log_file" || {
-		rm -f "${log_file}" "${tmp_manifest_path}"
-		exit 1
-	}
-	cat "${tmp_manifest_path}"
-	rm -f "${log_file}" "${tmp_manifest_path}"
-}
-
+####### ####### #######  #####  #     #
+#       #          #    #     # #     #
+#       #          #    #       #     #
+#####   #####      #    #       #######
+#       #          #    #       #     #
+#       #          #    #     # #     #
+#       #######    #     #####  #     #
 snapdir_b2_store_get_fetch_files_command() {
 	# Generates the command or commands required to download
 	# to the cache the files defined on a manifest.
@@ -156,6 +155,46 @@ snapdir_b2_store_get_fetch_files_command() {
 	} | _snapdir_get_transfer_objects_command "${source_dir}" "${target_dir}" "fetch" "${log_file}"
 
 	echo "${_SNAPDIR_B2_STORE_BIN_PATH} ensure-no-errors --checksum \"${id}\" --log-file \"$log_file\";"
+}
+
+######  #     # ######  #       ###  #####     ####### #     #  #####
+#     # #     # #     # #        #  #     #    #       ##    # #     #
+#     # #     # #     # #        #  #          #       # #   # #
+######  #     # ######  #        #  #          #####   #  #  #  #####
+#       #     # #     # #        #  #          #       #   # #       #
+#       #     # #     # #        #  #     #    #       #    ## #     #
+#        #####  ######  ####### ###  #####     #       #     #  #####
+
+snapdir_b2_store_get_manifest() {
+	# Pipes a manifest given its ID to stdout.
+	#
+	# All
+	#
+	# Example:
+	#
+	#			snapdir-b2-store get-manifest --id "${id}" --store "${store}"
+	#
+	set -eEuo pipefail
+	local id="${_SNAPDIR_B2_STORE_ID:?Missing --id}"
+	local store="${_SNAPDIR_B2_STORE_STORE:?Missing --store}"
+	local retries="${_SNAPDIR_B2_STORE_RETRIES:-5}"
+	local manifest_rel_path
+	manifest_rel_path=$(_snapdir_get_manifest_rel_path "${id}")
+
+	local log_file
+	# creates a temporary file to log the output of the transaction
+	log_file="$(mktemp -t "snapdir-${id}".XXXXXXXXXX)"
+	local tmp_manifest_path
+	# creates a temporary file to log the output of the transaction
+	tmp_manifest_path="$(mktemp -t "snapdir-manifest-${id}".XXXXXXXXXX)"
+
+	${_SNAPDIR_B2_STORE_BIN_PATH} fetch --checksum "${id}" --source-path "${manifest_rel_path}" --target-path "${tmp_manifest_path}" --log-file "$log_file" --store "${store}" --retries "${retries}" >/dev/null
+	${_SNAPDIR_B2_STORE_BIN_PATH} ensure-no-errors --checksum "${id}" --log-file "$log_file" || {
+		rm -f "${log_file}" "${tmp_manifest_path}"
+		exit 1
+	}
+	cat "${tmp_manifest_path}"
+	rm -f "${log_file}" "${tmp_manifest_path}"
 }
 
 snapdir_b2_store_fetch() {
@@ -285,6 +324,13 @@ snapdir_b2_store_run() (
 	eval "snapdir_b2_store_${command//-/_} $positional_args ${*:2}"
 )
 
+######  ######  ### #     #    #    ####### #######    ####### #     #  #####
+#     # #     #  #  #     #   # #      #    #          #       ##    # #     #
+#     # #     #  #  #     #  #   #     #    #          #       # #   # #
+######  ######   #  #     # #     #    #    #####      #####   #  #  #  #####
+#       #   #    #   #   #  #######    #    #          #       #   # #       #
+#       #    #   #    # #   #     #    #    #          #       #    ## #     #
+#       #     # ###    #    #     #    #    #######    #       #     #  #####
 _snapdir_get_transfer_objects_command() {
 	# Since this store works with the filesystem we can reuse the same
 	# function for both fetch and commit.
@@ -418,6 +464,13 @@ _snapdir_b2_store_get_remote_sha1sums() {
 		sort -k2
 }
 
+#       ####### #######  #####  #######  #####
+#          #    #       #     #    #    #     #
+#          #    #       #          #    #
+#          #    #####    #####     #     #####
+#          #    #             #    #          #
+#          #    #       #     #    #    #     #
+#          #    #######  #####     #     #####
 snapdir_b2_store_test() (
 	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
 	set -eEuo pipefail
