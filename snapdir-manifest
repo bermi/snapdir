@@ -90,6 +90,7 @@
 #   and then concatenate them without spaces or newlines between them to
 #   compute the checksum. Check the manual example in the [understanding
 #   manifests guide](docs/understanding-manifests.md).
+#   Duplicated checksums are removed before the checksum is computed.
 # - *`SIZE`*: The size of the file or directory contents in bytes. It
 #   does not include the size for the directory metadata as reported by
 #   `stat`; it is only the sum of all the elements in the directory.
@@ -155,12 +156,12 @@ snapdir_manifest_generate() {
 		dir_manifest_candidates="$candidate_dirs
 $files_in_dir_manifest"
 		dir_manifest=$(echo -n "$dir_manifest_candidates" | grep -E "^(D|F) [0-9]+ [a-f0-9]+ [0-9]+ (${dir%/}/[^/]+/?|/)$" || echo "")
-		dir_checksums="$(echo "$dir_manifest" | cut -d' ' -f3 | sort | tr -d '\n')"
+		dir_checksums="$(echo "$dir_manifest" | cut -d' ' -f3 | sort -u | tr -d '\n')"
 		dir_checksum="$(echo -n "$dir_checksums" | _snapdir_manifest_checksum)"
 		# sum the size of all the files in the directory
 		dir_member_size="$(_snapdir_manifest_sum_lines "$(echo "$dir_manifest" | cut -d' ' -f4)")"
 		if [[ ${_SNAPDIR_MANIFEST_VERBOSE} == "true" ]]; then
-			_snapdir_manifest_log "directory=$dir checksum=$dir_checksum sources=\"$dir_checksums\" size=${dir_member_size} path-sources=\"$(echo "$dir_manifest" | cut -d' ' -f5 | sort | tr '\n' ' ' | sed 's/ $//')\" checksum=$_SNAPDIR_MANIFEST_CHECKSUM_BIN"
+			_snapdir_manifest_log "directory=$dir checksum=$dir_checksum sources=\"$dir_checksums\" size=${dir_member_size} path-sources=\"$(echo "$dir_manifest" | cut -d' ' -f5 | sort -u | tr '\n' ' ' | sed 's/ $//')\" checksum=$_SNAPDIR_MANIFEST_CHECKSUM_BIN"
 		fi
 
 		dir_entry="$(_snapdir_manifest_format_dir_manifest_line "${dir}" "${dir_checksum}" "${dir_member_size}")"
@@ -846,6 +847,17 @@ F 600 67117d2a91c432d4db173671029b61d7ff437f7f87d153db1bf83b34b5833743 4 ./r1f"
 			expected=" ./a/a_link/$" >&2
 			grep -q "$expected" <<<"$result" || fail "expected not to fall on a symlink loop" && pass
 		fi
+
+		# --------------------------------------------------------------------------------
+		# Guide test cases
+		describe "snapdir-manifest generate duplicated files"
+		mkdir -p "${testing_dir}"/guide-files/
+		umask 077 "${testing_dir}"/guide-files/
+		touch "${testing_dir}"/guide-files/{foo,bar}.txt
+		check "snapdir-manifest ${testing_dir}/guide-files"
+		result=$($snapdir_manifest "${testing_dir}/guide-files" || true)
+		grep -q "dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b" <<<"$result" || fail "Expected dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b to be on '$result'" && pass
+		rm -rf "${testing_dir}"/guide-files/
 
 	}
 

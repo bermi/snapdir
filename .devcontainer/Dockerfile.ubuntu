@@ -4,8 +4,5 @@ RUN apt-get update && \
   apt-get install -y b3sum wget shellcheck shfmt git && \
   apt-get clean -y
 
-RUN wget -q "https://github.com/Backblaze/B2_Command_Line_Tool/releases/latest/download/b2-linux" -O /usr/local/bin/b2 && \
-  chmod +x /usr/local/bin/b2
-
 WORKDIR /workdir
 

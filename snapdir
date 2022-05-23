@@ -763,7 +763,7 @@ _snapdir_get_base_dir() {
 	local base_dir="${1:-${_SNAPDIR_CWD}}"
 	local verify=${2:-true}
 	# resolve to absolute path
-	base_dir="$(realpath "${base_dir}")"
+	base_dir="$(_snapdir_absolute_path "${base_dir}")"
 	if [[ ${verify} == "true" ]] && ! test -d "${base_dir}"; then
 		echo "error: Base directory '${base_dir}' does not exist." >&2
 		return 1
@@ -1174,6 +1174,12 @@ F 600 $foo_checksum 4 ./foo"
 		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
 		clean_files
 
+		check "should checkout to a non existing relative directory"
+		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "snapdir-test-relative-dir" 2>&1 || echo "")
+		[[ "$(grep -c "Checking out" <<<"$result")" == 2 ]] || fail "Expected two checkout messages, instead got ${result}"
+		grep -q "^foo$" "snapdir-test-relative-dir/foo" || fail "Expected snapdir-test-relative-dir/foo to contain 'foo', instead got '$(cat "snapdir-test-relative-dir/foo")'" && pass
+		rm -rf "snapdir-test-relative-dir"
+
 		# --------------------------------------------------------------------------------
 		# snapshot verify --id=<id> --dir=<dir>
 		# --------------------------------------------------------------------------------
@@ -1270,6 +1276,10 @@ F 600 $foo_checksum 4 ./foo"
 	run_tests
 )
 
+_snapdir_absolute_path() {
+	realpath -m "$1"
+}
+
 if [[ "$(uname -s)" == "Darwin" ]]; then
 	# ensure at least bash 5.0 is available
 	if [[ ${BASH_VERSION:0:1} -lt "5" ]]; then
@@ -1279,23 +1289,22 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 	_snapdir_readlink() {
 		echo "$(cd "$(dirname "$1")" || echo "" && pwd)/$(basename "$1")"
 	}
-	_snapdir_absolute_path() {
-		realpath -m "$1"
-	}
 else
 	shopt -s inherit_errexit
+	_snapdir_is_bussybox="$(test -h /bin/ls && echo true || echo false)"
 	_snapdir_readlink() {
 		readlink -f "$1"
 	}
-	# on alpine, realpath -m is not available
-	if realpath -m /dev/null 2>/dev/null >/dev/null; then
+	if [[ $_snapdir_is_bussybox == "true" ]]; then
 		_snapdir_absolute_path() {
-			realpath -m "$1"
-		}
-	else
-		_snapdir_absolute_path() {
-			test -d "$1" || mkdir -p "$(dirname "$1")"
-			echo "$(cd "$(dirname "$1")" || echo "" && pwd)/$(basename "$1")"
+			local base_dir
+			base_dir="$(dirname "$1")"
+			if [[ ${base_dir} == "/" ]]; then
+				echo "$1"
+			else
+				test -d "$1" || mkdir -p "$base_dir"
+				echo "$(cd "$base_dir" || echo "" && pwd)/$(basename "$1")"
+			fi
 		}
 	fi
 fi
