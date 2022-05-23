@@ -438,8 +438,17 @@ snapdir_b2_store_test() (
 				if [[ "$(uname -s)" == "Darwin" ]]; then
 					bin_path="b2-darwin"
 				fi
-				wget -q "https://github.com/Backblaze/B2_Command_Line_Tool/releases/latest/checkout/${bin_path}" -O "$HOME/.cache/snapdir/bin/b2"
+				https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v3.4.0/b2-linux
+				wget -q "https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v3.4.0/${bin_path}" -O "$HOME/.cache/snapdir/bin/b2" || {
+					echo "ERROR: Failed to download b2 binary" >&2
+					rm -rf "$HOME/.cache/snapdir/bin/b2"
+					exit 1
+				}
 				chmod +x "$HOME/.cache/snapdir/bin/b2"
+				"$HOME/.cache/snapdir/bin/b2" version | grep -q "version 3.4.0" || {
+					echo "Expected $HOME/.cache/snapdir/bin/b2 to be on version 3.4.0" >&2
+					exit 1
+				}
 			}
 			echo "authorizing b2 account"
 			echo "this integration test requires network connectivity and valid b2 credentials"
