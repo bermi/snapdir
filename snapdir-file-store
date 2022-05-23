@@ -641,7 +641,7 @@ snapdir_file_store_test() (
 		# --------------------------------------------------------------------------------
 		describe "snapdir fetch"
 		clean_files
-		mkdir "${_dir}" || fail "Expected '${_dir}' to not exist"
+		rm -rf "${_dir}"
 
 		# --------------------------------------------------------------------------------
 		# echo "# Running: \"${snapdir}\" pull --dryrun --verbose --store \"${store}\" --id \"${simple_manifest_id}\" \"${_dir}\""

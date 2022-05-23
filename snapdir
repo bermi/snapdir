@@ -132,7 +132,7 @@ snapdir_run() (
 		return 1
 	fi
 
-	_snapdir_export_env_defaults
+	_snapdir_export_env_defaults "${command}"
 	# env | grep _snapdir_ | sort
 	eval "snapdir_${command//-/_} $positional_args ${*:2}"
 )
@@ -710,6 +710,10 @@ _snapdir_get_store_bin_path() {
 	store_protocol="$(echo "${store}" | cut -d':' -f1)"
 	local store_bin_path
 	local explicit_bin_path
+	grep -q "^[a-z0-9]*$" <<<"$store_protocol" || {
+		echo "Invalid store protocol: '${store_protocol}'" >&2
+		return 1
+	}
 	explicit_bin_path="_SNAPDIR_${store_protocol^^}_STORE_BIN_PATH"
 	# if explicit_bin_path is defined, use it
 	if [[ ${!explicit_bin_path:-""} != "" ]] && test -f "${!explicit_bin_path}"; then
@@ -726,6 +730,7 @@ _snapdir_get_store_bin_path() {
 		echo "No 'snapdir-${store_protocol}-store' could be found on your PATH" >&2
 		return 1
 	fi
+	echo "$store_bin_path"
 }
 
 _snapdir_get_push_command() {
@@ -762,8 +767,12 @@ _snapdir_get_base_dir() {
 	set -eEuo pipefail
 	local base_dir="${1:-${_SNAPDIR_CWD}}"
 	local verify=${2:-true}
+	local create=${3:-$_SNAPDIR_CREATE_MISSING_BASE_DIR}
 	# resolve to absolute path
 	base_dir="$(_snapdir_absolute_path "${base_dir}")"
+	if [[ ${create} == "true" ]]; then
+		mkdir -p "${base_dir}"
+	fi
 	if [[ ${verify} == "true" ]] && ! test -d "${base_dir}"; then
 		echo "error: Base directory '${base_dir}' does not exist." >&2
 		return 1
@@ -836,8 +845,16 @@ _snapdir_set_manifest_from_stdin_or_id() {
 _snapdir_export_env_defaults() {
 	# Environment variables
 	set -eEuo pipefail
+	local command="${1:-none}"
+
+	_SNAPDIR_CREATE_MISSING_BASE_DIR=false
+	if [[ $command == "pull" ]]; then
+		_SNAPDIR_CREATE_MISSING_BASE_DIR=true
+	fi
 
 	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR:-"${HOME:-~}/.cache/${_SNAPDIR}/"}"
+	# remove trailing slash from _SNAPDIR_CACHE_DIR
+	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR%/}"
 	_SNAPDIR_VERBOSE=${_SNAPDIR_VERBOSE:-"false"}
 	_SNAPDIR_FORCE=${_SNAPDIR_FORCE:-"false"}
 	_SNAPDIR_CWD="${_SNAPDIR_CWD:-$(pwd)}"
@@ -856,6 +873,7 @@ _snapdir_export_env_defaults() {
 		_SNAPDIR_CACHE_DIR \
 		_SNAPDIR_VERBOSE \
 		_SNAPDIR_BIN_DIR \
+		_SNAPDIR_CREATE_MISSING_BASE_DIR \
 		_SNAPDIR_FORCE
 }
 
@@ -1190,6 +1208,9 @@ F 600 $foo_checksum 4 ./foo"
 
 		check "should verify objects"
 		grep -q "${foo_path}: OK" <<<"${result}" || fail "Failed to verify ${foo_path} got: '${result}'" && pass
+
+		check "should not conain double slashes in verify paths"
+		! grep -q "//" <<<"${result}" || fail "Found double slashes in verify output: '${result}'" && pass
 
 		check "should complain about a missing object"
 		rm -rf "${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
