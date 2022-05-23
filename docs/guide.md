@@ -5,9 +5,9 @@ This guide will show you how to use Snapdir through the command line.
 The audience for this guide are developers who want to understand how
 `snapdir` can be used as a building block for their own projects.
 
-First, follow the [install guide](./install.md) and make sure:
+First, follow the [install guide] and make sure:
 
-```bash
+``` bash
 snapdir --help
 ```
 
@@ -16,7 +16,7 @@ works.
 Alternativelly you can use the [bermi/snapdir] docker image to follow
 this guide from a shell with all the dependencies baked in by running:
 
-```bash
+``` bash
 docker run -it --rm --entrypoint /bin/bash  bermi/snapdir
 ```
 
@@ -44,17 +44,16 @@ The columns on the previous output are:
 
 -   D or F for a file or a directory.
 -   The permissions of the file or directory.
--   The BLAKE3 message diggest (`b3sum`) of the file or directory
-    contents.
+-   The BLAKE3 message diggest (`b3sum`) of the path contents.
 -   The size in bytes of the file or directory contents.
 -   The path to the file or directory.
 
 At this point, foo.txt and bar.txt are empty files, so their `b3sum`
 matches.
 
-`b3sum snapdir-guide/*` generates a similar output; this is not a coincidence
-as we are using `b3sum` under the hood for checking the integrity of the
-files.
+`b3sum snapdir-guide/*` generates a similar output; this is not a
+coincidence as we are using `b3sum` under the hood for checking the
+integrity of the files.
 
 The directory checksum is computed by concatenating the unique checksums
 of the files without newlines or spaces.
@@ -64,8 +63,8 @@ We can compute it manually by running:
     b3sum --no-names snapdir-guide/* | sort -u | tr -d '\n' | b3sum  --no-names
     # Outputs: dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b
 
-Directory checksums only use direct children files and directories checksums and
-do not recurse into subdirectories.
+Directory checksums only use direct children files and directories
+checksums and do not recurse into subdirectories.
 
 Now that we have an understanding of the manifest format, let's create
 an ID for the manifest itself by calling:
@@ -107,8 +106,8 @@ directory name to a variable:
     # Outputs: /tmp/snapdir_some_random_id
 
 If we inspect the directory on the previous output, we can see a copy of
-the manifest and the files (only one since they are deduplicated)
-we want to keep track of:
+the manifest and the files (only one since they are deduplicated) we
+want to keep track of:
 
     find $STAGED_DIR ! -type d
     # Outputs:
@@ -119,13 +118,12 @@ While the manifest content is copied verbatim and the files are linked
 to `${HOME}/.cache/snapdir/.objects/` as we can see in the following
 command:
 
-    ls -al $STAGED_DIR/.objects/af1/349/b9f/
-    # Outputs:
-    # 5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 -> ${HOME}/.cache/snapdir/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
+    readlink -f $STAGED_DIR/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
+    # Outputs: ${HOME}/.cache/snapdir/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
 
-The first nine characters of the `b3sum` (*af1349b9f*) are used to create a folder
-structure *af1/349/b9f/* that allows us to list manifests and objects more efficiently
-on storage engines.
+The first nine characters of the `b3sum` (*af1349b9f*) are used to
+create a folder structure *af1/349/b9f/* that allows us to list
+manifests and objects more efficiently on storage engines.
 
 The cache directory is used globally for all snapshots. As we'll see
 later, the `fetch` command also brings store snapshots into the cache
@@ -146,13 +144,15 @@ We will now add some content to the files and stage a new snapshot.
 Since we didn't include the `--keep` flag, the output now shows the `id`
 of the manifest and there's no `$STAGED_DIR` directory.
 
-The `id` the `stage` command generated is the same as the the one we get by
-running the following command:
+The `id` the `stage` command generated is the same as the the one we get
+by running the following command:
 
     snapdir id snapdir-guide
     # Outputs: f0b8a67f5fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
 
-The manifest is now staged on the cache as `${HOME}/.cache/snapdir/.manifests/f0b/8a6/7f5/fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f`. Let's inspect it:
+The manifest is now staged on the cache as
+`${HOME}/.cache/snapdir/.manifests/f0b/8a6/7f5/fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f`.
+Let's inspect it:
 
     cat ${HOME}/.cache/snapdir/.manifests/f0b/8a6/7f5/fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
     # Outputs:
@@ -160,15 +160,15 @@ The manifest is now staged on the cache as `${HOME}/.cache/snapdir/.manifests/f0
     # F 600 af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 0 ./bar.txt
     # F 600 49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92 4 ./foo.txt
 
-The `id` we've got via `snapshot id` is the same we could have gotten by running the `b3sum` command directly
-against the staged manifest:
+The `id` we've got via `snapshot id` is the same we could have gotten by
+running the `b3sum` command directly against the staged manifest:
 
     b3sum --no-names ${HOME}/.cache/snapdir/.manifests/f0b/8a6/7f5/fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
     # Outputs: f0b8a67f5fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
 
-The benefit of having `id`s based on checksums is that they can be verified
-against tampering and audited using `b3sum` without the need of relying or trusting
-on `snapdir`.
+The benefit of having `id`s based on checksums is that they can be
+verified against tampering and audited using `b3sum` without the need of
+relying or trusting on `snapdir`.
 
 ## Checking out snapshots
 
@@ -179,16 +179,15 @@ Lets remove the snapdir-guide directory
 and `checkout` the snapshot by using the previous `id`:
 
     snapdir checkout --id=f0b8a67f5fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f snapdir-guide
-    ls snapdir-guide
-    # Outputs: bar.txt  foo.txt
-    cat snapdir-guide/foo.txt
+    cat snapdir-guide/{foo,bar}.txt
     # Outputs: foo
+    # bar
 
 We can still checkout the id of the original snapshot, which will bring
 back the empty files.
 
     snapdir checkout --id=0e10f2cc09efcb1a4b9bbf61eeac6c29494c5b2fa556496d984c7a5b157c5e2e snapdir-guide
-    # Outputs: File /tmp/foo.txt already exists. To override file, use the --force flag.
+    # Outputs: File $HOME/snapdir-guide/foo.txt already exists. To override file, use the --force flag.
 
 as you can see, it has refused to override `foo.txt` unless `--force` is
 provided. We don't need to do that to continue with this guide.
@@ -202,10 +201,10 @@ Now lets add some content for the bar.txt file and stage it.
 ### Linking objects
 
 A way to save space is to checkout snapshots using the `--linked` flag,
-when using the `stage` command which will create a hard link to the objects.
-We'll not cover this mode in this guide since it's only useful if your use
-case can ensure that the linked objects will not be modified by using
-a [copy-on-write (COW) filesystem].
+when using the `stage` command which will create a hard link to the
+objects. We'll not cover this mode in this guide since it's only useful
+if your use case can ensure that the linked objects will not be modified
+by using a [copy-on-write (COW) filesystem].
 
 ## Verifying snapshots
 
@@ -232,8 +231,10 @@ the snapshot again:
 
 There are three ways to remove tampered objects from the cache.
 
-1.  Using the `--purge` option when calling the verify command: `snapdir verify --purge --id df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9`
-2.  Stage the snapdir-guide directory again: `snapdir stage snapdir-guide`
+1.  Using the `--purge` option when calling the verify command:
+    `snapdir verify --purge --id df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9`
+2.  Stage the snapdir-guide directory again:
+    `snapdir stage snapdir-guide`
 3.  Run a global cleanup command via: `snapdir verify-cache --purge`
 
 We'll use the second option to remove the tampered object since it will
@@ -250,19 +251,18 @@ So far, we've learned how to keep a snapshot in sync with the files on
 your local system. Let's now push the snapshot to a remote store
 repository.
 
-To push to a remote store a `snapdir-<STORE_NAME>-store` must exist on your path.
+To push to a remote store a `snapdir-<STORE_NAME>-store` must exist on
+your path.
 
-    ls /bin/snapdir*-store
-    # Outputs: /bin/snapdir-b2-store /bin/snapdir-file-store
+The file store is suitable for storing snapshots on networked
+filesystems, we'll be using it for this guide since it doesn't require
+any external account.
 
-The file store is suitable for storing snapshots on networked filesystems,
-we'll be using it for this guide since it doesn't require any external account.
+If you want to use the Backblaze b2 adapter, the [snapdir-b2-store
+documentation] guide will take over from this point.
 
-If you want to use the Backblaze b2 adapter, the [snapdir-b2-store documentation]
-guide will take over from this point.
-
-To push the contents of `snapdir-guide` to the file store repository in the 
-`${HOME}/snapdir-data` directory we can run:
+To push the contents of `snapdir-guide` to the file store repository in
+the `${HOME}/snapdir-data` directory we can run:
 
     snapdir push --store "file://${HOME}/snapdir-data" snapdir-guide
     # Outputs: df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
@@ -274,29 +274,21 @@ Let's clear our local cache and the snapdir-guide directories:
 
     rm -rf ${HOME}/.cache/snapdir snapdir-guide
 
-Pulling from the remote with the following command will recreate the local cache and the snapdir-guide directory:
+Pulling from the remote with the following command will recreate the
+local cache and the snapdir-guide directory:
 
     snapdir pull --verbose --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-data" snapdir-guide
-    ls snapdir-guide/
-    # Outputs: bar.txt  foo.txt
+    cat snapdir-guide/{foo,bar}.txt
+    # Outputs: foo
+    # bar
 
-If you only want to fetch the contents of the remote into the cache, you can use the `fetch` method:
+If you only want to fetch the contents of the remote into the cache, you
+can use the `fetch` method:
 
     rm -rf ${HOME}/.cache/snapdir
     snapdir fetch --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-data"
 
-
-
-  [unit tests status]: https://github.com/bermi/snapdir/actions/workflows/unit_tests.yml/badge.svg
-  [integration status]: https://github.com/bermi/snapdir/actions/workflows/integration.yml/badge.svg
-  [Snapdir]: https://github.com/bermi/snapdir
-  [conflict-free replicated data type]: https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type
-  [documentation for more information]: https://github.com/bermi/snapdir/tree/main/docs/
-  [snapdir-manifest]: https://github.com/bermi/snapdir/tree/main/snapdir-manifest-README.md
-  [snapdir-b2-store documentation]: https://github.com/bermi/snapdir/tree/main/snapdir-b2-store-README.md
-  [bermi/snapdir]: https://hub.docker.com/r/bermi/snapdir/tags
-  [BermiLabs]: https://bermilabs.com
-  [Git LFS]: https://git-lfs.github.com/
-  [ostree]: https://ostreedev.github.io/ostree/introduction/
+  [install guide]: ./install.md
   [bermi/snapdir]: https://hub.docker.com/r/bermi/snapdir/tags
   [copy-on-write (COW) filesystem]: https://en.wikipedia.org/wiki/Copy-on-write
+  [snapdir-b2-store documentation]: https://github.com/bermi/snapdir/tree/main/snapdir-b2-store-README.md

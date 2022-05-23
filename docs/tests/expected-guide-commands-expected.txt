@@ -1,0 +1,38 @@
+D 755 dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b 0 ./
+F 600 af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 0 ./bar.txt
+F 600 af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 0 ./foo.txt
+dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b
+0e10f2cc09efcb1a4b9bbf61eeac6c29494c5b2fa556496d984c7a5b157c5e2e
+0e10f2cc09efcb1a4b9bbf61eeac6c29494c5b2fa556496d984c7a5b157c5e2e
+$STAGED_DIR
+$STAGED_DIR/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
+$STAGED_DIR/.manifests/0e1/0f2/cc0/9efcb1a4b9bbf61eeac6c29494c5b2fa556496d984c7a5b157c5e2e
+$HOME/.cache/snapdir/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
+f0b8a67f5fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
+f0b8a67f5fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
+D 755 4a0732cfb45ebe9d8d572fc4c77b759384bed029911e35f8859430b889427d4d 4 ./
+F 600 af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 0 ./bar.txt
+F 600 49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92 4 ./foo.txt
+f0b8a67f5fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
+foo
+File $HOME/snapdir-guide/foo.txt already exists. To override file, use the --force flag.
+df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
+$HOME/.cache/snapdir/.manifests/df4/b3a/7b6/c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9: OK
+$HOME/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f: OK
+$HOME/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92: OK
+$HOME/.cache/snapdir/.manifests/df4/b3a/7b6/c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9: OK
+$HOME/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f: FAILED
+$HOME/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92: OK
+$HOME/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f /root/snapdir-guide/./bar.txt differ: char 1, line 1
+df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
+df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
+SAVED: saved $HOME/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f
+SAVED: saved $HOME/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92
+# [snapdir] SAVED: $HOME/.cache/snapdir/.manifests/df4/b3a/7b6/c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
+$HOME/.cache/snapdir/.manifests/df4/b3a/7b6/c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9: OK
+$HOME/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f: OK
+$HOME/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92: OK
+# [snapdir] Checking out $HOME/snapdir-guide/bar.txt with checksum b3199d36d434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f
+# [snapdir] Checking out $HOME/snapdir-guide/foo.txt with checksum 49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92
+foo
+bar
