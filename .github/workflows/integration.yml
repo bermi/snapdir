@@ -15,9 +15,6 @@ env:
   SNAPDIR_B2_STORE_TEST_BUCKET: bermilabs-test-bucket
   SNAPDIR_B2_STORE_APPLICATION_KEY_ID: ${{ secrets.SNAPDIR_B2_STORE_APPLICATION_KEY_ID }}
   SNAPDIR_B2_STORE_APPLICATION_KEY: ${{ secrets.SNAPDIR_B2_STORE_APPLICATION_KEY }}
-  SNAPDIR_S3_STORE_TEST_BUCKET: snapdir-test-bucket
-  SNAPDIR_AWS_ACCESS_KEY_ID: ${{ secrets.SNAPDIR_AWS_ACCESS_KEY_ID}}
-  SNAPDIR_AWS_SECRET_ACCESS_KEY: ${{ secrets.SNAPDIR_AWS_SECRET_ACCESS_KEY}}
 
 jobs:
   b2:
@@ -53,9 +50,9 @@ jobs:
         run: |
           docker run \
             --rm \
-            -e SNAPDIR_S3_STORE_TEST_BUCKET=$SNAPDIR_S3_STORE_TEST_BUCKET \
-            -e AWS_ACCESS_KEY_ID=$SNAPDIR_AWS_ACCESS_KEY_ID \
-            -e AWS_SECRET_ACCESS_KEY=$SNAPDIR_AWS_SECRET_ACCESS_KEY \
+            -e SNAPDIR_S3_STORE_TEST_BUCKET=snapdir-test-bucket \
+            -e AWS_ACCESS_KEY_ID="${{ secrets.SNAPDIR_AWS_ACCESS_KEY_ID}}" \
+            -e AWS_SECRET_ACCESS_KEY=${{ secrets.SNAPDIR_AWS_SECRET_ACCESS_KEY}} \
             -v $(pwd)/snapdir-manifest:/usr/bin/snapdir-manifest \
             -v $(pwd)/snapdir:/usr/bin/snapdir \
             -v $(pwd)/snapdir-s3-store:/usr/bin/snapdir-s3-store \
@@ -64,4 +61,4 @@ jobs:
             -v /usr/local/bin/b3sum:/usr/bin/b3sum \
             --entrypoint /bin/bash \
             amazon/aws-cli \
-            -c "snapdir-s3-store test --store s3://$SNAPDIR_S3_STORE_TEST_BUCKET"
+            -c "snapdir-s3-store test --store s3://snapdir-test-bucket"
