@@ -103,6 +103,7 @@ expect some features to be missing from the `bash` version.
 -   [Git LFS] Why not
     https://towardsdatascience.com/why-git-and-git-lfs-is-not-enough-to-solve-the-machine-learning-reproducibility-crisis-f733b49e96e8
 -   DVC (md5sum)
+-   HDF5
 -   Tar
 -   ZFS
 -   [ostree], requires `ostree` to verify snapshots.

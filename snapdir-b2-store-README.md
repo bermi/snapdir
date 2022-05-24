@@ -1,3 +1,24 @@
+# Snapdir b2 store
+
+The `snapdir-b2-store` provides support for using Backblaze's B2 storage.
+
+It requires the [`b2` command line tool](https://www.backblaze.com/b2/docs/quick_command_line.html) to be installed and available in your `PATH`.
+
+## Installation
+
+Copy the `snapdir-b2-store` file to a directory in your `PATH`.
+
+## Environment variables
+
+- SNAPDIR_B2_STORE_APPLICATION_KEY: The application key for the B2 storage. Defaults to B2_APPLICATION_KEY.
+- SNAPDIR_B2_STORE_APPLICATION_KEY_ID: The application key ID for the B2 storage. Defaults to B2_APPLICATION_KEY_ID.
+
+## Authentication
+
+The b2 store requires authentication before it can be used. You can authenticate by running the following command:
+
+    b2 authorize-account "${SNAPDIR_B2_STORE_APPLICATION_KEY_ID}" "${SNAPDIR_B2_STORE_APPLICATION_KEY}"
+
 ## Guide
 
 This is a continuation of the [guide under docs/](docs/guide.md) for using
@@ -15,16 +36,16 @@ your environment and then run the following command:
 
     b2 authorize-account "${SNAPDIR_B2_STORE_APPLICATION_KEY_ID}" "${SNAPDIR_B2_STORE_APPLICATION_KEY}"
 
-Create a bucket with the name "snapdir-snapdir-guide". We recommend that you
+Create a bucket with the name "snapdir-example". We recommend that you
 setup a bucket policy that prevents files from being deleted. Since you
 might choose a different name for your bucket, we'll save the store as
-an environment variable for the rest of the snapdir-guide.
+an environment variable for the rest of the example.
 
-    SNAPDIR_B2_STORE_BUCKET_NAME=snapdir-snapdir-guide
+    SNAPDIR_B2_STORE_BUCKET_NAME=snapdir-example
 
-We will now push the contents of `snapdir-guide` to the store repository.
+We will now push the contents of `example` to the store repository.
 
-    snapdir push --store "b2://${SNAPDIR_B2_STORE_BUCKET_NAME}/snapdir-guide" snapdir-guide
+    snapdir push --store "b2://${SNAPDIR_B2_STORE_BUCKET_NAME}/example" example
     # Outputs: df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
 
 If you run into issues, you can use the `--verbose` and `--debug`
@@ -33,35 +54,6 @@ options to get more information about the push.
 Let's clear our local cache and verify that we can pull the snapdir from
 the store repository.
 
-    rm -rf ${HOME}/.cache/snapdir snapdir-guide && \
-    snapdir pull --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "b2://${SNAPDIR_B2_STORE_BUCKET_NAME}/snapdir-guide" snapdir-guide
-
-## Pushing all snapshots
-
-We can now make sure that all the local manifests exist on the store by
-calling:
-
-We can now push snapshots off-process.
-
-## Push a --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
-
-```bash
-#!/bin/bash
-
-set -eEuo pipefail
-
-# Has ./snapdir changed?
-if git diff --name-only HEAD | grep -q snapdir; then
-  # lint
-  shellcheck ./snapdir
-  git diff --exit-code -- ./snapdir
-
-  # format
-  shfmt -w -s ./snapdir
-  git diff --exit-code -- ./snapdir
-
-  # test
-  ./snapdir test
-fi
-```
+    rm -rf ${HOME}/.cache/snapdir example && \
+    snapdir pull --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "b2://${SNAPDIR_B2_STORE_BUCKET_NAME}/example" example
 
