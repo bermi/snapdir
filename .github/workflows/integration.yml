@@ -62,7 +62,7 @@ jobs:
             -v $(pwd)/snapdir-s3-store:/usr/bin/snapdir-s3-store \
             -v $(pwd)/snapdir-file-store:/usr/bin/snapdir-file-store \
             -v $(pwd)/snapdir-test:/usr/bin/snapdir-test \
-            -v /usr/local/bin/b3sum:/usr/bin/b3sum
+            -v /usr/local/bin/b3sum:/usr/bin/b3sum \
             --entrypoint /bin/bash \
             amazon/aws-cli \
             -c "snapdir-s3-store test --store s3://$SNAPDIR_S3_STORE_TEST_BUCKET"
