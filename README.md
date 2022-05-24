@@ -2,7 +2,7 @@
 
 Audit and distribute authenticated directory snapshots.
 
-![unit tests status] ![integration status] ![docker status] ![docs status]
+![unit tests status] ![s3 status] ![b2 status] ![docker status] ![docs status]
 
 [Snapdir] enables creating, sharing and verifying snapshots of
 directories and their contents.
@@ -188,7 +188,8 @@ Check the [authoring stores documentation](./docs/authoring-stores.md) for more 
 LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 
   [unit tests status]: https://github.com/bermi/snapdir/actions/workflows/unit_tests.yml/badge.svg
-  [integration status]: https://github.com/bermi/snapdir/actions/workflows/integration.yml/badge.svg
+  [b2 status]: https://github.com/bermi/snapdir/actions/workflows/b2-store.yml/badge.svg
+  [s3 status]: https://github.com/bermi/snapdir/actions/workflows/s3-store.yml/badge.svg
   [docs status]: https://github.com/bermi/snapdir/actions/workflows/docs.yml/badge.svg
   [docker status]: https://github.com/bermi/snapdir/actions/workflows/build.yml/badge.svg
   [Snapdir]: https://github.com/bermi/snapdir
