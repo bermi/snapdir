@@ -531,9 +531,10 @@ snapdir_stage() {
 	while read -r line; do
 		set -eEuo pipefail
 		local checksum
-		local file_path
 		checksum="$(echo "$line" | cut -d' ' -f3)"
-		file_path="${base_dir}/$(echo "$line" | cut -d' ' -f5)"
+		local rel_path
+		rel_path="$(echo "$line" | cut -d' ' -f5)"
+		file_path="$(_snapdir_absolute_path "${base_dir}/${rel_path}")"
 		local object_rel_path
 		object_rel_path="$(_snapdir_get_object_rel_path "${checksum}")"
 		local object_rel_dir

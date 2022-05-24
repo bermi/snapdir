@@ -23,15 +23,15 @@ docker run -it --rm --entrypoint /bin/bash  bermi/snapdir
 ## Exploring the manifest
 
 Lets create a new directory with some files on it:
-
-    cd ~
-    mkdir -p snapdir-guide/
-    umask 077 snapdir-guide/
-    touch snapdir-guide/{foo,bar}.txt
+    
+    umask 077
+    mkdir -p ~/snapdir-guide/example/
+    cd ~/snapdir-guide/
+    touch example/{foo,bar}.txt
 
 You can see a manifest of the files in the directory by calling:
 
-    snapdir manifest snapdir-guide
+    snapdir manifest example
     # Outputs:
     # D 700 dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b 0 ./
     # F 600 af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 0 ./bar.txt
@@ -51,7 +51,7 @@ The columns on the previous output are:
 At this point, foo.txt and bar.txt are empty files, so their `b3sum`
 matches.
 
-`b3sum snapdir-guide/*` generates a similar output; this is not a
+`b3sum example/*` generates a similar output; this is not a
 coincidence as we are using `b3sum` under the hood for checking the
 integrity of the files.
 
@@ -60,7 +60,7 @@ of the files without newlines or spaces.
 
 We can compute it manually by running:
 
-    b3sum --no-names snapdir-guide/* | sort -u | tr -d '\n' | b3sum  --no-names
+    b3sum --no-names example/* | sort -u | tr -d '\n' | b3sum  --no-names
     # Outputs: dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b
 
 Directory checksums only use direct children files and directories
@@ -69,8 +69,8 @@ checksums and do not recurse into subdirectories.
 Now that we have an understanding of the manifest format, let's create
 an ID for the manifest itself by calling:
 
-    snapdir manifest snapdir-guide | b3sum --no-names
-    # Outputs: 0e10f2cc09efcb1a4b9bbf61eeac6c29494c5b2fa556496d984c7a5b157c5e2e
+    snapdir manifest example | b3sum --no-names
+    # Outputs: c678a299380893769bd7795628b96147229b410a9d5a5b7cae563bcae3c27857
 
 The `id` we just generated is now a reference to the directory at its
 current state.
@@ -78,8 +78,8 @@ current state.
 Since writting the previous command is a little tedious, we can use the
 `snapdir id` command instead:
 
-    snapdir id snapdir-guide
-    # Outputs: 0e10f2cc09efcb1a4b9bbf61eeac6c29494c5b2fa556496d984c7a5b157c5e2e
+    snapdir id example
+    # Outputs: c678a299380893769bd7795628b96147229b410a9d5a5b7cae563bcae3c27857
 
 After staging them locally, we can reference the snapshot `id` to create
 copies of the directory contents.
@@ -102,23 +102,23 @@ but it's essential to understand how it works, so we'll go over it here.
 Run the following command to stage the files locally, and save the
 directory name to a variable:
 
-    STAGED_DIR=$(snapdir stage snapdir-guide --keep | tee /dev/stderr)
+    STAGED_DIR=$(snapdir stage example --keep | tee /dev/stderr)
     # Outputs: /tmp/snapdir_some_random_id
 
 If we inspect the directory on the previous output, we can see a copy of
 the manifest and the files (only one since they are deduplicated) we
 want to keep track of:
 
-    find $STAGED_DIR ! -type d
+    find ${STAGED_DIR} ! -type d
     # Outputs:
-    # $STAGED_DIR/.manifests/010/932/05c/4c8fe5f9ad365871b6b0aa844ba6b9f010a5d68e466838d42091326
-    # $STAGED_DIR/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
+    # ${STAGED_DIR}/.manifests/c67/8a2/993/80893769bd7795628b96147229b410a9d5a5b7cae563bcae3c27857
+    # ${STAGED_DIR}/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
 
 While the manifest content is copied verbatim and the files are linked
 to `${HOME}/.cache/snapdir/.objects/` as we can see in the following
 command:
 
-    readlink -f $STAGED_DIR/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
+    readlink -f ${STAGED_DIR}/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
     # Outputs: ${HOME}/.cache/snapdir/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
 
 The first nine characters of the `b3sum` (*af1349b9f*) are used to
@@ -131,40 +131,40 @@ directory. Files must be placed on the local cache before being checked
 out into directories or persisted on store storage engines.
 
 Let's remove the staging directory since it is no longer for the rest of
-the snapdir-guide.
+the snapdir guide.
 
-    rm -rf "$STAGED_DIR"
+    rm -rf "${STAGED_DIR}"
 
 We will now add some content to the files and stage a new snapshot.
 
-    echo "foo" > snapdir-guide/foo.txt
-    snapdir stage snapdir-guide
-    # Outputs: f0b8a67f5fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
+    echo "foo" > example/foo.txt
+    snapdir stage example
+    # Outputs: 8af03a1bec09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be
 
 Since we didn't include the `--keep` flag, the output now shows the `id`
-of the manifest and there's no `$STAGED_DIR` directory.
+of the manifest and there's no `${STAGED_DIR}` directory.
 
 The `id` the `stage` command generated is the same as the the one we get
 by running the following command:
 
-    snapdir id snapdir-guide
-    # Outputs: f0b8a67f5fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
+    snapdir id example
+    # Outputs: 8af03a1bec09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be
 
 The manifest is now staged on the cache as
-`${HOME}/.cache/snapdir/.manifests/f0b/8a6/7f5/fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f`.
+`${HOME}/.cache/snapdir/.manifests/8af/03a/1be/c09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be`.
 Let's inspect it:
 
-    cat ${HOME}/.cache/snapdir/.manifests/f0b/8a6/7f5/fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
+    cat ${HOME}/.cache/snapdir/.manifests/8af/03a/1be/c09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be
     # Outputs:
-    # D 755 4a0732cfb45ebe9d8d572fc4c77b759384bed029911e35f8859430b889427d4d 4 ./
+    # D 700 4a0732cfb45ebe9d8d572fc4c77b759384bed029911e35f8859430b889427d4d 4 ./
     # F 600 af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 0 ./bar.txt
     # F 600 49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92 4 ./foo.txt
 
 The `id` we've got via `snapshot id` is the same we could have gotten by
 running the `b3sum` command directly against the staged manifest:
 
-    b3sum --no-names ${HOME}/.cache/snapdir/.manifests/f0b/8a6/7f5/fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
-    # Outputs: f0b8a67f5fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
+    b3sum --no-names ${HOME}/.cache/snapdir/.manifests/8af/03a/1be/c09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be
+    # Outputs: 8af03a1bec09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be
 
 The benefit of having `id`s based on checksums is that they can be
 verified against tampering and audited using `b3sum` without the need of
@@ -172,30 +172,30 @@ relying or trusting on `snapdir`.
 
 ## Checking out snapshots
 
-Lets remove the snapdir-guide directory
+Lets remove the `example` directory
 
-    rm -rf snapdir-guide
+    rm -rf example
 
 and `checkout` the snapshot by using the previous `id`:
 
-    snapdir checkout --id=f0b8a67f5fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f snapdir-guide
-    cat snapdir-guide/{foo,bar}.txt
+    snapdir checkout --id=8af03a1bec09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be example
+    cat example/{foo,bar}.txt
     # Outputs: foo
     # bar
 
 We can still checkout the id of the original snapshot, which will bring
 back the empty files.
 
-    snapdir checkout --id=0e10f2cc09efcb1a4b9bbf61eeac6c29494c5b2fa556496d984c7a5b157c5e2e snapdir-guide
-    # Outputs: File $HOME/snapdir-guide/foo.txt already exists. To override file, use the --force flag.
+    snapdir checkout --id=c678a299380893769bd7795628b96147229b410a9d5a5b7cae563bcae3c27857 example
+    # Outputs: File ${HOME}/example/foo.txt already exists. To override file, use the --force flag.
 
 as you can see, it has refused to override `foo.txt` unless `--force` is
 provided. We don't need to do that to continue with this guide.
 
 Now lets add some content for the bar.txt file and stage it.
 
-    echo "bar" > snapdir-guide/bar.txt
-    snapdir stage snapdir-guide
+    echo "bar" > example/bar.txt
+    snapdir stage example
     # Outputs: df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
 
 ### Linking objects
@@ -212,7 +212,7 @@ We can verify the integrity of a snapshot by calling:
 
     snapdir verify --verbose --id df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
     # Outputs:
-    # ${HOME}/.cache/snapdir/.manifests/ab5/f25/e59/925e01a58a05ac41437c90d6e0cefabd3bf2f6d53489d5467183f17: OK
+    # ${HOME}/.cache/snapdir/.manifests/df4/b3a/7b6/c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9: OK
     # ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f: OK
     # ${HOME}/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92: OK
 
@@ -225,7 +225,7 @@ the snapshot again:
     echo "tampered" > ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f
     snapdir verify --verbose --id df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
     # Outputs:
-    # ${HOME}/.cache/snapdir/.manifests/ab5/f25/e59/925e01a58a05ac41437c90d6e0cefabd3bf2f6d53489d5467183f17: OK
+    # ${HOME}/.cache/snapdir/.manifests/df4/b3a/7b6/c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9: OK
     # ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f: FAILED
     # ${HOME}/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92: OK
 
@@ -233,16 +233,16 @@ There are three ways to remove tampered objects from the cache.
 
 1.  Using the `--purge` option when calling the verify command:
     `snapdir verify --purge --id df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9`
-2.  Stage the snapdir-guide directory again:
-    `snapdir stage snapdir-guide`
+2.  Stage the example directory again:
+    `snapdir stage example`
 3.  Run a global cleanup command via: `snapdir verify-cache --purge`
 
 We'll use the second option to remove the tampered object since it will
 re-generate the object in the cache.
 
-    snapdir stage snapdir-guide
+    snapdir stage example
     # Outputs:
-    # ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f /workdir/kutest.com/snapdir-guide/./bar.txt differ: byte 1, line 1
+    # ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f ${HOME}/snapdir-guide/example/bar.txt differ: char 1, line 1
     # df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
 
 ## Pushing snapshots
@@ -261,24 +261,28 @@ any external account.
 If you want to use the Backblaze b2 adapter, the [snapdir-b2-store
 documentation] guide will take over from this point.
 
-To push the contents of `snapdir-guide` to the file store repository in
-the `${HOME}/snapdir-data` directory we can run:
+To push the contents of `example` to the file store repository in
+the `${HOME}/snapdir-guide/data` directory we can run:
 
-    snapdir push --store "file://${HOME}/snapdir-data" snapdir-guide
+    snapdir push --store "file://${HOME}/snapdir-guide/data" example
     # Outputs: df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
 
 If you run into issues, you can use the `--verbose` and `--debug`
 options to get more information about the push.
 
-Let's clear our local cache and the snapdir-guide directories:
+Let's clear our local cache and the example directories:
 
-    rm -rf ${HOME}/.cache/snapdir snapdir-guide
+    rm -rf ${HOME}/.cache/snapdir example
 
 Pulling from the remote with the following command will recreate the
-local cache and the snapdir-guide directory:
+local cache and the example directory:
 
-    snapdir pull --verbose --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-data" snapdir-guide
-    cat snapdir-guide/{foo,bar}.txt
+    snapdir pull --verbose --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-guide/data" example
+    # Outputs:
+    # SAVED: ${HOME}/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92
+    # SAVED: ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f
+
+    cat example/{foo,bar}.txt
     # Outputs: foo
     # bar
 
@@ -286,7 +290,19 @@ If you only want to fetch the contents of the remote into the cache, you
 can use the `fetch` method:
 
     rm -rf ${HOME}/.cache/snapdir
-    snapdir fetch --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-data"
+    snapdir fetch --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-guide/data"
+
+## Conclussion
+
+We have covered the basics of using snapdir using a local store. As a next
+step you can try using one of the remote stores.
+
+## Cleanup
+
+To clean up the local cache and the example directory we created, you can run:
+
+    rm -rf ${HOME}/.cache/snapdir ~/snapdir-guide/
+
 
   [install guide]: ./install.md
   [bermi/snapdir]: https://hub.docker.com/r/bermi/snapdir/tags

@@ -1,36 +1,36 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2086,SC2164
-alias ls='ls --color=auto'
-cd ~
-mkdir -p snapdir-guide/
-umask 077 snapdir-guide/
-touch snapdir-guide/{foo,bar}.txt
-snapdir manifest snapdir-guide
-b3sum --no-names snapdir-guide/* | sort -u | tr -d '\n' | b3sum  --no-names
-snapdir manifest snapdir-guide | b3sum --no-names
-snapdir id snapdir-guide
-STAGED_DIR=$(snapdir stage snapdir-guide --keep | tee /dev/stderr)
-find $STAGED_DIR ! -type d
-readlink -f $STAGED_DIR/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
-rm -rf "$STAGED_DIR"
-echo "foo" > snapdir-guide/foo.txt
-snapdir stage snapdir-guide
-snapdir id snapdir-guide
-cat ${HOME}/.cache/snapdir/.manifests/f0b/8a6/7f5/fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
-b3sum --no-names ${HOME}/.cache/snapdir/.manifests/f0b/8a6/7f5/fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f
-rm -rf snapdir-guide
-snapdir checkout --id=f0b8a67f5fb5ddd6d67aa9ae5f843d9b00793a68d8d79235834b0b974abe904f snapdir-guide
-cat snapdir-guide/{foo,bar}.txt
-snapdir checkout --id=0e10f2cc09efcb1a4b9bbf61eeac6c29494c5b2fa556496d984c7a5b157c5e2e snapdir-guide
-echo "bar" > snapdir-guide/bar.txt
-snapdir stage snapdir-guide
+umask 077
+mkdir -p ~/snapdir-guide/example/
+cd ~/snapdir-guide/
+touch example/{foo,bar}.txt
+snapdir manifest example
+b3sum --no-names example/* | sort -u | tr -d '\n' | b3sum  --no-names
+snapdir manifest example | b3sum --no-names
+snapdir id example
+STAGED_DIR=$(snapdir stage example --keep | tee /dev/stderr)
+find ${STAGED_DIR} ! -type d
+readlink -f ${STAGED_DIR}/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
+rm -rf "${STAGED_DIR}"
+echo "foo" > example/foo.txt
+snapdir stage example
+snapdir id example
+cat ${HOME}/.cache/snapdir/.manifests/8af/03a/1be/c09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be
+b3sum --no-names ${HOME}/.cache/snapdir/.manifests/8af/03a/1be/c09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be
+rm -rf example
+snapdir checkout --id=8af03a1bec09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be example
+cat example/{foo,bar}.txt
+snapdir checkout --id=c678a299380893769bd7795628b96147229b410a9d5a5b7cae563bcae3c27857 example
+echo "bar" > example/bar.txt
+snapdir stage example
 snapdir verify --verbose --id df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
 echo "tampered" > ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f
 snapdir verify --verbose --id df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
-snapdir stage snapdir-guide
-snapdir push --store "file://${HOME}/snapdir-data" snapdir-guide
-rm -rf ${HOME}/.cache/snapdir snapdir-guide
-snapdir pull --verbose --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-data" snapdir-guide
-cat snapdir-guide/{foo,bar}.txt
+snapdir stage example
+snapdir push --store "file://${HOME}/snapdir-guide/data" example
+rm -rf ${HOME}/.cache/snapdir example
+snapdir pull --verbose --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-guide/data" example
+cat example/{foo,bar}.txt
 rm -rf ${HOME}/.cache/snapdir
-snapdir fetch --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-data"
+snapdir fetch --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-guide/data"
+rm -rf ${HOME}/.cache/snapdir ~/snapdir-guide/

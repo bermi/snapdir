@@ -9,23 +9,39 @@ echo "Extracting commands from docs/guide.md to ./docs/tests/guide-commands.sh"
 {
   echo "#!/usr/bin/env bash"
   echo "# shellcheck disable=SC2086,SC2164"
-  echo "alias ls='ls --color=auto'"
   grep "    [^#\`]" ./docs/guide.md | sed 's|^ *||';
 } > ./docs/tests/guide-commands.sh
 chmod +x ./docs/tests/guide-commands.sh
 echo "Running shellckeck on ./docs/tests/guide-commands.sh"
 shellcheck ./docs/tests/guide-commands.sh
 
+echo "Building docker image"
 docker build . -t snapdir-test
 
+echo "Running documentation commands"
 # shellcheck disable=SC2016
-docker run -it \
-  --rm -v "$(pwd)"/docs/tests/guide-commands.sh:/guide.sh  \
+docker run \
+  --rm -v "$(pwd)"/docs/tests/guide-commands.sh:/root/guide.sh  \
   --entrypoint /bin/bash \
-  snapdir-test -c "chmod +x guide.sh && bash guide.sh" | \
-  sed 's|/tmp/snapdir_[^/]*|$STAGED_DIR|; s|/root|$HOME|' > ./docs/tests/latest-guide-commands.txt
+  --workdir /root \
+  snapdir-test -c "set -eEuo pipefail && chmod +x guide.sh && ./guide.sh" | \
+  tr -d $'\r' | sed 's|/tmp/snapdir_[^/]*|${STAGED_DIR}|g; s|/root|${HOME}|g' > ./docs/tests/latest-guide-commands.txt
 
-diff ./docs/tests/latest-guide-commands.txt ./docs/tests/expected-guide-commands-expected.txt || {
+echo "Making the output of the commands is shown on docs/guide.md"
+# for each line on ./docs/tests/latest-guide-commands.txt make sure it is found in ./docs/guide.md
+while read -r line; do
+  if ! grep -q "$line" ./docs/guide.md; then
+    echo "ERROR: '$line' Output not found in ./docs/guide.md"
+    exit 1
+  fi
+done < ./docs/tests/latest-guide-commands.txt
+echo "outputs verified"
+
+test -f ./docs/tests/expected-guide-commands-expected.txt || {
+  cp ./docs/tests/latest-guide-commands.txt ./docs/tests/expected-guide-commands-expected.txt
+}
+echo "comparing to a known version ./docs/tests/expected-guide-commands-expected.txt"
+diff <(sort ./docs/tests/latest-guide-commands.txt) <(sort ./docs/tests/expected-guide-commands-expected.txt) || {
   echo "ERROR: ./docs/tests/latest-guide-commands.txt and ./docs/tests/expected-guide-commands-expected.txt differ"
   exit 1
 }

@@ -359,7 +359,7 @@ _snapdir_file_store_persit() {
 		fi
 	else
 		mv "${tmp_target_path}" "${target_path}"
-		echo "SAVED: saved ${target_path}"
+		echo "SAVED: ${target_path}"
 	fi
 }
 

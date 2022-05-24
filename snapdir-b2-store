@@ -416,7 +416,7 @@ _snapdir_b2_fetch_to_cache() {
 		fi
 	else
 		mv "${tmp_target_path}" "${target_path}"
-		echo "SAVED: saved ${target_path}"
+		echo "SAVED: ${target_path}"
 	fi
 }
 
