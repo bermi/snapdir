@@ -4,6 +4,7 @@ F 600 af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 0 ./foo.t
 dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b
 c678a299380893769bd7795628b96147229b410a9d5a5b7cae563bcae3c27857
 c678a299380893769bd7795628b96147229b410a9d5a5b7cae563bcae3c27857
+${STAGED_DIR}
 ${STAGED_DIR}/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
 ${STAGED_DIR}/.manifests/c67/8a2/993/80893769bd7795628b96147229b410a9d5a5b7cae563bcae3c27857
 ${HOME}/.cache/snapdir/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
@@ -14,6 +15,7 @@ F 600 af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 0 ./bar.t
 F 600 49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92 4 ./foo.txt
 8af03a1bec09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be
 foo
+File ${HOME}/snapdir-guide/example/foo.txt already exists. To override file, use the --force flag.
 df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
 ${HOME}/.cache/snapdir/.manifests/df4/b3a/7b6/c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9: OK
 ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f: OK
@@ -24,10 +26,6 @@ ${HOME}/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67
 ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f ${HOME}/snapdir-guide/example/bar.txt differ: char 1, line 1
 df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
 df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
-SAVED: ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f
-SAVED: ${HOME}/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92
-${HOME}/.cache/snapdir/.manifests/df4/b3a/7b6/c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9: OK
-${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f: OK
-${HOME}/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92: OK
+
 foo
 bar

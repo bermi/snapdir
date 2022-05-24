@@ -19,7 +19,7 @@ cat ${HOME}/.cache/snapdir/.manifests/8af/03a/1be/c09b1838d2c4f56c6940ed35ccdad1
 b3sum --no-names ${HOME}/.cache/snapdir/.manifests/8af/03a/1be/c09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be
 rm -rf example
 snapdir checkout --id=8af03a1bec09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be example
-cat example/{foo,bar}.txt
+cat example/foo.txt
 snapdir checkout --id=c678a299380893769bd7795628b96147229b410a9d5a5b7cae563bcae3c27857 example
 echo "bar" > example/bar.txt
 snapdir stage example
@@ -29,7 +29,7 @@ snapdir verify --verbose --id df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c
 snapdir stage example
 snapdir push --store "file://${HOME}/snapdir-guide/data" example
 rm -rf ${HOME}/.cache/snapdir example
-snapdir pull --verbose --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-guide/data" example
+snapdir pull --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-guide/data" example
 cat example/{foo,bar}.txt
 rm -rf ${HOME}/.cache/snapdir
 snapdir fetch --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-guide/data"

@@ -111,8 +111,8 @@ want to keep track of:
 
     find ${STAGED_DIR} ! -type d
     # Outputs:
-    # ${STAGED_DIR}/.manifests/c67/8a2/993/80893769bd7795628b96147229b410a9d5a5b7cae563bcae3c27857
     # ${STAGED_DIR}/.objects/af1/349/b9f/5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
+    # ${STAGED_DIR}/.manifests/c67/8a2/993/80893769bd7795628b96147229b410a9d5a5b7cae563bcae3c27857
 
 While the manifest content is copied verbatim and the files are linked
 to `${HOME}/.cache/snapdir/.objects/` as we can see in the following
@@ -176,18 +176,17 @@ Lets remove the `example` directory
 
     rm -rf example
 
-and `checkout` the snapshot by using the previous `id`:
+and `checkout` the snapshot to restore the contents of `example` by using the previous `id`:
 
     snapdir checkout --id=8af03a1bec09b1838d2c4f56c6940ed35ccdad1064243d2d775e8347ba82b9be example
-    cat example/{foo,bar}.txt
+    cat example/foo.txt
     # Outputs: foo
-    # bar
 
 We can still checkout the id of the original snapshot, which will bring
 back the empty files.
 
     snapdir checkout --id=c678a299380893769bd7795628b96147229b410a9d5a5b7cae563bcae3c27857 example
-    # Outputs: File ${HOME}/example/foo.txt already exists. To override file, use the --force flag.
+    # Outputs: File ${HOME}/snapdir-guide/example/foo.txt already exists. To override file, use the --force flag.
 
 as you can see, it has refused to override `foo.txt` unless `--force` is
 provided. We don't need to do that to continue with this guide.
@@ -274,14 +273,12 @@ Let's clear our local cache and the example directories:
 
     rm -rf ${HOME}/.cache/snapdir example
 
+At this point the data is only available on the file store at `"file://${HOME}/snapdir-guide/data"`.    
+
 Pulling from the remote with the following command will recreate the
 local cache and the example directory:
 
-    snapdir pull --verbose --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-guide/data" example
-    # Outputs:
-    # SAVED: ${HOME}/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92
-    # SAVED: ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f
-
+    snapdir pull --id=df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9 --store "file://${HOME}/snapdir-guide/data" example
     cat example/{foo,bar}.txt
     # Outputs: foo
     # bar
