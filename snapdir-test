@@ -86,6 +86,11 @@ snapdir_test_run_integration_tests() {
 	else
 		echo "# skipping snapdir-b2-store test. No SNAPDIR_B2_STORE_TEST_BUCKET provided." >&2
 	fi
+	if [[ ${SNAPDIR_S3_STORE_TEST_BUCKET:-} != "" ]]; then
+		"$dir/snapdir-s3-store" test --store "s3://${SNAPDIR_S3_STORE_TEST_BUCKET}"
+	else
+		echo "# skipping snapdir-s3-store test. No SNAPDIR_S3_STORE_TEST_BUCKET provided." >&2
+	fi
 	echo "# integration tests completed in ${SECONDS} seconds"
 }
 
@@ -227,6 +232,7 @@ _snapdir_test_utils() {
 	}
 	run_tests_without_teardown() {
 		SECONDS=0
+		_SNAPDIR_TEST_TEARDOWN_COMPLETE=true
 		setup
 		test_suite || {
 			echo "Left directory $_SNAPDIR_TEST_TMP_DIR untouched." >&2

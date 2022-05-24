@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
-# # snapdir-b2-store 0.1.1
+# # snapdir-s3-store 0.1.1
 #
 # ## Description:
 #
-#     Snapdir store backed by Backblaze B2.
+#     Snapdir store backed by [Amazon S3 cli tool](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/s3/index.html).
 #
 # ## License
 #
@@ -14,11 +14,11 @@ set -eEuo pipefail
 IFS=$'\n\t'
 
 # By default this script will take the name of the current file
-_SNAPDIR_B2_STORE="snapdir-b2-store"
+_SNAPDIR_S3_STORE="snapdir-s3-store"
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
-	_SNAPDIR_B2_STORE="$(basename "${BASH_SOURCE[0]}")"
+	_SNAPDIR_S3_STORE="$(basename "${BASH_SOURCE[0]}")"
 fi
-_SNAPDIR_B2_STORE_VERSION="0.1.1"
+_SNAPDIR_S3_STORE_VERSION="0.1.1"
 
 #       ### #     # ####### ####### ######  #######    #     #####  #######
 #        #  ##    #    #    #       #     # #         # #   #     # #
@@ -39,22 +39,22 @@ _SNAPDIR_B2_STORE_VERSION="0.1.1"
 #       #     #       # #     #
 #       #     # #     # #     #
 #        #####   #####  #     #
-snapdir_b2_store_get_push_command() {
+snapdir_s3_store_get_push_command() {
 	# Gets the command for pushing the contents of the staging directory
-	# Backblaze b2.
+	# Amazon S3.
 	# The staging directory is a temporary directory that is used sync
-	# the contents of a specific manifest to the b2 bucket.
-	# We rely on 'b2 sync' tool to do the actual push and integrity
+	# the contents of a specific manifest to the s3 bucket.
+	# We rely on 'aws s3' and 'aws s3api' to do the actual push and integrity
 	# check.
 	#
-	#     snapdir-b2-store get-push-command \
+	#     snapdir-s3-store get-push-command \
 	#         --staging-dir "${staging_directory}" \
 	#         --store "${store}"
 	#
 	set -eEuo pipefail
-	local id="${_SNAPDIR_B2_STORE_ID:?Missing --id}"
-	local store="${_SNAPDIR_B2_STORE_STORE:?Missing --store}"
-	local source_dir="${_SNAPDIR_B2_STORE_STAGING_DIR:?Missing --staging-dir}"
+	local id="${_SNAPDIR_S3_STORE_ID:?Missing --id}"
+	local store="${_SNAPDIR_S3_STORE_STORE:?Missing --store}"
+	local source_dir="${_SNAPDIR_S3_STORE_STAGING_DIR:?Missing --staging-dir}"
 	local manifest_rel_path
 	manifest_rel_path=$(_snapdir_get_manifest_rel_path "${id}")
 	# remove trailing slash
@@ -62,17 +62,15 @@ snapdir_b2_store_get_push_command() {
 
 	# only push when the manifest does not exist
 	# first push objects then the manifest
-	local manifest_sha1sum
-	manifest_sha1sum="$(sha1sum "${source_dir}/${manifest_rel_path}" | cut -d' ' -f1)"
 	cat <<-EOF
 		set -eEuo pipefail;
-		_existing_manifest=\$(${_SNAPDIR_B2_STORE_BIN_PATH} get-manifest --id "${id}" --store "${store}" --retries 0 2>&1 | head -1 || echo "");
+		_existing_manifest=\$(${_SNAPDIR_S3_STORE_BIN_PATH} get-manifest --id "${id}" --store "${store}" --retries 0 2>&1 | head -1 || echo "");
 		if [[ \$_existing_manifest =~ ^D.*/ ]]; then
 			echo "Manifest already exists, skipping push";
 		else
 			SECONDS=0
-			b2 sync --noProgress --skipNewer --compareVersions none "$source_dir/.objects/" "${store}/.objects/";
-			b2 upload-file --noProgress --quiet --sha1 "$manifest_sha1sum" "${_SNAPDIR_STORE_BUCKET}" "${source_dir}/${manifest_rel_path}" "${_SNAPDIR_STORE_BASE_DIR}/${manifest_rel_path}";
+			aws s3 sync --only-show-errors --follow-symlinks --no-guess-mime-type "$source_dir/.objects/" "${store}/.objects/";
+			aws s3 cp --only-show-errors --follow-symlinks --no-guess-mime-type "${source_dir}/${manifest_rel_path}" "${store}/${manifest_rel_path}";
 			echo "Done pushing ${id} after \$SECONDS seconds";
 		fi
 	EOF
@@ -85,7 +83,7 @@ snapdir_b2_store_get_push_command() {
 #     # ####### #   # #  #  #       #             #    #
 #     # #     # #    ##  #  #       #       #     #    #
 #     # #     # #     # ### #       #######  #####     #
-snapdir_b2_store_get_manifest_command() {
+snapdir_s3_store_get_manifest_command() {
 	# Gets the command for echoing the contents of a manifest given its ID.
 	# This method does not save the manifest on the cache (that's done by
 	# snapdir), it just prints the contents of the manifest.
@@ -94,14 +92,14 @@ snapdir_b2_store_get_manifest_command() {
 	#
 	# Example:
 	#
-	#			snapdir-b2-store get-manifest-command --id "${id}" --store "${store}"
+	#			snapdir-s3-store get-manifest-command --id "${id}" --store "${store}"
 	#
 	set -eEuo pipefail
-	local id="${_SNAPDIR_B2_STORE_ID:?Missing --id}"
-	local store="${_SNAPDIR_B2_STORE_STORE:?Missing --store}"
+	local id="${_SNAPDIR_S3_STORE_ID:?Missing --id}"
+	local store="${_SNAPDIR_S3_STORE_STORE:?Missing --store}"
 	cat <<-EOF
 		set -eEuo pipefail;
-		${_SNAPDIR_B2_STORE_BIN_PATH} get-manifest --id "${id}" --store "${store}";
+		${_SNAPDIR_S3_STORE_BIN_PATH} get-manifest --id "${id}" --store "${store}";
 	EOF
 }
 
@@ -112,7 +110,7 @@ snapdir_b2_store_get_manifest_command() {
 #       #          #    #       #     #
 #       #          #    #     # #     #
 #       #######    #     #####  #     #
-snapdir_b2_store_get_fetch_files_command() {
+snapdir_s3_store_get_fetch_files_command() {
 	# Generates the command or commands required to download
 	# to the cache the files defined on a manifest.
 	# In order to mantain consistency when reading manifests
@@ -123,17 +121,17 @@ snapdir_b2_store_get_fetch_files_command() {
 	# Example:
 	#
 	# 	cat some_manifest_file | \
-	#       snapdir-b2-store get-fetch-files-command \
+	#       snapdir-s3-store get-fetch-files-command \
 	#       --id "${id}" \
-	#       --store "b2://long/term/storage/" \
+	#       --store "s3://long/term/storage/" \
 	#       --cache-dir "/tmp/snapdir-cache"
 	#
 	set -eEuo pipefail
-	local id="${_SNAPDIR_B2_STORE_ID:?Missing --id}"
-	local store="${_SNAPDIR_B2_STORE_STORE:?Missing --store}"
+	local id="${_SNAPDIR_S3_STORE_ID:?Missing --id}"
+	local store="${_SNAPDIR_S3_STORE_STORE:?Missing --store}"
 	local source_dir
-	source_dir="$(_snapdir_b2_store_get_remote_prefix "${store}")"
-	local target_dir="${_SNAPDIR_B2_STORE_CACHE_DIR:?Missing --cache-dir}"
+	source_dir="$(_snapdir_s3_store_get_remote_prefix "${store}")"
+	local target_dir="${_SNAPDIR_S3_STORE_CACHE_DIR:?Missing --cache-dir}"
 	# remove trailing slash
 	target_dir="${target_dir%/}"
 
@@ -154,7 +152,7 @@ snapdir_b2_store_get_fetch_files_command() {
 		fi
 	} | _snapdir_get_transfer_objects_command "${source_dir}" "${target_dir}" "fetch" "${log_file}"
 
-	echo "${_SNAPDIR_B2_STORE_BIN_PATH} ensure-no-errors --checksum \"${id}\" --log-file \"$log_file\";"
+	echo "${_SNAPDIR_S3_STORE_BIN_PATH} ensure-no-errors --checksum \"${id}\" --log-file \"$log_file\";"
 }
 
 ######  #     # ######  #       ###  #####     ####### #     #  #####
@@ -165,19 +163,19 @@ snapdir_b2_store_get_fetch_files_command() {
 #       #     # #     # #        #  #     #    #       #    ## #     #
 #        #####  ######  ####### ###  #####     #       #     #  #####
 
-snapdir_b2_store_get_manifest() {
+snapdir_s3_store_get_manifest() {
 	# Pipes a manifest given its ID to stdout.
 	#
 	# All
 	#
 	# Example:
 	#
-	#			snapdir-b2-store get-manifest --id "${id}" --store "${store}"
+	#			snapdir-s3-store get-manifest --id "${id}" --store "${store}"
 	#
 	set -eEuo pipefail
-	local id="${_SNAPDIR_B2_STORE_ID:?Missing --id}"
-	local store="${_SNAPDIR_B2_STORE_STORE:?Missing --store}"
-	local retries="${_SNAPDIR_B2_STORE_RETRIES:-5}"
+	local id="${_SNAPDIR_S3_STORE_ID:?Missing --id}"
+	local store="${_SNAPDIR_S3_STORE_STORE:?Missing --store}"
+	local retries="${_SNAPDIR_S3_STORE_RETRIES:-5}"
 	local manifest_rel_path
 	manifest_rel_path=$(_snapdir_get_manifest_rel_path "${id}")
 
@@ -188,8 +186,8 @@ snapdir_b2_store_get_manifest() {
 	# creates a temporary file to log the output of the transaction
 	tmp_manifest_path="$(mktemp -t "snapdir-manifest-${id}".XXXXXXXXXX)"
 
-	${_SNAPDIR_B2_STORE_BIN_PATH} fetch --checksum "${id}" --source-path "${manifest_rel_path}" --target-path "${tmp_manifest_path}" --log-file "$log_file" --store "${store}" --retries "${retries}" >/dev/null
-	${_SNAPDIR_B2_STORE_BIN_PATH} ensure-no-errors --checksum "${id}" --log-file "$log_file" || {
+	${_SNAPDIR_S3_STORE_BIN_PATH} fetch --checksum "${id}" --source-path "${manifest_rel_path}" --target-path "${tmp_manifest_path}" --log-file "$log_file" --store "${store}" --retries "${retries}" >/dev/null
+	${_SNAPDIR_S3_STORE_BIN_PATH} ensure-no-errors --checksum "${id}" --log-file "$log_file" || {
 		rm -f "${log_file}" "${tmp_manifest_path}"
 		exit 1
 	}
@@ -197,13 +195,13 @@ snapdir_b2_store_get_manifest() {
 	rm -f "${log_file}" "${tmp_manifest_path}"
 }
 
-snapdir_b2_store_fetch() {
+snapdir_s3_store_fetch() {
 	set -eEuo pipefail
-	local log_file="${_SNAPDIR_B2_STORE_LOG_FILE:?Missing --log-file}"
-	_snapdir_b2_fetch_to_cache | tee "$log_file"
+	local log_file="${_SNAPDIR_S3_STORE_LOG_FILE:?Missing --log-file}"
+	_snapdir_s3_fetch_to_cache | tee "$log_file"
 }
 
-snapdir_b2_store_ensure_no_errors() {
+snapdir_s3_store_ensure_no_errors() {
 	# This method is called once all the .objects in the manifest have been
 	# transferred to or from the store.
 	# Errors will be sent to stderr and the process will exit with
@@ -211,13 +209,13 @@ snapdir_b2_store_ensure_no_errors() {
 	#
 	# Example:
 	#
-	#     snapdir-b2-store verify-transactions \
+	#     snapdir-s3-store verify-transactions \
 	#         --checksum "aa91e498f401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d" \
 	#         --log-file "/log/file/for/the/transaction"
 	#
 	set -eEuo pipefail
-	local checksum="${_SNAPDIR_B2_STORE_CHECKSUM:?Missing --checksum}"
-	local log_file="${_SNAPDIR_B2_STORE_LOG_FILE:?Missing --log-file}"
+	local checksum="${_SNAPDIR_S3_STORE_CHECKSUM:?Missing --checksum}"
+	local log_file="${_SNAPDIR_S3_STORE_LOG_FILE:?Missing --log-file}"
 
 	# only after all the files have been copied, and ided, we'll
 	# save the manifest
@@ -234,31 +232,31 @@ snapdir_b2_store_ensure_no_errors() {
 }
 
 # TODO: Add a method for verifying the integrity of the files for a given manifest on
-# b2. We can leverage something like _snapdir_b2_store_get_remote_sha1sums
+# s3. We can leverage something like _snapdir_s3_store_get_remote_md5sums
 # but targeted at individual manifest ids instead of the entire store.
 
-snapdir_b2_store_run() (
+snapdir_s3_store_run() (
 	set -eEuo pipefail
 	local subcommands="get-manifest|get-manifest-command|get-fetch-files-command|get-push-command|test|version|ensure-no-errors|fetch"
 	local boolean_args="debug"
 	local value_required_args="cache_dir|staging_dir|store|manifest|id|source_path|target_path|checksum|log_file|retries"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
 
-	_snapdir_b2_store_parse_argument_key() {
-		sed -E 's|^--?|_SNAPDIR_B2_STORE_|; s|-|_|g;' <<<"${1^^}"
+	_snapdir_s3_store_parse_argument_key() {
+		sed -E 's|^--?|_SNAPDIR_S3_STORE_|; s|-|_|g;' <<<"${1^^}"
 	}
 
-	_snapdir_b2_store_validate_option() {
+	_snapdir_s3_store_validate_option() {
 		set -eEuo pipefail
-		grep -q -E "^_SNAPDIR_B2_STORE_(${legal_argument_keys^^})$" <<<"${1}" || {
-			echo "error: Unknown option: ${1//_SNAPDIR_B2_STORE_/}" | tr '[:upper:]' '[:lower:]' >&2
+		grep -q -E "^_SNAPDIR_S3_STORE_(${legal_argument_keys^^})$" <<<"${1}" || {
+			echo "error: Unknown option: ${1//_SNAPDIR_S3_STORE_/}" | tr '[:upper:]' '[:lower:]' >&2
 			echo "Valid options are: --(${legal_argument_keys})" >&2
 			exit 1
 		}
 	}
 
-	_snapdir_b2_store_help() {
-		sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_B2_STORE_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+	_snapdir_s3_store_help() {
+		sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_S3_STORE_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
 		exit 0
 	}
 
@@ -275,25 +273,25 @@ snapdir_b2_store_run() (
 			shift
 			;;
 		help | -h | --help)
-			_snapdir_b2_store_help
+			_snapdir_s3_store_help
 			;;
 		version | -v | --version)
-			echo "${_SNAPDIR_B2_STORE_VERSION}"
+			echo "${_SNAPDIR_S3_STORE_VERSION}"
 			exit 0
 			;;
-		# export all --*=* flags as _SNAPDIR_B2_STORE_* env vars
+		# export all --*=* flags as _SNAPDIR_S3_STORE_* env vars
 		--*=* | -*=*)
-			key="$(_snapdir_b2_store_parse_argument_key "${1%%=*}")"
-			_snapdir_b2_store_validate_option "$key"
+			key="$(_snapdir_s3_store_parse_argument_key "${1%%=*}")"
+			_snapdir_s3_store_validate_option "$key"
 			echo "export ${key}=\"${1#*=}\"" 1>&2
 			export "$key"="${1#*=}"
 			shift
 			;;
-		# export all --* * flags as _SNAPDIR_B2_STORE_* env vars
+		# export all --* * flags as _SNAPDIR_S3_STORE_* env vars
 		--*)
 			is_boolean=$(grep -q -E "^--?(${boolean_args})$" <<<"${1}" && echo true || echo false)
-			key="$(_snapdir_b2_store_parse_argument_key "${1}")"
-			_snapdir_b2_store_validate_option "$key"
+			key="$(_snapdir_s3_store_parse_argument_key "${1}")"
+			_snapdir_s3_store_validate_option "$key"
 			shift
 			value="${1:-true}"
 			# if key is in boolean_args
@@ -315,13 +313,13 @@ snapdir_b2_store_run() (
 	# if command is not set, show help
 	if [[ ${command:-""} == "" ]]; then
 		echo "Uknown command '$subcommand_candidate'. Valid commands are: ${subcommands}" >&2
-		echo "Try: ${_SNAPDIR_B2_STORE_STORE} --help" >&2
+		echo "Try: ${_SNAPDIR_S3_STORE_STORE} --help" >&2
 		return 1
 	fi
 
-	_snapdir_b2_store_export_env_defaults
-	# env | grep _snapdir_b2_store_ | sort
-	eval "snapdir_b2_store_${command//-/_} $positional_args ${*:2}"
+	_snapdir_s3_store_export_env_defaults
+	# env | grep _snapdir_s3_store_ | sort
+	eval "snapdir_s3_store_${command//-/_} $positional_args ${*:2}"
 )
 
 ######  ######  ### #     #    #    ####### #######    ####### #     #  #####
@@ -360,7 +358,7 @@ _snapdir_get_transfer_objects_command() {
 		rel_file_path="$(_snapdir_get_object_rel_path "${checksum}")"
 		if ! test -f "${target_dir}/${rel_file_path}"; then
 			# redirect stdout and stderr to the temporary file $log_file but also send stdout to stdout and stderr to stderr
-			echo "nice ${_SNAPDIR_B2_STORE_BIN_PATH} fetch --checksum \"${checksum}\" --source-path \"${rel_file_path}\" --target-path \"${target_dir}/${rel_file_path}\" --log-file \"$log_file\" & "
+			echo "nice ${_SNAPDIR_S3_STORE_BIN_PATH} fetch --checksum \"${checksum}\" --source-path \"${rel_file_path}\" --target-path \"${target_dir}/${rel_file_path}\" --log-file \"$log_file\" & "
 			total_files=$((total_files + 1))
 		fi
 	done
@@ -373,45 +371,52 @@ _snapdir_get_transfer_objects_command() {
 	fi
 }
 
-_snapdir_b2_fetch_to_cache() {
-	# This method will persist files from b2 to a target local path and verify
+_snapdir_s3_fetch_to_cache() {
+	# This method will persist files from s3 to a target local path and verify
 	# that the checksums match the --checksum argument.
-	# The file is downloaded from b2 to a temporary location renamed to the
+	# The file is downloaded from s3 to a temporary location renamed to the
 	# final location once the integrity has been checked.
 	# We can use the same logic for objects and manifests.
 	set -eEuo pipefail
-	local source_path="${_SNAPDIR_B2_STORE_SOURCE_PATH:?Missing --source-path}"
-	local target_path="${_SNAPDIR_B2_STORE_TARGET_PATH:?Missing --target-path}"
-	local checksum="${_SNAPDIR_B2_STORE_CHECKSUM:?Missing --checksum}"
-	local retries="${_SNAPDIR_B2_STORE_RETRIES:-5}"
+	local source_path="${_SNAPDIR_S3_STORE_SOURCE_PATH:?Missing --source-path}"
+	local target_path="${_SNAPDIR_S3_STORE_TARGET_PATH:?Missing --target-path}"
+	local checksum="${_SNAPDIR_S3_STORE_CHECKSUM:?Missing --checksum}"
+	local retries="${_SNAPDIR_S3_STORE_RETRIES:-5}"
 
-	# To avoid concurrency errors, the b2 will be copied to a
+	# To avoid concurrency errors, the s3 will be copied to a
 	# temporary location and then renamed to it's final location.
-	# We only perform integrity checks on the temporary b2 since
+	# We only perform integrity checks on the temporary s3 since
 	# the mv command does not afects the contents of the data on disk
-	# as long as the tmp b2 is on the same b2.
+	# as long as the tmp s3 is on the same s3.
 	local tmp_target_path
 	tmp_target_path="${target_path}.$(_snapdir_tmp_id)"
 	mkdir -p "$(dirname "${tmp_target_path}")"
 
-	_snapdir_b2_store_export_env_defaults
+	_snapdir_s3_store_export_env_defaults
 
-	# download the file from b2
-	b2 download-file-by-name --noProgress "${_SNAPDIR_STORE_BUCKET}" "${_SNAPDIR_STORE_BASE_DIR}/${source_path}" "${tmp_target_path}" | grep -q "Checksum matches" || {
-		echo "WARNING: Failed with command: 'b2 download-file-by-name --noProgress \"${_SNAPDIR_STORE_BUCKET}\" \"${_SNAPDIR_STORE_BASE_DIR}/${source_path}\" \"${tmp_target_path}\"'" >&2
+	local s3_path="s3://${_SNAPDIR_STORE_BUCKET}/${_SNAPDIR_STORE_BASE_DIR}/${source_path}"
+
+	# download the file from s3
+	aws s3 cp --only-show-errors --no-guess-mime-type "${s3_path}" "${tmp_target_path}" || {
+		echo "WARNING: Failed with command: 'aws s3 cp --only-show-errors --no-guess-mime-type \"${s3_path}\" \"${tmp_target_path}\";" >&2
 	}
 
-	if ! test -f "${tmp_target_path}" || [[ "$(b3sum "${tmp_target_path}" --no-names)" != "${checksum}" ]]; then
-		# retry when the source has a valid checksum
-		rm -rf "${tmp_target_path}"
-		# subtract 1 from _SNAPDIR_B2_STORE_RETRIES
+	local valid_checksum
+	valid_checksum="$({ test -f "${tmp_target_path}" && test "$(b3sum "${tmp_target_path}" --no-names)" == "${checksum}"; } || echo "false" && echo "true")"
+	if [[ $valid_checksum == "false" ]]; then
+		local reason="fetching"
+		if test -f "${tmp_target_path}"; then
+			rm -rf "${tmp_target_path}"
+			reason="missmatched checksum after fetching"
+		fi
+		# subtract 1 from _SNAPDIR_S3_STORE_RETRIES
 		retries=$((retries - 1))
 		if [[ ${retries} -gt 0 ]]; then
-			echo "WARNING: Retrying fetch b2://${_SNAPDIR_STORE_BUCKET}${source_path} to ${target_path} ${retries} retries left." >&2
-			_SNAPDIR_B2_STORE_RETRIES=$retries _snapdir_b2_fetch_to_cache
+			echo "WARNING: Temporary failed $reason: 'aws s3 cp --only-show-errors --no-guess-mime-type \"${s3_path}\" \"${tmp_target_path}\"'. ${retries} retries left." >&2
+			_SNAPDIR_S3_STORE_RETRIES=$retries _snapdir_s3_fetch_to_cache
 		else
 			# give up
-			echo "ERROR: Failed to fetch b2://${_SNAPDIR_STORE_BUCKET}${source_path} to ${target_path} with checksum ${checksum}." >&2
+			echo "ERROR: Failed $reason ${s3_path} to ${target_path} with checksum ${checksum}." >&2
 			exit 1
 		fi
 	else
@@ -420,50 +425,59 @@ _snapdir_b2_fetch_to_cache() {
 	fi
 }
 
-_snapdir_b2_store_get_remote_prefix() {
+_snapdir_s3_store_get_remote_prefix() {
 	set -eEuo pipefail
 	local store="${1:?Missing store}"
 	local store_dir
-	store_dir="$(echo "$store" | sed -E 's|^b2:/*[^/]*/?||')"
+	store_dir="$(echo "$store" | sed -E 's|^s3:/*[^/]*/?||')"
 	# remove trailing slash
 	echo "${store_dir%/}"
 }
 
-_snapdir_b2_store_export_env_defaults() {
+_snapdir_s3_store_export_env_defaults() {
 	# Environment variables
 	set -eEuo pipefail
 	_snapdir_set_manifest_from_stdin_or_id
 	if [[ ${_SNAPDIR_ID:-""} != "" ]]; then
-		_SNAPDIR_B2_STORE_ID="${_SNAPDIR_ID}"
+		_SNAPDIR_S3_STORE_ID="${_SNAPDIR_ID}"
 	fi
-	: "${_SNAPDIR_B2_STORE_STORE:?Missing --store required for b2 store}"
-	_SNAPDIR_STORE="${_SNAPDIR_B2_STORE_STORE}"
+	: "${_SNAPDIR_S3_STORE_STORE:?Missing --store required for s3 store}"
+	_SNAPDIR_STORE="${_SNAPDIR_S3_STORE_STORE}"
 	_snapdir_export_store_vars
-	# Exposes the credentials required by the b2 command line tool.
-	# SNAPDIR_B2_STORE_APPLICATION_KEY and SNAPDIR_B2_STORE_APPLICATION_KEY_ID can
-	# override the B2_APPLICATION_KEY and B2_APPLICATION_KEY_ID environment
+	# Exposes the credentials required by the aws command line tool.
+	# SNAPDIR_AWS_ACCESS_KEY_ID and SNAPDIR_AWS_SECRET_ACCESS_KEY can
+	# override the AWS_ACCESS_KEY_ID and SNAPDIR_AWS_SECRET_ACCESS_KEY environment
 	# variables.
-	export B2_APPLICATION_KEY="${SNAPDIR_B2_STORE_APPLICATION_KEY:-${B2_APPLICATION_KEY:?Missing SNAPDIR_B2_STORE_APPLICATION_KEY}}"
-	export B2_APPLICATION_KEY_ID="${SNAPDIR_B2_STORE_APPLICATION_KEY_ID:-${B2_APPLICATION_KEY_ID:?Missing SNAPDIR_B2_STORE_APPLICATION_KEY_ID}}"
+
+	export SNAPDIR_AWS_ACCESS_KEY_ID="${SNAPDIR_AWS_ACCESS_KEY_ID:-${AWS_ACCESS_KEY_ID:?Missing SNAPDIR_AWS_ACCESS_KEY_ID}}"
+	export SNAPDIR_AWS_SECRET_ACCESS_KEY="${SNAPDIR_AWS_SECRET_ACCESS_KEY:-${AWS_SECRET_ACCESS_KEY:?Missing SNAPDIR_AWS_SECRET_ACCESS_KEY}}"
+	export AWS_ACCESS_KEY_ID="$SNAPDIR_AWS_ACCESS_KEY_ID"
+	export AWS_SECRET_ACCESS_KEY="$SNAPDIR_AWS_SECRET_ACCESS_KEY"
 	: "${_SNAPDIR_STORE_BUCKET:?Missing _SNAPDIR_STORE_BUCKET}"
 }
 
-_snapdir_b2_store_get_remote_sha1sums() {
-	# Runs a slow list of sha1sums on the remote store.
+_snapdir_s3_store_get_remote_md5sums() {
+	# Runs a slow list of md5sums on the remote store.
 	# You should not rely on this method for anything other than testing
 	# since it is very slow and does not support pagination.
 	set -eEuo pipefail
-	b2 ls --json --recursive "${_SNAPDIR_STORE_BUCKET}" "${1:?Missing remote directory}" |
-		grep -E '(fileName|Sha1)' |
+	echo aws s3api list-objects-v2 --bucket "${_SNAPDIR_STORE_BUCKET}" --prefix "${1:?Missing remote directory}" 1>&2
+	aws s3api list-objects-v2 --bucket "${_SNAPDIR_STORE_BUCKET}" --prefix "${1:?Missing remote directory}" |
+		grep -E '"(Key|ETag)":' |
 		cut -d':' -f2 |
-		sed 's|[," ]||g' |
-		while read -r id; do
-			read -r file
-			echo "$id  $file"
+		sed 's|[,"\\ ]||g' |
+		while read -r file; do
+			read -r id
+			# JSON does not guarantee the order of the properties
+			# If id matches the regex for the md5 we've got the order right
+			if [[ ${id} =~ ^[a-f0-9]{32}$ ]]; then
+				echo "$id  $file"
+			else
+				echo "$file  $id"
+			fi
 		done |
 		sort -k2
 }
-
 #       ####### #######  #####  #######  #####
 #          #    #       #     #    #    #     #
 #          #    #       #          #    #
@@ -471,42 +485,32 @@ _snapdir_b2_store_get_remote_sha1sums() {
 #          #    #             #    #          #
 #          #    #       #     #    #    #     #
 #          #    #######  #####     #     #####
-snapdir_b2_store_test() (
+snapdir_s3_store_test() (
 	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
 	set -eEuo pipefail
 
 	# Import test utilities
 	# shellcheck disable=SC1091
-	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_B2_STORE_BIN_PATH}"
+	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_S3_STORE_BIN_PATH}"
 
 	setup_suite() {
 		set -eEuo pipefail
-		_SNAPDIR_TEST_STORE="${_SNAPDIR_B2_STORE_STORE}${_SNAPDIR_TEST_TMP_DIR}"
+		_SNAPDIR_TEST_STORE="${_SNAPDIR_S3_STORE_STORE}${_SNAPDIR_TEST_TMP_DIR}"
 
 		export PATH="$HOME/.cache/snapdir/bin:$PATH"
-		{
-			which b2 >/dev/null || {
-				mkdir -p "$HOME/.cache/snapdir/bin"
-				local bin_path="b2-linux"
-				if [[ "$(uname -s)" == "Darwin" ]]; then
-					bin_path="b2-darwin"
-				fi
-				https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v3.4.0/b2-linux
-				wget -q "https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v3.4.0/${bin_path}" -O "$HOME/.cache/snapdir/bin/b2" || {
-					echo "ERROR: Failed to download b2 binary" >&2
-					rm -rf "$HOME/.cache/snapdir/bin/b2"
-					exit 1
-				}
-				chmod +x "$HOME/.cache/snapdir/bin/b2"
-				"$HOME/.cache/snapdir/bin/b2" version | grep -q "version 3.4.0" || {
-					echo "Expected $HOME/.cache/snapdir/bin/b2 to be on version 3.4.0" >&2
-					exit 1
-				}
+		(
+			set -eEuo pipefail
+			which aws >/dev/null || {
+				echo "Missing aws, installing..."
+				cd /tmp
+				curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+				unzip awscliv2.zip
+				./aws/install
+				rm -rf awscli* aws
 			}
-			echo "authorizing b2 account"
-			echo "this integration test requires network connectivity and valid b2 credentials"
-			b2 authorize-account "${SNAPDIR_B2_STORE_APPLICATION_KEY_ID}" "${SNAPDIR_B2_STORE_APPLICATION_KEY}"
-		} 2>&1 | sed 's|^|# |' || return 1
+			echo "verifying aws --version"
+			aws --version
+		) 2>&1 | sed 's|^|# |' || return 1
 	}
 
 	teardown_suite() {
@@ -515,9 +519,9 @@ snapdir_b2_store_test() (
 			return 0
 		fi
 		{
-			echo "cleaning up remote b2 temporary test data"
+			echo "cleaning up remote s3 temporary test data"
 			mkdir -p /tmp/empty-dir
-			b2 sync --skipNewer --noProgress --allowEmptySource --delete --compareVersions none "/tmp/empty-dir/" "${_SNAPDIR_TEST_STORE}/"
+			aws s3 sync --only-show-errors --delete "/tmp/empty-dir/" "${_SNAPDIR_TEST_STORE}/"
 			rmdir /tmp/empty-dir
 		} 2>&1 | sed 's|^|# |' || true
 	}
@@ -526,7 +530,7 @@ snapdir_b2_store_test() (
 		set -eEuo pipefail
 		export PATH="$HOME/.cache/snapdir/bin:$PATH"
 		local snapdir="$_SNAPDIR_BIN_PATH"
-		local b2store="$_SNAPDIR_B2_STORE_BIN_PATH"
+		local s3store="$_SNAPDIR_S3_STORE_BIN_PATH"
 		local result=""
 		local _dir="${_SNAPDIR_TEST_TMP_DIR}/files"
 		local _cwd="$_SNAPDIR_CWD"
@@ -539,17 +543,17 @@ snapdir_b2_store_test() (
 		local simple_manifest="D 700 e2b4329871fef9f50a20ba5d1475ee474f1df4091fe49002fd2bbcc42e6a04d5 8 ./
 F 600 $bar_checksum 4 ./bar
 F 600 $foo_checksum 4 ./foo"
-		local store="${_SNAPDIR_B2_STORE_STORE}${_SNAPDIR_TEST_TMP_DIR}"
+		local store="${_SNAPDIR_S3_STORE_STORE}${_SNAPDIR_TEST_TMP_DIR}"
 		local store_dir
-		store_dir="$(_snapdir_b2_store_get_remote_prefix "${store}")"
+		store_dir="$(_snapdir_s3_store_get_remote_prefix "${store}")"
 
-		local foo_sha1sum="f1d2d2f924e986ac86fdf7b36c94bcdf32beec15"
-		local bar_sha1sum="e242ed3bffccdf271b7fbaf34ed72d089537b42f"
-		local simple_manifest_sha1sum="79e4eaf321878facb19213b33885b00ad2e5bbe3"
-		local store_ls_sha1
-		store_ls_sha1=$(echo "${simple_manifest_sha1sum}  ${store_dir}/.manifests/${simple_manifest_path}
-${foo_sha1sum}  ${store_dir}/.objects/${foo_path}
-${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
+		local foo_md5sum="d3b07384d113edec49eaa6238ad5ff00"
+		local bar_md5sum="c157a79031e1c40f85931829bc5fc552"
+		local simple_manifest_md5sum="55094bca5d56d02394d874d1900cfb48"
+		local store_ls_md5
+		store_ls_md5=$(echo "${simple_manifest_md5sum}  ${store_dir}/.manifests/${simple_manifest_path}
+${foo_md5sum}  ${store_dir}/.objects/${foo_path}
+${bar_md5sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 
 		echo "# running integration tests against ${store}"
 		# --------------------------------------------------------------------------------
@@ -563,6 +567,7 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 		# We only push if the manifest does not exist. We first push the objects and finally the manifest.
 		# echo "# Running: \"${snapdir}\" push --dryrun --verbose --store=\"${store}\" \"${_dir}\""
 		result=$("${snapdir}" push --verbose --dryrun --store "${store}" "${_dir}" 2>&1 || echo "")
+		# echo "result: $result"
 
 		# --------------------------------------------------------------------------------
 		check "should sync objects before manifests"
@@ -570,15 +575,15 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 
 		# --------------------------------------------------------------------------------
 		check "should issue valid sync command "
-		grep -q 'b2 sync .*--skipNewer --compareVersions none "[^"]*/.objects/" "b2://[^"]*/.objects/"' <<<"${result}" || fail "Expected to find 'b2 sync --skipNewer --compareVersions none \"${_dir}/.objects/\" \"b2://.*/.objects/\"' in '$result'" && pass
+		grep -q 'aws s3 sync --only-show-errors --follow-symlinks --no-guess-mime-type "[^"]*/.objects/" "s3://[^"]*/.objects/"' <<<"${result}" || fail "Expected to find 'aws s3 sync --no-guess-mime-type \"${_dir}/.objects/\" \"s3://.*/.objects/\"' in '$result'" && pass
 
 		# --------------------------------------------------------------------------------
 		check "should try to fetch the manifest"
 		grep -q 'get-manifest --id ' <<<"${result}" || fail "Expected to find 'get-manifest --id ' in '$result'" && pass
 
 		# --------------------------------------------------------------------------------
-		check "should include --noProgress"
-		grep -q "noProgress" <<<"${result}" || fail "Expected '--noProgress' in '$result'" && pass
+		check "should include --only-show-errors"
+		grep -q "only-show-errors" <<<"${result}" || fail "Expected '--only-show-errors' in '$result'" && pass
 
 		# --------------------------------------------------------------------------------
 		echo "# slow integration test ahead"
@@ -586,17 +591,19 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 
 		describe "snapdir push"
 		result=$("${snapdir}" push --verbose --store "${store}" "${_dir}" 2>&1 || echo "")
+
+		check "should succeed with manifest id"
 		[[ $result =~ $simple_manifest_id ]] || fail "Unexpected verbose push output, got: '$result' expected '$simple_manifest_id' to be included" && pass
 
 		# --------------------------------------------------------------------------------
 		check "should have pushed staged files correctly"
-		result=$(_snapdir_b2_store_get_remote_sha1sums "${store_dir}")
-		[[ $store_ls_sha1 == "$result" ]] || fail "Unexpected remote sha1sums, got: '$result' expected '$store_ls_sha1'" && pass
+		result=$(_snapdir_s3_store_get_remote_md5sums "${store_dir}")
+		[[ $store_ls_md5 == "$result" ]] || fail "Unexpected remote md5sums, got: '$result' expected '$store_ls_md5'" && pass
 
 		# --------------------------------------------------------------------------------
-		describe "snapdir-b2-store get-manifest"
+		# describe "snapdir-s3-store get-manifest"
 		check "should get manifest from remote"
-		result=$("$b2store" get-manifest --id "$simple_manifest_id" --store "${store}" 2>&1 || echo "")
+		result=$("$s3store" get-manifest --id "$simple_manifest_id" --store "${store}" 2>&1 || echo "")
 		[[ $simple_manifest == "$result" ]] || fail "Unexpected manifest, got: '$result' expected '$simple_manifest'" && pass
 
 		# --------------------------------------------------------------------------------
@@ -647,6 +654,7 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 		# tree -a "${_SNAPDIR_TEST_TMP_DIR}"
 
 		check "should fetch the manifest"
+		test -f "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" || fail "Expected '${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}' to exist. Got output: '$result'"
 		echo "${simple_manifest_id}  ${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" | b3sum -c >/dev/null || fail "Expected '${simple_manifest_id} ${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}' to be valid."
 		grep -q "SAVED:.*${simple_manifest_path}" <<<"${result}" || fail "Expected '${simple_manifest_path}' to be SAVED but got '$result'" && pass
 
@@ -667,11 +675,11 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 		check "should fail when the manifest has been tampered with"
 		cp "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}.original"
 		echo "tampered" >"${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}"
-		b2 upload-file --noProgress --quiet "${_SNAPDIR_STORE_BUCKET}" "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" "${_SNAPDIR_CACHE_DIR#/}/.manifests/${simple_manifest_path}" >/dev/null
+		s3 upload-file --only-show-errors "${_SNAPDIR_STORE_BUCKET}" "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" "${_SNAPDIR_CACHE_DIR#/}/.manifests/${simple_manifest_path}" >/dev/null
 		result=$("${snapdir}" fetch --dryrun --store "${store}" --id "${simple_manifest_id}" 2>&1 || echo "")
 		# restore tampered file
 		mv "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}.original" "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}"
-		b2 upload-file --noProgress --quiet "${_SNAPDIR_STORE_BUCKET}" "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" "${_SNAPDIR_CACHE_DIR#/}/.manifests/${simple_manifest_path}" >/dev/null
+		s3 upload-file --only-show-errors "${_SNAPDIR_STORE_BUCKET}" "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" "${_SNAPDIR_CACHE_DIR#/}/.manifests/${simple_manifest_path}" >/dev/null
 		grep -q "error: Manifest for snapshot '${simple_manifest_id}' does not match the snapshot id." <<<"${result}" || fail "Expected 'error: Manifest for snapshot '${simple_manifest_id}' does not match the snapshot id.' but got '$result'" && pass
 
 		# --------------------------------------------------------------------------------
@@ -705,12 +713,12 @@ ${bar_sha1sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 )
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
-	_snapdir_b2_store_readlink() {
+	_snapdir_s3_store_readlink() {
 		echo "$(cd "$(dirname "$1")" || echo "" && pwd)/$(basename "$1")"
 	}
 else
 	shopt -s inherit_errexit
-	_snapdir_b2_store_readlink() {
+	_snapdir_s3_store_readlink() {
 		readlink -f "$1"
 	}
 fi
@@ -726,14 +734,14 @@ fi
 # Run if is not sourced
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	# Get the absolute path to ${BASH_SOURCE[0]}
-	export _SNAPDIR_B2_STORE_BIN_PATH="${_SNAPDIR_B2_STORE_BIN_PATH:-$(_snapdir_b2_store_readlink "${BASH_SOURCE[0]}")}"
+	export _SNAPDIR_S3_STORE_BIN_PATH="${_SNAPDIR_S3_STORE_BIN_PATH:-$(_snapdir_s3_store_readlink "${BASH_SOURCE[0]}")}"
 	# import snapdir functions and environment variables,
 	# we'll need them to resolve directories, logging and testing.
-	_SNAPDIR_BIN_PATH="$(which snapdir || echo "$(dirname "${_SNAPDIR_B2_STORE_BIN_PATH}")/snapdir")"
+	_SNAPDIR_BIN_PATH="$(which snapdir || echo "$(dirname "${_SNAPDIR_S3_STORE_BIN_PATH}")/snapdir")"
 	export _SNAPDIR_BIN_PATH
 	# shellcheck disable=SC1090
 	. "$_SNAPDIR_BIN_PATH"
-	snapdir_b2_store_run "${@:1}"
+	snapdir_s3_store_run "${@:1}"
 else
-	_snapdir_b2_store_export_env_defaults
+	_snapdir_s3_store_export_env_defaults
 fi
