@@ -506,6 +506,8 @@ snapdir_s3_store_test() (
 			}
 			echo "verifying aws --version"
 			aws --version
+			echo "verifying aws caller identity"
+			aws sts get-caller-identity
 		) 2>&1 | sed 's|^|# |' || return 1
 	}
 
