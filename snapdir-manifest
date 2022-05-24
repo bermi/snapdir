@@ -383,7 +383,6 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 		echo "$_SNAPDIR_MANIFEST_CACHE_DIR/$(echo "${file_path} ${SNAPDIR_MANIFEST_CONTEXT:-""}$(stat -f '%i %A %z %Sm' "$file_path")" | _snapdir_manifest_checksum)"
 	}
 else
-	shopt -s inherit_errexit
 
 	_snapdir_manifest_readlink() {
 		readlink -f "$1"
@@ -542,7 +541,7 @@ _snapdir_manifest_export_env_defaults() {
 	set -eEuo pipefail
 
 	_SNAPDIR_MANIFEST_CHECKSUM_BIN="${_SNAPDIR_MANIFEST_CHECKSUM_BIN:-b3sum}"
-	which "$_SNAPDIR_MANIFEST_CHECKSUM_BIN" >/dev/null || {
+	"$_SNAPDIR_MANIFEST_CHECKSUM_BIN" --version >/dev/null || {
 		echo "Could not find '$_SNAPDIR_MANIFEST_CHECKSUM_BIN', please install it or specify an alternative --checksum-bin" >&2
 		exit 1
 	}

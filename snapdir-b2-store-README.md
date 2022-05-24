@@ -26,7 +26,7 @@ Backblaze B2.
 
 Make sure you install the b2cli tool.
 
-    which b2 >/dev/null || {
+    b2 version || {
         wget -q "https://github.com/Backblaze/B2_Command_Line_Tool/releases/latest/checkout/b2-linux" | sudo tee "/usr/local/bin/b2" >/dev/null
         sudo chmod +x /usr/local/bin/b2
     }

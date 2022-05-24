@@ -449,8 +449,9 @@ snapdir_checkout() {
 	done <"${manifest_cache_path}"
 
 	if [[ ${dryrun} == "true" ]]; then
-		for directory in "${directories[@]}"; do
-			_snapdir_dryrun_log "mkdir -p \"$directory\""
+		# using safe idiom to iterate over arrays on bash >= 4.0
+		for ((i = 0; i < ${#directories[@]}; i++)); do
+			_snapdir_dryrun_log "mkdir -p \"${directories[$i]}\""
 		done
 
 		if [[ ${_SNAPDIR_LINKED:-false} == true ]]; then
@@ -466,8 +467,9 @@ snapdir_checkout() {
 			done
 		fi
 	else
-		for directory in "${directories[@]}"; do
-			mkdir -p "$directory"
+		# using safe idiom to iterate over arrays on bash >= 4.0
+		for ((i = 0; i < ${#directories[@]}; i++)); do
+			mkdir -p "${directories[$i]}"
 		done
 
 		if [[ ${_SNAPDIR_LINKED:-false} == true ]]; then
@@ -486,8 +488,9 @@ snapdir_checkout() {
 
 	if [[ ${_SNAPDIR_VERBOSE:-""} == "true" ]]; then
 		# print success messages
-		for message in "${success_messages[@]}"; do
-			_snapdir_log "$message"
+		# using safe idiom to iterate over arrays on bash >= 4.0
+		for ((i = 0; i < ${#success_messages[@]}; i++)); do
+			_snapdir_log "${success_messages[$i]}"
 		done
 	fi
 }
@@ -721,17 +724,17 @@ _snapdir_get_store_bin_path() {
 		echo "${!explicit_bin_path}"
 		return 0
 	fi
-	store_bin_path=$(which "snapdir-${store_protocol}-store" || echo "" 2>/dev/null)
+	if test -f "${_SNAPDIR_BIN_DIR}/snapdir-${store_protocol}-store"; then
+		echo "${_SNAPDIR_BIN_DIR}/snapdir-${store_protocol}-store"
+		return 0
+	fi
+	store_bin_path=$("snapdir-${store_protocol}-store" -v || echo "" 2>/dev/null)
 	if [[ ${store_bin_path} == "" ]]; then
-		if test -f "${_SNAPDIR_BIN_DIR}/snapdir-${store_protocol}-store"; then
-			echo "${_SNAPDIR_BIN_DIR}/snapdir-${store_protocol}-store"
-			return 0
-		fi
 		echo "Unsupported store protocol: ${store_protocol}" >&2
 		echo "No 'snapdir-${store_protocol}-store' could be found on your PATH" >&2
 		return 1
 	fi
-	echo "$store_bin_path"
+	echo "${store_bin_path}"
 }
 
 _snapdir_get_push_command() {
@@ -860,7 +863,6 @@ _snapdir_export_env_defaults() {
 	_SNAPDIR_FORCE=${_SNAPDIR_FORCE:-"false"}
 	_SNAPDIR_CWD="${_SNAPDIR_CWD:-$(pwd)}"
 	_SNAPDIR_BIN_DIR="$(dirname "${_SNAPDIR_BIN_PATH}")"
-
 	_snapdir_set_manifest_from_stdin_or_id
 	_snapdir_export_store_vars
 
@@ -1302,17 +1304,18 @@ _snapdir_absolute_path() {
 	realpath -m "$1"
 }
 
+if [[ ${BASH_VERSION:0:1} -lt "4" ]]; then
+	echo "Bash version 4.0 or higher is required. You have: ${BASH_VERSION}" >&2
+	exit 1
+fi
+
 if [[ "$(uname -s)" == "Darwin" ]]; then
 	# ensure at least bash 5.0 is available
-	if [[ ${BASH_VERSION:0:1} -lt "5" ]]; then
-		echo "Bash version 5.0 or higher is required. You have: ${BASH_VERSION}" >&2
-		exit 1
-	fi
 	_snapdir_readlink() {
 		echo "$(cd "$(dirname "$1")" || echo "" && pwd)/$(basename "$1")"
 	}
 else
-	shopt -s inherit_errexit
+
 	_snapdir_is_bussybox="$(test -h /bin/ls && echo true || echo false)"
 	_snapdir_readlink() {
 		readlink -f "$1"

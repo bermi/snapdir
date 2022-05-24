@@ -64,6 +64,11 @@
 set -eEuo pipefail
 IFS=$'\n\t'
 
+if [[ ${BASH_VERSION:0:1} -lt "4" ]]; then
+	echo "Bash version 4.0 or higher is required. You have: ${BASH_VERSION}" >&2
+	exit 1
+fi
+
 snapdir_test_run_unit_tests() {
 	set -eEuo pipefail
 	local dir
@@ -71,7 +76,13 @@ snapdir_test_run_unit_tests() {
 	SECONDS=0
 	"$dir/snapdir-manifest" test
 	"$dir/snapdir" test
-	"$dir/snapdir-file-store" test
+
+	if test -f "$dir/snapdir-file-store"; then
+		"$dir/snapdir-file-store" test
+	else
+		echo "# skipping snapdir-file-store test, $dir/snapdir-file-store not found" 2>&1
+	fi
+
 	echo "# unit tests completed in ${SECONDS} seconds"
 }
 
@@ -81,15 +92,16 @@ snapdir_test_run_integration_tests() {
 	dir="$(dirname "${BASH_SOURCE[0]}")"
 	echo "# integration tests"
 	SECONDS=0
-	if [[ ${SNAPDIR_B2_STORE_TEST_BUCKET:-} != "" ]]; then
+
+	if test -f "$dir/snapdir-b2-store" && [[ ${SNAPDIR_B2_STORE_TEST_BUCKET:-} != "" ]]; then
 		"$dir/snapdir-b2-store" test --store "b2://${SNAPDIR_B2_STORE_TEST_BUCKET}"
 	else
-		echo "# skipping snapdir-b2-store test. No SNAPDIR_B2_STORE_TEST_BUCKET provided." >&2
+		echo "# skipping snapdir-b2-store test. Missing SNAPDIR_B2_STORE_TEST_BUCKET or $dir/snapdir-b2-store" >&2
 	fi
-	if [[ ${SNAPDIR_S3_STORE_TEST_BUCKET:-} != "" ]]; then
+	if test -f "$dir/snapdir-s3-store" && [[ ${SNAPDIR_S3_STORE_TEST_BUCKET:-} != "" ]]; then
 		"$dir/snapdir-s3-store" test --store "s3://${SNAPDIR_S3_STORE_TEST_BUCKET}"
 	else
-		echo "# skipping snapdir-s3-store test. No SNAPDIR_S3_STORE_TEST_BUCKET provided." >&2
+		echo "# skipping snapdir-s3-store test. Missing SNAPDIR_S3_STORE_TEST_BUCKET or $dir/snapdir-s3-store" >&2
 	fi
 	echo "# integration tests completed in ${SECONDS} seconds"
 }
@@ -252,8 +264,30 @@ if [[ ${1:-} == -h || ${1:-} == --help ]]; then
 	_snapdir_test_help
 fi
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
+	_snapdir_test_readlink() {
+		echo "$(cd "$(dirname "$1")" || echo "" && pwd)/$(basename "$1")"
+	}
+else
+
+	_snapdir_test_readlink() {
+		readlink -f "$1"
+	}
+fi
+
 # Run if is not sourced
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	export _SNAPDIR_TEST_BIN_PATH="${_SNAPDIR_TEST_BIN_PATH:-$(_snapdir_test_readlink "${BASH_SOURCE[0]}")}"
+
+	_SNAPDIR_BIN_PATH="$(dirname "${_SNAPDIR_TEST_BIN_PATH}")/snapdir"
+	if ! test -f "$_SNAPDIR_BIN_PATH"; then
+		if snapdir -v 2>/dev/null >/dev/null; then
+			_SNAPDIR_BIN_PATH="snapdir"
+		else
+			echo "error: Could not find snapdir binary"
+			exit 1
+		fi
+	fi
 	snapdir_test_run_unit_tests
 	# was integration passed?
 	if [[ ${1:-} == integration ]]; then
