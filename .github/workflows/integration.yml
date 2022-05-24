@@ -52,7 +52,6 @@ jobs:
       - name: s3 integration test
         run: |
           docker run \
-            -it \
             --rm \
             -e SNAPDIR_S3_STORE_TEST_BUCKET \
             -e SNAPDIR_AWS_ACCESS_KEY_ID \
