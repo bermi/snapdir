@@ -657,6 +657,21 @@ snapdir_file_store_test() (
 		grep -q foo "${_dir}/foo" || fail "Expected '${_dir}/foo' to contain 'foo'. With result '$result'"
 		grep -q bar "${_dir}/bar" || fail "Expected '${_dir}/bar' to contain 'bar'. With result '$result'" && pass
 
+		check "should pull files without without FAILED errors"
+		! grep -q "FAILED" <<<"${result}" || fail "Expected no FAILED errors but got '$result'" && pass
+
+		# --------------------------------------------------------------------------------
+		rm -rf "${_SNAPDIR_CACHE_DIR}" "${_dir}"
+		result=$("${snapdir}" pull --verbose --store "${store}" --id "${simple_manifest_id}" "${_dir}" 2>&1 || echo "")
+
+		# --------------------------------------------------------------------------------
+		check "should pull files without cache"
+		grep -q foo "${_dir}/foo" || fail "Expected '${_dir}/foo' to contain 'foo'. With result '$result'"
+		grep -q bar "${_dir}/bar" || fail "Expected '${_dir}/bar' to contain 'bar'. With result '$result'" && pass
+
+		check "should pull files without cache and without FAILED errors"
+		! grep -q "FAILED" <<<"${result}" || fail "Expected no FAILED errors but got '$result'" && pass
+
 	}
 
 	run_tests
