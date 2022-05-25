@@ -13,11 +13,12 @@ find_binaries() {
     else
       find . -maxdepth 1 -perm /u=x,g=x,o=x  -type f
     fi
-  } | grep -o "snapdir[a-z0-9-]*"
+  } | grep -v test | grep -o "snapdir[a-z0-9-]*"
 }
 
 show_public_api_methods() {
   set -eEuo pipefail
+  local default_commands_regexp="snapdir-manifest generate"
   for binary in $(find_binaries | sort); do
     local contents
     contents="$(cat "$binary")"
@@ -27,14 +28,26 @@ show_public_api_methods() {
     local commands
     commands=$(grep -o "^snapdir[a-z_0-9]*" <<<"$contents" | tr '_' '-' | sed -E "s|^$binary-|$binary |")
     for command in $commands; do
-      echo "### $command"
+      # skip if command matches: run
+      if [[ "$command" =~ ^(run)$ ]]; then
+        continue
+      fi
       local examples
-      examples=$(grep "^$command" ./docs/tests/tested-commands.sh || echo "")
+      # Default command?
+      if [[ "$command" =~ ^($default_commands_regexp)$ ]]; then
+        echo "### $binary [${command//$binary /}]"
+        examples=$(grep "^$binary -" ./docs/tests/tested-commands.sh || echo "")
+      else
+        echo "### $command"
+        examples=$(grep "^$command" ./docs/tests/tested-commands.sh || echo "")
+      fi
+
       echo ""
       if [[ "$examples" != "" ]]; then
         echo "Examples from tests:"
         echo ""
-        echo "${examples}" | sed 's|^|    |' | sort -u
+        # shellcheck disable=SC2016
+        echo "${examples}" | sort -u | sed -E 's|^(.*)$|```bash\n\1\n```|'
       else
         echo "No examples found on docs/tests/tested-commands.sh"
       fi
