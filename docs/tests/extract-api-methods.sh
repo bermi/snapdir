@@ -40,13 +40,13 @@ show_public_api_methods() {
 			if [[ $command =~ ^($default_commands_regexp)$ ]]; then
 				echo "### $binary (${subcommand})"
         echo ""
-        echo "<div><span class=command>[$binary](#$binary)</span> <span class=\"subcommand optional\">[${subcommand}]($subcommand_slug)</span> <span class=toc>[toc](#snapdir-reference)</span></div>"
+        echo "[$binary](#$binary) [${subcommand}]($subcommand_slug) [toc](#snapdir-reference)"
         echo ""
 				examples=$(grep "^$binary -" ./docs/tests/tested-commands.sh || echo "")
 			else
 				echo "### $command"
         echo ""
-        echo "<div><span class=command>[$binary](#$binary)</span> <span class=subcommand>[${subcommand}]($subcommand_slug)</span> <span class=toc>[toc](#snapdir-reference)</span></div>"
+        echo "[$binary](#$binary) [${subcommand}]($subcommand_slug) [toc](#snapdir-reference)"
         echo ""
         examples=$(grep "^$command" ./docs/tests/tested-commands.sh || echo "")
 			fi
