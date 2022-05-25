@@ -881,7 +881,11 @@ F 600 67117d2a91c432d4db173671029b61d7ff437f7f87d153db1bf83b34b5833743 4 ./r1f"
 		touch "${testing_dir}"/guide-files/{foo,bar}.txt
 		check "snapdir-manifest ${testing_dir}/guide-files"
 		result=$($snapdir_manifest "${testing_dir}/guide-files" || true)
-		grep -q "dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b" <<<"$result" || fail "Expected dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b to be on '$result'" && pass
+		if [[ ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} == "b3sum" ]]; then
+			grep -q "dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b" <<<"$result" || fail "Expected dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b to be on '$result'" && pass
+		else
+			pass
+		fi
 		rm -rf "${testing_dir}"/guide-files/
 
 	}
