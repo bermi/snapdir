@@ -33,20 +33,20 @@ show_public_api_methods() {
 				continue
 			fi
       local subcommand="${command//$binary /}"
-      local subcommand_slug
-      subcommand_slug="#$(echo "$subcommand" | tr ' ' '-')"
+      local command_slug
+      command_slug="#$(echo "$command" | tr ' ' '-')"
 			local examples
 			# Default command?
 			if [[ $command =~ ^($default_commands_regexp)$ ]]; then
 				echo "### $binary (${subcommand})"
         echo ""
-        echo "[$binary](#$binary) [${subcommand}]($subcommand_slug) [toc](#snapdir-reference)"
+        echo "[$binary](#$binary) [${subcommand}]($command_slug) [toc](#snapdir-reference)"
         echo ""
 				examples=$(grep "^$binary -" ./docs/tests/tested-commands.sh || echo "")
 			else
 				echo "### $command"
         echo ""
-        echo "[$binary](#$binary) [${subcommand}]($subcommand_slug) [toc](#snapdir-reference)"
+        echo "[$binary](#$binary) [${subcommand}]($command_slug) [toc](#snapdir-reference)"
         echo ""
         examples=$(grep "^$command" ./docs/tests/tested-commands.sh || echo "")
 			fi
