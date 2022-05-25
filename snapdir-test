@@ -280,11 +280,9 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	export _SNAPDIR_TEST_BIN_PATH="${_SNAPDIR_TEST_BIN_PATH:-$(_snapdir_test_readlink "${BASH_SOURCE[0]}")}"
 	export ENVIRONMENT="test"
 	_SNAPDIR_BIN_PATH="$(dirname "${_SNAPDIR_TEST_BIN_PATH}")/snapdir"
-
 	# Saves the command into the run log for debugging, documentation, etc.
 	# _SNAPDIR_RUN_LOG_PATH=$(pwd)/test-log ./snapdir-test
-	_SNAPDIR_RUN_LOG_PATH="${_SNAPDIR_RUN_LOG_PATH:-"$(dirname "${_SNAPDIR_TEST_BIN_PATH}")/docs/tests/tested-commands.sh"}"
-	if test -f "$_SNAPDIR_RUN_LOG_PATH"; then
+	if [[ ${_SNAPDIR_RUN_LOG_PATH:-} != "" ]] && test -f "$_SNAPDIR_RUN_LOG_PATH"; then
 		echo "" >"$_SNAPDIR_RUN_LOG_PATH"
 		export _SNAPDIR_RUN_LOG_PATH
 	else
@@ -306,7 +304,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	fi
 
 	# Cleanup the run log to delete random stuff and make it easier to read
-	if test -f "$_SNAPDIR_RUN_LOG_PATH"; then
+	if [[ ${_SNAPDIR_RUN_LOG_PATH:-} != "" ]] && test -f "$_SNAPDIR_RUN_LOG_PATH"; then
 		{
 			echo "#!/usr/bin/env bash"
 			echo "# snapdir tested commands"
