@@ -560,12 +560,25 @@ _snapdir_manifest_define_exclude_patterns() {
 
 }
 
+_snapdir_manifest_ensure_checksum_bin() {
+	set -eEuo pipefail
+	# RHEL does not ship which by default, and busybox does not have
+	# a --version option for *sum commands but support which
+	if "$_SNAPDIR_MANIFEST_CHECKSUM_BIN" --version >/dev/null 2>&1; then
+		return 0
+	elif which "$_SNAPDIR_MANIFEST_CHECKSUM_BIN" >/dev/null 2>&1; then
+		return 0
+	else
+		return 1
+	fi
+}
+
 _snapdir_manifest_export_env_defaults() {
 	# Environment variables
 	set -eEuo pipefail
 
 	_SNAPDIR_MANIFEST_CHECKSUM_BIN="${_SNAPDIR_MANIFEST_CHECKSUM_BIN:-b3sum}"
-	"$_SNAPDIR_MANIFEST_CHECKSUM_BIN" --version >/dev/null || {
+	_snapdir_manifest_ensure_checksum_bin || {
 		echo "Could not find '$_SNAPDIR_MANIFEST_CHECKSUM_BIN', please install it or specify an alternative --checksum-bin" >&2
 		exit 1
 	}
