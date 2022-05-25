@@ -1,13 +1,58 @@
 # snapdir reference
 
+  - [Table of contents](#table-of-contents)
+    - [snapdir](#snapdir)
+      - [snapdir manifest](#snapdir-manifest)
+      - [snapdir id](#snapdir-id)
+      - [snapdir push](#snapdir-push)
+      - [snapdir fetch](#snapdir-fetch)
+      - [snapdir pull](#snapdir-pull)
+      - [snapdir checkout](#snapdir-checkout)
+      - [snapdir stage](#snapdir-stage)
+      - [snapdir verify](#snapdir-verify)
+      - [snapdir verify-cache](#snapdir-verify-cache)
+      - [snapdir flush-cache](#snapdir-flush-cache)
+      - [snapdir defaults](#snapdir-defaults)
+      - [snapdir test](#snapdir-test)
+    - [snapdir-b2-store](#snapdir-b2-store)
+      - [snapdir-b2-store get-push-command](#snapdir-b2-store-get-push-command)
+      - [snapdir-b2-store get-manifest-command](#snapdir-b2-store-get-manifest-command)
+      - [snapdir-b2-store get-fetch-files-command](#snapdir-b2-store-get-fetch-files-command)
+      - [snapdir-b2-store get-manifest](#snapdir-b2-store-get-manifest)
+      - [snapdir-b2-store fetch](#snapdir-b2-store-fetch)
+      - [snapdir-b2-store ensure-no-errors](#snapdir-b2-store-ensure-no-errors)
+      - [snapdir-b2-store test](#snapdir-b2-store-test)
+    - [snapdir-file-store](#snapdir-file-store)
+      - [snapdir-file-store get-push-command](#snapdir-file-store-get-push-command)
+      - [snapdir-file-store get-manifest-command](#snapdir-file-store-get-manifest-command)
+      - [snapdir-file-store get-fetch-files-command](#snapdir-file-store-get-fetch-files-command)
+      - [snapdir-file-store ensure-no-errors](#snapdir-file-store-ensure-no-errors)
+      - [snapdir-file-store commit-manifest](#snapdir-file-store-commit-manifest)
+      - [snapdir-file-store fetch-object](#snapdir-file-store-fetch-object)
+      - [snapdir-file-store commit-object](#snapdir-file-store-commit-object)
+      - [snapdir-file-store test](#snapdir-file-store-test)
+    - [snapdir-manifest](#snapdir-manifest)
+      - [snapdir-manifest (generate)](#snapdir-manifest-(generate))
+      - [snapdir-manifest flush-cache](#snapdir-manifest-flush-cache)
+      - [snapdir-manifest cache-id](#snapdir-manifest-cache-id)
+      - [snapdir-manifest defaults](#snapdir-manifest-defaults)
+      - [snapdir-manifest test](#snapdir-manifest-test)
+    - [snapdir-s3-store](#snapdir-s3-store)
+      - [snapdir-s3-store get-push-command](#snapdir-s3-store-get-push-command)
+      - [snapdir-s3-store get-manifest-command](#snapdir-s3-store-get-manifest-command)
+      - [snapdir-s3-store get-fetch-files-command](#snapdir-s3-store-get-fetch-files-command)
+      - [snapdir-s3-store get-manifest](#snapdir-s3-store-get-manifest)
+      - [snapdir-s3-store fetch](#snapdir-s3-store-fetch)
+      - [snapdir-s3-store ensure-no-errors](#snapdir-s3-store-ensure-no-errors)
+      - [snapdir-s3-store test](#snapdir-s3-store-test)
+
 
 ## snapdir
 
-### snapdir run
-
-No examples found on docs/tests/tested-commands.sh
-
 ### snapdir manifest
+
+<div><span class=command>[snapdir](#snapdir)</span> <span class=subcommand>[manifest](#manifest)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -20,6 +65,9 @@ snapdir manifest --exclude "${EXCLUDE_PATTERN}" "${DIR}"
 
 ### snapdir id
 
+<div><span class=command>[snapdir](#snapdir)</span> <span class=subcommand>[id](#id)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -27,6 +75,9 @@ snapdir id "${DIR}"
 ```
 
 ### snapdir push
+
+<div><span class=command>[snapdir](#snapdir)</span> <span class=subcommand>[push](#push)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -48,6 +99,9 @@ snapdir push --verbose --store "${STORE}" "${DIR}"
 
 ### snapdir fetch
 
+<div><span class=command>[snapdir](#snapdir)</span> <span class=subcommand>[fetch](#fetch)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -68,6 +122,9 @@ snapdir fetch --store "${STORE}" --id bogus --verbose
 
 ### snapdir pull
 
+<div><span class=command>[snapdir](#snapdir)</span> <span class=subcommand>[pull](#pull)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -84,6 +141,9 @@ snapdir pull --verbose --store "${STORE}" --id "${ID}" "${DIR}"
 ```
 
 ### snapdir checkout
+
+<div><span class=command>[snapdir](#snapdir)</span> <span class=subcommand>[checkout](#checkout)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -105,6 +165,9 @@ snapdir checkout --verbose --id "${ID}" --path "${PATH}" "${DIR}"
 
 ### snapdir stage
 
+<div><span class=command>[snapdir](#snapdir)</span> <span class=subcommand>[stage](#stage)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -118,6 +181,9 @@ snapdir stage --verbose "${DIR}"
 ```
 
 ### snapdir verify
+
+<div><span class=command>[snapdir](#snapdir)</span> <span class=subcommand>[verify](#verify)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -136,6 +202,9 @@ snapdir verify-cache --purge
 
 ### snapdir verify-cache
 
+<div><span class=command>[snapdir](#snapdir)</span> <span class=subcommand>[verify-cache](#verify-cache)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -147,6 +216,9 @@ snapdir verify-cache --purge
 
 ### snapdir flush-cache
 
+<div><span class=command>[snapdir](#snapdir)</span> <span class=subcommand>[flush-cache](#flush-cache)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -155,9 +227,15 @@ snapdir flush-cache
 
 ### snapdir defaults
 
+<div><span class=command>[snapdir](#snapdir)</span> <span class=subcommand>[defaults](#defaults)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 No examples found on docs/tests/tested-commands.sh
 
 ### snapdir test
+
+<div><span class=command>[snapdir](#snapdir)</span> <span class=subcommand>[test](#test)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -170,6 +248,9 @@ snapdir test
 
 ### snapdir-b2-store get-push-command
 
+<div><span class=command>[snapdir-b2-store](#snapdir-b2-store)</span> <span class=subcommand>[get-push-command](#get-push-command)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -177,6 +258,9 @@ snapdir-b2-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
 ```
 
 ### snapdir-b2-store get-manifest-command
+
+<div><span class=command>[snapdir-b2-store](#snapdir-b2-store)</span> <span class=subcommand>[get-manifest-command](#get-manifest-command)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -189,6 +273,9 @@ snapdir-b2-store get-manifest-command --id bogus --store "${STORE}"
 
 ### snapdir-b2-store get-fetch-files-command
 
+<div><span class=command>[snapdir-b2-store](#snapdir-b2-store)</span> <span class=subcommand>[get-fetch-files-command](#get-fetch-files-command)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -196,6 +283,9 @@ snapdir-b2-store get-fetch-files-command --id "${ID}" --store "${STORE}" "${DIR}
 ```
 
 ### snapdir-b2-store get-manifest
+
+<div><span class=command>[snapdir-b2-store](#snapdir-b2-store)</span> <span class=subcommand>[get-manifest](#get-manifest)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -211,6 +301,9 @@ snapdir-b2-store get-manifest-command --id bogus --store "${STORE}"
 
 ### snapdir-b2-store fetch
 
+<div><span class=command>[snapdir-b2-store](#snapdir-b2-store)</span> <span class=subcommand>[fetch](#fetch)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -222,17 +315,19 @@ snapdir-b2-store fetch --checksum "${ID}" --source-path "${SOURCE_PATH}" --targe
 
 ### snapdir-b2-store ensure-no-errors
 
+<div><span class=command>[snapdir-b2-store](#snapdir-b2-store)</span> <span class=subcommand>[ensure-no-errors](#ensure-no-errors)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
 snapdir-b2-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
 ```
 
-### snapdir-b2-store run
-
-No examples found on docs/tests/tested-commands.sh
-
 ### snapdir-b2-store test
+
+<div><span class=command>[snapdir-b2-store](#snapdir-b2-store)</span> <span class=subcommand>[test](#test)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -245,6 +340,9 @@ snapdir-b2-store test --store "${STORE}"
 
 ### snapdir-file-store get-push-command
 
+<div><span class=command>[snapdir-file-store](#snapdir-file-store)</span> <span class=subcommand>[get-push-command](#get-push-command)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -252,6 +350,9 @@ snapdir-file-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
 ```
 
 ### snapdir-file-store get-manifest-command
+
+<div><span class=command>[snapdir-file-store](#snapdir-file-store)</span> <span class=subcommand>[get-manifest-command](#get-manifest-command)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -264,6 +365,9 @@ snapdir-file-store get-manifest-command --id bogus --store "${STORE}"
 
 ### snapdir-file-store get-fetch-files-command
 
+<div><span class=command>[snapdir-file-store](#snapdir-file-store)</span> <span class=subcommand>[get-fetch-files-command](#get-fetch-files-command)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -271,6 +375,9 @@ snapdir-file-store get-fetch-files-command --id "${ID}" --store "${STORE}" --cac
 ```
 
 ### snapdir-file-store ensure-no-errors
+
+<div><span class=command>[snapdir-file-store](#snapdir-file-store)</span> <span class=subcommand>[ensure-no-errors](#ensure-no-errors)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -280,6 +387,9 @@ snapdir-file-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
 
 ### snapdir-file-store commit-manifest
 
+<div><span class=command>[snapdir-file-store](#snapdir-file-store)</span> <span class=subcommand>[commit-manifest](#commit-manifest)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -287,6 +397,9 @@ snapdir-file-store commit-manifest --checksum "${ID}" --source-path "${SOURCE_PA
 ```
 
 ### snapdir-file-store fetch-object
+
+<div><span class=command>[snapdir-file-store](#snapdir-file-store)</span> <span class=subcommand>[fetch-object](#fetch-object)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -296,17 +409,19 @@ snapdir-file-store fetch-object --checksum "${ID}" --source-path "${SOURCE_PATH}
 
 ### snapdir-file-store commit-object
 
+<div><span class=command>[snapdir-file-store](#snapdir-file-store)</span> <span class=subcommand>[commit-object](#commit-object)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
 snapdir-file-store commit-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 ```
 
-### snapdir-file-store run
-
-No examples found on docs/tests/tested-commands.sh
-
 ### snapdir-file-store test
+
+<div><span class=command>[snapdir-file-store](#snapdir-file-store)</span> <span class=subcommand>[test](#test)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -317,7 +432,10 @@ snapdir-file-store test
 
 ## snapdir-manifest
 
-### snapdir-manifest [generate]
+### snapdir-manifest (generate)
+
+<div><span class=command>[snapdir-manifest](#snapdir-manifest)</span> <span class="subcommand optional">[generate](#generate)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -397,23 +515,31 @@ snapdir-manifest --no-follow --checksum-bin md5sum "${DIR}"
 snapdir-manifest --no-follow --checksum-bin sha256sum "${DIR}"
 ```
 
-### snapdir-manifest run
-
-No examples found on docs/tests/tested-commands.sh
-
 ### snapdir-manifest flush-cache
+
+<div><span class=command>[snapdir-manifest](#snapdir-manifest)</span> <span class=subcommand>[flush-cache](#flush-cache)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 No examples found on docs/tests/tested-commands.sh
 
 ### snapdir-manifest cache-id
 
+<div><span class=command>[snapdir-manifest](#snapdir-manifest)</span> <span class=subcommand>[cache-id](#cache-id)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 No examples found on docs/tests/tested-commands.sh
 
 ### snapdir-manifest defaults
 
+<div><span class=command>[snapdir-manifest](#snapdir-manifest)</span> <span class=subcommand>[defaults](#defaults)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 No examples found on docs/tests/tested-commands.sh
 
 ### snapdir-manifest test
+
+<div><span class=command>[snapdir-manifest](#snapdir-manifest)</span> <span class=subcommand>[test](#test)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -432,6 +558,9 @@ snapdir-manifest test --checksum-bin sha256sum
 
 ### snapdir-s3-store get-push-command
 
+<div><span class=command>[snapdir-s3-store](#snapdir-s3-store)</span> <span class=subcommand>[get-push-command](#get-push-command)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -439,6 +568,9 @@ snapdir-s3-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
 ```
 
 ### snapdir-s3-store get-manifest-command
+
+<div><span class=command>[snapdir-s3-store](#snapdir-s3-store)</span> <span class=subcommand>[get-manifest-command](#get-manifest-command)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -451,6 +583,9 @@ snapdir-s3-store get-manifest-command --id bogus --store "${STORE}"
 
 ### snapdir-s3-store get-fetch-files-command
 
+<div><span class=command>[snapdir-s3-store](#snapdir-s3-store)</span> <span class=subcommand>[get-fetch-files-command](#get-fetch-files-command)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -458,6 +593,9 @@ snapdir-s3-store get-fetch-files-command --id "${ID}" --store "${STORE}" "${DIR}
 ```
 
 ### snapdir-s3-store get-manifest
+
+<div><span class=command>[snapdir-s3-store](#snapdir-s3-store)</span> <span class=subcommand>[get-manifest](#get-manifest)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
@@ -473,6 +611,9 @@ snapdir-s3-store get-manifest-command --id bogus --store "${STORE}"
 
 ### snapdir-s3-store fetch
 
+<div><span class=command>[snapdir-s3-store](#snapdir-s3-store)</span> <span class=subcommand>[fetch](#fetch)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
@@ -484,21 +625,22 @@ snapdir-s3-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store
 
 ### snapdir-s3-store ensure-no-errors
 
+<div><span class=command>[snapdir-s3-store](#snapdir-s3-store)</span> <span class=subcommand>[ensure-no-errors](#ensure-no-errors)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
+
 Examples from tests:
 
 ```bash
 snapdir-s3-store ensure-no-errors --store "${STORE}" "${DIR}"
 ```
 
-### snapdir-s3-store run
-
-No examples found on docs/tests/tested-commands.sh
-
 ### snapdir-s3-store test
+
+<div><span class=command>[snapdir-s3-store](#snapdir-s3-store)</span> <span class=subcommand>[test](#test)</span> <span class=toc>[toc](#snapdir-reference)</span></div>
+
 
 Examples from tests:
 
 ```bash
 snapdir-s3-store test --store "${STORE}"
 ```
-
