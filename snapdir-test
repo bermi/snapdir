@@ -278,8 +278,19 @@ fi
 # Run if is not sourced
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	export _SNAPDIR_TEST_BIN_PATH="${_SNAPDIR_TEST_BIN_PATH:-$(_snapdir_test_readlink "${BASH_SOURCE[0]}")}"
-
+	export ENVIRONMENT="test"
 	_SNAPDIR_BIN_PATH="$(dirname "${_SNAPDIR_TEST_BIN_PATH}")/snapdir"
+
+	# Saves the command into the run log for debugging, documentation, etc.
+	# _SNAPDIR_RUN_LOG_PATH=$(pwd)/test-log ./snapdir-test
+	_SNAPDIR_RUN_LOG_PATH="${_SNAPDIR_RUN_LOG_PATH:-"$(dirname "${_SNAPDIR_TEST_BIN_PATH}")/docs/tests/tested-commands.sh"}"
+	if test -f "$_SNAPDIR_RUN_LOG_PATH"; then
+		echo "" >"$_SNAPDIR_RUN_LOG_PATH"
+		export _SNAPDIR_RUN_LOG_PATH
+	else
+		unset _SNAPDIR_RUN_LOG_PATH
+	fi
+
 	if ! test -f "$_SNAPDIR_BIN_PATH"; then
 		if snapdir -v 2>/dev/null >/dev/null; then
 			_SNAPDIR_BIN_PATH="snapdir"
@@ -293,6 +304,18 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	if [[ ${1:-} == integration ]]; then
 		snapdir_test_run_integration_tests
 	fi
+
+	# Cleanup the run log to delete random stuff and make it easier to read
+	if test -f "$_SNAPDIR_RUN_LOG_PATH"; then
+		{
+			echo "#!/usr/bin/env bash"
+			echo "# snapdir tested commands"
+			# shellcheck disable=SC2016
+			sed -E 's|/tmp/([^.]*).[^/]*(/?)|/tmp/\1\2|g; s|([a-f0-9]{3}/[a-f0-9]{3}/[a-f0-9]{3}/[a-f0-9]{55})|"${ID_PATH}"|g; s|([a-f0-9]{64})|"${ID}"|g' | sort -u
+		} <"${_SNAPDIR_RUN_LOG_PATH}" >"${_SNAPDIR_RUN_LOG_PATH}.tmp"
+		mv "${_SNAPDIR_RUN_LOG_PATH}.tmp" "${_SNAPDIR_RUN_LOG_PATH}"
+	fi
+
 	exit 0
 elif [[ ${1:-""} != "" ]]; then
 	_snapdir_test_utils "${1}"

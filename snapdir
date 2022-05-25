@@ -33,10 +33,16 @@ snapdir_run() (
 	# You can call this function when sourcing this script if you want to expose it as
 	# a sub-command
 
+	# Saves the command into the run log for debugging, documentation, etc.
+	if [[ ${ENVIRONMENT:-""} == "test" ]] && test -f "${_SNAPDIR_RUN_LOG_PATH:-""}"; then
+		# shellcheck disable=SC2145
+		echo "snapdir ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
+	fi
+
 	set -eEuo pipefail
 	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults"
 	local boolean_args="debug|force|linked|keep|purge|verbose|dryrun"
-	local value_required_args="manifest|id|store|cwd|script_path|cache_dir|path"
+	local value_required_args="id|store|cache_dir|path|exclude"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
 
 	parse_argument_key() {
@@ -76,7 +82,7 @@ snapdir_run() (
 	local key
 	local value
 	local is_boolean
-	local subcommand_candidate="$1"
+	local subcommand_candidate="${1:-""}"
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		manifest | id | stage | checkout | fetch | pull | push | verify | verify-cache | flush-cache | test | defaults)
@@ -127,13 +133,18 @@ snapdir_run() (
 
 	# if command is not set, show help
 	if [ -z "$command" ]; then
-		echo "Uknown command '$subcommand_candidate'. Valid commands are: ${subcommands}" >&2
-		echo "Try: ${_SNAPDIR} --help" >&2
-		return 1
+		if [[ $subcommand_candidate != "" ]]; then
+			echo "Uknown command '$subcommand_candidate'. Valid commands are: ${subcommands}" >&2
+			echo "Try: ${_SNAPDIR} --help" >&2
+			return 1
+		else
+			_snapdir_help
+			echo "Valid snapdir commands are: ${subcommands}" >&2
+			return 1
+		fi
 	fi
 
 	_snapdir_export_env_defaults "${command}"
-	# env | grep _snapdir_ | sort
 	eval "snapdir_${command//-/_} $positional_args ${*:2}"
 )
 
@@ -159,14 +170,20 @@ snapdir_manifest() {
 	local snapdir_dir_abs_path
 	snapdir_dir_abs_path="$(realpath "${base_dir}")"
 	if [[ ${snapdir_dir_abs_path%/} == "/" ]]; then
-		_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" --exclude="system" "/")
+		_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" --exclude="${_SNAPDIR_EXCLUDE:-system}" "/")
 	else
 		test -d "${snapdir_dir_abs_path}" || {
 			echo "error: Snapshot directory '${snapdir_dir_abs_path}' does not exist." >&2
 			return 1
 		}
-		_snapdir_log "Running: ${_SNAPDIR_BIN_DIR}/snapdir-manifest \"$snapdir_dir_abs_path\""
-		_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" "$snapdir_dir_abs_path")
+		if [[ ${_SNAPDIR_EXCLUDE} != "" ]]; then
+			_snapdir_log "Running: ${_SNAPDIR_BIN_DIR}/snapdir-manifest --exclude=\"${_SNAPDIR_EXCLUDE}\" \"$snapdir_dir_abs_path\""
+			_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" --exclude="${_SNAPDIR_EXCLUDE}" "$snapdir_dir_abs_path")
+		else
+			_snapdir_log "Running: ${_SNAPDIR_BIN_DIR}/snapdir-manifest \"$snapdir_dir_abs_path\""
+			_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" "$snapdir_dir_abs_path")
+		fi
+
 	fi
 	echo "${_SNAPDIR_MANIFEST}"
 }
@@ -605,6 +622,14 @@ snapdir_stage() {
 snapdir_verify() {
 	set -eEuo pipefail
 	local purge="${_SNAPDIR_PURGE:-false}"
+
+	# Fail if the cache directory is set
+	if [[ ${1:-""} != "" ]]; then
+		echo "error: Cannot verify a directory. Only staged manifests can be verified providing their --id." >&2
+		echo "error: Please remove the path '$1' from the command." >&2
+		return 1
+	fi
+
 	# When purge is enabled, we'll buffer the result of b3sum to remove FAILED objects
 	if [[ ${purge} == "true" ]]; then
 		local result
@@ -677,9 +702,11 @@ snapdir_flush_cache() {
 ######  ####### #       #     #  #####  #######    #     #####
 
 snapdir_defaults() {
-	snapdir_manifest_defaults
-	env | grep _SNAPDIR | grep -v VERSION | sed -E 's|^_SNAPDIR_|--|; s|_|-|g;' | tr '[:upper:]' '[:lower:]' | sort
-	echo "SNAPDIR_BIN_PATH=${SNAPDIR_BIN_PATH:-$_SNAPDIR_BIN_PATH}"
+	{
+		"${_SNAPDIR_BIN_DIR}/snapdir-manifest" defaults | grep -v "^-"
+		env | grep "SNAPDIR" | grep -v VERSION | sed -E 's|^_?SNAPDIR_|--|; s|_|-|g;' | tr '[:upper:]' '[:lower:]' | sort
+		echo "SNAPDIR_BIN_PATH=${SNAPDIR_BIN_PATH:-$_SNAPDIR_BIN_PATH}"
+	} | sort -u
 }
 
 ######  ######  ### #     #    #    ####### #######    ####### #     #  #####
@@ -866,6 +893,7 @@ _snapdir_export_env_defaults() {
 	_SNAPDIR_FORCE=${_SNAPDIR_FORCE:-"false"}
 	_SNAPDIR_CWD="${_SNAPDIR_CWD:-$(pwd)}"
 	_SNAPDIR_BIN_DIR="$(dirname "${_SNAPDIR_BIN_PATH}")"
+	_SNAPDIR_EXCLUDE="${_SNAPDIR_EXCLUDE:-""}"
 	_snapdir_set_manifest_from_stdin_or_id
 	_snapdir_export_store_vars
 
@@ -879,6 +907,7 @@ _snapdir_export_env_defaults() {
 		_SNAPDIR_CACHE_DIR \
 		_SNAPDIR_VERBOSE \
 		_SNAPDIR_BIN_DIR \
+		_SNAPDIR_EXCLUDE \
 		_SNAPDIR_CREATE_MISSING_BASE_DIR \
 		_SNAPDIR_FORCE
 }
@@ -1008,6 +1037,14 @@ F 600 $foo_checksum 4 ./foo"
 		describe "snapshot manifest for '${_dir}'"
 		check "should generate manifest"
 		result=$("${snapshot}" manifest "${_dir}" 2>&1 || echo "")
+		expected="$simple_manifest"
+		test "$result" == "$expected" || fail "Unexpected manifest '$result', expected '$expected'" && pass
+
+		check "should --exclude files when generating manifest"
+		mkdir -p "${_dir}/.ignored/"
+		echo "ignored file" >"${_dir}/.ignored/ignored_file"
+		result=$("${snapshot}" manifest --exclude=".ignored" "${_dir}" 2>&1 || echo "")
+		rm -rf "${_dir}/.ignored/"
 		expected="$simple_manifest"
 		test "$result" == "$expected" || fail "Unexpected manifest '$result', expected '$expected'" && pass
 		clean_files

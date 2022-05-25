@@ -20,9 +20,8 @@ Download the [snapdir-manifest] script and save it somewhere in your
 `PATH`.
 
 ``` bash
-wget -p https://github.com/bermi/snapdir/releases/download/v0.1.1/snapdir-manifest -O snapdir-manifest
+wget -p https://raw.githubusercontent.com/bermi/snapdir/main/snapdir-manifest -O snapdir-manifest
 chmod +x snapdir-manifest
-echo "9867df2280d89d4880d5a1754696101e376e6f9600753a41a520da27e187fe95  snapdir-manifest" | b3sum -c
 mv snapdir-manifest /usr/local/bin/
 ```
 

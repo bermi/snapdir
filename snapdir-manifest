@@ -21,8 +21,8 @@
 #                              binary (default: b3sum).
 #     --debug                  Prints debug messages.
 #     --exclude=PATTERN        Excludes paths matching PATTERN.
-#                              set to "system" to default to
-#                              $SNAPDIR_MANIFEST_EXCLUDE
+#                              set to "%system%" to default to
+#                              $SNAPDIR_SYSTEM_EXCLUDE_DIRS
 #     -h, --help               Prints help message.
 #     --no-follow              Prevents following symlinks.
 #     --verbose                Prints verbose messages.
@@ -45,10 +45,10 @@
 #
 # ### Environment variables
 #
-#     SNAPDIR_MANIFEST_BIN_PATH   Test-only path to a snapdir-manifest binary.
-#     SNAPDIR_MANIFEST_CONTEXT    Context string for deriving key in keyed mode.
-#                                 This only works with b3sum.
-#     SNAPDIR_MANIFEST_EXCLUDE    Default grep -v rule for --exclude="system".
+#     SNAPDIR_MANIFEST_BIN_PATH      Test-only path to a snapdir-manifest binary.
+#     SNAPDIR_MANIFEST_CONTEXT       Context string for deriving key in keyed mode.
+#                                    This only works with b3sum.
+#     SNAPDIR_SYSTEM_EXCLUDE_DIRS    Directories to exclude on --exclude="%system%".
 #
 # ### Examples
 #
@@ -69,7 +69,7 @@
 #     snapdir-manifest --cache --cache-id "$trusted_cache_id" ./
 #
 #     # generates a manifest for a whole system, excluding system files
-#     snapdir-manifest --absolute --exclude=system --no-follow /
+#     snapdir-manifest --absolute --exclude="%system%" --no-follow /
 #
 # ## Manifest specification
 #
@@ -201,8 +201,14 @@ snapdir_manifest_run() (
 	# in order to avoid polluting the environment with helper functions
 	# You can call this function when sourcing this script if you want to expose it as
 	# a sub-command
-
 	set -eEuo pipefail
+
+	# Saves the command into the run log for debugging, documentation, etc.
+	if [[ ${ENVIRONMENT:-""} == "test" ]] && test -f "${_SNAPDIR_RUN_LOG_PATH:-""}"; then
+		# shellcheck disable=SC2145
+		echo "snapdir-manifest ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
+	fi
+
 	local subcommands="generate|cache-id|defaults|flush-cache|test|version"
 	local boolean_args="absolute|cache|debug|no_follow|verbose"
 	local value_required_args="exclude|cache_dir|cache_id|checksum_bin"
@@ -536,6 +542,24 @@ _snapdir_manifest_define_checksum_fn() {
 	fi
 }
 
+_snapdir_manifest_define_exclude_patterns() {
+	set -eEuo pipefail
+	# TODO: allow using an arbitrary number of exclude patterns
+	local system_exclude_dirs="(^(${SNAPDIR_SYSTEM_EXCLUDE_DIRS:-"/vscode/|/dev/|/proc/|/sys/|/tmp/|/var/run/|/run/|/mnt/|/media/|/lost+found/|/var/snap/lxd/common/ns/shmounts/|/var/snap/lxd/common/ns/mntns/|/var/lib/lxcfs/"}|${HOME:-~}/.cache/|${_SNAPDIR_MANIFEST_CACHE_DIR}))"
+	local common_exclude_dirs="(/(${SNAPDIR_COMMON_EXCLUDE_DIRS:-".cache|.git|.DS_Store|.vscode-server|.dbus|.gvfs|.local/share/gvfs-metadata|.local/share/Trash|.Trash|node_modules|Trash-1000"})($|/))"
+	# user-defined exclude from --exclude
+	_SNAPDIR_MANIFEST_EXCLUDE="${_SNAPDIR_MANIFEST_EXCLUDE:-""}"
+	# if _SNAPDIR_MANIFEST_EXCLUDE contains the string '%system%' then replace it with the system_exclude_dirs
+	if [[ ${_SNAPDIR_MANIFEST_EXCLUDE} == *"%system%"* ]]; then
+		_SNAPDIR_MANIFEST_EXCLUDE="${_SNAPDIR_MANIFEST_EXCLUDE//%system%/$system_exclude_dirs}"
+		_SNAPDIR_MANIFEST_NO_FOLLOW=true
+	fi
+	if [[ ${_SNAPDIR_MANIFEST_EXCLUDE} == *"%common%"* ]]; then
+		_SNAPDIR_MANIFEST_EXCLUDE="${_SNAPDIR_MANIFEST_EXCLUDE//%common%/$common_exclude_dirs}"
+	fi
+
+}
+
 _snapdir_manifest_export_env_defaults() {
 	# Environment variables
 	set -eEuo pipefail
@@ -558,15 +582,7 @@ _snapdir_manifest_export_env_defaults() {
 	_SNAPDIR_MANIFEST_VERBOSE=${_SNAPDIR_MANIFEST_VERBOSE:-"false"}
 	_SNAPDIR_MANIFEST_CACHE_ID="${_SNAPDIR_MANIFEST_CACHE_ID:-""}"
 
-	# global exclude from environment variable SNAPDIR_MANIFEST_EXCLUDE
-	SNAPDIR_MANIFEST_EXCLUDE="${SNAPDIR_MANIFEST_EXCLUDE:-"^(/vscode/|/dev/|/proc/|/sys/|/tmp/|/var/run/|/run/|/mnt/|/media/|/lost+found/|/var/snap/lxd/common/ns/shmounts/|/var/snap/lxd/common/ns/mntns/|/var/lib/lxcfs/|${HOME:-~}/.cache/|${_SNAPDIR_MANIFEST_CACHE_DIR})"}"
-
-	# user-defined exclude from --exclude
-	_SNAPDIR_MANIFEST_EXCLUDE="${_SNAPDIR_MANIFEST_EXCLUDE:-""}"
-	if [[ ${_SNAPDIR_MANIFEST_EXCLUDE} == "system" ]]; then
-		_SNAPDIR_MANIFEST_EXCLUDE="${SNAPDIR_MANIFEST_EXCLUDE}"
-		_SNAPDIR_MANIFEST_NO_FOLLOW=true
-	fi
+	_snapdir_manifest_define_exclude_patterns
 
 	export _SNAPDIR_MANIFEST_CACHE_DIR \
 		_SNAPDIR_MANIFEST_CACHE_ID \
@@ -748,7 +764,17 @@ F 600 67117d2a91c432d4db173671029b61d7ff437f7f87d153db1bf83b34b5833743 4 ./r1f"
 		describe "generate with excluded files"
 		check "snapdir-manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} --exclude=files/a ${testing_dir}/files"
 		$snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --exclude=files/a "${testing_dir}/files" | grep -q "$expected_excluding_a" || fail "Expected to exclude files/a" && pass
+		# --------------------------------------------------------------------------------
 
+		describe "generate with %common% excluded files"
+		check "snapdir-manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} --exclude='%common%' ${testing_dir}/files"
+		mkdir -p "${testing_dir}/files/.git/objects"
+		echo "secret" >"${testing_dir}/files/.git/objects/secret"
+		result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --exclude="%common%" "${testing_dir}/files" 2>&1 || true)
+		rm -rf "${testing_dir}/files/.git"
+		! grep -q ".git" <<<"$result" || fail "Unexpected .git found in output: '$result'" && pass
+
+		# --------------------------------------------------------------------------------
 		check "snapdir-manifest --checksum-bin ${_SNAPDIR_MANIFEST_CHECKSUM_BIN} ../files"
 		cd "${testing_dir}/files"
 		_verify_manifest "$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" "../files" || true)"

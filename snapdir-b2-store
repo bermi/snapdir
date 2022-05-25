@@ -239,6 +239,13 @@ snapdir_b2_store_ensure_no_errors() {
 
 snapdir_b2_store_run() (
 	set -eEuo pipefail
+
+	# Saves the command into the run log for debugging, documentation, etc.
+	if [[ ${ENVIRONMENT:-""} == "test" ]] && test -f "${_SNAPDIR_RUN_LOG_PATH:-""}"; then
+		# shellcheck disable=SC2145
+		echo "snapdir-b2-store ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
+	fi
+
 	local subcommands="get-manifest|get-manifest-command|get-fetch-files-command|get-push-command|test|version|ensure-no-errors|fetch"
 	local boolean_args="debug"
 	local value_required_args="cache_dir|staging_dir|store|manifest|id|source_path|target_path|checksum|log_file|retries"

@@ -371,6 +371,13 @@ _snapdir_file_store_get_store_dir() {
 
 snapdir_file_store_run() (
 	set -eEuo pipefail
+
+	# Saves the command into the run log for debugging, documentation, etc.
+	if [[ ${ENVIRONMENT:-""} == "test" ]] && test -f "${_SNAPDIR_RUN_LOG_PATH:-""}"; then
+		# shellcheck disable=SC2145
+		echo "snapdir-file-store ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
+	fi
+
 	local subcommands="get-manifest-command|get-fetch-files-command|get-push-command|test|version|commit-object|commit-manifest|ensure-no-errors|fetch-object"
 	local boolean_args="debug|verbose"
 	local value_required_args="cache_dir|staging_dir|store|manifest|id|source_path|target_path|checksum|log_file"
