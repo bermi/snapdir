@@ -5,6 +5,7 @@ IFS=$'\n\t'
 
 set -eEuo pipefail
 
+DEBUG_DOCS=${DEBUG_DOCS:-true}
 DEFAULT_COMMANDS_REGEXP="snapdir-manifest generate"
 
 _BASE_DIR="$(dirname "${BASH_SOURCE[0]}")"
@@ -43,32 +44,6 @@ get_parametrized_options() {
 get_global_options() {
 	set -eEuo pipefail
   get_options
-}
-
-_get_function_body() {
-  set -eEuo pipefail
-  local command="${1// /_}"
-  local function_name
-  function_name="$(echo "$command" | tr '-' '_')"
-  local script_contents
-  script_contents=$(cat)
-  echo "$script_contents" | sed -n "/$function_name/,/^}/p" | sed -n "/$function_name/,/^}/p" | grep -v "${function_name}(" | grep -v "^}"
-}
-
-_get_doc_block_from_function_body() {
-  set -eEuo pipefail
-  local function_body
-  function_body="$(cat)"
-  # get the first line number that does not
-  # start with #
-  local first_line_number
-  first_line_number=$(echo "$function_body" | grep -n "^[^#]" | head -n 1 | cut -d ':' -f1 || true)
-  if [[ -z "$first_line_number" ]]; then
-    echo "ERROR: No documentation found"
-    return
-  fi
-  # show the first line number - 1
-  echo "$function_body" | sed -n 1,"$((first_line_number - 1))"p
 }
 
 _get_examples_from_tests() {
@@ -188,15 +163,22 @@ generate_docs_for_script() {
   local valid_params
   valid_params="$(echo "$contents" | get_parametrized_options | _get_or_list || echo "")"
 
-  # _get_global_usage
+  if [[ "${DEBUG_DOCS}" == "true" ]]; then
+    _get_global_usage
+  fi
 
   local commands
   commands=$(grep -o "^snapdir[a-z_0-9]*" <<<"$contents" | tr '_' '-' | sed -E "s|^$binary-|$binary |")
+
+  echo "## API Reference"
+  echo ""
+
   for command in $commands; do
-    local command_slug
-    command_slug="#$(echo "$command" | tr ' ' '-')"
-    local examples_from_tests
-    examples_from_tests=$(_get_examples_from_tests "$command" "$binary")
+    # local command_slug
+    # if [[ "$command" != "snapdir checkout" ]]; then
+    #   continue;
+    # fi
+    # command_slug="#$(echo "$command" | tr ' ' '-')"
     local subcommand
     subcommand="${command//$binary /}"
 
@@ -212,31 +194,36 @@ generate_docs_for_script() {
     fi
 
     echo ""
-    echo "[$binary](#$binary) [${subcommand}]($command_slug)"
-    echo ""
+    # echo "[$binary](#$binary) [${subcommand}]($command_slug)"
+    # echo ""
 
-    echo ""
     local inline_docs
-    inline_docs="$(echo "$contents" | _get_function_body "$command" | sed -E 's|[\t]*# ?|#|' | _get_doc_block_from_function_body)"
+    inline_docs="$(./"$binary" "$subcommand" --help 2>&1 || echo "")"
 
     if [[ "${inline_docs:-""}" == "" ]]; then
       echo "ERROR: Missing inline docs for '$command'"
     else
-      echo "### Inline documentation"
-      echo ""
+      if [[ "${DEBUG_DOCS}" == "true" ]]; then
+        echo "### Inline documentation"
+        echo ""
+      fi
       echo "$inline_docs"
     fi
-    
-    echo ""
-    _get_method_usage "$usage_command" "$examples_from_tests" "$valid_options" "$valid_params"
 
-    if [[ $examples_from_tests != "" ]]; then
-      echo "### Examples from tests"
+    if [[ "${DEBUG_DOCS}" == "true" ]]; then
+      local examples_from_tests
+      examples_from_tests=$(_get_examples_from_tests "$command" "$binary")
       echo ""
-      # shellcheck disable=SC2016
-      echo "${examples_from_tests}" | sed -E 's|^(.*)$|```bash\n\1\n```|'
-    else
-      echo "ERROR: No examples found on docs/tests/tested-commands.sh"
+      _get_method_usage "$usage_command" "$examples_from_tests" "$valid_options" "$valid_params"
+
+      if [[ $examples_from_tests != "" ]]; then
+        echo "### Examples from tests"
+        echo ""
+        # shellcheck disable=SC2016
+        echo "${examples_from_tests}" | sed -E 's|^(.*)$|```bash\n\1\n```|'
+      else
+        echo "ERROR: No examples found on docs/tests/tested-commands.sh"
+      fi
     fi
     echo ""
   done
@@ -258,7 +245,7 @@ generate_toc() {
 
 _docs=""
 if test -f "${1:-""}"; then
-  _docs=$(generate_docs_for_script "$1" | sed -E 's|^#||')
+  _docs=$(generate_docs_for_script "$1")
 elif [[ "${1:-""}" == "single-page" ]]; then
   echo "# snapdir reference"
   _docs=$(generate_singe_page_docs)
