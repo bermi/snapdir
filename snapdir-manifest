@@ -120,12 +120,40 @@ snapdir_manifest_generate() {
 	# Usage:
 	#
 	#     snapdir-manifest \
-	#         --(absolute|cache|no-follow|verbose) \
-	#         --cache-dir="${CACHE_DIR}" \
-	#         --cache-id="${ID}" \
-	#         --checksum-bin=b3sum|md5sum|sha256sum \
-	#         --exclude="${EXCLUDE_PATTERN}" \
+	#         [--(absolute|cache|no-follow|verbose)] \
+	#         [--cache-dir="${CACHE_DIR}"] \
+	#         [--cache-id="${ID}"] \
+	#         [--checksum-bin=b3sum|md5sum|sha256sum] \
+	#         [--exclude="${EXCLUDE_PATTERN}"] \
 	#         "${DIR}"
+	#
+	# Examples:
+	#
+	#     # generates a manifest for a directory
+	#     snapdir-manifest  "${DIR}"
+	#
+	#     # generates a manifest for the root directory using
+	#     # absolute paths. This assumes --exclude=system
+	#     snapdir-manifest --absolute /
+	#
+	#     # generates a manifest using the cache and validating
+	#     # a previously known cache id
+	#     snapdir-manifest --cache \
+	#         --cache-id "${CACHE_ID}" \
+	#         --cache-dir "${CACHE_DIR}" "${DIR}"
+	#
+	#     # excludes files matching the pattern
+	#     snapdir-manifest --exclude ".ignore" "${DIR}"
+	#
+	#     # excludes files matching the pattern while
+	#     # keeping the default common and system patterns
+	#     snapdir-manifest --exclude ".ignore|%common%|%system%" "${DIR}"
+	#
+	#     # use sha256sum as the checksum algorithm
+	#     snapdir-manifest --checksum-bin sha256sum "${DIR}"
+	#
+	#     # use a custom secret for b3sum context
+	#     SNAPDIR_MANIFEST_CONTEXT="${SECRET}" snapdir-manifest "${DIR}"
 	#
 	set -eEuo pipefail
 	local root_dir
@@ -199,122 +227,6 @@ $dir_entry"
 
 }
 
-######  #     # #     #
-#     # #     # ##    #
-#     # #     # # #   #
-######  #     # #  #  #
-#   #   #     # #   # #
-#    #  #     # #    ##
-#     #  #####  #     #
-
-snapdir_manifest_run() (
-	# Using ( for the function body instead of { to run in a subshell
-	# in order to avoid polluting the environment with helper functions
-	# You can call this function when sourcing this script if you want to expose it as
-	# a sub-command
-	set -eEuo pipefail
-
-	# Saves the command into the run log for debugging, documentation, etc.
-	if [[ ${ENVIRONMENT:-""} == "test" ]] && [[ ${_SNAPDIR_RUN_LOG_PATH:-""} != "" ]] && test -f "${_SNAPDIR_RUN_LOG_PATH:-""}"; then
-		# shellcheck disable=SC2145
-		echo "snapdir-manifest ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
-	fi
-
-	local commands="generate|cache-id|defaults|flush-cache|test|version"
-	local boolean_args="absolute|cache|debug|no_follow|verbose"
-	local value_required_args="exclude|cache_dir|cache_id|checksum_bin"
-	local legal_argument_keys="${boolean_args}|${value_required_args}"
-
-	_snapdir_manifest_parse_argument_key() {
-		sed -E 's|^--?|_SNAPDIR_MANIFEST_|; s|-|_|g;' <<<"${1^^}"
-	}
-
-	_snapdir_manifest_validate_option() {
-		set -eEuo pipefail
-		grep -q -E "^_SNAPDIR_MANIFEST_(${legal_argument_keys^^})$" <<<"${1}" || {
-			echo "error: Unknown option: ${1//_SNAPDIR_MANIFEST_/}" | tr '[:upper:]' '[:lower:]' >&2
-			echo "Valid options are: --(${legal_argument_keys})" >&2
-			exit 1
-		}
-	}
-
-	_snapdir_manifest_help() {
-		_snapdir_manifest_export_env_defaults
-		sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_MANIFEST_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
-		exit 0
-	}
-
-	local command="generate"
-	local positional_args=""
-	local key
-	local value
-	local is_boolean
-	local explicit_default_command=false
-	local command_candidate="${1:-"$command"}"
-	while [ $# -gt 0 ]; do
-		case "$1" in
-		generate | cache-id | test | flush-cache | defaults)
-			# calling 'snapdir-manifest manifest test' should run the manifest
-			# on the test directory instead of running the test command
-			if [[ $explicit_default_command == "true" ]]; then
-				positional_args="${positional_args}${1} "
-			else
-				command="$1"
-			fi
-			if [[ $1 == "generate" ]]; then
-				explicit_default_command=true
-			fi
-			shift
-			;;
-		help | -h | --help)
-			_snapdir_manifest_help
-			;;
-		version | -v | --version)
-			echo "${_SNAPDIR_MANIFEST_VERSION}"
-			exit 0
-			;;
-		# export all --*=* flags as _SNAPDIR_MANIFEST_* env vars
-		--*=* | -*=*)
-			key="$(_snapdir_manifest_parse_argument_key "${1%%=*}")"
-			_snapdir_manifest_validate_option "$key"
-			export "$key"="${1#*=}"
-			shift
-			;;
-		# export all --* * flags as _SNAPDIR_MANIFEST_* env vars
-		--*)
-			is_boolean=$(grep -q -E "^--?(${boolean_args})$" <<<"${1}" && echo true || echo false)
-			key="$(_snapdir_manifest_parse_argument_key "${1}")"
-			_snapdir_manifest_validate_option "$key"
-			shift
-			value="${1:-true}"
-			# if key is in boolean_args
-			if [[ ${is_boolean} == "false" ]] && [[ ${value:0:1} != "-" ]]; then
-				# since this might be the last arg, this will always be truthy
-				shift || true
-			else
-				value="true"
-			fi
-			export "${key}"="${value}"
-			;;
-		*)
-			positional_args="${positional_args}${1} "
-			shift
-			;;
-		esac
-	done
-
-	# if command is not set, show help
-	if [ -z "$command" ]; then
-		echo "Uknown command '$command_candidate'. Valid commands are: ${commands}" >&2
-		echo "Try: ${_SNAPDIR_MANIFEST} --help" >&2
-		return 1
-	fi
-
-	_snapdir_manifest_export_env_defaults
-	# env | grep _snapdir_manifest_ | sort
-	eval "snapdir_manifest_${command//-/_} $positional_args ${*:2}"
-)
-
 ####### #       #     #  #####  #     #     #####     #     #####  #     # #######
 #       #       #     # #     # #     #    #     #   # #   #     # #     # #
 #       #       #     # #       #     #    #        #   #  #       #     # #
@@ -324,6 +236,12 @@ snapdir_manifest_run() (
 #       #######  #####   #####  #     #     #####  #     #  #####  #     # #######
 
 snapdir_manifest_flush_cache() {
+	# Empties the cache directory.
+	#
+	# Usage:
+	#
+	#     snapdir-manifest flush-cache [--cache-dir "${CACHE_DIR}"]
+	#
 	set -eEuo pipefail
 	local cache_dir="${_SNAPDIR_MANIFEST_CACHE_DIR:?Missing --cache-dir option}"
 	_snapdir_manifest_log "Flushing cache_dir: $cache_dir"
@@ -339,6 +257,15 @@ snapdir_manifest_flush_cache() {
 #        #####  #     #  #####  #     # #######    ### ######
 
 snapdir_manifest_cache_id() {
+	# Computes the hash for the cache at its current state.
+	#
+	# You can store the generated ID on a trusted system and use it to
+	# check if the cache has changed or has been tampered with.
+	#
+	# Usage:
+	#
+	#     snapdir-manifest [--cache-dir "${CACHE_DIR}"]
+	#
 	set -eEuo pipefail
 	local cache_dir="${_SNAPDIR_MANIFEST_CACHE_DIR:?Missing --cache-dir option}"
 	_snapdir_manifest_log "Checking cache_dir: $cache_dir"
@@ -357,6 +284,7 @@ snapdir_manifest_cache_id() {
 ######  ####### #       #     #  #####  #######    #     #####
 
 snapdir_manifest_defaults() {
+	# Shows the default enviroment variables and argument values.
 	env | grep _SNAPDIR_MANIFEST | grep -v VERSION | sed -E 's|^_SNAPDIR_MANIFEST_|--|; s|_|-|g;' | tr '[:upper:]' '[:lower:]' | sort
 	echo "SNAPDIR_MANIFEST_BIN_PATH=${SNAPDIR_MANIFEST_BIN_PATH:-$_SNAPDIR_MANIFEST_BIN_PATH}"
 	echo "SNAPDIR_MANIFEST_CONTEXT=${SNAPDIR_MANIFEST_CONTEXT:-""}"
@@ -650,6 +578,122 @@ _snapdir_manifest_ensure_cache() {
 	fi
 }
 
+######  #     # #     #
+#     # #     # ##    #
+#     # #     # # #   #
+######  #     # #  #  #
+#   #   #     # #   # #
+#    #  #     # #    ##
+#     #  #####  #     #
+
+_snapdir_manifest_run() (
+	# Using ( for the function body instead of { to run in a subshell
+	# in order to avoid polluting the environment with helper functions
+	# You can call this function when sourcing this script if you want to expose it as
+	# a sub-command
+	set -eEuo pipefail
+
+	# Saves the command into the run log for debugging, documentation, etc.
+	if [[ ${ENVIRONMENT:-""} == "test" ]] && [[ ${_SNAPDIR_RUN_LOG_PATH:-""} != "" ]] && test -f "${_SNAPDIR_RUN_LOG_PATH:-""}"; then
+		# shellcheck disable=SC2145
+		echo "snapdir-manifest ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
+	fi
+
+	local commands="generate|cache-id|defaults|flush-cache|test|version"
+	local boolean_args="absolute|cache|debug|no_follow|verbose"
+	local value_required_args="exclude|cache_dir|cache_id|checksum_bin"
+	local legal_argument_keys="${boolean_args}|${value_required_args}"
+
+	_snapdir_manifest_parse_argument_key() {
+		sed -E 's|^--?|_SNAPDIR_MANIFEST_|; s|-|_|g;' <<<"${1^^}"
+	}
+
+	_snapdir_manifest_validate_option() {
+		set -eEuo pipefail
+		grep -q -E "^_SNAPDIR_MANIFEST_(${legal_argument_keys^^})$" <<<"${1}" || {
+			echo "error: Unknown option: ${1//_SNAPDIR_MANIFEST_/}" | tr '[:upper:]' '[:lower:]' >&2
+			echo "Valid options are: --(${legal_argument_keys})" >&2
+			exit 1
+		}
+	}
+
+	_snapdir_manifest_help() {
+		_snapdir_manifest_export_env_defaults
+		sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_MANIFEST_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+		exit 0
+	}
+
+	local command="generate"
+	local positional_args=""
+	local key
+	local value
+	local is_boolean
+	local explicit_default_command=false
+	local command_candidate="${1:-"$command"}"
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		generate | cache-id | test | flush-cache | defaults)
+			# calling 'snapdir-manifest manifest test' should run the manifest
+			# on the test directory instead of running the test command
+			if [[ $explicit_default_command == "true" ]]; then
+				positional_args="${positional_args}${1} "
+			else
+				command="$1"
+			fi
+			if [[ $1 == "generate" ]]; then
+				explicit_default_command=true
+			fi
+			shift
+			;;
+		help | -h | --help)
+			_snapdir_manifest_help
+			;;
+		version | -v | --version)
+			echo "${_SNAPDIR_MANIFEST_VERSION}"
+			exit 0
+			;;
+		# export all --*=* flags as _SNAPDIR_MANIFEST_* env vars
+		--*=* | -*=*)
+			key="$(_snapdir_manifest_parse_argument_key "${1%%=*}")"
+			_snapdir_manifest_validate_option "$key"
+			export "$key"="${1#*=}"
+			shift
+			;;
+		# export all --* * flags as _SNAPDIR_MANIFEST_* env vars
+		--*)
+			is_boolean=$(grep -q -E "^--?(${boolean_args})$" <<<"${1}" && echo true || echo false)
+			key="$(_snapdir_manifest_parse_argument_key "${1}")"
+			_snapdir_manifest_validate_option "$key"
+			shift
+			value="${1:-true}"
+			# if key is in boolean_args
+			if [[ ${is_boolean} == "false" ]] && [[ ${value:0:1} != "-" ]]; then
+				# since this might be the last arg, this will always be truthy
+				shift || true
+			else
+				value="true"
+			fi
+			export "${key}"="${value}"
+			;;
+		*)
+			positional_args="${positional_args}${1} "
+			shift
+			;;
+		esac
+	done
+
+	# if command is not set, show help
+	if [ -z "$command" ]; then
+		echo "Uknown command '$command_candidate'. Valid commands are: ${commands}" >&2
+		echo "Try: ${_SNAPDIR_MANIFEST} --help" >&2
+		return 1
+	fi
+
+	_snapdir_manifest_export_env_defaults
+	# env | grep _snapdir_manifest_ | sort
+	eval "snapdir_manifest_${command//-/_} $positional_args ${*:2}"
+)
+
 #       ####### #######  #####  #######  #####
 #          #    #       #     #    #    #     #
 #          #    #       #          #    #
@@ -930,7 +974,7 @@ F 600 67117d2a91c432d4db173671029b61d7ff437f7f87d153db1bf83b34b5833743 4 ./r1f"
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	# Get the absolute path to ${BASH_SOURCE[0]}
 	_SNAPDIR_MANIFEST_BIN_PATH="${_SNAPDIR_MANIFEST_BIN_PATH:-$(_snapdir_manifest_readlink "${BASH_SOURCE[0]}")}"
-	snapdir_manifest_run "${@:1}"
+	_snapdir_manifest_run "${@:1}"
 else
 	_snapdir_manifest_export_env_defaults
 fi

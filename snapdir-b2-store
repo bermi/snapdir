@@ -237,7 +237,7 @@ snapdir_b2_store_ensure_no_errors() {
 # b2. We can leverage something like _snapdir_b2_store_get_remote_sha1sums
 # but targeted at individual manifest ids instead of the entire store.
 
-snapdir_b2_store_run() (
+_snapdir_b2_store_run() (
 	set -eEuo pipefail
 
 	# Saves the command into the run log for debugging, documentation, etc.
@@ -745,7 +745,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	fi
 	# shellcheck disable=SC1090
 	. "$_SNAPDIR_BIN_PATH"
-	snapdir_b2_store_run "${@:1}"
+	_snapdir_b2_store_run "${@:1}"
 else
 	_snapdir_b2_store_export_env_defaults
 fi

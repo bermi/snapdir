@@ -369,7 +369,7 @@ _snapdir_file_store_get_store_dir() {
 	echo "${store_dir%/}"
 }
 
-snapdir_file_store_run() (
+_snapdir_file_store_run() (
 	set -eEuo pipefail
 
 	# Saves the command into the run log for debugging, documentation, etc.
@@ -596,7 +596,7 @@ snapdir_file_store_test() (
 
 		# --------------------------------------------------------------------------------
 		# echo "# Running: \"${snapdir}\" fetch --dryrun --verbose --store \"${store}\" --id \"${simple_manifest_id}\""
-		result=$("${snapdir}" fetch --dryrun --store "${store}" --id "${simple_manifest_id}" 2>&1 | grep dryrun || echo "")
+		result=$("${snapdir}" fetch --dryrun --store "${store}" --id "${simple_manifest_id}" 2>&1 || echo "")
 
 		# --------------------------------------------------------------------------------
 		check "should cat the contents of the manifest to stdout"
@@ -721,7 +721,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	fi
 	# shellcheck disable=SC1090
 	. "$_SNAPDIR_BIN_PATH"
-	snapdir_file_store_run "${@:1}"
+	_snapdir_file_store_run "${@:1}"
 else
 	_snapdir_file_store_export_env_defaults
 fi

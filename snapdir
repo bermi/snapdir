@@ -20,134 +20,6 @@ _SNAPDIR_VERSION="0.1.1"
 set -eEuo pipefail
 IFS=$'\n\t'
 
-######  #     # #     #
-#     # #     # ##    #
-#     # #     # # #   #
-######  #     # #  #  #
-#   #   #     # #   # #
-#    #  #     # #    ##
-#     #  #####  #     #
-
-snapdir_run() (
-	# run in a subshell to avoid polluting the environment with helper functions
-	# You can call this function when sourcing this script if you want to expose it as
-	# a sub-command
-
-	# Saves the command into the run log for debugging, documentation, etc.
-	if [[ ${ENVIRONMENT:-""} == "test" ]] && [[ ${_SNAPDIR_RUN_LOG_PATH:-""} != "" ]] && test -f "${_SNAPDIR_RUN_LOG_PATH:-""}"; then
-		# shellcheck disable=SC2145
-		echo "snapdir ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
-	fi
-
-	set -eEuo pipefail
-	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults"
-	local boolean_args="debug|force|linked|keep|purge|verbose|dryrun"
-	local value_required_args="id|store|cache_dir|path|exclude"
-	local legal_argument_keys="${boolean_args}|${value_required_args}"
-
-	parse_argument_key() {
-		sed -E 's|^--?|_SNAPDIR_|; s|-|_|g;' <<<"${1^^}"
-	}
-
-	validate_option() {
-		set -eEuo pipefail
-		grep -q -E "^_SNAPDIR_(${legal_argument_keys^^})$" <<<"${1}" || {
-			echo "error: Unknown option: ${1//_SNAPDIR_/}" | tr '[:upper:]' '[:lower:]' >&2
-			echo "Valid options are: --(${legal_argument_keys})" >&2
-			exit 1
-		}
-	}
-
-	_snapdir_parse_argument_key() {
-		sed -E 's|^--?|_SNAPDIR_|; s|-|_|g;' <<<"${1^^}"
-	}
-
-	_snapdir_validate_option() {
-		set -eEuo pipefail
-		grep -q -E "^_SNAPDIR_(${legal_argument_keys^^})$" <<<"${1}" || {
-			echo "error: Unknown option: ${1//_SNAPDIR_/}" | tr '[:upper:]' '[:lower:]' >&2
-			echo "Valid options are: --(${legal_argument_keys})" >&2
-			exit 1
-		}
-	}
-
-	_snapdir_help() {
-		_snapdir_export_env_defaults
-		sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
-		exit 0
-	}
-
-	local command=""
-	local positional_args=""
-	local key
-	local value
-	local is_boolean
-	local subcommand_candidate="${1:-""}"
-	while [ $# -gt 0 ]; do
-		case "$1" in
-		manifest | id | stage | checkout | fetch | pull | push | verify | verify-cache | flush-cache | test | defaults)
-			# if command is already set, compain about multiple commands
-			if [ -n "$command" ]; then
-				echo "error: multiple commands specified: $command $1" >&2
-				return 1
-			fi
-			command="$1"
-			shift
-			;;
-		help | -h | --help)
-			_snapdir_help
-			;;
-		version | -v | --version)
-			echo "${_SNAPDIR_VERSION}"
-			exit 0
-			;;
-		# export all --*=* flags as _SNAPDIR_* env vars
-		--*=* | -*=*)
-			key="$(parse_argument_key "${1%%=*}")"
-			validate_option "$key"
-			export "$key"="${1#*=}"
-			shift
-			;;
-		# export all --* * flags as _SNAPDIR_* env vars
-		--*)
-			is_boolean=$(grep -q -E "^--?(${boolean_args})$" <<<"${1}" && echo true || echo false)
-			key="$(parse_argument_key "${1}")"
-			validate_option "$key"
-			shift
-			value="${1:-true}"
-			# if key is in boolean_args
-			if [[ ${is_boolean} == "false" ]] && [[ ${value:0:1} != "-" ]]; then
-				# since this might be the last arg, this will always be truthy
-				shift || true
-			else
-				value="true"
-			fi
-			export "${key}"="${value}"
-			;;
-		*)
-			positional_args="${positional_args}${1} "
-			shift
-			;;
-		esac
-	done
-
-	# if command is not set, show help
-	if [ -z "$command" ]; then
-		if [[ $subcommand_candidate != "" ]]; then
-			echo "Uknown command '$subcommand_candidate'. Valid commands are: ${subcommands}" >&2
-			echo "Try: ${_SNAPDIR} --help" >&2
-			return 1
-		else
-			_snapdir_help
-			echo "Valid snapdir commands are: ${subcommands}" >&2
-			return 1
-		fi
-	fi
-
-	_snapdir_export_env_defaults "${command}"
-	eval "snapdir_${command//-/_} $positional_args ${*:2}"
-)
-
 #     #    #    #     # ### ####### #######  #####  #######
 ##   ##   # #   ##    #  #  #       #       #     #    #
 # # # #  #   #  # #   #  #  #       #       #          #
@@ -157,6 +29,45 @@ snapdir_run() (
 #     # #     # #     # ### #       #######  #####     #
 
 snapdir_manifest() {
+	# Prints on the stdout a manifest for a directory or staged manifest ID.
+	#
+	# Usage:
+	#
+	#     snapdir manifest \
+	#         [--(id="${MANIFEST_ID}")] \
+	#         [--(exclude="${EXCLUDE_PATTERN}")] \
+	#         "${DIR}"
+	#
+	# Returns: [A snapdir manifest](docs/understanding-manifests.md) as
+	#          a UTF-8 encoded string.
+	#
+	# Examples:
+	#
+	#     # generates a manifest for a directory
+	#     snapdir manifest "${DIR}"
+	#
+	#     # excludes files matching the pattern
+	#     snapdir manifest --exclude ".ignore" "${DIR}"
+	#
+	#			# exclude commonly ignored files, such as .git and .DS_Store
+	#			snapdir manifest --exclude "%common%" "${DIR}"
+	#
+	#     # excludes files matching the pattern while
+	#     # keeping the default common pattern
+	#     snapdir manifest --exclude ".ignore|%common%" "${DIR}"
+	#
+	#     # use a custom secret for b3sum context
+	#     SNAPDIR_MANIFEST_CONTEXT="${SECRET}" snapdir manifest "${DIR}"
+	#
+	#     # reads the directory from stdin
+	#      echo "${DIR}" | snapdir manifest
+	#
+	#     # shows the manifest for an staged manifest ID
+	#     snapdir manifest --id "${MANIFEST_ID}"
+	#
+	#     # shows the manifest given a staged manifest ID trhough stdin
+	#     echo "${MANIFEST_ID}" | snapdir manifest
+	#
 	set -eEuo pipefail
 	# the manifest only gets generated once per call
 	if [[ ${_SNAPDIR_MANIFEST:-} != "" ]]; then
@@ -197,6 +108,22 @@ snapdir_manifest() {
 #       ### ######
 
 snapdir_id() {
+	# Generates a snapshot id for a given directory and writes it to stdout.
+	#
+	# Usage:
+	#
+	#     snapdir id "${DIR}"
+	#
+	# Returns: Snapshot ID (a BLAKE3 hash for the manifest contents)
+	#
+	# Examples:
+	#
+	#     # generates a snapshot id for a directory
+	#     snapdir id "${DIR}"
+	#
+	#     # generates a snapshot id for a manifest provided as stdin
+	#     echo "${DIR}" | snapdir manifest | snapdir id
+	#
 	set -eEuo pipefail
 	# the id only gets generated once per call
 	if [[ ${_SNAPDIR_ID:-} != "" ]]; then
@@ -222,6 +149,41 @@ snapdir_id() {
 #        #####   #####  #     #
 
 snapdir_push() {
+	# Pushes a directory snapshot to a store.
+	#
+	# This method will stage the snapshot and then push it to the store.
+	#
+	# The STORE is a URI of the form:
+	#
+	#     [store:]//[bucket|host]/[path]
+	#
+	# For example: s3://my-bucket/my-snapshots or file:///tmp/my-snapshots
+	#
+	# Usage:
+	#
+	#     snapdir push \
+	#         --store="${STORE}" \
+	#         [--id="${ID}"] or ["${DIR}"] \
+	#     		[--cache-dir="${CACHE_DIR}"] \
+	#         [--(debug|dryrun|verbose)]
+	#
+	# Returns: snapshot id
+	#
+	# Examples:
+	#
+	#     # pushes a snapshot of a directory to a store
+	#     snapdir push --store="${STORE}" "${DIR}"
+	#
+	#     # pushes a staged snapshot id to a store
+	#     snapdir push --store="${STORE}" --id="${ID}"
+	#
+	#     # pushes the stdin provided snapshot id to a store
+	#     snapdir id "${DIR}" | snapdir push --store="${STORE}"
+	#
+	# 	 # show the snapdir-$adapter-store command that would be executed
+	#     # for a dry run
+	#     snapdir push --store="${STORE}" --verbose --dryrun "${DIR}"
+	#
 	set -eEuo pipefail
 	local store="${_SNAPDIR_STORE:?Missing --store option when calling ${_SNAPDIR} push}"
 	local dryrun="${_SNAPDIR_DRYRUN:-false}"
@@ -281,6 +243,26 @@ snapdir_push() {
 #       #######    #     #####  #     #
 
 snapdir_fetch() {
+	# Retrieves a snapshot from a store and saves it in the local cache.
+	#
+	# Returns: No output unless in --verbose mode. Exit code 1 in case of error.
+	#
+	# Usage:
+	#
+	#     snapdir fetch \
+	#         --store="${STORE}" \
+	#         --id="${ID}" \
+	#         [--(dryrun|verbose)] \
+	#         [--cache-dir="${CACHE_DIR}"]
+	#
+	# Examples:
+	#
+	#     # fetches a snapshot from a store and saves it in the local cache
+	#     snapdir fetch --store="${STORE}" --id="${ID}" --verbose
+	#
+	#     # dry run
+	#     snapdir fetch --store="${STORE}" --id="${ID}" --dryrun
+	#
 	set -eEuo pipefail
 	local snapdir_id="${_SNAPDIR_ID:?Missing --id option when calling ${_SNAPDIR} fetch}"
 	local store="${_SNAPDIR_STORE:?Missing --store option when calling ${_SNAPDIR} push}"
@@ -363,6 +345,30 @@ snapdir_fetch() {
 #       #        #####  ####### #######
 
 snapdir_pull() {
+	# Fetches a snapshot from a store and checks it out on a given directory.
+	#
+	# Returns: No output unless in --verbose mode. Exit code 1 in case of error.
+	#
+	# Usage:
+	#
+	#     snapdir pull \
+	#         --store="${STORE}" \
+	#         --id="${ID}" \
+	#         [--(dryrun|verbose|force|linked)] \
+	#         [--cache-dir="${CACHE_DIR}"]
+	#         ["${DIR}"]
+	#
+	# Examples:
+	#
+	#     # fetches a snapshot and checks it out
+	#     snapdir pull --store="${STORE}" --id="${ID}" --verbose "${DIR}"
+	#
+	#     # forces a checkout even if the directory contains modified files
+	#     snapdir pull --store="${STORE}" --id="${ID}" --force "${DIR}"
+	#
+	#     # dry run
+	#     snapdir pull --store="${STORE}" --id="${ID}" --dryrun "${DIR}"
+	#
 	set -eEuo pipefail
 	local base_dir
 	base_dir="$(_snapdir_get_base_dir "${1:-"."}")"
@@ -394,6 +400,37 @@ snapdir_pull() {
 ######  #     # #######  #####  #    # #######  #####     #
 
 snapdir_checkout() {
+	# Checks out a snapshot from the cache on a given directory.
+	#
+	# When the linked option is used, the files are hardlinked instead of copied.
+	# This only works if the files are on the same filesystem and it's only
+	# recommended for filesystems with copy-on-write (COW) support.
+	#
+	# Returns: No output unless in --verbose mode. Exit code 1 in case of error.
+	#
+	# Usage:
+	#
+	#     snapdir checkout \
+	#         --store="${STORE}" \
+	#         --id="${ID}" \
+	#         [--(dryrun|verbose|force|linked)] \
+	#         [--cache-dir="${CACHE_DIR}"]
+	#         ["${DIR}"]
+	#
+	# Examples:
+	#
+	#     # checks out a snapshot
+	#     snapdir checkout --store="${STORE}" --id="${ID}" --verbose "${DIR}"
+	#
+	#     # forces a checkout even if the directory contains modified files
+	#     snapdir checkout --store="${STORE}" --id="${ID}" --force "${DIR}"
+	#
+	#     # dry run
+	#     snapdir checkout --store="${STORE}" --id="${ID}" --dryrun "${DIR}"
+	#
+	#     # hardlinks files instead of copying them
+	#     snapdir checkout --store="${STORE}" --id="${ID}" --linked "${DIR}"
+	#
 	set -eEuo pipefail
 	local base_dir
 	base_dir="$(_snapdir_get_base_dir "${1:-"."}" false)"
@@ -524,6 +561,28 @@ snapdir_checkout() {
 #     #####     #    #     #  #####  #######
 
 snapdir_stage() {
+	# Stages the files in a given directory into the local cache.
+	#
+	# Returns: The manifest id or the staging directory when --keep is provided.
+	#
+	# Usage:
+	#
+	#     snapdir stage ["${DIR}"] \
+	#         [--cache-dir="${CACHE_DIR}"]
+	#         [--(keep|verbose)]
+	#
+	# Examples:
+	#
+	#     # Stages the current directory so that it can be
+	#     # pushed to the store or checked out elsewhere locally.
+	#     snapdir stage
+	#
+	#     # stages a given directory and keeps the staging directory
+	#     snapdir stage "${DIR}" --keep # this prints the staging directory
+	#
+	#     # stages a to a custom cache directory
+	#     snapdir stage "${DIR}" --cache-dir="${CACHE_DIR}" --verbose
+	#
 	set -eEuo pipefail
 	local base_dir
 	base_dir="$(_snapdir_get_base_dir "${1:-""}")"
@@ -620,6 +679,24 @@ snapdir_stage() {
 #          #    ####### #     # ### #          #
 
 snapdir_verify() {
+	# Verifies the integrity of a snapshot.
+	#
+	# Returns: Exits with 0 if the snapshot is valid, 1 otherwise.
+	#
+	# Usage:
+	#     snapdir verify \
+	#         --id="${ID}" \
+	#         [--cache-dir="${CACHE_DIR}"]
+	#         [--(purge|verbose)]
+	#
+	# Examples:
+	#
+	#     # verify a snapshot that has been cached locally
+	#     snapdir verify --id="${ID}" --verbose
+	#
+	#     # verify and purge invalid objects from the cache
+	#     snapdir verify --id="${ID}" --purge
+	#
 	set -eEuo pipefail
 	local purge="${_SNAPDIR_PURGE:-false}"
 
@@ -655,6 +732,21 @@ snapdir_verify() {
 #       #    ####### #     # ### #          #        #####  #     #  #####  #     # #######
 
 snapdir_verify_cache() {
+	# Verifies the integrity of all the objects in the cache.
+	#
+	# Returns: Exits with 0 if all the objects are valid, 1 otherwise.
+	#
+	# Usage:
+	#
+	#     snapdir verify-cache \
+	#         [--cache-dir="${CACHE_DIR}"]
+	#         [--(purge|verbose)]
+	#
+	# Example:
+	#
+	#     # verify all the objects in the cache and purges invalid objects
+	#     snapdir verify-cache --verbose --purge
+	#
 	set -eEuo pipefail
 	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
 	local purge="${_SNAPDIR_PURGE:-false}"
@@ -667,11 +759,14 @@ snapdir_verify_cache() {
 		checksum="$(echo "$line" | cut -d' ' -f1)"
 		expected_checksum="$(echo "$line" | cut -d' ' -f2)"
 		if [[ ${checksum} != "${expected_checksum}" ]]; then
+			_snapdir_log "${expected_checksum} FAILED"
 			failed=true
 			echo "Checksum mismatch for ${expected_checksum}" >&2
 			if [[ ${purge} == "true" ]]; then
 				rm "${cache_dir}/$(_snapdir_get_object_rel_path "${expected_checksum}")"
 			fi
+		else
+			_snapdir_log "${expected_checksum} OK"
 		fi
 	done <<<"$(b3sum "${cache_dir}"/.objects/*/*/*/* | sed 's| .*.objects/| |; s|/||g' 2>&1 || echo "")"
 	if [[ ${failed} == "true" ]]; then
@@ -688,6 +783,13 @@ snapdir_verify_cache() {
 #       #######  #####   #####  #     #     #####  #     #  #####  #     # #######
 
 snapdir_flush_cache() {
+	# Empties the local cache.
+	#
+	# Usage:
+	#
+	#     snapdir verify-cache \
+	#         [--cache-dir="${CACHE_DIR}"]
+	#
 	set -eEuo pipefail
 	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
 	rm -rf "${cache_dir}"
@@ -702,12 +804,147 @@ snapdir_flush_cache() {
 ######  ####### #       #     #  #####  #######    #     #####
 
 snapdir_defaults() {
+	# Shows the default environment variables and options.
+	#
+	# Usage:
+	#
+	#     snapdir defaults
+	#
+	set -eEuo pipefail
 	{
 		"${_SNAPDIR_BIN_DIR}/snapdir-manifest" defaults | grep -v "^-"
 		env | grep "SNAPDIR" | grep -v VERSION | sed -E 's|^_?SNAPDIR_|--|; s|_|-|g;' | tr '[:upper:]' '[:lower:]' | sort
 		echo "SNAPDIR_BIN_PATH=${SNAPDIR_BIN_PATH:-$_SNAPDIR_BIN_PATH}"
 	} | sort -u
 }
+
+######  #     # #     #
+#     # #     # ##    #
+#     # #     # # #   #
+######  #     # #  #  #
+#   #   #     # #   # #
+#    #  #     # #    ##
+#     #  #####  #     #
+
+_snapdir_run() (
+	# run in a subshell to avoid polluting the environment with helper functions
+	# You can call this function when sourcing this script if you want to expose it as
+	# a sub-command
+
+	# Saves the command into the run log for debugging, documentation, etc.
+	if [[ ${ENVIRONMENT:-""} == "test" ]] && [[ ${_SNAPDIR_RUN_LOG_PATH:-""} != "" ]] && test -f "${_SNAPDIR_RUN_LOG_PATH:-""}"; then
+		# shellcheck disable=SC2145
+		echo "snapdir ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
+	fi
+
+	set -eEuo pipefail
+	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults"
+	local boolean_args="debug|force|linked|keep|purge|verbose|dryrun"
+	local value_required_args="id|store|cache_dir|path|exclude"
+	local legal_argument_keys="${boolean_args}|${value_required_args}"
+
+	parse_argument_key() {
+		sed -E 's|^--?|_SNAPDIR_|; s|-|_|g;' <<<"${1^^}"
+	}
+
+	validate_option() {
+		set -eEuo pipefail
+		grep -q -E "^_SNAPDIR_(${legal_argument_keys^^})$" <<<"${1}" || {
+			echo "error: Unknown option: ${1//_SNAPDIR_/}" | tr '[:upper:]' '[:lower:]' >&2
+			echo "Valid options are: --(${legal_argument_keys})" >&2
+			exit 1
+		}
+	}
+
+	_snapdir_parse_argument_key() {
+		sed -E 's|^--?|_SNAPDIR_|; s|-|_|g;' <<<"${1^^}"
+	}
+
+	_snapdir_validate_option() {
+		set -eEuo pipefail
+		grep -q -E "^_SNAPDIR_(${legal_argument_keys^^})$" <<<"${1}" || {
+			echo "error: Unknown option: ${1//_SNAPDIR_/}" | tr '[:upper:]' '[:lower:]' >&2
+			echo "Valid options are: --(${legal_argument_keys})" >&2
+			exit 1
+		}
+	}
+
+	_snapdir_help() {
+		_snapdir_export_env_defaults
+		sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+		exit 0
+	}
+
+	local command=""
+	local positional_args=""
+	local key
+	local value
+	local is_boolean
+	local subcommand_candidate="${1:-""}"
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		manifest | id | stage | checkout | fetch | pull | push | verify | verify-cache | flush-cache | test | defaults)
+			# if command is already set, compain about multiple commands
+			if [ -n "$command" ]; then
+				echo "error: multiple commands specified: $command $1" >&2
+				return 1
+			fi
+			command="$1"
+			shift
+			;;
+		help | -h | --help)
+			_snapdir_help
+			;;
+		version | -v | --version)
+			echo "${_SNAPDIR_VERSION}"
+			exit 0
+			;;
+		# export all --*=* flags as _SNAPDIR_* env vars
+		--*=* | -*=*)
+			key="$(parse_argument_key "${1%%=*}")"
+			validate_option "$key"
+			export "$key"="${1#*=}"
+			shift
+			;;
+		# export all --* * flags as _SNAPDIR_* env vars
+		--*)
+			is_boolean=$(grep -q -E "^--?(${boolean_args})$" <<<"${1}" && echo true || echo false)
+			key="$(parse_argument_key "${1}")"
+			validate_option "$key"
+			shift
+			value="${1:-true}"
+			# if key is in boolean_args
+			if [[ ${is_boolean} == "false" ]] && [[ ${value:0:1} != "-" ]]; then
+				# since this might be the last arg, this will always be truthy
+				shift || true
+			else
+				value="true"
+			fi
+			export "${key}"="${value}"
+			;;
+		*)
+			positional_args="${positional_args}${1} "
+			shift
+			;;
+		esac
+	done
+
+	# if command is not set, show help
+	if [ -z "$command" ]; then
+		if [[ $subcommand_candidate != "" ]]; then
+			echo "Uknown command '$subcommand_candidate'. Valid commands are: ${subcommands}" >&2
+			echo "Try: ${_SNAPDIR} --help" >&2
+			return 1
+		else
+			_snapdir_help
+			echo "Valid snapdir commands are: ${subcommands}" >&2
+			return 1
+		fi
+	fi
+
+	_snapdir_export_env_defaults "${command}"
+	eval "snapdir_${command//-/_} $positional_args ${*:2}"
+)
 
 ######  ######  ### #     #    #    ####### #######    ####### #     #  #####
 #     # #     #  #  #     #   # #      #    #          #       ##    # #     #
@@ -850,14 +1087,33 @@ _snapdir_get_relative_path() {
 	echo "${result}"
 }
 
+_snapdir_set_manifest_from_id() {
+	set -eEuo pipefail
+	local manifest_cache_path
+	if _snapdir_is_valid_id "$_SNAPDIR_ID"; then
+		manifest_cache_path="${_SNAPDIR_CACHE_DIR}/$(_snapdir_get_manifest_rel_path)"
+		if test -f "${manifest_cache_path}"; then
+			_SNAPDIR_MANIFEST="$(cat "${manifest_cache_path}")"
+		elif [[ ${_SNAPDIR_REQUIRE_STAGED_ID} == "true" ]]; then
+			echo "error: Manifest for snapdir ID '${_SNAPDIR_ID}' not found in the local cache. Snapshots must be fetched or staged locally first." >&2
+			return 1
+		fi
+	fi
+}
+
+_snapdir_is_valid_id() {
+	set -eEuo pipefail
+	local id="${1:?Missing id}"
+	if grep -E -q "^[a-f0-9]{64}$" <<<"$id"; then
+		return 0
+	fi
+	return 1
+}
+
 _snapdir_set_manifest_from_stdin_or_id() {
 	set -eEuo pipefail
 	if [[ ${_SNAPDIR_ID:-""} != "" ]]; then
-		local manifest_cache_path
-		manifest_cache_path="${_SNAPDIR_CACHE_DIR}/$(_snapdir_get_manifest_rel_path)"
-		test -f "${manifest_cache_path}" && {
-			_SNAPDIR_MANIFEST="$(cat "${manifest_cache_path}")"
-		}
+		_snapdir_set_manifest_from_id
 	fi
 
 	# Are we receiving a manifest via stdin?
@@ -865,11 +1121,24 @@ _snapdir_set_manifest_from_stdin_or_id() {
 		_SNAPDIR_MANIFEST="$(cat)"
 		# some callers like Docker RUN might provide an empty /dev/stdin
 		if [[ ${_SNAPDIR_MANIFEST} != "" ]]; then
+			# if _SNAPDIR_MANIFEST is a 64 char hex string, it is a manifest id
+			if _snapdir_is_valid_id "$_SNAPDIR_MANIFEST"; then
+				_SNAPDIR_ID="$_SNAPDIR_MANIFEST"
+				unset _SNAPDIR_MANIFEST
+				_snapdir_set_manifest_from_id
+				return 0
+			fi
+			local dir_candidate="$_SNAPDIR_MANIFEST"
 			# remove lines that don't match the manifest format
 			_SNAPDIR_MANIFEST="$(echo "${_SNAPDIR_MANIFEST}" | grep -E "(D|F) [0-9]+ [a-f0-9]+ [0-9]+ .*" || echo "")"
 			if [[ ${_SNAPDIR_MANIFEST} == "" ]]; then
-				echo "error: Manifest provided through stdin is not properly formatted." >&2
-				exit 1
+				if test -d "$dir_candidate"; then
+					unset _SNAPDIR_MANIFEST
+					_SNAPDIR_CWD="$dir_candidate"
+				else
+					echo "error: Manifest or manifest ID provided through stdin is invalid." >&2
+					exit 1
+				fi
 			fi
 			_SNAPDIR_ID="$(snapdir_id)"
 		fi
@@ -882,8 +1151,11 @@ _snapdir_export_env_defaults() {
 	local command="${1:-none}"
 
 	_SNAPDIR_CREATE_MISSING_BASE_DIR=false
+	_SNAPDIR_REQUIRE_STAGED_ID=false
 	if [[ $command == "pull" ]]; then
 		_SNAPDIR_CREATE_MISSING_BASE_DIR=true
+	elif [[ $command == "id" ]] || [[ $command == "manifest" ]] || [[ $command == "push" ]]; then
+		_SNAPDIR_REQUIRE_STAGED_ID=true
 	fi
 
 	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR:-"${HOME:-~}/.cache/${_SNAPDIR}/"}"
@@ -1040,6 +1312,26 @@ F 600 $foo_checksum 4 ./foo"
 		expected="$simple_manifest"
 		test "$result" == "$expected" || fail "Unexpected manifest '$result', expected '$expected'" && pass
 
+		check "should generate manifest reading dir from stdin"
+		result=$(echo "${_dir}" | "${snapshot}" manifest 2>&1 || echo "")
+		test "$result" == "$simple_manifest" || fail "Unexpected manifest '$result', expected '$simple_manifest'" && pass
+
+		check "should not generate manifest for explicit --id if it's not in the local cache"
+		result=$("${snapshot}" manifest --id "${simple_manifest_id}" 2>&1 || echo "")
+		expected="error: Manifest for snapdir ID '${simple_manifest_id}' not found in the local cache. Snapshots must be fetched or staged locally first."
+		test "$result" == "$expected" || fail "Expected error '$result' to be: '$expected'" && pass
+
+		# saving to stage so we can reference it by id
+		"${snapshot}" stage "${_dir}" >/dev/null
+
+		check "should generate manifest reading id from --id"
+		result=$("${snapshot}" manifest --id "${simple_manifest_id}" 2>&1 || echo "")
+		test "$result" == "$simple_manifest" || fail "Unexpected manifest '$result', expected '$simple_manifest'" && pass
+
+		check "should generate manifest reading id from stdin"
+		result=$(echo "${simple_manifest_id}" | "${snapshot}" manifest 2>&1 || echo "")
+		test "$result" == "$simple_manifest" || fail "Unexpected manifest '$result', expected '$simple_manifest'" && pass
+
 		check "should --exclude files when generating manifest"
 		mkdir -p "${_dir}/.ignored/"
 		echo "ignored file" >"${_dir}/.ignored/ignored_file"
@@ -1078,7 +1370,7 @@ F 600 $foo_checksum 4 ./foo"
 
 		check "should prevent malformated stdin manifests"
 		result=$(echo "foo bar" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
-		expected="error: Manifest provided through stdin is not properly formatted."
+		expected="error: Manifest or manifest ID provided through stdin is invalid."
 		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
 
 		# --------------------------------------------------------------------------------
@@ -1386,7 +1678,7 @@ fi
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	# Get the absolute path to ${BASH_SOURCE[0]}
 	_SNAPDIR_BIN_PATH="$(_snapdir_readlink "${BASH_SOURCE[0]}")"
-	snapdir_run "${@:1}"
+	_snapdir_run "${@:1}"
 else
 	_snapdir_export_env_defaults
 fi

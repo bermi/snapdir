@@ -129,6 +129,19 @@ snapdir test
 # check: should generate manifest
 snapdir manifest "${DIR}"
 snapdir-manifest "${DIR}"
+# check: should generate manifest reading dir from stdin
+snapdir manifest
+snapdir-manifest "${DIR}"
+snapdir-manifest "${DIR}"
+# check: should not generate manifest for explicit --id if it's not in the local cache
+snapdir manifest --id "${ID}"
+snapdir stage "${DIR}"
+snapdir-manifest "${DIR}"
+snapdir-manifest "${DIR}"
+# check: should generate manifest reading id from --id
+snapdir manifest --id "${ID}"
+# check: should generate manifest reading id from stdin
+snapdir manifest
 # check: should --exclude "${EXCLUDE_PATTERN}" when generating manifest
 snapdir manifest --exclude "${EXCLUDE_PATTERN}" "${DIR}"
 snapdir-manifest --exclude "${EXCLUDE_PATTERN}" "${DIR}"
@@ -282,8 +295,8 @@ snapdir-file-store commit-manifest --checksum "${ID}" --source-path "${SOURCE_PA
 # check: should add missing objects from the store
 snapdir push --id "${ID}" --verbose --store "${STORE}"
 snapdir-file-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
-snapdir-file-store commit-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 snapdir-file-store commit-manifest --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
+snapdir-file-store commit-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 # check: should revert tampered objects
 snapdir push --id "${ID}" --verbose --store "${STORE}"
 snapdir-file-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
@@ -322,9 +335,9 @@ snapdir-file-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
 snapdir pull --verbose --store "${STORE}" --id "${ID}" "${DIR}"
 snapdir-file-store get-manifest-command --id "${ID}" --store "${STORE}"
 snapdir-file-store get-fetch-files-command --id "${ID}" --store "${STORE}" --cache-dir "${CACHE_DIR}"
-snapdir-file-store fetch-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
-snapdir-file-store fetch-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 snapdir-file-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
+snapdir-file-store fetch-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
+snapdir-file-store fetch-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 # check: should pull files without cache
 # check: should pull files without cache and without FAILED errors
 snapdir-b2-store test --store "${STORE}"

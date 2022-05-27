@@ -235,7 +235,7 @@ snapdir_s3_store_ensure_no_errors() {
 # s3. We can leverage something like _snapdir_s3_store_get_remote_md5sums
 # but targeted at individual manifest ids instead of the entire store.
 
-snapdir_s3_store_run() (
+_snapdir_s3_store_run() (
 	set -eEuo pipefail
 
 	# Saves the command into the run log for debugging, documentation, etc.
@@ -757,7 +757,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	export _SNAPDIR_BIN_PATH
 	# shellcheck disable=SC1090
 	. "$_SNAPDIR_BIN_PATH"
-	snapdir_s3_store_run "${@:1}"
+	_snapdir_s3_store_run "${@:1}"
 else
 	_snapdir_s3_store_export_env_defaults
 fi
