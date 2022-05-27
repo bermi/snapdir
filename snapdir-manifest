@@ -8,7 +8,7 @@
 #
 # ## Usage
 #
-#     snapdir-manifest [OPTIONS] [SUBCOMMAND] [ARGUMENTS]
+#     snapdir-manifest [OPTIONS] [COMMAND] [ARGUMENTS]
 #
 # ### Options
 #
@@ -28,7 +28,7 @@
 #     --verbose                Prints verbose messages.
 #     -v, --version            Prints version.
 #
-# ### Subcommands
+# ### Commands
 #
 #     cache-id           Gets the id for the cache.
 #     flush-cache        Flushes the cache.
@@ -115,7 +115,18 @@ IFS=$'\n\t'
 #     # #     # #     # ### #       #######  #####     #
 
 snapdir_manifest_generate() {
-	# Generate a manifest for a directory.
+	# Generates a manifest for a directory.
+	#
+	# Usage:
+	#
+	#     snapdir-manifest \
+	#         --(absolute|cache|no-follow|verbose) \
+	#         --cache-dir="${CACHE_DIR}" \
+	#         --cache-id="${ID}" \
+	#         --checksum-bin=b3sum|md5sum|sha256sum \
+	#         --exclude="${EXCLUDE_PATTERN}" \
+	#         "${DIR}"
+	#
 	set -eEuo pipefail
 	local root_dir
 	# get absolute path to root_dir
@@ -209,7 +220,7 @@ snapdir_manifest_run() (
 		echo "snapdir-manifest ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
 	fi
 
-	local subcommands="generate|cache-id|defaults|flush-cache|test|version"
+	local commands="generate|cache-id|defaults|flush-cache|test|version"
 	local boolean_args="absolute|cache|debug|no_follow|verbose"
 	local value_required_args="exclude|cache_dir|cache_id|checksum_bin"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
@@ -239,7 +250,7 @@ snapdir_manifest_run() (
 	local value
 	local is_boolean
 	local explicit_default_command=false
-	local subcommand_candidate="${1:-"$command"}"
+	local command_candidate="${1:-"$command"}"
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		generate | cache-id | test | flush-cache | defaults)
@@ -294,7 +305,7 @@ snapdir_manifest_run() (
 
 	# if command is not set, show help
 	if [ -z "$command" ]; then
-		echo "Uknown command '$subcommand_candidate'. Valid commands are: ${subcommands}" >&2
+		echo "Uknown command '$command_candidate'. Valid commands are: ${commands}" >&2
 		echo "Try: ${_SNAPDIR_MANIFEST} --help" >&2
 		return 1
 	fi

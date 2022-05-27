@@ -108,7 +108,7 @@ of the following characteristics:
     --verbose              Enable verbose output.
     --version, -v          Prints version.
 
-### Subcommands
+### Commands
 
 
     checkout --id= [--linked] DIR  Checkout a snapshot to a directory.

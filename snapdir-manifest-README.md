@@ -66,7 +66,7 @@ docker run -it --rm \
     --verbose                Prints verbose messages.
     -v, --version            Prints version.
 
-### Subcommands
+### Commands
 
     cache-id           Gets the id for the cache.
     flush-cache        Flushes the cache.

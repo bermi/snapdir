@@ -5,123 +5,252 @@
 # We use the results to generate documentation and generative testing.
 
 snapdir-manifest test
+# describe: snapdir-manifest generate
+# check: snapdir-manifest --checksum-bin b3sum "${DIR}"
 snapdir-manifest --checksum-bin b3sum "${DIR}"
+# describe: generate with excluded files
+# check: snapdir-manifest --checksum-bin b3sum --exclude "${EXCLUDE_PATTERN}" "${DIR}"
 snapdir-manifest --checksum-bin b3sum --exclude "${EXCLUDE_PATTERN}" "${DIR}"
+# describe: generate with %common% excluded files
+# check: snapdir-manifest --checksum-bin b3sum --exclude "${EXCLUDE_PATTERN}" "${DIR}"
 snapdir-manifest --checksum-bin b3sum --exclude "${EXCLUDE_PATTERN}" "${DIR}"
+# check: snapdir-manifest --checksum-bin b3sum  "${DIR}"
 snapdir-manifest --checksum-bin b3sum "${DIR}"
+# describe: generate with absolute paths
+# check: snapdir-manifest --checksum-bin b3sum --absolute "${DIR}"
 snapdir-manifest --checksum-bin b3sum --absolute "${DIR}"
+# describe: generate with secrets
+# check: SNAPDIR_MANIFEST_CONTEXT=secret snapdir-manifest --checksum-bin b3sum "${DIR}"
 snapdir-manifest --checksum-bin b3sum "${DIR}"
+# describe: using 300MB file
 snapdir-manifest --checksum-bin b3sum --cache --verbose --cache-dir "${CACHE_DIR}" "${DIR}"
 snapdir-manifest --checksum-bin b3sum --cache --verbose --cache-dir "${CACHE_DIR}" "${DIR}"
+# check: cache
+# check: cache misses
+# check: cache hits
+# describe: cache verification
+# check: cache id verification
 snapdir-manifest --checksum-bin b3sum cache-id --cache-dir "${CACHE_DIR}"
 snapdir-manifest --checksum-bin b3sum --cache --cache-id "${ID}" --cache-dir "${CACHE_DIR}" "${DIR}"
+# check: invalid id detection
 snapdir-manifest --checksum-bin b3sum --cache --cache-id bogus --cache-dir "${CACHE_DIR}" "${DIR}"
+# describe: symlinks
+# check: symlinks followed by default
 snapdir-manifest --checksum-bin b3sum "${DIR}"
+# check:  --no-follow
 snapdir-manifest --no-follow --checksum-bin b3sum "${DIR}"
+# check: loops
 snapdir-manifest --checksum-bin b3sum "${DIR}"
+# describe: snapdir-manifest generate duplicated files
+# check: snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest test --checksum-bin md5sum
+# describe: snapdir-manifest generate
+# check: snapdir-manifest --checksum-bin md5sum "${DIR}"
 snapdir-manifest --checksum-bin md5sum "${DIR}"
+# describe: generate with excluded files
+# check: snapdir-manifest --checksum-bin md5sum --exclude "${EXCLUDE_PATTERN}" "${DIR}"
 snapdir-manifest --checksum-bin md5sum --exclude "${EXCLUDE_PATTERN}" "${DIR}"
+# describe: generate with %common% excluded files
+# check: snapdir-manifest --checksum-bin md5sum --exclude "${EXCLUDE_PATTERN}" "${DIR}"
 snapdir-manifest --checksum-bin md5sum --exclude "${EXCLUDE_PATTERN}" "${DIR}"
+# check: snapdir-manifest --checksum-bin md5sum  "${DIR}"
 snapdir-manifest --checksum-bin md5sum "${DIR}"
+# describe: generate with absolute paths
+# check: snapdir-manifest --checksum-bin md5sum --absolute "${DIR}"
 snapdir-manifest --checksum-bin md5sum --absolute "${DIR}"
+# describe: generate with secrets
+# check: SNAPDIR_MANIFEST_CONTEXT=secret snapdir-manifest --checksum-bin md5sum "${DIR}"
 snapdir-manifest --checksum-bin md5sum "${DIR}"
+# describe: using 300MB file
 snapdir-manifest --checksum-bin md5sum --cache --verbose --cache-dir "${CACHE_DIR}" "${DIR}"
 snapdir-manifest --checksum-bin md5sum --cache --verbose --cache-dir "${CACHE_DIR}" "${DIR}"
+# check: cache
+# check: cache misses
+# check: cache hits
+# describe: cache verification
+# check: cache id verification
 snapdir-manifest --checksum-bin md5sum cache-id --cache-dir "${CACHE_DIR}"
 snapdir-manifest --checksum-bin md5sum --cache --cache-id "${ID}" --cache-dir "${CACHE_DIR}" "${DIR}"
+# check: invalid id detection
 snapdir-manifest --checksum-bin md5sum --cache --cache-id bogus --cache-dir "${CACHE_DIR}" "${DIR}"
+# describe: symlinks
+# check: symlinks followed by default
 snapdir-manifest --checksum-bin md5sum "${DIR}"
+# check:  --no-follow
 snapdir-manifest --no-follow --checksum-bin md5sum "${DIR}"
+# check: loops
 snapdir-manifest --checksum-bin md5sum "${DIR}"
+# describe: snapdir-manifest generate duplicated files
+# check: snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest test --checksum-bin sha256sum
+# describe: snapdir-manifest generate
+# check: snapdir-manifest --checksum-bin sha256sum "${DIR}"
 snapdir-manifest --checksum-bin sha256sum "${DIR}"
+# describe: generate with excluded files
+# check: snapdir-manifest --checksum-bin sha256sum --exclude "${EXCLUDE_PATTERN}" "${DIR}"
 snapdir-manifest --checksum-bin sha256sum --exclude "${EXCLUDE_PATTERN}" "${DIR}"
+# describe: generate with %common% excluded files
+# check: snapdir-manifest --checksum-bin sha256sum --exclude "${EXCLUDE_PATTERN}" "${DIR}"
 snapdir-manifest --checksum-bin sha256sum --exclude "${EXCLUDE_PATTERN}" "${DIR}"
+# check: snapdir-manifest --checksum-bin sha256sum  "${DIR}"
 snapdir-manifest --checksum-bin sha256sum "${DIR}"
+# describe: generate with absolute paths
+# check: snapdir-manifest --checksum-bin sha256sum --absolute "${DIR}"
 snapdir-manifest --checksum-bin sha256sum --absolute "${DIR}"
+# describe: generate with secrets
+# check: SNAPDIR_MANIFEST_CONTEXT=secret snapdir-manifest --checksum-bin sha256sum "${DIR}"
 snapdir-manifest --checksum-bin sha256sum "${DIR}"
+# describe: using 300MB file
 snapdir-manifest --checksum-bin sha256sum --cache --verbose --cache-dir "${CACHE_DIR}" "${DIR}"
 snapdir-manifest --checksum-bin sha256sum --cache --verbose --cache-dir "${CACHE_DIR}" "${DIR}"
+# check: cache
+# check: cache misses
+# check: cache hits
+# describe: cache verification
+# check: cache id verification
 snapdir-manifest --checksum-bin sha256sum cache-id --cache-dir "${CACHE_DIR}"
 snapdir-manifest --checksum-bin sha256sum --cache --cache-id "${ID}" --cache-dir "${CACHE_DIR}" "${DIR}"
+# check: invalid id detection
 snapdir-manifest --checksum-bin sha256sum --cache --cache-id bogus --cache-dir "${CACHE_DIR}" "${DIR}"
+# describe: symlinks
+# check: symlinks followed by default
 snapdir-manifest --checksum-bin sha256sum "${DIR}"
+# check:  --no-follow
 snapdir-manifest --no-follow --checksum-bin sha256sum "${DIR}"
+# check: loops
 snapdir-manifest --checksum-bin sha256sum "${DIR}"
+# describe: snapdir-manifest generate duplicated files
+# check: snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir test
+# describe: snapshot manifest for '/tmp/snapdir_tests/files'
+# check: should generate manifest
 snapdir manifest "${DIR}"
 snapdir-manifest "${DIR}"
+# check: should --exclude "${EXCLUDE_PATTERN}" when generating manifest
 snapdir manifest --exclude "${EXCLUDE_PATTERN}" "${DIR}"
 snapdir-manifest --exclude "${EXCLUDE_PATTERN}" "${DIR}"
+# describe: snapshot id
+# check: should generate snapshot id
 snapdir id "${DIR}"
 snapdir-manifest "${DIR}"
+# describe: snapshot nested id
+# check: should generate snapshot id for nested files
 snapdir id "${DIR}"
 snapdir-manifest "${DIR}"
+# describe: snapshot id from stdin manifest
+# check: should generate snapshot id from a manifest provided on stdin, even when no  files are present
 snapdir id "${DIR}"
+# check: should prevent malformated stdin manifests
 snapdir id "${DIR}"
+# describe: snapshot stage files
+# check: should stage files in manifest
 snapdir stage --keep "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
+# check: should have created the staging directory
+# check: should stage file bar contents
+# check: should stage manifest
+# describe: snapshot manifest should not include staged files
+# check: should generate manifest without staged files
 snapdir stage "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir manifest "${DIR}"
 snapdir-manifest "${DIR}"
+# describe: snapshot stage idempotency
+# check: should ignore  "${DIR}"
 snapdir stage --keep "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir stage --keep "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
+# describe: snapshot stage nested files
+# check: should stage nested files in manifest
 snapdir stage --keep "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
+# check: should have created the staging directory
+# check: should create a copy of the staged file foo
 snapdir stage "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
+# check: should return just the snapshot id when --keep is not specified
+# describe: snapshot checkout files
 snapdir stage "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
+# check: should not be able got generate an id for missing directory
 snapdir id "${DIR}"
+# check: should checkout files from the local cache
 snapdir checkout --verbose --id "${ID}" "${DIR}"
+# check: should not checkout up to date files
 snapdir checkout --verbose --id "${ID}" "${DIR}"
+# check: should generate a consistent id for checkout data
 snapdir id "${DIR}"
 snapdir-manifest "${DIR}"
+# check: should fail if file is modified
 snapdir checkout --verbose --id "${ID}" "${DIR}"
+# check: should override modified files when --force is used
 snapdir checkout --verbose --force --id "${ID}" "${DIR}"
+# check: test should rollback if checkout fails
 snapdir checkout --verbose --id "${ID}" "${DIR}"
+# check: should checkout a single file with --path
 snapdir checkout --verbose --id "${ID}" --path "${PATH}" "${DIR}"
+# check: should checkout a single directory with --path
 snapdir checkout --verbose --id "${ID}" --path "${PATH}" "${DIR}"
+# check: should ignore leading  "${DIR}"
 snapdir checkout --verbose --id "${ID}" --path "${PATH}" "${DIR}"
+# check: should ignore trailing / on --path
 snapdir checkout --verbose --id "${ID}" --path "${PATH}" "${DIR}"
+# check: should checkout files as links
 snapdir checkout --verbose --id "${ID}" --linked "${DIR}"
+# check: should generate a consistent id for checkout data as links
 snapdir id "${DIR}"
 snapdir-manifest "${DIR}"
+# check: should checkout to a non existing relative directory
 snapdir checkout --verbose --id "${ID}" "${DIR}"
+# check: should verify manifest
 snapdir verify --verbose --id "${ID}"
+# check: should verify objects
+# check: should not conain double slashes in verify paths
+# check: should complain about a missing object
 snapdir verify --verbose --id "${ID}"
+# check: should complain about a corrupted object
 snapdir verify --verbose --id "${ID}"
+# check: should purge corrupted
 snapdir verify --verbose --purge --id "${ID}"
+# check: should warn about purged object
 snapdir stage --verbose "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
+# check: should restore tampered after a new stage
 snapdir verify --verbose --id "${ID}"
+# check: should complain about a corrupted object
 snapdir verify-cache
+# check: should purge corrupted
 snapdir verify-cache --purge
 snapdir stage "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
+# describe: snapshot flush-cache
 snapdir checkout --force --id "${ID}" "${DIR}"
 snapdir checkout --force --id "${ID}" "${DIR}"
+# check: should have cached files
+# check: should clear cache files
 snapdir flush-cache
+# describe: snapshot checkout without cache
 snapdir flush-cache
+# check: should complain about missing cache
 snapdir checkout --verbose --id "${ID}" "${DIR}"
+# describe: snapshot version
+# check: should output semver version
 snapdir version
 snapdir-file-store test
+# describe: snapdir push
 snapdir stage "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
@@ -130,27 +259,44 @@ snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-file-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
+# check: should run expensive method in the background and with nice
+# check: should include 2 commit-object commands
+# check: should include 1 commit-manifest command
+# check: should have not committed anything when using --dryrun
+# describe: push --store "${STORE}"
 snapdir push --id "${ID}" --debug --verbose --store "${STORE}"
 snapdir-file-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
 snapdir-file-store commit-manifest --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 snapdir-file-store commit-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 snapdir-file-store commit-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
+# check: should have committed the staged content
+# check: should have committed the manifest
+# check: manifest file contents should match the manifest id
+# check: should avoid pushing if the manifest already exists
 snapdir push --id "${ID}" --verbose --store "${STORE}"
 snapdir-file-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
+# check: should not re-upload objects already on the store
 snapdir push --id "${ID}" --verbose --store "${STORE}"
 snapdir-file-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
 snapdir-file-store commit-manifest --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
+# check: should add missing objects from the store
 snapdir push --id "${ID}" --verbose --store "${STORE}"
 snapdir-file-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
 snapdir-file-store commit-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 snapdir-file-store commit-manifest --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
+# check: should revert tampered objects
 snapdir push --id "${ID}" --verbose --store "${STORE}"
 snapdir-file-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
 snapdir-file-store commit-manifest --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 snapdir-file-store commit-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
+# describe: snapdir fetch
 snapdir fetch --dryrun --store "${STORE}" --id "${ID}"
 snapdir-file-store get-manifest-command --id "${ID}" --store "${STORE}"
 snapdir-file-store get-fetch-files-command --id "${ID}" --store "${STORE}" --cache-dir "${CACHE_DIR}"
+# check: should cat the contents of the manifest to stdout
+# check: should have not persisted the manifest on the cache
+# check: should have not persisted objects on the cache
+# check: should fail when the manifest has been tampered with
 snapdir fetch --dryrun --store "${STORE}" --id "${ID}"
 snapdir-file-store get-manifest-command --id "${ID}" --store "${STORE}"
 snapdir fetch --store "${STORE}" --id "${ID}" --verbose
@@ -159,20 +305,30 @@ snapdir-file-store get-fetch-files-command --id "${ID}" --store "${STORE}" --cac
 snapdir-file-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
 snapdir-file-store fetch-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 snapdir-file-store fetch-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
+# check: should fetch the manifest
+# check: should fetch the objects
+# check: non existing manifest should fail
 snapdir fetch --store "${STORE}" --id bogus --verbose
 snapdir-file-store get-manifest-command --id bogus --store "${STORE}"
+# describe: snapdir fetch
 snapdir pull --dryrun --verbose --store "${STORE}" --id "${ID}" "${DIR}"
 snapdir-file-store get-fetch-files-command --id "${ID}" --store "${STORE}" --cache-dir "${CACHE_DIR}"
+# check: no files should have been pulled in --dryrun mode
 snapdir pull --verbose --store "${STORE}" --id "${ID}" "${DIR}"
 snapdir-file-store get-fetch-files-command --id "${ID}" --store "${STORE}" --cache-dir "${CACHE_DIR}"
 snapdir-file-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
+# check: should pull the files
+# check: should pull files without without FAILED errors
 snapdir pull --verbose --store "${STORE}" --id "${ID}" "${DIR}"
 snapdir-file-store get-manifest-command --id "${ID}" --store "${STORE}"
 snapdir-file-store get-fetch-files-command --id "${ID}" --store "${STORE}" --cache-dir "${CACHE_DIR}"
 snapdir-file-store fetch-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 snapdir-file-store fetch-object --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 snapdir-file-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
+# check: should pull files without cache
+# check: should pull files without cache and without FAILED errors
 snapdir-b2-store test --store "${STORE}"
+# describe: snapdir push --dryrun
 snapdir stage "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
@@ -181,6 +337,11 @@ snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-b2-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
+# check: should sync objects before manifests
+# check: should issue valid sync command
+# check: should try to fetch the manifest
+# check: should include --noProgress
+# describe: snapdir push
 snapdir push --verbose --store "${STORE}" "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
@@ -188,43 +349,60 @@ snapdir-manifest "${DIR}"
 snapdir-b2-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
 snapdir-b2-store get-manifest --id "${ID}" --store "${STORE}"
 snapdir-b2-store fetch --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --store "${STORE}"
+# check: should have pushed staged files correctly
+# describe: snapdir-b2-store get-manifest
+# check: should get manifest from remote
 snapdir-b2-store get-manifest --id "${ID}" --store "${STORE}"
 snapdir-b2-store fetch --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --store "${STORE}"
 snapdir-b2-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
+# check: should avoid pushing if the manifest already exists
 snapdir push --id "${ID}" --verbose --store "${STORE}"
 snapdir-b2-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
 snapdir-b2-store get-manifest --id "${ID}" --store "${STORE}"
 snapdir-b2-store fetch --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --store "${STORE}"
 snapdir-b2-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
+# check: should only respond with manifest id when not --verbose
 snapdir push --id "${ID}" --store "${STORE}"
 snapdir-b2-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
 snapdir-b2-store get-manifest --id "${ID}" --store "${STORE}"
 snapdir-b2-store fetch --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --store "${STORE}"
 snapdir-b2-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
+# describe: snapdir fetch
 snapdir fetch --dryrun --store "${STORE}"
 snapdir-b2-store get-manifest-command --id "${ID}" --store "${STORE}"
 snapdir-b2-store get-manifest --id "${ID}" --store "${STORE}"
 snapdir-b2-store fetch --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --store "${STORE}"
 snapdir-b2-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
 snapdir-b2-store get-fetch-files-command --id "${ID}" --store "${STORE}" "${DIR}"
+# check: should call get-manifest
+# check: should have not persisted the manifest on the cache
+# check: should have not persisted objects on the cache
 snapdir fetch --store "${STORE}"
 snapdir-b2-store get-manifest-command --id "${ID}" --store "${STORE}"
 snapdir-b2-store get-manifest --id "${ID}" --store "${STORE}"
 snapdir-b2-store fetch --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --store "${STORE}"
 snapdir-b2-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
 snapdir-b2-store get-fetch-files-command --id "${ID}" --store "${STORE}" "${DIR}"
-snapdir-b2-store fetch --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 snapdir-b2-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
 snapdir-b2-store fetch --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
+snapdir-b2-store fetch --checksum "${ID}" --source-path "${SOURCE_PATH}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
+# check: should fetch the manifest
+# check: should fetch the objects
+# check: non existing manifest should fail
 snapdir fetch --store "${STORE}"
 snapdir-b2-store get-manifest-command --id bogus --store "${STORE}"
+# check: should fail when the manifest has been tampered with
 snapdir fetch --dryrun --store "${STORE}"
+# describe: snapdir fetch
 snapdir pull --dryrun --verbose --store "${STORE}" "${DIR}"
 snapdir-b2-store get-fetch-files-command --id "${ID}" --store "${STORE}" "${DIR}"
+# check: no files should have been pulled in --dryrun mode
 snapdir pull --verbose --store "${STORE}" "${DIR}"
 snapdir-b2-store get-fetch-files-command --id "${ID}" --store "${STORE}" "${DIR}"
 snapdir-b2-store ensure-no-errors --checksum "${ID}" --log-file "${LOG_PATH}"
+# check: should pull the files
 snapdir-s3-store test --store "${STORE}"
+# describe: snapdir push --dryrun
 snapdir stage "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
@@ -233,6 +411,11 @@ snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-s3-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
+# check: should sync objects before manifests
+# check: should issue valid sync command
+# check: should try to fetch the manifest
+# check: should include --only-show-errors
+# describe: snapdir push
 snapdir push --verbose --store "${STORE}" "${DIR}"
 snapdir-manifest "${DIR}"
 snapdir-manifest "${DIR}"
@@ -240,39 +423,55 @@ snapdir-manifest "${DIR}"
 snapdir-s3-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
 snapdir-s3-store get-manifest --id "${ID}" --store "${STORE}"
 snapdir-s3-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store "${STORE}"
+# check: should succeed with manifest id
+# check: should have pushed staged files correctly
+# check: should get manifest from remote
 snapdir-s3-store get-manifest --id "${ID}" --store "${STORE}"
 snapdir-s3-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store "${STORE}"
 snapdir-s3-store ensure-no-errors --store "${STORE}" "${DIR}"
+# check: should avoid pushing if the manifest already exists
 snapdir push --id "${ID}" --verbose --store "${STORE}"
 snapdir-s3-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
 snapdir-s3-store get-manifest --id "${ID}" --store "${STORE}"
 snapdir-s3-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store "${STORE}"
 snapdir-s3-store ensure-no-errors --store "${STORE}" "${DIR}"
+# check: should only respond with manifest id when not --verbose
 snapdir push --id "${ID}" --store "${STORE}"
 snapdir-s3-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
 snapdir-s3-store get-manifest --id "${ID}" --store "${STORE}"
 snapdir-s3-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store "${STORE}"
 snapdir-s3-store ensure-no-errors --store "${STORE}" "${DIR}"
+# describe: snapdir fetch
 snapdir fetch --dryrun --store "${STORE}"
 snapdir-s3-store get-manifest-command --id "${ID}" --store "${STORE}"
 snapdir-s3-store get-manifest --id "${ID}" --store "${STORE}"
 snapdir-s3-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store "${STORE}"
 snapdir-s3-store ensure-no-errors --store "${STORE}" "${DIR}"
 snapdir-s3-store get-fetch-files-command --id "${ID}" --store "${STORE}" "${DIR}"
+# check: should call get-manifest
+# check: should have not persisted the manifest on the cache
+# check: should have not persisted objects on the cache
 snapdir fetch --store "${STORE}"
 snapdir-s3-store get-manifest-command --id "${ID}" --store "${STORE}"
 snapdir-s3-store get-manifest --id "${ID}" --store "${STORE}"
 snapdir-s3-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store "${STORE}"
 snapdir-s3-store ensure-no-errors --store "${STORE}" "${DIR}"
 snapdir-s3-store get-fetch-files-command --id "${ID}" --store "${STORE}" "${DIR}"
+snapdir-s3-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
 snapdir-s3-store ensure-no-errors --store "${STORE}" "${DIR}"
 snapdir-s3-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
-snapdir-s3-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
+# check: should fetch the manifest
+# check: should fetch the objects
+# check: non existing manifest should fail
 snapdir fetch --store "${STORE}"
 snapdir-s3-store get-manifest-command --id bogus --store "${STORE}"
+# check: should fail when the manifest has been tampered with
 snapdir fetch --dryrun --store "${STORE}"
+# describe: snapdir fetch
 snapdir pull --dryrun --verbose --store "${STORE}" "${DIR}"
 snapdir-s3-store get-fetch-files-command --id "${ID}" --store "${STORE}" "${DIR}"
+# check: no files should have been pulled in --dryrun mode
 snapdir pull --verbose --store "${STORE}" "${DIR}"
 snapdir-s3-store get-fetch-files-command --id "${ID}" --store "${STORE}" "${DIR}"
 snapdir-s3-store ensure-no-errors --store "${STORE}" "${DIR}"
+# check: should pull the files

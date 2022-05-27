@@ -171,6 +171,7 @@ _snapdir_test_utils() {
 	describe() {
 		set -eEuo pipefail
 		_SNAPDIR_TEST_DESCRIPTION="$1"
+		_snapdir_test_log_line "describe: $1"
 	}
 
 	_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=false
@@ -182,6 +183,7 @@ _snapdir_test_utils() {
 		fi
 		_SNAPDIR_TEST_CHECK_LOCKED_UNTIL_PASS=true
 		_SNAPDIR_TEST_CHECK_NAME="$1"
+		_snapdir_test_log_line "check: $1"
 	}
 
 	# suites can override setup function to prepare the test environment
@@ -282,6 +284,14 @@ _snapdir_test_init_log() {
 		export _SNAPDIR_RUN_LOG_PATH
 	else
 		unset _SNAPDIR_RUN_LOG_PATH
+	fi
+}
+
+_snapdir_test_log_line() {
+	set -eEuo pipefail
+	local line="$1"
+	if [[ ${_SNAPDIR_RUN_LOG_PATH:-} != "" ]]; then
+		echo "# $line" >>"$_SNAPDIR_RUN_LOG_PATH"
 	fi
 }
 
