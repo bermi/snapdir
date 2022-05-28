@@ -21,7 +21,7 @@ The b2 store requires authentication before it can be used. You can authenticate
 
 ## Guide
 
-This is a continuation of the [guide under docs/](docs/guide.md) for using
+This is a continuation of the [guide under docs/guide.md](./guide.md) for using
 Backblaze B2.
 
 Make sure you install the b2cli tool.

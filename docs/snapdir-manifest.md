@@ -237,7 +237,7 @@ LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
   [Snapdir]: https://github.com/bermi/snapdir/
   [BLAKE3]: https://github.com/BLAKE3-team/BLAKE3
   [bermi/snapdir]: https://hub.docker.com/r/bermi/snapdir/tags
-  [understanding manifests guide]: docs/understanding-manifests.md
+  [understanding manifests guide]: ./understanding-manifests.md
   [ostree]: https://ostreedev.github.io/ostree/introduction/
   [Sigstore]: https://www.sigstore.dev/
   [cosign]: https://github.com/sigstore/cosign
