@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 
-# # snapdir-b2-store 0.1.1
+# # snapdir-b2-store
 #
 # ## Description:
 #
 #     Snapdir store backed by Backblaze B2.
-#
-# ## License
 #
 # LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 

@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 
-# # snapdir-file-store 0.1.1
+# # snapdir-file-store
 #
 # ## Description:
 #
 #     Reference implementation of snapdir store using the filesystem.
-#
-# ## License
 #
 # LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 

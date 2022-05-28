@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 
-# # snapdir-s3-store 0.1.1
+# # snapdir-s3-store
 #
 # ## Description:
 #
 #     Snapdir store backed by [Amazon S3 cli tool](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/s3/index.html).
-#
-# ## License
 #
 # LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 

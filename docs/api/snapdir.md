@@ -1,6 +1,6 @@
 # snapdir
 
-Create authenticated directory snapshots and save them on pluggable stores.
+Create, audit and distribute authenticated directory snapshots.
 
 ## Usage
 

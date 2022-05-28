@@ -3,8 +3,6 @@
 set -eEuo pipefail
 IFS=$'\n\t'
 
-set -eEuo pipefail
-
 DEBUG=${DEBUG:-true}
 DEFAULT_COMMANDS_REGEXP="snapdir-manifest generate"
 
@@ -53,9 +51,9 @@ _get_examples_from_tests() {
   local examples
   # Default command?
   if [[ $command =~ ^($DEFAULT_COMMANDS_REGEXP)$ ]]; then
-    examples=$(grep "^$binary -" ./docs/tests/tested-commands.sh || echo "")
+    examples=$(grep "^$binary -" ./utils/qa-fixtures/tested-commands.sh || echo "")
   else
-    examples=$(grep "^$command" ./docs/tests/tested-commands.sh || echo "")
+    examples=$(grep "^$command" ./utils/qa-fixtures/tested-commands.sh || echo "")
   fi
   examples="$(echo "$examples" | grep -v "bogus")"
 
@@ -150,7 +148,7 @@ _get_method_usage() {
 generate_docs_for_script() {
 	set -eEuo pipefail
   local binary="${1:?Missing binary name}"
-  local bin_path="$_BASE_DIR/../../$binary"
+  local bin_path="$_BASE_DIR/../$binary"
 
   test -f "${bin_path}" || {
     echo "Could not find '${bin_path}' file."
@@ -170,7 +168,11 @@ generate_docs_for_script() {
   "$bin_path" --help
 
   local commands
-  commands=$(grep -o "^snapdir[a-z_0-9]*" <<<"$contents" | tr '_' '-' | sed -E "s|^$binary-|$binary |")
+  commands=$(grep -o "^snapdir[a-z_0-9]*" <<<"$contents" | tr '_' '-' | sed -E "s|^$binary-|$binary |" || echo "")
+
+  if [[ "$commands" == "" ]]; then
+    return 0
+  fi
 
   echo "## API Reference"
   echo ""
@@ -224,7 +226,7 @@ generate_docs_for_script() {
         # shellcheck disable=SC2016
         echo "${examples_from_tests}" | sed -E 's|^(.*)$|```bash\n\1\n```|'
       else
-        echo "ERROR: No examples found on docs/tests/tested-commands.sh"
+        echo "ERROR: No examples found on utils/qa-fixtures/tested-commands.sh"
       fi
     fi
     echo ""
@@ -254,9 +256,9 @@ elif [[ "${1:-""}" == "single-page" ]]; then
 else
   mkdir -p tmp/reference
   for binary in $(find_binaries | sort); do
-    ./docs/utils/generate-docs.sh "$binary" > "./tmp/reference/$binary.md"
+    ./utils/generate-docs.sh "$binary" > "./tmp/reference/$binary.md"
   done
-  ./docs/utils/generate-docs.sh "single-page" --toc > "./tmp/reference.md"
+  ./utils/generate-docs.sh "single-page" --toc > "./tmp/reference.md"
 fi
 
 if [[ "$_docs" != "" ]]; then
