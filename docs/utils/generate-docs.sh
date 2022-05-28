@@ -5,7 +5,7 @@ IFS=$'\n\t'
 
 set -eEuo pipefail
 
-DEBUG_DOCS=${DEBUG_DOCS:-true}
+DEBUG=${DEBUG:-true}
 DEFAULT_COMMANDS_REGEXP="snapdir-manifest generate"
 
 _BASE_DIR="$(dirname "${BASH_SOURCE[0]}")"
@@ -163,9 +163,11 @@ generate_docs_for_script() {
   local valid_params
   valid_params="$(echo "$contents" | get_parametrized_options | _get_or_list || echo "")"
 
-  if [[ "${DEBUG_DOCS}" == "true" ]]; then
+  if [[ "${DEBUG}" == "true" ]]; then
     _get_global_usage
   fi
+
+  "$bin_path" --help
 
   local commands
   commands=$(grep -o "^snapdir[a-z_0-9]*" <<<"$contents" | tr '_' '-' | sed -E "s|^$binary-|$binary |")
@@ -203,14 +205,14 @@ generate_docs_for_script() {
     if [[ "${inline_docs:-""}" == "" ]]; then
       echo "ERROR: Missing inline docs for '$command'"
     else
-      if [[ "${DEBUG_DOCS}" == "true" ]]; then
+      if [[ "${DEBUG}" == "true" ]]; then
         echo "### Inline documentation"
         echo ""
       fi
       echo "$inline_docs"
     fi
 
-    if [[ "${DEBUG_DOCS}" == "true" ]]; then
+    if [[ "${DEBUG}" == "true" ]]; then
       local examples_from_tests
       examples_from_tests=$(_get_examples_from_tests "$command" "$binary")
       echo ""

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# snapdir-manifest 0.1.1
+# # snapdir-manifest
 #
 # Description:
 #
@@ -35,7 +35,7 @@
 #     defaults           Prints default options and env variables.
 #     generate <PATH>    Generates a manifest for a directory (default
 #                        when no other sub-command is provided).
-#     help               Prints help information.
+#     help [COMMAND]     Prints help information.
 #     test               Tests the snapdir-manifest module.
 #     version            Prints the version.
 #
@@ -350,6 +350,136 @@ else
 	}
 fi
 
+######  #     # #     #
+#     # #     # ##    #
+#     # #     # # #   #
+######  #     # #  #  #
+#   #   #     # #   # #
+#    #  #     # #    ##
+#     #  #####  #     #
+
+_snapdir_manifest_run() (
+	# Using ( for the function body instead of { to run in a subshell
+	# in order to avoid polluting the environment with helper functions
+	# You can call this function when sourcing this script if you want to expose it as
+	# a sub-command
+	set -eEuo pipefail
+
+	# Saves the command into the run log for debugging, documentation, etc.
+	if [[ ${ENVIRONMENT:-""} == "test" ]] && [[ ${_SNAPDIR_RUN_LOG_PATH:-""} != "" ]] && test -f "${_SNAPDIR_RUN_LOG_PATH:-""}"; then
+		# shellcheck disable=SC2145
+		echo "snapdir-manifest ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
+	fi
+
+	local commands="generate|cache-id|defaults|flush-cache|test|version"
+	local boolean_args="absolute|cache|debug|no_follow|verbose"
+	local value_required_args="exclude|cache_dir|cache_id|checksum_bin"
+	local legal_argument_keys="${boolean_args}|${value_required_args}"
+
+	_snapdir_manifest_parse_argument_key() {
+		sed -E 's|^--?|_SNAPDIR_MANIFEST_|; s|-|_|g;' <<<"${1^^}"
+	}
+
+	_snapdir_manifest_validate_option() {
+		set -eEuo pipefail
+		grep -q -E "^_SNAPDIR_MANIFEST_(${legal_argument_keys^^})$" <<<"${1}" || {
+			echo "error: Unknown option: ${1//_SNAPDIR_MANIFEST_/}" | tr '[:upper:]' '[:lower:]' >&2
+			echo "Valid options are: --(${legal_argument_keys})" >&2
+			exit 1
+		}
+	}
+
+	_snapdir_manifest_help() {
+		_snapdir_manifest_export_env_defaults
+		local command="${1:-""}"
+		if [[ ${command} == "" ]]; then
+			sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_MANIFEST_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+		else
+			_snapdir_manifest_command_help "snapdir_manifest_${command//-/_}" <"$_SNAPDIR_MANIFEST_BIN_PATH" | more
+		fi
+		exit 0
+	}
+
+	local command="generate"
+	local positional_args=""
+	local key
+	local value
+	local is_boolean
+	local explicit_default_command="false"
+	local command_candidate="${1:-"$command"}"
+	local show_help="false"
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		generate | cache-id | test | flush-cache | defaults)
+			# calling 'snapdir-manifest manifest test' should run the manifest
+			# on the test directory instead of running the test command
+			if [[ $explicit_default_command == "true" ]]; then
+				positional_args="${positional_args}${1} "
+			else
+				command="$1"
+			fi
+			if [[ $1 == "generate" ]]; then
+				explicit_default_command="true"
+			fi
+			shift
+			;;
+		help | -h | --help)
+			show_help="true"
+			shift
+			;;
+		version | -v | --version)
+			echo "${_SNAPDIR_MANIFEST_VERSION}"
+			exit 0
+			;;
+		# export all --*=* flags as _SNAPDIR_MANIFEST_* env vars
+		--*=* | -*=*)
+			key="$(_snapdir_manifest_parse_argument_key "${1%%=*}")"
+			_snapdir_manifest_validate_option "$key"
+			export "$key"="${1#*=}"
+			shift
+			;;
+		# export all --* * flags as _SNAPDIR_MANIFEST_* env vars
+		--*)
+			is_boolean=$(grep -q -E "^--?(${boolean_args})$" <<<"${1}" && echo true || echo false)
+			key="$(_snapdir_manifest_parse_argument_key "${1}")"
+			_snapdir_manifest_validate_option "$key"
+			shift
+			value="${1:-true}"
+			# if key is in boolean_args
+			if [[ ${is_boolean} == "false" ]] && [[ ${value:0:1} != "-" ]]; then
+				# since this might be the last arg, this will always be truthy
+				shift || true
+			else
+				value="true"
+			fi
+			export "${key}"="${value}"
+			;;
+		*)
+			positional_args="${positional_args}${1} "
+			shift
+			;;
+		esac
+	done
+
+	if [[ ${show_help} == "true" ]]; then
+		if [[ $command == "generate" ]] && [[ ${explicit_default_command} != "true" ]]; then
+			command=""
+		fi
+		_snapdir_manifest_help "$command"
+	fi
+
+	# if command is not set, show help
+	if [ -z "$command" ]; then
+		echo "Uknown command '$command_candidate'. Valid commands are: ${commands}" >&2
+		echo "Try: ${_SNAPDIR_MANIFEST} --help" >&2
+		return 1
+	fi
+
+	_snapdir_manifest_export_env_defaults
+	# env | grep _snapdir_manifest_ | sort
+	eval "snapdir_manifest_${command//-/_} $positional_args ${*:2}"
+)
+
 _snapdir_manifest_find_dirs_with_level() {
 	set -eEuo pipefail
 	_snapdir_manifest_find_dirs "$1" | _snapdir_manifest_add_dir_level | sort -nrk1
@@ -578,121 +708,40 @@ _snapdir_manifest_ensure_cache() {
 	fi
 }
 
-######  #     # #     #
-#     # #     # ##    #
-#     # #     # # #   #
-######  #     # #  #  #
-#   #   #     # #   # #
-#    #  #     # #    ##
-#     #  #####  #     #
-
-_snapdir_manifest_run() (
-	# Using ( for the function body instead of { to run in a subshell
-	# in order to avoid polluting the environment with helper functions
-	# You can call this function when sourcing this script if you want to expose it as
-	# a sub-command
+_snapdir_manifest_command_help() {
 	set -eEuo pipefail
+	local command="${1:?Missing command}"
+	local contents
+	contents=$(cat)
+	echo "$contents" | _snapdir_manifest_get_function_body "$command" | sed -E 's|[\t]*# ?|#|' | _snapdir_manifest_get_doc_block_from_function_body "$command"
+}
 
-	# Saves the command into the run log for debugging, documentation, etc.
-	if [[ ${ENVIRONMENT:-""} == "test" ]] && [[ ${_SNAPDIR_RUN_LOG_PATH:-""} != "" ]] && test -f "${_SNAPDIR_RUN_LOG_PATH:-""}"; then
-		# shellcheck disable=SC2145
-		echo "snapdir-manifest ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
+_snapdir_manifest_get_function_body() {
+	set -eEuo pipefail
+	local command="${1// /_}"
+	local function_name
+	function_name="$(echo "$command" | tr '-' '_')"
+	local script_contents
+	script_contents=$(cat)
+	echo "$script_contents" | sed -E -n "/^${function_name} ?\(\)/,/^}/p" | sed -E -n "/^${function_name} ?\(\)/,/^}/p" | grep -v "${function_name}(" | grep -v "^}"
+}
+
+_snapdir_manifest_get_doc_block_from_function_body() {
+	set -eEuo pipefail
+	local function_body
+	function_body="$(cat)"
+	local command="${1// /_}"
+	# get the first line number that does not
+	# start with #
+	local first_line_number
+	first_line_number=$(echo "$function_body" | grep -n "^[^#]" | head -n 1 | cut -d ':' -f1 || true)
+	if [[ -z $first_line_number ]]; then
+		echo "ERROR: No documentation found for ${command}"
+		return
 	fi
-
-	local commands="generate|cache-id|defaults|flush-cache|test|version"
-	local boolean_args="absolute|cache|debug|no_follow|verbose"
-	local value_required_args="exclude|cache_dir|cache_id|checksum_bin"
-	local legal_argument_keys="${boolean_args}|${value_required_args}"
-
-	_snapdir_manifest_parse_argument_key() {
-		sed -E 's|^--?|_SNAPDIR_MANIFEST_|; s|-|_|g;' <<<"${1^^}"
-	}
-
-	_snapdir_manifest_validate_option() {
-		set -eEuo pipefail
-		grep -q -E "^_SNAPDIR_MANIFEST_(${legal_argument_keys^^})$" <<<"${1}" || {
-			echo "error: Unknown option: ${1//_SNAPDIR_MANIFEST_/}" | tr '[:upper:]' '[:lower:]' >&2
-			echo "Valid options are: --(${legal_argument_keys})" >&2
-			exit 1
-		}
-	}
-
-	_snapdir_manifest_help() {
-		_snapdir_manifest_export_env_defaults
-		sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_MANIFEST_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
-		exit 0
-	}
-
-	local command="generate"
-	local positional_args=""
-	local key
-	local value
-	local is_boolean
-	local explicit_default_command=false
-	local command_candidate="${1:-"$command"}"
-	while [ $# -gt 0 ]; do
-		case "$1" in
-		generate | cache-id | test | flush-cache | defaults)
-			# calling 'snapdir-manifest manifest test' should run the manifest
-			# on the test directory instead of running the test command
-			if [[ $explicit_default_command == "true" ]]; then
-				positional_args="${positional_args}${1} "
-			else
-				command="$1"
-			fi
-			if [[ $1 == "generate" ]]; then
-				explicit_default_command=true
-			fi
-			shift
-			;;
-		help | -h | --help)
-			_snapdir_manifest_help
-			;;
-		version | -v | --version)
-			echo "${_SNAPDIR_MANIFEST_VERSION}"
-			exit 0
-			;;
-		# export all --*=* flags as _SNAPDIR_MANIFEST_* env vars
-		--*=* | -*=*)
-			key="$(_snapdir_manifest_parse_argument_key "${1%%=*}")"
-			_snapdir_manifest_validate_option "$key"
-			export "$key"="${1#*=}"
-			shift
-			;;
-		# export all --* * flags as _SNAPDIR_MANIFEST_* env vars
-		--*)
-			is_boolean=$(grep -q -E "^--?(${boolean_args})$" <<<"${1}" && echo true || echo false)
-			key="$(_snapdir_manifest_parse_argument_key "${1}")"
-			_snapdir_manifest_validate_option "$key"
-			shift
-			value="${1:-true}"
-			# if key is in boolean_args
-			if [[ ${is_boolean} == "false" ]] && [[ ${value:0:1} != "-" ]]; then
-				# since this might be the last arg, this will always be truthy
-				shift || true
-			else
-				value="true"
-			fi
-			export "${key}"="${value}"
-			;;
-		*)
-			positional_args="${positional_args}${1} "
-			shift
-			;;
-		esac
-	done
-
-	# if command is not set, show help
-	if [ -z "$command" ]; then
-		echo "Uknown command '$command_candidate'. Valid commands are: ${commands}" >&2
-		echo "Try: ${_SNAPDIR_MANIFEST} --help" >&2
-		return 1
-	fi
-
-	_snapdir_manifest_export_env_defaults
-	# env | grep _snapdir_manifest_ | sort
-	eval "snapdir_manifest_${command//-/_} $positional_args ${*:2}"
-)
+	# show the first line number - 1
+	echo "$function_body" | sed -n 1,"$((first_line_number - 1))"p | sed -E 's|^#||'
+}
 
 #       ####### #######  #####  #######  #####
 #          #    #       #     #    #    #     #
@@ -702,8 +751,16 @@ _snapdir_manifest_run() (
 #          #    #       #     #    #    #     #
 #          #    #######  #####     #     #####
 
+# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
 snapdir_manifest_test() (
-	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	# Runs the tests for the snapdir-manifest command.
+	#
+	# Requires the helper script [snapdir-test](./snapdir-test) to be on the same directory.
+	#
+	# Usage:
+	#
+	#     snapdir-manifest test
+	#
 	set -eEuo pipefail
 
 	# Import test utilities

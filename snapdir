@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-# # snapdir 0.1.1
+# # snapdir
 #
-# Create authenticated directory snapshots and save them on pluggable stores.
+# Create, audit and distribute authenticated directory snapshots.
 #
 # ## Usage
 #
@@ -31,7 +31,7 @@
 #     defaults                       Prints default settings and arguments.
 #     fetch --id= --store=           Fetch a snapshot from a store.
 #     flush-cache                    Flushes the local cache.
-#     help                           Prints help information.
+#     help [COMMAND]                 Prints help information.
 #     id [PATH]                      Prints the manifest ID of a directory
 #                                    or manifest provided via stdin.
 #     manifest PATH                  Prints the manifest of a directory.
@@ -1016,6 +1016,10 @@ _snapdir_run() (
 		esac
 	done
 
+	if [[ ${show_help} == "true" ]]; then
+		_snapdir_help "$command"
+	fi
+
 	# if command is not set, show help
 	if [ -z "$command" ]; then
 		if [[ $subcommand_candidate != "" ]]; then
@@ -1027,10 +1031,6 @@ _snapdir_run() (
 			echo "Valid snapdir commands are: ${subcommands}" >&2
 			return 1
 		fi
-	fi
-
-	if [[ ${show_help} == "true" ]]; then
-		_snapdir_help "$command"
 	fi
 
 	_snapdir_export_env_defaults "${command}"
