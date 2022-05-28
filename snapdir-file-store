@@ -396,7 +396,12 @@ _snapdir_file_store_run() (
 
 	_snapdir_file_store_help() {
 		_snapdir_file_store_export_env_defaults
-		sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_FILE_STORE_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+		local command="${1:-""}"
+		if [[ ${command} == "" ]]; then
+			sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_FILE_STORE_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+		else
+			_snapdir_command_help "snapdir_file_store_${command//-/_}" <"$_SNAPDIR_FILE_STORE_BIN_PATH" | more
+		fi
 		exit 0
 	}
 
@@ -406,6 +411,8 @@ _snapdir_file_store_run() (
 	local value
 	local is_boolean
 	local subcommand_candidate="${1:-"$command"}"
+	local show_help=false
+
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		get-manifest-command | get-fetch-files-command | get-push-command | test | commit-object | commit-manifest | fetch-object | ensure-no-errors)
@@ -413,7 +420,8 @@ _snapdir_file_store_run() (
 			shift
 			;;
 		help | -h | --help)
-			_snapdir_file_store_help
+			show_help=true
+			shift
 			;;
 		version | -v | --version)
 			echo "${_SNAPDIR_FILE_STORE_VERSION}"
@@ -448,6 +456,10 @@ _snapdir_file_store_run() (
 			;;
 		esac
 	done
+
+	if [[ ${show_help} == "true" ]]; then
+		_snapdir_file_store_help "$command"
+	fi
 
 	# if command is not set, show help
 	if [[ ${command:-""} == "" ]]; then

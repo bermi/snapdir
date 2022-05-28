@@ -2,9 +2,28 @@
 
 # # snapdir-b2-store
 #
-# ## Description:
+#  Snapdir store backed by Backblaze B2.
 #
-#     Snapdir store backed by Backblaze B2.
+# ## Usage
+#
+#     snapdir-b2-store [OPTIONS] [SUBCOMMAND] [ARGUMENTS]
+#
+# ## Installation
+#
+# The `snapdir-b2-store` requires the [`b2` command line tool](https://www.backblaze.com/b2/docs/quick_command_line.html) to be installed and available in your `PATH`.
+#
+# Expose the `snapdir-b2-store` file to a directory in your `PATH` to enabling it on `snapdir`.
+#
+# ## Environment variables
+#
+# - SNAPDIR_B2_STORE_APPLICATION_KEY: The application key for the B2 storage. Defaults to B2_APPLICATION_KEY.
+# - SNAPDIR_B2_STORE_APPLICATION_KEY_ID: The application key ID for the B2 storage. Defaults to B2_APPLICATION_KEY_ID.
+#
+# ## Authentication
+#
+# The b2 store requires authentication before it can be used. You can authenticate by running the following command:
+#
+#     b2 authorize-account "${SNAPDIR_B2_STORE_APPLICATION_KEY_ID}" "${SNAPDIR_B2_STORE_APPLICATION_KEY}"
 #
 # LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 
@@ -111,20 +130,19 @@ snapdir_b2_store_get_manifest_command() {
 #       #          #    #     # #     #
 #       #######    #     #####  #     #
 snapdir_b2_store_get_fetch_files_command() {
-	# Generates the command or commands required to download
-	# to the cache the files defined on a manifest.
-	# In order to mantain consistency when reading manifests
-	# manifests will not exist on the local cache until
-	# all the objects have been fetched. Therefore this
-	# function will read the manifest contents from stdin.
+	# Generates the commands required to download from
+	# b2 to the local cache the files defined on a manifest.
+	# Manifests will not exist on the local cache until
+	# all the objects have been fetched.
+	# This function reads the manifest contents from stdin.
 	#
-	# Example:
+	# Usage:
 	#
 	# 	cat some_manifest_file | \
 	#       snapdir-b2-store get-fetch-files-command \
-	#       --id "${id}" \
-	#       --store "b2://long/term/storage/" \
-	#       --cache-dir "/tmp/snapdir-cache"
+	#       --id="${ID}" \
+	#       --store="b2://bucket-name/long/term/storage/" \
+	#       [--cache-dir="${CACHE_DIR}"]
 	#
 	set -eEuo pipefail
 	local id="${_SNAPDIR_B2_STORE_ID:?Missing --id}"
@@ -166,11 +184,12 @@ snapdir_b2_store_get_fetch_files_command() {
 snapdir_b2_store_get_manifest() {
 	# Pipes a manifest given its ID to stdout.
 	#
-	# All
+	# Usage:
 	#
-	# Example:
-	#
-	#			snapdir-b2-store get-manifest --id "${id}" --store "${store}"
+	#     snapdir-b2-store get-manifest \
+	#         --id="${ID}" \
+	#         --store="${STORE}" \
+	#         [--retries=5]
 	#
 	set -eEuo pipefail
 	local id="${_SNAPDIR_B2_STORE_ID:?Missing --id}"
@@ -196,6 +215,17 @@ snapdir_b2_store_get_manifest() {
 }
 
 snapdir_b2_store_fetch() {
+	# Performs the actual fetching of files from the remote store.
+	#
+	# Usage:
+	#
+	#     snapdir-b2-store fetch \
+	#         --store "${STORE}" \
+	#         --checksum="${ID}" \
+	#         --source-path="${SOURCE_FILE_PATH}" \
+	#         --target-path="${REMOTE_FILE_PATH}" \
+	#				  --log-file="${LOG_FILE_PATH}"
+	#
 	set -eEuo pipefail
 	local log_file="${_SNAPDIR_B2_STORE_LOG_FILE:?Missing --log-file}"
 	_snapdir_b2_fetch_to_cache | tee "$log_file"
@@ -207,7 +237,7 @@ snapdir_b2_store_ensure_no_errors() {
 	# Errors will be sent to stderr and the process will exit with
 	# a non-zero status.
 	#
-	# Example:
+	# Usage:
 	#
 	#     snapdir-b2-store verify-transactions \
 	#         --checksum "aa91e498f401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d" \
@@ -263,7 +293,12 @@ _snapdir_b2_store_run() (
 	}
 
 	_snapdir_b2_store_help() {
-		sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_B2_STORE_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+		local command="${1:-""}"
+		if [[ ${command} == "" ]]; then
+			sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_B2_STORE_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+		else
+			_snapdir_command_help "snapdir_b2_store_${command//-/_}" <"$_SNAPDIR_B2_STORE_BIN_PATH" | more
+		fi
 		exit 0
 	}
 
@@ -273,6 +308,8 @@ _snapdir_b2_store_run() (
 	local value
 	local is_boolean
 	local subcommand_candidate="${1:-"$command"}"
+	local show_help=false
+
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		fetch | get-manifest | get-manifest-command | get-fetch-files-command | get-push-command | test | ensure-no-errors)
@@ -280,7 +317,8 @@ _snapdir_b2_store_run() (
 			shift
 			;;
 		help | -h | --help)
-			_snapdir_b2_store_help
+			show_help=true
+			shift
 			;;
 		version | -v | --version)
 			echo "${_SNAPDIR_B2_STORE_VERSION}"
@@ -316,6 +354,10 @@ _snapdir_b2_store_run() (
 			;;
 		esac
 	done
+
+	if [[ ${show_help} == "true" ]]; then
+		_snapdir_b2_store_help "$command"
+	fi
 
 	# if command is not set, show help
 	if [[ ${command:-""} == "" ]]; then
