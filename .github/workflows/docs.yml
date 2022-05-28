@@ -24,4 +24,4 @@ jobs:
           tags: bermi/snapdir:latest
       - name: Verify docs
         run: |
-          ./docs/tests/verify-docs.sh
+          ./utils/verify-docs.sh
