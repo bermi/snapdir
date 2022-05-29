@@ -83,6 +83,10 @@ snapdir_s3_store_get_push_command() {
 	# remove trailing slash
 	source_dir="${source_dir%/}"
 
+	local remote_manifest_path="${store%/}/${manifest_rel_path#/}"
+	# remove leading slash
+	remote_manifest_path="${remote_manifest_path#/}"
+
 	# only push when the manifest does not exist
 	# first push objects then the manifest
 	cat <<-EOF
@@ -92,8 +96,8 @@ snapdir_s3_store_get_push_command() {
 			echo "Manifest already exists, skipping push";
 		else
 			SECONDS=0
-			aws s3 sync --only-show-errors --follow-symlinks --no-guess-mime-type "$source_dir/.objects/" "${store}/.objects/";
-			aws s3 cp --only-show-errors --follow-symlinks --no-guess-mime-type "${source_dir}/${manifest_rel_path}" "${store}/${manifest_rel_path}";
+			aws s3 sync --only-show-errors --follow-symlinks --no-guess-mime-type "${source_dir%/}/.objects/" "${store%/}/.objects/";
+			aws s3 cp --only-show-errors --follow-symlinks --no-guess-mime-type "${source_dir%/}/${manifest_rel_path#/}" "$remote_manifest_path";
 			echo "Done pushing ${id} after \$SECONDS seconds";
 		fi
 	EOF
@@ -444,7 +448,9 @@ _snapdir_s3_fetch_to_cache() {
 
 	_snapdir_s3_store_export_env_defaults
 
-	local s3_path="s3://${_SNAPDIR_STORE_BUCKET}/${_SNAPDIR_STORE_BASE_DIR}/${source_path}"
+	local remote_relative_path="${_SNAPDIR_STORE_BASE_DIR%/}/${source_path#/}"
+	remote_relative_path="${remote_relative_path#/}"
+	local s3_path="s3://${_SNAPDIR_STORE_BUCKET}/${remote_relative_path}"
 
 	# download the file from s3
 	aws s3 cp --only-show-errors --no-guess-mime-type "${s3_path}" "${tmp_target_path}" || {

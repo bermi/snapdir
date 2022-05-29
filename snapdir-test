@@ -97,6 +97,14 @@ _snapdir_test_run_integration_tests() {
 	echo "# integration tests"
 	SECONDS=0
 
+	# source .env if it exists
+	if test -f "$dir/.env"; then
+		set -a
+		# shellcheck disable=SC1091
+		. "$dir/.env"
+		set +a
+	fi
+
 	if test -f "$dir/snapdir-b2-store" && [[ ${SNAPDIR_B2_STORE_TEST_BUCKET:-} != "" ]]; then
 		"$dir/snapdir-b2-store" test --store "b2://${SNAPDIR_B2_STORE_TEST_BUCKET}"
 	else

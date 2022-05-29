@@ -81,6 +81,11 @@ snapdir_b2_store_get_push_command() {
 	# first push objects then the manifest
 	local manifest_sha1sum
 	manifest_sha1sum="$(sha1sum "${source_dir}/${manifest_rel_path}" | cut -d' ' -f1)"
+	local remote_manifest_path
+	remote_manifest_path="${_SNAPDIR_STORE_BASE_DIR%/}/${manifest_rel_path#/}"
+	# remove leading slash
+	remote_manifest_path="${remote_manifest_path#/}"
+
 	cat <<-EOF
 		set -eEuo pipefail;
 		_existing_manifest=\$(${_SNAPDIR_B2_STORE_BIN_PATH} get-manifest --id "${id}" --store "${store}" --retries 0 2>&1 | head -1 || echo "");
@@ -89,7 +94,7 @@ snapdir_b2_store_get_push_command() {
 		else
 			SECONDS=0
 			b2 sync --noProgress --skipNewer --compareVersions none "${source_dir%/}/.objects/" "${store%/}/.objects/";
-			b2 upload-file --noProgress --quiet --sha1 "$manifest_sha1sum" "${_SNAPDIR_STORE_BUCKET}" "${source_dir%/}/${manifest_rel_path#/}" "${_SNAPDIR_STORE_BASE_DIR%/}/${manifest_rel_path#/}";
+			b2 upload-file --noProgress --quiet --sha1 "$manifest_sha1sum" "${_SNAPDIR_STORE_BUCKET}" "${source_dir%/}/${manifest_rel_path#/}" "${remote_manifest_path}";
 			echo "Done pushing ${id} after \$SECONDS seconds";
 		fi
 	EOF
@@ -439,9 +444,13 @@ _snapdir_b2_fetch_to_cache() {
 	mkdir -p "$(dirname "${tmp_target_path}")"
 
 	_snapdir_b2_store_export_env_defaults
+	local remote_source_path
+	remote_source_path="${_SNAPDIR_STORE_BASE_DIR%/}/${source_path#/}"
+	# remove leading slash
+	remote_source_path="${remote_source_path#/}"
 
 	# download the file from b2
-	b2 download-file-by-name --noProgress "${_SNAPDIR_STORE_BUCKET}" "${_SNAPDIR_STORE_BASE_DIR%/}/${source_path#/}" "${tmp_target_path}" | grep -q "Checksum matches" || {
+	b2 download-file-by-name --noProgress "${_SNAPDIR_STORE_BUCKET}" "$remote_source_path" "${tmp_target_path}" | grep -q "Checksum matches" || {
 		echo "WARNING: Failed with command: 'b2 download-file-by-name --noProgress \"${_SNAPDIR_STORE_BUCKET}\" \"${_SNAPDIR_STORE_BASE_DIR%/}/${source_path#/}\" \"${tmp_target_path}\"'" >&2
 	}
 
