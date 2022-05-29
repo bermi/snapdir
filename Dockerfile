@@ -5,7 +5,8 @@ RUN apk add \
   --no-cache bash b3sum wget
 
 COPY ./snapdir* /bin/
-RUN chmod +x /bin/snapdir* && snapdir-test && rm -rf /tmp/snapdir*
+RUN chmod +x /bin/snapdir*
+RUN snapdir-test && rm -rf /tmp/snapdir*
 
 RUN apk del wget && rm -rf /var/cache/apk/*
 
