@@ -88,8 +88,8 @@ snapdir_b2_store_get_push_command() {
 			echo "Manifest already exists, skipping push";
 		else
 			SECONDS=0
-			b2 sync --noProgress --skipNewer --compareVersions none "$source_dir/.objects/" "${store}/.objects/";
-			b2 upload-file --noProgress --quiet --sha1 "$manifest_sha1sum" "${_SNAPDIR_STORE_BUCKET}" "${source_dir}/${manifest_rel_path}" "${_SNAPDIR_STORE_BASE_DIR}/${manifest_rel_path}";
+			b2 sync --noProgress --skipNewer --compareVersions none "${source_dir%/}/.objects/" "${store%/}/.objects/";
+			b2 upload-file --noProgress --quiet --sha1 "$manifest_sha1sum" "${_SNAPDIR_STORE_BUCKET}" "${source_dir%/}/${manifest_rel_path#/}" "${_SNAPDIR_STORE_BASE_DIR%/}/${manifest_rel_path#/}";
 			echo "Done pushing ${id} after \$SECONDS seconds";
 		fi
 	EOF
@@ -441,8 +441,8 @@ _snapdir_b2_fetch_to_cache() {
 	_snapdir_b2_store_export_env_defaults
 
 	# download the file from b2
-	b2 download-file-by-name --noProgress "${_SNAPDIR_STORE_BUCKET}" "${_SNAPDIR_STORE_BASE_DIR}/${source_path}" "${tmp_target_path}" | grep -q "Checksum matches" || {
-		echo "WARNING: Failed with command: 'b2 download-file-by-name --noProgress \"${_SNAPDIR_STORE_BUCKET}\" \"${_SNAPDIR_STORE_BASE_DIR}/${source_path}\" \"${tmp_target_path}\"'" >&2
+	b2 download-file-by-name --noProgress "${_SNAPDIR_STORE_BUCKET}" "${_SNAPDIR_STORE_BASE_DIR%/}/${source_path#/}" "${tmp_target_path}" | grep -q "Checksum matches" || {
+		echo "WARNING: Failed with command: 'b2 download-file-by-name --noProgress \"${_SNAPDIR_STORE_BUCKET}\" \"${_SNAPDIR_STORE_BASE_DIR%/}/${source_path#/}\" \"${tmp_target_path}\"'" >&2
 	}
 
 	if ! test -f "${tmp_target_path}" || [[ "$(b3sum "${tmp_target_path}" --no-names)" != "${checksum}" ]]; then
@@ -497,7 +497,9 @@ _snapdir_b2_store_get_remote_sha1sums() {
 	# You should not rely on this method for anything other than testing
 	# since it is very slow and does not support pagination.
 	set -eEuo pipefail
-	b2 ls --json --recursive "${_SNAPDIR_STORE_BUCKET}" "${1:?Missing remote directory}" |
+	local remote_directory="${1:?Missing remote directory}"
+	remote_directory=${remote_directory%/}
+	b2 ls --json --recursive "${_SNAPDIR_STORE_BUCKET}" "$remote_directory" |
 		grep -E '(fileName|Sha1)' |
 		cut -d':' -f2 |
 		sed 's|[," ]||g' |

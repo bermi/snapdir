@@ -52,10 +52,10 @@ Example:
 
 ### snapdir-b2-store get-fetch-files-command
 
-Generates the commands required to download from 
+Generates the commands required to download from
 b2 to the local cache the files defined on a manifest.
 Manifests will not exist on the local cache until
-all the objects have been fetched. 
+all the objects have been fetched.
 This function reads the manifest contents from stdin.
 
 Usage:

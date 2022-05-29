@@ -32,8 +32,8 @@ jobs:
           docker run \
             --rm \
             -e SNAPDIR_S3_STORE_TEST_BUCKET=snapdir-test-bucket \
-            -e AWS_ACCESS_KEY_ID="${{ secrets.SNAPDIR_AWS_ACCESS_KEY_ID}}" \
-            -e AWS_SECRET_ACCESS_KEY=${{ secrets.SNAPDIR_AWS_SECRET_ACCESS_KEY}} \
+            -e SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID="${{ secrets.SNAPDIR_AWS_ACCESS_KEY_ID}}" \
+            -e SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY=${{ secrets.SNAPDIR_AWS_SECRET_ACCESS_KEY}} \
             -e AWS_DEFAULT_REGION=us-east-1 \
             -v $(pwd)/snapdir-manifest:/usr/bin/snapdir-manifest \
             -v $(pwd)/snapdir:/usr/bin/snapdir \

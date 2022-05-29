@@ -1,8 +1,33 @@
 # snapdir-s3-store
 
-## Description:
+Snapdir store backed by [Amazon S3 cli tool](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/s3/index.html).
 
-    Snapdir store backed by [Amazon S3 cli tool](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/s3/index.html).
+## Usage
+
+    snapdir-s3-store [OPTIONS] [SUBCOMMAND] [ARGUMENTS]
+
+## Installation
+
+The `snapdir-s3-store` requires the [`aws` command line tool](https://aws.amazon.com/cli/) to be installed and available in your `PATH`.
+
+Expose the `snapdir-s3-store` file to a directory in your `PATH` to enabling it on `snapdir`.
+
+## Environment variables
+
+- SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID: The application key for the AWS S3 bucket. Defaults to AWS_ACCESS_KEY_ID.
+- SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY: The application key ID for the AWS S3 bucket. Defaults to AWS_SECRET_ACCESS_KEY.
+
+The aws cli tool requires a `AWS_DEFAULT_REGION` to be set.
+
+## Authentication
+
+Check your credentials with the command:
+
+    AWS_ACCESS_KEY_ID=$SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID && \
+    AWS_SECRET_ACCESS_KEY=$SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY && \
+    aws sts get-caller-identity
+
+If you encounter issues, run `aws configure` to configure your credentials.
 
 ## API Reference
 
@@ -33,10 +58,10 @@ Example:
 
 ### snapdir-s3-store get-fetch-files-command
 
-Generates the commands required to download from 
+Generates the commands required to download from
 S3 to the local cache the files defined on a manifest.
 Manifests will not exist on the local cache until
-all the objects have been fetched. 
+all the objects have been fetched.
 This function reads the manifest contents from stdin.
 
 Usage:

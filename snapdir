@@ -152,19 +152,26 @@ snapdir_manifest() {
 	base_dir="$(_snapdir_get_base_dir "${1:-""}")"
 	local snapdir_dir_abs_path
 	snapdir_dir_abs_path="$(realpath "${base_dir}")"
+	local verbose_flag=""
+	if [[ ${_SNAPDIR_VERBOSE:-false} == "true" ]]; then
+		verbose_flag="--verbose"
+	fi
 	if [[ ${snapdir_dir_abs_path%/} == "/" ]]; then
-		_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" --exclude="${_SNAPDIR_EXCLUDE:-system}" "/")
+		# shellcheck disable=SC2086
+		_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" $verbose_flag --cache --exclude="${_SNAPDIR_EXCLUDE:-system}" "/")
 	else
 		test -d "${snapdir_dir_abs_path}" || {
 			echo "error: Snapshot directory '${snapdir_dir_abs_path}' does not exist." >&2
 			return 1
 		}
 		if [[ ${_SNAPDIR_EXCLUDE} != "" ]]; then
-			_snapdir_log "Running: ${_SNAPDIR_BIN_DIR}/snapdir-manifest --exclude=\"${_SNAPDIR_EXCLUDE}\" \"$snapdir_dir_abs_path\""
-			_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" --exclude="${_SNAPDIR_EXCLUDE}" "$snapdir_dir_abs_path")
+			_snapdir_log "Running: ${_SNAPDIR_BIN_DIR}/snapdir-manifest $verbose_flag --cache --exclude=\"${_SNAPDIR_EXCLUDE}\" \"$snapdir_dir_abs_path\""
+			# shellcheck disable=SC2086
+			_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" $verbose_flag --cache --exclude="${_SNAPDIR_EXCLUDE}" "$snapdir_dir_abs_path")
 		else
-			_snapdir_log "Running: ${_SNAPDIR_BIN_DIR}/snapdir-manifest \"$snapdir_dir_abs_path\""
-			_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" "$snapdir_dir_abs_path")
+			_snapdir_log "Running: ${_SNAPDIR_BIN_DIR}/snapdir-manifest $verbose_flag --cache \"$snapdir_dir_abs_path\""
+			# shellcheck disable=SC2086
+			_SNAPDIR_MANIFEST=$("${_SNAPDIR_BIN_DIR}/snapdir-manifest" $verbose_flag --cache "$snapdir_dir_abs_path")
 		fi
 
 	fi
