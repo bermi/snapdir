@@ -5,6 +5,8 @@ on:
     # b3sum versions are tested
     - cron: "13 0 * * 1"
   push:
+    tags-ignore:
+      - '**'
   pull_request:
 defaults:
   run:

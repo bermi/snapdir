@@ -9,10 +9,11 @@
     "terminal.integrated.defaultProfile.linux": "bash"
   },
   "extensions": [
-    "timonwong.shellcheck",
-    "github.copilot",
-    "rogalmic.bash-debug"
-  ],
+	"timonwong.shellcheck",
+	"github.copilot",
+	"rogalmic.bash-debug",
+	"redhat.vscode-yaml"
+],
   "hostRequirements": {
     "cpus": 1,
     "memory": "1gb",

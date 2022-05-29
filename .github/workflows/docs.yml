@@ -6,6 +6,8 @@ on:
     # b3sum and alpine versions are tested
     - cron: "14 0 * * 1"
   push:
+    tags-ignore:
+      - '**'
   pull_request:
 
 jobs:

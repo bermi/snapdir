@@ -1,4 +1,4 @@
-name: release
+name: Release
 
 on:
   push:
@@ -24,10 +24,7 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           push: true
-          tags:
-            - bermi/snapdir:latest
-            - bermi/snapdir:${{ env.GITHUB_SHA }}
-            - bermi/snapdir:${{ github.event.release.tag_name }}
+          tags: bermi/snapdir:latest , bermi/snapdir:${{ env.GITHUB_SHA }} , bermi/snapdir:${{ github.event.release.tag_name }}
 
   tagged-release:
     name: "Tagged Release"
