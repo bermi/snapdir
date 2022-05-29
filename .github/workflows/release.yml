@@ -22,9 +22,6 @@ jobs:
             ghcr.io/bermi/snapdir
           # generate Docker tags based on the following events/attributes
           tags: |
-            type=schedule
-            type=ref,event=branch
-            type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
@@ -43,7 +40,7 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: bermi/snapdir:latest , ${{ steps.meta.outputs.tags }}
 
   tagged-release:
     name: "Tagged Release"
