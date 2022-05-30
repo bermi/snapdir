@@ -73,10 +73,10 @@ _snapdir_test_run_unit_tests() {
 	dir="$(dirname "${BASH_SOURCE[0]}")"
 	SECONDS=0
 	"$dir/snapdir-manifest" test
-	if which md5sum >/dev/null 2>&1; then
+	if command -v md5sum >/dev/null 2>&1; then
 		"$dir/snapdir-manifest" test --checksum-bin=md5sum
 	fi
-	if which sha256sum >/dev/null 2>&1; then
+	if command -v sha256sum >/dev/null 2>&1; then
 		"$dir/snapdir-manifest" test --checksum-bin=sha256sum
 	fi
 	"$dir/snapdir" test
@@ -100,7 +100,7 @@ _snapdir_test_run_integration_tests() {
 	# source .env if it exists
 	if test -f "$dir/.env"; then
 		set -a
-		# shellcheck disable=SC1091
+		# shellcheck disable=SC1091 source=./.env
 		. "$dir/.env"
 		set +a
 	fi
@@ -208,7 +208,7 @@ _snapdir_test_utils() {
 			_SNAPDIR_TEST_NUMBER=$((_SNAPDIR_TEST_TOTAL_CHECKS - _SNAPDIR_TESTS_PENDING_CHECKS + 1))
 			_SNAPDIR_TESTS_PENDING_CHECKS=$((_SNAPDIR_TESTS_PENDING_CHECKS - 1))
 		fi
-		echo "ok ${_SNAPDIR_TEST_NUMBER} - ${_SNAPDIR_TEST_DESCRIPTION} / $_SNAPDIR_TEST_CHECK_NAME"
+		echo "ok ${_SNAPDIR_TEST_NUMBER:-0} - ${_SNAPDIR_TEST_DESCRIPTION} / $_SNAPDIR_TEST_CHECK_NAME"
 	}
 
 	skip() {
@@ -331,10 +331,10 @@ _snapdir_test_normalize_log() {
 		} <"${_SNAPDIR_RUN_LOG_PATH}" >"${_SNAPDIR_RUN_LOG_PATH}.tmp"
 		mv "${_SNAPDIR_RUN_LOG_PATH}.tmp" "${_SNAPDIR_RUN_LOG_PATH}"
 		# ensure the previous steps have not messed up with the shell commands
-		if which "shellcheck" >/dev/null 2>&1; then
+		if command -v "shellcheck" >/dev/null 2>&1; then
 			shellcheck "${_SNAPDIR_RUN_LOG_PATH}"
 		fi
-		if which "shfmt" >/dev/null 2>&1; then
+		if command -v "shfmt" >/dev/null 2>&1; then
 			shfmt -w -s "${_SNAPDIR_RUN_LOG_PATH}"
 		fi
 	fi

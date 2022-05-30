@@ -30,11 +30,6 @@
 set -eEuo pipefail
 IFS=$'\n\t'
 
-# By default this script will take the name of the current file
-_SNAPDIR_B2_STORE="snapdir-b2-store"
-if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
-	_SNAPDIR_B2_STORE="$(basename "${BASH_SOURCE[0]}")"
-fi
 _SNAPDIR_B2_STORE_VERSION="0.1.1"
 
 #       ### #     # ####### ####### ######  #######    #     #####  #######
@@ -490,7 +485,6 @@ _snapdir_b2_store_export_env_defaults() {
 		_SNAPDIR_B2_STORE_ID="${_SNAPDIR_ID}"
 	fi
 	: "${_SNAPDIR_B2_STORE_STORE:?Missing --store required for b2 store}"
-	_SNAPDIR_STORE="${_SNAPDIR_B2_STORE_STORE}"
 	_snapdir_export_store_vars
 	# Exposes the credentials required by the b2 command line tool.
 	# SNAPDIR_B2_STORE_APPLICATION_KEY and SNAPDIR_B2_STORE_APPLICATION_KEY_ID can
@@ -531,7 +525,7 @@ snapdir_b2_store_test() (
 	set -eEuo pipefail
 
 	# Import test utilities
-	# shellcheck disable=SC1091
+	# shellcheck disable=SC1091 source=./snapdir-test
 	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_B2_STORE_BIN_PATH}"
 
 	setup_suite() {
@@ -585,7 +579,6 @@ snapdir_b2_store_test() (
 		local b2store="$_SNAPDIR_B2_STORE_BIN_PATH"
 		local result=""
 		local _dir="${_SNAPDIR_TEST_TMP_DIR}/files"
-		local _cwd="$_SNAPDIR_CWD"
 		local foo_checksum="49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
 		local foo_path="49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
 		local bar_checksum="b3199d36d434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"

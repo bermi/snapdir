@@ -494,7 +494,7 @@ snapdir_file_store_test() (
 	set -eEuo pipefail
 
 	# Import test utilities
-	# shellcheck disable=SC1091
+	# shellcheck disable=SC1091 source=./snapdir-test
 	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_FILE_STORE_BIN_PATH}"
 
 	teardown_suite() {
@@ -506,7 +506,6 @@ snapdir_file_store_test() (
 		local snapdir="$_SNAPDIR_BIN_PATH"
 		local result=""
 		local _dir="${_SNAPDIR_TEST_TMP_DIR}/files"
-		local _cwd="$_SNAPDIR_CWD"
 		local foo_checksum="49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
 		local foo_path="49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
 		local bar_checksum="b3199d36d434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"

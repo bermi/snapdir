@@ -3,7 +3,7 @@
 set -eEuo pipefail
 IFS=$'\n\t'
 
-which docker > /dev/null || {
+command -v docker > /dev/null || {
   echo "Docker is not installed. We need docker to verify the docs on a pristine environment." >&2
   exit 1
 }

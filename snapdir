@@ -529,25 +529,41 @@ snapdir_checkout() {
 		only_path="$(_snapdir_absolute_path "${base_dir}/${_SNAPDIR_PATH}")"
 	fi
 
+	local actual_manifest
+	actual_manifest="$(_SNAPDIR_VERBOSE=false _SNAPDIR_DEBUG=false _SNAPDIR_ID="" _SNAPDIR_MANIFEST="" "${_SNAPDIR_BIN_PATH}" manifest "$base_dir" 2>/dev/null || echo "")"
+	local manifest_diff
+	manifest_diff="$(diff <(echo "${actual_manifest}") "$manifest_cache_path" 2>/dev/null || echo "")"
+	local additions_manifest
+	additions_manifest="$(echo "${manifest_diff}" | grep '^>' | cut -d' ' -f2- || echo "")"
+
 	# We store all state changes in associative arrays so that they only get applied if there are no errors
 	local directories=()
 	local success_messages=()
 	local source_files=()
 	local source_perms=()
 	local target_files=()
+
 	while read -r line; do
 		set -eEuo pipefail
+		if [[ "${line:-""}" == "" ]]; then
+			continue
+		fi
 		# split line by spaces and define the line_parts array
 		IFS=' ' read -r -a line_parts <<<"${line}"
 		local type="${line_parts[0]}"
 		local permissions="${line_parts[1]}"
 		local checksum="${line_parts[2]}"
 		local relative_path="${line_parts[4]}"
+		local object_dir
 		local absolute_path
 		absolute_path="$(_snapdir_absolute_path "${base_dir}/${relative_path}")"
 		# When providing --path we only want to include the files starting with that path
-		if [[ ${only_path} != "" ]] && grep -v -q "^${only_path}" <<<"${absolute_path}"; then
-			continue
+		if [[ ${only_path} != "" ]]; then
+			if grep -v -q "^${only_path}" <<<"${absolute_path}"; then
+				continue
+			fi
+			object_dir="$(dirname "${absolute_path}")"
+			test -d "$object_dir" || directories+=("$object_dir")
 		fi
 		if [[ ${type} == "D" ]]; then
 			test -d "$absolute_path" || directories+=("$absolute_path")
@@ -560,16 +576,8 @@ snapdir_checkout() {
 				echo "${absolute_path} with checksum ${checksum} not found on cache. Did you forget to fetch ${snapdir_id} from the store?" >&2
 				return 1
 			}
-			local parent_dir
-			parent_dir="$(dirname "$absolute_path")"
-			test -d "${parent_dir}" || directories+=("${parent_dir}")
 			if test -f "$absolute_path"; then
-				local current_checksum
-				current_checksum=$(b3sum --no-names "$absolute_path")
-				if [[ $current_checksum == "$checksum" ]]; then
-					success_messages+=("${absolute_path} is up to date")
-					continue
-				elif [[ ${_SNAPDIR_FORCE:-false} == false ]]; then
+				if [[ ${_SNAPDIR_FORCE:-false} == false ]]; then
 					# Fatal error
 					echo "File ${absolute_path} already exists. To override file, use the --force flag." >&2
 					return 1
@@ -582,9 +590,10 @@ snapdir_checkout() {
 			target_files+=("$absolute_path")
 			source_perms+=("$permissions")
 		fi
-	done <"${manifest_cache_path}"
+	done <<<"${additions_manifest}"
 
 	if [[ ${dryrun} == "true" ]]; then
+		# unique list of directories
 		# using safe idiom to iterate over arrays on bash >= 4.0
 		for ((i = 0; i < ${#directories[@]}; i++)); do
 			_snapdir_dryrun_log "mkdir -p \"${directories[$i]}\""
@@ -623,6 +632,18 @@ snapdir_checkout() {
 	fi
 
 	if [[ ${_SNAPDIR_VERBOSE:-""} == "true" ]]; then
+		local unchanged_files
+		unchanged_files="$(diff  --unchanged-line-format='%l
+' --new-line-format='' --old-line-format='' <(echo "${actual_manifest}") "$manifest_cache_path" | grep '^F ' | cut -d' ' -f5 2>/dev/null || echo "")"
+		local absolute_path
+		for relative_path in ${unchanged_files}; do
+			absolute_path="$(_snapdir_absolute_path "${base_dir}/${relative_path}")"
+			if [[ ${only_path} != "" ]] && grep -v -q "^${only_path}" <<<"${absolute_path}"; then
+				continue
+			fi
+			_snapdir_log "${absolute_path} is up to date"
+		done
+
 		# print success messages
 		# using safe idiom to iterate over arrays on bash >= 4.0
 		for ((i = 0; i < ${#success_messages[@]}; i++)); do
@@ -1413,7 +1434,7 @@ snapdir_test() (
 	set -eEuo pipefail
 
 	# Import test utilities
-	# shellcheck disable=SC1091
+	# shellcheck disable=SC1091 source=./snapdir-test
 	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_BIN_PATH}"
 
 	test_suite() {
@@ -1421,7 +1442,6 @@ snapdir_test() (
 		local result=""
 		local expected=""
 		local _dir="${_SNAPDIR_TEST_TMP_DIR}/files"
-		local _cwd="$_SNAPDIR_CWD"
 		local snapshot="${_SNAPDIR_BIN_PATH}"
 		local foo_checksum="49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
 		local foo_path="49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
@@ -1433,7 +1453,7 @@ snapdir_test() (
 		local simple_manifest="D 700 e2b4329871fef9f50a20ba5d1475ee474f1df4091fe49002fd2bbcc42e6a04d5 8 ./
 F 600 $bar_checksum 4 ./bar
 F 600 $foo_checksum 4 ./foo"
-
+		
 		# --------------------------------------------------------------------------------
 		# snapshot manifest
 		# --------------------------------------------------------------------------------

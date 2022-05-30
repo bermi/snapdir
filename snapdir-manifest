@@ -635,7 +635,7 @@ _snapdir_manifest_ensure_checksum_bin() {
 	# a --version option for *sum commands but support which
 	if "$_SNAPDIR_MANIFEST_CHECKSUM_BIN" --version >/dev/null 2>&1; then
 		return 0
-	elif which "$_SNAPDIR_MANIFEST_CHECKSUM_BIN" >/dev/null 2>&1; then
+	elif command -v "$_SNAPDIR_MANIFEST_CHECKSUM_BIN" >/dev/null 2>&1; then
 		return 0
 	else
 		return 1
@@ -764,7 +764,7 @@ snapdir_manifest_test() (
 	set -eEuo pipefail
 
 	# Import test utilities
-	# shellcheck disable=SC1091
+	# shellcheck disable=SC1091 source=./snapdir-test
 	. "$(dirname "${_SNAPDIR_MANIFEST_BIN_PATH}")/snapdir-test" "${_SNAPDIR_MANIFEST_BIN_PATH}"
 
 	test_suite() {

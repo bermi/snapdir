@@ -36,11 +36,6 @@
 set -eEuo pipefail
 IFS=$'\n\t'
 
-# By default this script will take the name of the current file
-_SNAPDIR_S3_STORE="snapdir-s3-store"
-if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
-	_SNAPDIR_S3_STORE="$(basename "${BASH_SOURCE[0]}")"
-fi
 _SNAPDIR_S3_STORE_VERSION="0.1.1"
 
 #       ### #     # ####### ####### ######  #######    #     #####  #######
@@ -498,7 +493,6 @@ _snapdir_s3_store_export_env_defaults() {
 		_SNAPDIR_S3_STORE_ID="${_SNAPDIR_ID}"
 	fi
 	: "${_SNAPDIR_S3_STORE_STORE:?Missing --store required for s3 store}"
-	_SNAPDIR_STORE="${_SNAPDIR_S3_STORE_STORE}"
 	_snapdir_export_store_vars
 	# Exposes the credentials required by the aws command line tool.
 	# SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID and SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY can
@@ -545,7 +539,7 @@ snapdir_s3_store_test() (
 	set -eEuo pipefail
 
 	# Import test utilities
-	# shellcheck disable=SC1091
+	# shellcheck disable=SC1091 source=./snapdir-test
 	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_S3_STORE_BIN_PATH}"
 
 	setup_suite() {
@@ -590,7 +584,6 @@ snapdir_s3_store_test() (
 		local s3store="$_SNAPDIR_S3_STORE_BIN_PATH"
 		local result=""
 		local _dir="${_SNAPDIR_TEST_TMP_DIR}/files"
-		local _cwd="$_SNAPDIR_CWD"
 		local foo_checksum="49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
 		local foo_path="49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
 		local bar_checksum="b3199d36d434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
