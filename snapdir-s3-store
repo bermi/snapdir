@@ -493,6 +493,7 @@ _snapdir_s3_store_export_env_defaults() {
 		_SNAPDIR_S3_STORE_ID="${_SNAPDIR_ID}"
 	fi
 	: "${_SNAPDIR_S3_STORE_STORE:?Missing --store required for s3 store}"
+	_SNAPDIR_STORE="$_SNAPDIR_S3_STORE_STORE"
 	_snapdir_export_store_vars
 	# Exposes the credentials required by the aws command line tool.
 	# SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID and SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY can

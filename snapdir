@@ -545,7 +545,7 @@ snapdir_checkout() {
 
 	while read -r line; do
 		set -eEuo pipefail
-		if [[ "${line:-""}" == "" ]]; then
+		if [[ ${line:-""} == "" ]]; then
 			continue
 		fi
 		# split line by spaces and define the line_parts array
@@ -633,7 +633,7 @@ snapdir_checkout() {
 
 	if [[ ${_SNAPDIR_VERBOSE:-""} == "true" ]]; then
 		local unchanged_files
-		unchanged_files="$(diff  --unchanged-line-format='%l
+		unchanged_files="$(diff --unchanged-line-format='%l
 ' --new-line-format='' --old-line-format='' <(echo "${actual_manifest}") "$manifest_cache_path" | grep '^F ' | cut -d' ' -f5 2>/dev/null || echo "")"
 		local absolute_path
 		for relative_path in ${unchanged_files}; do
@@ -1167,7 +1167,7 @@ _snapdir_command_help() {
 	local command="${1:?Missing command}"
 	local contents
 	contents=$(cat)
-	echo "$contents" | _snapdir_get_function_body "$command" | sed -E 's|[\t]*# ?|#|' | _snapdir_get_doc_block_from_function_body
+	echo "$contents" | _snapdir_get_function_body "$command" | sed -E 's|# ?|#|' | _snapdir_get_doc_block_from_function_body
 }
 
 _snapdir_get_function_body() {
@@ -1177,7 +1177,7 @@ _snapdir_get_function_body() {
 	function_name="$(echo "$command" | tr '-' '_')"
 	local script_contents
 	script_contents=$(cat)
-	echo "$script_contents" | sed -E -n "/^${function_name} ?\(\)/,/^}/p" | sed -E -n "/^${function_name} ?\(\)/,/^}/p" | grep -v "${function_name}(" | grep -v "^}"
+	echo "$script_contents" | sed -E -n "/^${function_name} ?\(\)/,/^}/p" | sed -E -n "/^${function_name} ?\(\)/,/^}/p" | grep -v "${function_name}(" | grep -v "^}" | sed -E 's|^\t||'
 }
 
 _snapdir_get_doc_block_from_function_body() {
@@ -1188,7 +1188,7 @@ _snapdir_get_doc_block_from_function_body() {
 	# start with #
 	local first_line_number
 	first_line_number=$(echo "$function_body" | grep -n "^[^#]" | head -n 1 | cut -d ':' -f1 || true)
-	if [[ -z $first_line_number ]]; then
+	if [[ ${first_line_number:-""} == "" ]]; then
 		echo "ERROR: No documentation found"
 		return
 	fi
@@ -1453,7 +1453,7 @@ snapdir_test() (
 		local simple_manifest="D 700 e2b4329871fef9f50a20ba5d1475ee474f1df4091fe49002fd2bbcc42e6a04d5 8 ./
 F 600 $bar_checksum 4 ./bar
 F 600 $foo_checksum 4 ./foo"
-		
+
 		# --------------------------------------------------------------------------------
 		# snapshot manifest
 		# --------------------------------------------------------------------------------

@@ -1,3 +1,4 @@
+OS=$(shell uname)
 ifeq ($(OS),Darwin)
   SNAPDIR_BIN_FILES=$(shell find . -maxdepth 1 -type f -perm +0111 -print | sed 's|^\./||')
 else

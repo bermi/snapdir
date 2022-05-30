@@ -485,6 +485,7 @@ _snapdir_b2_store_export_env_defaults() {
 		_SNAPDIR_B2_STORE_ID="${_SNAPDIR_ID}"
 	fi
 	: "${_SNAPDIR_B2_STORE_STORE:?Missing --store required for b2 store}"
+	_SNAPDIR_STORE="$_SNAPDIR_B2_STORE_STORE"
 	_snapdir_export_store_vars
 	# Exposes the credentials required by the b2 command line tool.
 	# SNAPDIR_B2_STORE_APPLICATION_KEY and SNAPDIR_B2_STORE_APPLICATION_KEY_ID can

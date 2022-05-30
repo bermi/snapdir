@@ -723,7 +723,7 @@ _snapdir_manifest_get_function_body() {
 	function_name="$(echo "$command" | tr '-' '_')"
 	local script_contents
 	script_contents=$(cat)
-	echo "$script_contents" | sed -E -n "/^${function_name} ?\(\)/,/^}/p" | sed -E -n "/^${function_name} ?\(\)/,/^}/p" | grep -v "${function_name}(" | grep -v "^}"
+	echo "$script_contents" | sed -E -n "/^${function_name} ?\(\)/,/^}/p" | sed -E -n "/^${function_name} ?\(\)/,/^}/p" | grep -v "${function_name}(" | grep -v "^}" | sed -E 's|^\t||'
 }
 
 _snapdir_manifest_get_doc_block_from_function_body() {
