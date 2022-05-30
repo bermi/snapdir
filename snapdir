@@ -532,9 +532,13 @@ snapdir_checkout() {
 	local actual_manifest
 	actual_manifest="$(_SNAPDIR_VERBOSE=false _SNAPDIR_DEBUG=false _SNAPDIR_ID="" _SNAPDIR_MANIFEST="" "${_SNAPDIR_BIN_PATH}" manifest "$base_dir" 2>/dev/null || echo "")"
 	local manifest_diff
-	manifest_diff="$(diff <(echo "${actual_manifest}") "$manifest_cache_path" 2>/dev/null || echo "")"
+	# Warning: diff output is pretty inconsistent we will only consider
+	# lines that start with '(+|-) (D|F) '
+	manifest_diff="$(diff -u <(echo "${actual_manifest}") "$manifest_cache_path" 2>/dev/null | grep -E "^(\+|-) ?(D|F) " || echo "")"
 	local additions_manifest
-	additions_manifest="$(echo "${manifest_diff}" | grep '^>' | cut -d' ' -f2- || echo "")"
+	# we only want new additions made to the manifest. diff will sometimes include
+	# an extra space after the + symbol
+	additions_manifest="$(echo "${manifest_diff}" | grep '^+' | sed -E 's#^(\+) ?##' || echo "")"
 
 	# We store all state changes in associative arrays so that they only get applied if there are no errors
 	local directories=()
@@ -592,6 +596,25 @@ snapdir_checkout() {
 		fi
 	done <<<"${additions_manifest}"
 
+	if [[ ${_SNAPDIR_VERBOSE:-""} == "true" ]]; then
+		local unchanged_files
+		unchanged_files="$(diff -u <(echo "${actual_manifest}" | grep "^F ") <(echo "${additions_manifest}" | grep "^F ") 2>/dev/null | grep -E "^- ?" | sed -E 's#^(-) ?##' | cut -d' ' -f5 || echo "")"
+		local absolute_path
+		for relative_path in ${unchanged_files}; do
+			absolute_path="$(_snapdir_absolute_path "${base_dir}/${relative_path}")"
+			if [[ ${only_path} != "" ]] && grep -v -q "^${only_path}" <<<"${absolute_path}"; then
+				continue
+			fi
+			_snapdir_log "${absolute_path} is up to date"
+		done
+
+		# print success messages from
+		# using safe idiom to iterate over arrays on bash >= 4.0
+		for ((i = 0; i < ${#success_messages[@]}; i++)); do
+			_snapdir_log "${success_messages[$i]}"
+		done
+	fi
+
 	if [[ ${dryrun} == "true" ]]; then
 		# unique list of directories
 		# using safe idiom to iterate over arrays on bash >= 4.0
@@ -629,26 +652,6 @@ snapdir_checkout() {
 				chmod "${source_perms[$i]}" "${target_files[$i]}"
 			done
 		fi
-	fi
-
-	if [[ ${_SNAPDIR_VERBOSE:-""} == "true" ]]; then
-		local unchanged_files
-		unchanged_files="$(diff --unchanged-line-format='%l
-' --new-line-format='' --old-line-format='' <(echo "${actual_manifest}") "$manifest_cache_path" | grep '^F ' | cut -d' ' -f5 2>/dev/null || echo "")"
-		local absolute_path
-		for relative_path in ${unchanged_files}; do
-			absolute_path="$(_snapdir_absolute_path "${base_dir}/${relative_path}")"
-			if [[ ${only_path} != "" ]] && grep -v -q "^${only_path}" <<<"${absolute_path}"; then
-				continue
-			fi
-			_snapdir_log "${absolute_path} is up to date"
-		done
-
-		# print success messages
-		# using safe idiom to iterate over arrays on bash >= 4.0
-		for ((i = 0; i < ${#success_messages[@]}; i++)); do
-			_snapdir_log "${success_messages[$i]}"
-		done
 	fi
 }
 
@@ -1602,7 +1605,7 @@ F 600 $foo_checksum 4 ./foo"
 
 		check "should checkout files from the local cache"
 		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
-		[[ "$(grep -c "Checking out" <<<"$result")" == 2 ]] || fail "Expected two checkout messages, instead got ${result}" && pass
+		[[ "$(grep -c "Checking out" <<<"$result")" == 2 ]] || fail "Expected two checkout messages, instead got '${result}'" && pass
 
 		check "should not checkout up to date files"
 		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
