@@ -827,6 +827,8 @@ snapdir_verify() {
 		failed_objects="$(echo "$result" | grep -E ': FAILED' | cut -d ':' -f1 | tr '\n' ' ')"
 		echo "$result"
 		if [[ ${failed_objects:-""} != "" ]]; then
+			# trim the trailing space
+			failed_objects="${failed_objects% }"
 			echo "warning: Removing corrupted objects: ${failed_objects}" >&2
 			echo "$failed_objects" | xargs rm -f
 			return 1
