@@ -91,6 +91,8 @@ _SNAPDIR_VERSION="0.3.1"
 
 set -eEuo pipefail
 IFS=$'\n\t'
+# kill all the processes in the same group as the current process
+trap 'kill 0' INT
 
 #     #    #    #     # ### ####### #######  #####  #######
 ##   ##   # #   ##    #  #  #       #       #     #    #
@@ -314,7 +316,9 @@ snapdir_push() {
 			if [[ $verbose == "true" ]]; then
 				verbose_flag="set -x;"
 			fi
-			bash -c "set -eEuo pipefail;${verbose_flag}${push_command}
+			bash -c "set -eEuo pipefail;
+			trap 'kill 0' INT;
+			${verbose_flag}${push_command}
 			wait" | _snapdir_log
 		fi
 	else
@@ -385,7 +389,9 @@ snapdir_fetch() {
 			_snapdir_dryrun_log "${fetch_manifest_command}"
 		fi
 
-		bash -c "set -eEuo pipefail;${fetch_manifest_command}" >"${manifest_cache_path}.${tmp_id}" || {
+		bash -c "set -eEuo pipefail;
+					trap 'kill 0' INT;
+					${fetch_manifest_command}" >"${manifest_cache_path}.${tmp_id}" || {
 			echo "error: Failed to fetch manifest for snapshot '${snapdir_id}' from store '${store}' when calling '${fetch_manifest_command}'." >&2
 			rm -rf "${manifest_cache_path}.${tmp_id}"
 			return 1
@@ -411,6 +417,7 @@ snapdir_fetch() {
 			_snapdir_dryrun_log "${fetch_files_commands}"
 		else
 			bash -c "set -eEuo pipefail;
+			trap 'kill 0' INT;
 			${fetch_files_commands}
 			wait" >"$_output_dest" || {
 				rm -rf "${manifest_cache_path}.${tmp_id}"
