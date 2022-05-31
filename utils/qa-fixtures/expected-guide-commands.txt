@@ -23,7 +23,7 @@ ${HOME}/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67
 ${HOME}/.cache/snapdir/.manifests/df4/b3a/7b6/c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9: OK
 ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f: FAILED
 ${HOME}/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92: OK
-warning: Removing corrupted objects: ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f 
+warning: Removing corrupted objects: ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f
 ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f: FAILED
 df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
 df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
