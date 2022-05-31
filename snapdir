@@ -110,6 +110,7 @@ snapdir_manifest() {
 	#     snapdir manifest \
 	#         [--(id="${MANIFEST_ID}")] \
 	#         [--(exclude="${EXCLUDE_PATTERN}")] \
+	#         [--cache-dir="${CACHE_DIR}"] \
 	#         [--stage] \
 	#         "${DIR}"
 	#
@@ -203,7 +204,10 @@ snapdir_id() {
 	#
 	# Usage:
 	#
-	#     snapdir id [--stage] "${DIR}"
+	#     snapdir id \
+	#         [--stage] \
+	#         [--cache-dir="${CACHE_DIR}"] \
+	#         "${DIR}"
 	#
 	# Returns: Snapshot ID (a BLAKE3 hash for the manifest contents)
 	#
@@ -259,7 +263,7 @@ snapdir_push() {
 	#     snapdir push \
 	#         --store="${STORE}" \
 	#         [--id="${ID}"] or ["${DIR}"] \
-	#     		[--cache-dir="${CACHE_DIR}"] \
+	#         [--cache-dir="${CACHE_DIR}"] \
 	#         [--(debug|dryrun|verbose)]
 	#
 	# Returns: snapshot id
@@ -481,6 +485,21 @@ snapdir_pull() {
 			echo "error: snapdir_pull failed after ${_SNAPDIR_MAX_RETRIES} retries" >&2
 			return 1
 		fi
+	fi
+
+	# stage the directory before checking it out if exists
+	# this will ensure the cache has a copy of the directory
+	# before reaching the store
+	if test -d "${base_dir}"; then
+		local original_id=${_SNAPDIR_ID:-""}
+		local original_manifest=${_SNAPDIR_MANIFEST:-""}
+		_snapdir_log "Rebuilding local cache from '${base_dir}'"
+		_SNAPDIR_ID="" \
+		_SNAPDIR_STAGE=true \
+		_SNAPDIR_MANIFEST="" \
+		snapdir_manifest "${base_dir}" | _snapdir_log >/dev/null || true
+		_SNAPDIR_ID="${original_id}"
+		_SNAPDIR_MANIFEST="${original_manifest}"
 	fi
 
 	snapdir_fetch
