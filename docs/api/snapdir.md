@@ -89,6 +89,7 @@ Usage:
     snapdir manifest \
         [--(id="${MANIFEST_ID}")] \
         [--(exclude="${EXCLUDE_PATTERN}")] \
+        [--cache-dir="${CACHE_DIR}"] \
         [--stage] \
         "${DIR}"
 
@@ -132,7 +133,10 @@ Generates a snapshot id for a given directory and writes it to stdout.
 
 Usage:
 
-    snapdir id [--stage] "${DIR}"
+    snapdir id \
+        [--stage] \
+        [--cache-dir="${CACHE_DIR}"] \
+        "${DIR}"
 
 Returns: Snapshot ID (a BLAKE3 hash for the manifest contents)
 
@@ -165,7 +169,7 @@ Usage:
     snapdir push \
         --store="${STORE}" \
         [--id="${ID}"] or ["${DIR}"] \
-    		[--cache-dir="${CACHE_DIR}"] \
+        [--cache-dir="${CACHE_DIR}"] \
         [--(debug|dryrun|verbose)]
 
 Returns: snapshot id

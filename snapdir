@@ -495,9 +495,9 @@ snapdir_pull() {
 		local original_manifest=${_SNAPDIR_MANIFEST:-""}
 		_snapdir_log "Rebuilding local cache from '${base_dir}'"
 		_SNAPDIR_ID="" \
-		_SNAPDIR_STAGE=true \
-		_SNAPDIR_MANIFEST="" \
-		snapdir_manifest "${base_dir}" | _snapdir_log >/dev/null || true
+			_SNAPDIR_STAGE=true \
+			_SNAPDIR_MANIFEST="" \
+			snapdir_manifest "${base_dir}" | _snapdir_log >/dev/null || true
 		_SNAPDIR_ID="${original_id}"
 		_SNAPDIR_MANIFEST="${original_manifest}"
 	fi
