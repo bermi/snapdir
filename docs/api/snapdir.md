@@ -89,6 +89,7 @@ Usage:
     snapdir manifest \
         [--(id="${MANIFEST_ID}")] \
         [--(exclude="${EXCLUDE_PATTERN}")] \
+        [--stage] \
         "${DIR}"
 
 Returns: [A snapdir manifest](docs/understanding-manifests.md) as
@@ -98,6 +99,10 @@ Examples:
 
     # generates a manifest for a directory
     snapdir manifest "${DIR}"
+
+    # generates a manifest for a directory and stages it
+    # creating a copy of the objects in the local cache
+    snapdir manifest --stage "${DIR}"
 
     # excludes files matching the pattern
     snapdir manifest --exclude ".ignore" "${DIR}"
@@ -127,7 +132,7 @@ Generates a snapshot id for a given directory and writes it to stdout.
 
 Usage:
 
-    snapdir id "${DIR}"
+    snapdir id [--stage] "${DIR}"
 
 Returns: Snapshot ID (a BLAKE3 hash for the manifest contents)
 
@@ -135,6 +140,10 @@ Examples:
 
     # generates a snapshot id for a directory
     snapdir id "${DIR}"
+
+    # generates a snapshot id for a directory and stages
+    # the contents and the manifest id in the local cache
+    snapdir manifest --stage "${DIR}"
 
     # generates a snapshot id for a manifest provided as stdin
     echo "${DIR}" | snapdir manifest | snapdir id

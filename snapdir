@@ -108,6 +108,7 @@ snapdir_manifest() {
 	#     snapdir manifest \
 	#         [--(id="${MANIFEST_ID}")] \
 	#         [--(exclude="${EXCLUDE_PATTERN}")] \
+	#         [--stage] \
 	#         "${DIR}"
 	#
 	# Returns: [A snapdir manifest](docs/understanding-manifests.md) as
@@ -117,6 +118,10 @@ snapdir_manifest() {
 	#
 	#     # generates a manifest for a directory
 	#     snapdir manifest "${DIR}"
+	#
+	#     # generates a manifest for a directory and stages it
+	#     # creating a copy of the objects in the local cache
+	#     snapdir manifest --stage "${DIR}"
 	#
 	#     # excludes files matching the pattern
 	#     snapdir manifest --exclude ".ignore" "${DIR}"
@@ -175,6 +180,11 @@ snapdir_manifest() {
 		fi
 
 	fi
+	if [[ ${_SNAPDIR_STAGE:-false} == "true" ]]; then
+		_snapdir_log "Staging manifest: ${_SNAPDIR_MANIFEST}"
+		snapdir_stage "${1:-""}" >/dev/null
+	fi
+
 	echo "${_SNAPDIR_MANIFEST}"
 }
 
@@ -191,7 +201,7 @@ snapdir_id() {
 	#
 	# Usage:
 	#
-	#     snapdir id "${DIR}"
+	#     snapdir id [--stage] "${DIR}"
 	#
 	# Returns: Snapshot ID (a BLAKE3 hash for the manifest contents)
 	#
@@ -199,6 +209,10 @@ snapdir_id() {
 	#
 	#     # generates a snapshot id for a directory
 	#     snapdir id "${DIR}"
+	#
+	#     # generates a snapshot id for a directory and stages
+	#     # the contents and the manifest id in the local cache
+	#     snapdir manifest --stage "${DIR}"
 	#
 	#     # generates a snapshot id for a manifest provided as stdin
 	#     echo "${DIR}" | snapdir manifest | snapdir id
@@ -687,11 +701,17 @@ snapdir_stage() {
 	#     snapdir stage "${DIR}" --cache-dir="${CACHE_DIR}" --verbose
 	#
 	set -eEuo pipefail
+
+	# ensure objects from the directory are on the cache
+	_snapdir_cache_objects "${1:-""}"
+
 	local base_dir
 	base_dir="$(_snapdir_get_base_dir "${1:-""}")"
 	local manifest="${_SNAPDIR_MANIFEST:-$(snapdir_manifest "${base_dir}")}"
+	_SNAPDIR_MANIFEST="${manifest}"
 	local snapdir_id
 	snapdir_id="$(snapdir_manifest "$base_dir" | b3sum --no-names -)"
+	_SNAPDIR_ID="${snapdir_id}"
 	local staging_directory
 	staging_directory="$(mktemp -d -t "${_SNAPDIR}"_"${snapdir_id}".XXXXXXXXXX)"
 
@@ -710,8 +730,6 @@ snapdir_stage() {
 	fi
 
 	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
-	local manifest_cache_path="$cache_dir/${manifest_rel_path}"
-	mkdir -p "$cache_dir/$(dirname "${manifest_rel_path}")"
 
 	local checksum
 	local rel_path
@@ -731,31 +749,14 @@ snapdir_stage() {
 
 		checksum="${line_parts[2]}"
 		object_rel_path="$(_snapdir_get_object_rel_path "${checksum}")"
-		object_rel_dir="$(dirname "${object_rel_path}")"
-
-		rel_path="${line_parts[4]}"
-		file_path="$(_snapdir_absolute_path "${base_dir}/${rel_path}")"
-		# Caches the object and verifies the checksum
-		cache_path="$cache_dir/${object_rel_path}"
-
-		# prevent overwriting unchanged files in order to avoid unnecessary inotify events
-		if ! test -f "${cache_path}"; then
-			_snapdir_log "Caching ${cache_path}"
-			mkdir -p "$cache_dir/${object_rel_dir}"
-			# Files on the cache should be immutable
-			# TODO: On COW filesystems, it will be more
-			# efficient to link the file instead of copying it.
-			cp "${file_path}" "${cache_path}"
-			chmod 600 "${cache_path}"
-		else
-			_snapdir_log "Object cache for ${file_path} alredy exists"
-		fi
 
 		# we only need to create the staging directory if --keep is provided
 		if [[ ${_SNAPDIR_KEEP:-"false"} == "true" ]]; then
 			symlink_path="$staging_directory/${object_rel_path}"
 			if [[ ! -e $symlink_path ]]; then
+				cache_path="$cache_dir/${object_rel_path}"
 				_snapdir_log "Linking ${cache_path} to ${symlink_path}"
+				object_rel_dir="$(dirname "${object_rel_path}")"
 				mkdir -p "$staging_directory/${object_rel_dir}"
 				# use softlink to allow the cache and the staging area to be on different volumes
 				ln -s "${cache_path}" "$symlink_path"
@@ -763,16 +764,7 @@ snapdir_stage() {
 		fi
 	done
 
-	# its important to save the cache manifest after the objects are saved on the cache
-	# since this will ensure the cache manifest is consistent with the objects
-	# prevent overwriting unchanged files in order to avoid unnecessary inotify events
-	if ! test -f "${manifest_cache_path}" || ! cmp "${manifest_cache_path}" "${staged_manifest_path}"; then
-		_snapdir_log "Committing manifest ${snapdir_id} as ${manifest_cache_path}"
-		cp "${staged_manifest_path}" "${manifest_cache_path}"
-		chmod 600 "${manifest_cache_path}"
-	else
-		_snapdir_log "Manifest unchanged for ${snapdir_id}"
-	fi
+	_snapdir_cache_manifest
 
 	if [[ ${_SNAPDIR_KEEP:-"false"} == "true" ]]; then
 		echo "$staging_directory"
@@ -962,7 +954,7 @@ _snapdir_run() (
 
 	set -eEuo pipefail
 	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults"
-	local boolean_args="debug|force|linked|keep|purge|verbose|dryrun"
+	local boolean_args="debug|force|linked|keep|purge|stage|verbose|dryrun"
 	local value_required_args="id|store|cache_dir|path|exclude"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
 
@@ -1079,6 +1071,57 @@ _snapdir_run() (
 	_snapdir_export_env_defaults "${command}"
 	eval "snapdir_${command//-/_} $positional_args ${*:2}"
 )
+
+_snapdir_cache_objects() {
+	# Caches the files from a directory into the local cache.
+	#
+	set -eEuo pipefail
+	local base_dir
+	base_dir="$(_snapdir_get_base_dir "${1:-""}")"
+	local manifest="${_SNAPDIR_MANIFEST:-$(snapdir_manifest "${base_dir}")}"
+	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
+	local checksum
+	local rel_path
+	local object_rel_path
+	local object_rel_dir
+	local cache_path
+	local line_parts
+	local manifest_files
+	manifest_files="$(echo "${manifest}" | grep '^F ' || echo "")"
+
+	for line in $manifest_files; do
+		IFS=' ' read -r -a line_parts <<<"${line}"
+		checksum="${line_parts[2]}"
+		object_rel_path="$(_snapdir_get_object_rel_path "${checksum}")"
+		rel_path="${line_parts[4]}"
+		file_path="$(_snapdir_absolute_path "${base_dir}/${rel_path}")"
+		# Caches the object and verifies the checksum
+		cache_path="$cache_dir/${object_rel_path}"
+
+		# prevent overwriting unchanged files in order to avoid unnecessary inotify events
+		if ! test -f "${cache_path}"; then
+			_snapdir_log "Caching ${cache_path}"
+			object_rel_dir="$(dirname "${object_rel_path}")"
+			mkdir -p "$cache_dir/${object_rel_dir}"
+			# Files on the cache should be immutable
+			# TODO: On COW filesystems, it will be more
+			# efficient to link the file instead of copying it.
+			cp "${file_path}" "${cache_path}"
+			chmod 600 "${cache_path}"
+		else
+			_snapdir_log "Object cache for ${file_path} alredy exists"
+		fi
+	done
+}
+
+_snapdir_cache_manifest() {
+	# Saves the manifest in the local cache.
+	set -eEuo pipefail
+	: "${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
+	local manifest="${_SNAPDIR_MANIFEST:?Missing manifest contents}"
+	snapdir_id >/dev/null
+	echo "$manifest" | _snapdir_save_manifest_on_cache
+}
 
 _snapdir_get_fetch_snapdir_manifest_command() {
 	set -eEuo pipefail
@@ -1366,7 +1409,7 @@ _snapdir_export_store_vars() {
 }
 
 _snapdir_save_manifest_on_cache() {
-	# when the cache is provided via STDIN we'll save it on the cache dir
+	# when the manifest is provided via STDIN we'll save it on the cache dir
 	set -eEuo pipefail
 	local manifest_rel_path
 	manifest_rel_path="$(_snapdir_get_manifest_rel_path "${_SNAPDIR_ID}")"
@@ -1489,7 +1532,10 @@ F 600 $foo_checksum 4 ./foo"
 		test "$result" == "$expected" || fail "Expected error '$result' to be: '$expected'" && pass
 
 		# saving to stage so we can reference it by id
-		"${snapshot}" stage "${_dir}" >/dev/null
+		check "should stage when generating manifest with the --stage option"
+		result=$("${snapshot}" manifest --verbose --stage "${_dir}" 2>&1 || echo "")
+		grep -q "Staging manifest" <<<"$result" || fail "Expected 'Staging manifest' message on '$result' verbose output" && pass
+		# "${snapshot}" stage "${_dir}"
 
 		check "should generate manifest reading id from --id"
 		result=$("${snapshot}" manifest --id "${simple_manifest_id}" 2>&1 || echo "")
