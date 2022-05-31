@@ -229,7 +229,7 @@ snapdir_id() {
 		base_dir="$(_snapdir_get_base_dir "${1:-""}")"
 		manifest="$(snapdir_manifest "${base_dir}")"
 	fi
-	_SNAPDIR_ID="$(echo "$manifest" | b3sum --no-names -)"
+	_SNAPDIR_ID="$(echo "$manifest" | grep -v "^#" | b3sum --no-names -)"
 	echo "$_SNAPDIR_ID"
 }
 
@@ -399,7 +399,7 @@ snapdir_fetch() {
 	fi
 
 	# TODO: verify the integrity of the manifest before moving forward
-	if [[ "$(b3sum "${manifest_pipe_path}" --no-names)" != "${snapdir_id}" ]]; then
+	if [[ "$(grep -v "^#" <"$manifest_pipe_path" | b3sum --no-names)" != "${snapdir_id}" ]]; then
 		echo "error: Manifest for snapshot '${snapdir_id}' does not match the snapshot id." >&2
 		rm -rf "${manifest_cache_path}.${tmp_id}"
 		return 1
@@ -710,7 +710,7 @@ snapdir_stage() {
 	local manifest="${_SNAPDIR_MANIFEST:-$(snapdir_manifest "${base_dir}")}"
 	_SNAPDIR_MANIFEST="${manifest}"
 	local snapdir_id
-	snapdir_id="$(snapdir_manifest "$base_dir" | b3sum --no-names -)"
+	snapdir_id="$(snapdir_manifest "$base_dir" | grep -v "^#" | b3sum --no-names -)"
 	_SNAPDIR_ID="${snapdir_id}"
 	local staging_directory
 	staging_directory="$(mktemp -d -t "${_SNAPDIR}"_"${snapdir_id}".XXXXXXXXXX)"
@@ -723,7 +723,7 @@ snapdir_stage() {
 	echo "${manifest}" >"$staged_manifest_path"
 	# ensure the staged manifest b3sum matches the snapshot id
 	local staged_manifest_b3sum
-	staged_manifest_b3sum="$(b3sum "$staged_manifest_path" --no-names)"
+	staged_manifest_b3sum="$(grep -v "^#" <"$staged_manifest_path" | b3sum --no-names)"
 	if [[ ${staged_manifest_b3sum} != "${snapdir_id}" ]]; then
 		echo "Staged manifest $staged_manifest_path b3sum does not match snapshot id ${snapdir_id}." >&2
 		return 1
@@ -1584,6 +1584,14 @@ F 600 $foo_checksum 4 ./foo"
 		check "should prevent malformated stdin manifests"
 		result=$(echo "foo bar" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		expected="error: Manifest or manifest ID provided through stdin is invalid."
+		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
+
+		describe "snapshot id from stdin manifest with comments"
+		check "should generate snapshot id from a manifest provided on stdin, even when no  files are present"
+		result=$(echo "# a comment
+# another comment
+$simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
+		expected="$simple_manifest_id"
 		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
 
 		# --------------------------------------------------------------------------------

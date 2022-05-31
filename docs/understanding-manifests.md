@@ -63,6 +63,12 @@ mean.
 5.  *`PATH`*: The file or directory path. When using `--absolute` will
     resolve to the absolute path.
 
+### Manifest comments
+
+Lines starting with `#` are ignored and should be removed before
+computing the manifest checksum. This can be used to store details
+about how the manifest was created, or where the storage is located.
+
 ## Manually creating a manifest
 
 We'll now recreate the checksums manually using `b3sum`. First, generate
