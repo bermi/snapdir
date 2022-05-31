@@ -150,8 +150,6 @@ snapdir_s3_store_get_fetch_files_command() {
 	set -eEuo pipefail
 	local id="${_SNAPDIR_S3_STORE_ID:?Missing --id}"
 	local store="${_SNAPDIR_S3_STORE_STORE:?Missing --store}"
-	local source_dir
-	source_dir="$(_snapdir_s3_store_get_remote_prefix "${store}")"
 	local target_dir="${_SNAPDIR_S3_STORE_CACHE_DIR:?Missing --cache-dir}"
 	# remove trailing slash
 	target_dir="${target_dir%/}"
@@ -171,7 +169,7 @@ snapdir_s3_store_get_fetch_files_command() {
 			# read manifest from the environment variable
 			grep '^F ' <<<"${_SNAPDIR_MANIFEST}" || echo ""
 		fi
-	} | _snapdir_get_transfer_objects_command "${source_dir}" "${target_dir}" "fetch" "${log_file}"
+	} | _snapdir_s3_store_get_transfer_objects_command "${target_dir}" "${log_file}"
 
 	echo "${_SNAPDIR_S3_STORE_BIN_PATH} ensure-no-errors --store \"$store\" --checksum \"${id}\" --log-file \"$log_file\";"
 }
@@ -381,22 +379,11 @@ _snapdir_s3_store_run() (
 #       #   #    #   #   #  #######    #    #          #       #   # #       #
 #       #    #   #    # #   #     #    #    #          #       #    ## #     #
 #       #     # ###    #    #     #    #    #######    #       #     #  #####
-_snapdir_get_transfer_objects_command() {
-	# Since this store works with the filesystem we can reuse the same
-	# function for both fetch and commit.
-	# Implementations of these slow methods should be implemented in
-	# using non-blocking I/O and should be able to handle large files
-	# in a concurrent manner.
-	# For simplicity we've relied on `nice` to schedule the commands
-	# in a way that will not cause the system to thrash.
-	# The log file should be unique for each transaction and it will
-	# be scanned for errors. An error is a line that starts with "ERROR: "
-	# and it will be printed to stderr and prevent the manifest from
-	# being committed.
+_snapdir_s3_store_get_transfer_objects_command() {
+	# Prints the command to transfer the objects from b2 to the local cache.
 	set -eEuo pipefail
-	local source_dir="${1:?Missing source directory}"
-	local target_dir="${2:?Missing target directory}"
-	local log_file="${4:?Missing log_file}"
+	local target_dir="${1:?Missing target directory}"
+	local log_file="${2:?Missing log_file}"
 	local file_paths_on_manifest
 	file_paths_on_manifest="$(cat)"
 	local total_files=0
@@ -719,8 +706,8 @@ ${bar_md5sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 
 		# --------------------------------------------------------------------------------
 		check "non existing manifest should fail"
-		result=$("${snapdir}" fetch --store "${store}" --id "bogus" --verbose 2>&1 || echo "")
-		grep -q "error: Failed to fetch manifest for snapshot 'bogus' from store" <<<"${result}" || fail "Expected 'error: Failed to fetch manifest for snapshot 'bogus' from store but got '$result'" && pass
+		result=$("${snapdir}" fetch --store "${store}" --id "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789" --verbose 2>&1 || echo "")
+		grep -q "error: Failed to fetch manifest for snapshot 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' from store" <<<"${result}" || fail "Expected 'error: Failed to fetch manifest for snapshot 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' from store but got '$result'" && pass
 
 		# --------------------------------------------------------------------------------
 

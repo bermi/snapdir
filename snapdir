@@ -1301,6 +1301,9 @@ _snapdir_set_manifest_from_id() {
 			echo "error: Manifest for snapdir ID '${_SNAPDIR_ID}' not found in the local cache. Snapshots must be fetched or staged locally first." >&2
 			return 1
 		fi
+	else
+		echo "error: Manifest ID '${_SNAPDIR_ID}' is not a valid BLAKE3 checksum." >&2
+		return 1
 	fi
 }
 
@@ -1540,6 +1543,10 @@ F 600 $foo_checksum 4 ./foo"
 		check "should generate manifest reading id from --id"
 		result=$("${snapshot}" manifest --id "${simple_manifest_id}" 2>&1 || echo "")
 		test "$result" == "$simple_manifest" || fail "Unexpected manifest '$result', expected '$simple_manifest'" && pass
+
+		check "should complain about non existing --id"
+		result=$("${snapshot}" manifest --id "${simple_manifest_id::-1}" 2>&1 || echo "")
+		test "$result" == "error: Manifest ID '${simple_manifest_id::-1}' is not a valid BLAKE3 checksum." || fail "Unexpected manifest '$result', expected invalid BLAKE3 checksum error" && pass
 
 		check "should generate manifest reading id from stdin"
 		result=$(echo "${simple_manifest_id}" | "${snapshot}" manifest 2>&1 || echo "")

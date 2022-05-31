@@ -646,8 +646,8 @@ snapdir_file_store_test() (
 
 		# --------------------------------------------------------------------------------
 		check "non existing manifest should fail"
-		result=$("${snapdir}" fetch --store "${store}" --id "bogus" --verbose 2>&1 || echo "")
-		grep -q "ID 'bogus' not found on --store '${store}'" <<<"${result}" || fail "Expected 'ID 'bogus' not found on --store '${store}' but got '$result'" && pass
+		result=$("${snapdir}" fetch --store "${store}" --id "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789" --verbose 2>&1 || echo "")
+		grep -q "ID 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' not found on --store '${store}'" <<<"${result}" || fail "Expected 'ID 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' not found on --store '${store}' but got '$result'" && pass
 
 		# --------------------------------------------------------------------------------
 		# snapdir pull
