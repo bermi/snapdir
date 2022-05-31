@@ -713,46 +713,55 @@ snapdir_stage() {
 	local manifest_cache_path="$cache_dir/${manifest_rel_path}"
 	mkdir -p "$cache_dir/$(dirname "${manifest_rel_path}")"
 
-	while read -r line; do
-		set -eEuo pipefail
-		local checksum
-		checksum="$(echo "$line" | cut -d' ' -f3)"
-		local rel_path
-		rel_path="$(echo "$line" | cut -d' ' -f5)"
-		file_path="$(_snapdir_absolute_path "${base_dir}/${rel_path}")"
-		local object_rel_path
+	local checksum
+	local rel_path
+	local object_rel_path
+	local object_rel_dir
+	local cache_path
+	local symlink_path
+	local line_parts
+	local object_type
+
+	for line in $manifest; do
+		IFS=' ' read -r -a line_parts <<<"${line}"
+		object_type="${line_parts[0]}"
+		if [[ ${object_type} != "F" ]]; then
+			continue
+		fi
+
+		checksum="${line_parts[2]}"
 		object_rel_path="$(_snapdir_get_object_rel_path "${checksum}")"
-		local object_rel_dir
 		object_rel_dir="$(dirname "${object_rel_path}")"
+
+		rel_path="${line_parts[4]}"
+		file_path="$(_snapdir_absolute_path "${base_dir}/${rel_path}")"
 		# Caches the object and verifies the checksum
-		local cache_path="$cache_dir/${object_rel_path}"
+		cache_path="$cache_dir/${object_rel_path}"
 
-		if test -f "${file_path}"; then
-			# prevent overwriting unchanged files in order to avoid unnecessary inotify events
-			if ! test -f "${cache_path}" || ! cmp "${cache_path}" "${file_path}"; then
-				_snapdir_log "Caching ${cache_path}"
-				mkdir -p "$cache_dir/${object_rel_dir}"
-				test -f "${cache_path}" && {
-					_snapdir_log "Warning: Purged tampered ${cache_path}"
-				}
-				# Files on the cache should be immutable
-				cp "${file_path}" "${cache_path}"
-				chmod 600 "${cache_path}"
-			else
-				_snapdir_log "Object cache for ${file_path} alredy exists"
-			fi
+		# prevent overwriting unchanged files in order to avoid unnecessary inotify events
+		if ! test -f "${cache_path}"; then
+			_snapdir_log "Caching ${cache_path}"
+			mkdir -p "$cache_dir/${object_rel_dir}"
+			# Files on the cache should be immutable
+			# TODO: On COW filesystems, it will be more
+			# efficient to link the file instead of copying it.
+			cp "${file_path}" "${cache_path}"
+			chmod 600 "${cache_path}"
 		else
-			_snapdir_log "File ${file_path} already cached"
+			_snapdir_log "Object cache for ${file_path} alredy exists"
 		fi
 
-		local symlink_path="$staging_directory/${object_rel_path}"
-		if [[ ! -e $symlink_path ]] && test -f "${cache_path}"; then
-			mkdir -p "$staging_directory/${object_rel_dir}"
-			_snapdir_log "Linking ${cache_path} to ${symlink_path}"
-			# use softlink to allow the cache and the staging area to be on different volumes
-			ln -s "${cache_path}" "$symlink_path"
+		# we only need to create the staging directory if --keep is provided
+		if [[ ${_SNAPDIR_KEEP:-"false"} == "true" ]]; then
+			symlink_path="$staging_directory/${object_rel_path}"
+			if [[ ! -e $symlink_path ]]; then
+				_snapdir_log "Linking ${cache_path} to ${symlink_path}"
+				mkdir -p "$staging_directory/${object_rel_dir}"
+				# use softlink to allow the cache and the staging area to be on different volumes
+				ln -s "${cache_path}" "$symlink_path"
+			fi
 		fi
-	done <<<"$manifest"
+	done
 
 	# its important to save the cache manifest after the objects are saved on the cache
 	# since this will ensure the cache manifest is consistent with the objects
@@ -818,6 +827,7 @@ snapdir_verify() {
 		failed_objects="$(echo "$result" | grep -E ': FAILED' | cut -d ':' -f1 | tr '\n' ' ')"
 		echo "$result"
 		if [[ ${failed_objects:-""} != "" ]]; then
+			echo "warning: Removing corrupted objects: ${failed_objects}" >&2
 			echo "$failed_objects" | xargs rm -f
 			return 1
 		fi
@@ -1724,8 +1734,9 @@ F 600 $foo_checksum 4 ./foo"
 		echo "corrupted" >"${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
 		generate_files
 		check "should warn about purged object"
+		result=$("${snapshot}" verify --verbose --purge --id=${simple_manifest_id} 2>&1 || echo "")
+		grep -q "warning: Removing corrupted objects" <<<"${result}" || fail "Failed to warn about purged object got: '${result}'" && pass
 		result=$("${snapshot}" stage --verbose "${_dir}" 2>&1 || echo "")
-		grep -q "Warning: Purged tampered" <<<"${result}" || fail "Failed to warn about purged object got: '${result}'" && pass
 		check "should restore tampered after a new stage"
 		result=$("${snapshot}" verify --verbose --id=${simple_manifest_id} 2>&1 || echo "")
 		grep -q "${foo_path}: OK" <<<"${result}" || fail "Failed to verify ${foo_path} got: '${result}'" && pass

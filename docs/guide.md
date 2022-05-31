@@ -228,21 +228,18 @@ the snapshot again:
     # ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f: FAILED
     # ${HOME}/.cache/snapdir/.objects/49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92: OK
 
-There are three ways to remove tampered objects from the cache.
+There are two ways to remove tampered objects from the cache.
 
 1.  Using the `--purge` option when calling the verify command:
     `snapdir verify --purge --id df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9`
-2.  Stage the example directory again:
-    `snapdir stage example`
-3.  Run a global cleanup command via: `snapdir verify-cache --purge`
+2.  Run a global cleanup command via: `snapdir verify-cache --purge`
 
-We'll use the second option to remove the tampered object since it will
-re-generate the object in the cache.
+We'll use the first option to remove the tampered object and will stage the snapshot again.
 
+    snapdir verify --purge --id df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
+    # Outputs: warning: Removing corrupted objects: ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f
     snapdir stage example
-    # Outputs:
-    # ${HOME}/.cache/snapdir/.objects/b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f ${HOME}/snapdir-guide/example/bar.txt differ: char 1, line 1
-    # df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
+    # Outputs: df4b3a7b6c04e5b14ebb548a28ac0dea6c645f0ecfde85df2c0911ac10d2e8a9
 
 ## Pushing snapshots
 
