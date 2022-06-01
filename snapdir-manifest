@@ -541,13 +541,11 @@ _snapdir_manifest_file_manifest() {
 	# directory_depth permission_bits checksum size filename
 	set -eEuo pipefail
 	local checksum
-	SECONDS=0
-	_snapdir_manifest_log "computing checksum for: $1"
 	local cache_path
 	if [[ ${_SNAPDIR_MANIFEST_CACHE} == "true" ]]; then
 		cache_path="$(_snapdir_manifest_get_path_for_file_cache "$1")"
 		if ! test -f "$cache_path"; then
-			_snapdir_manifest_log "cache miss for $1"
+			_snapdir_manifest_log "cache miss, computing checksum for: $1"
 			checksum=$(_snapdir_manifest_checksum "$1")
 			_snapdir_manifest_format_file_manifest_line "$1" "$checksum" | tee "$cache_path"
 		else
@@ -555,16 +553,15 @@ _snapdir_manifest_file_manifest() {
 			cat "$cache_path"
 		fi
 	else
+		_snapdir_manifest_log "computing checksum for: $1"
 		checksum=$(_snapdir_manifest_checksum "$1")
 		_snapdir_manifest_format_file_manifest_line "$1" "$checksum"
 	fi
-	_snapdir_manifest_log "$1 checksum duration=${SECONDS}s"
 }
 
 _snapdir_manifest_for_files_in_dir() {
 	set -eEuo pipefail
 	local dir="$1"
-	_snapdir_manifest_log "_snapdir_manifest_for_files_in_dir '${dir}'"
 	local files
 	files=$(_snapdir_manifest_find_files "$1")
 	if [[ $files == "" ]]; then
@@ -574,7 +571,6 @@ _snapdir_manifest_for_files_in_dir() {
 	# Get manifest checksums for files in the background
 	# only files directly in the directory are included in the manifest
 	while read -r file; do
-		_snapdir_manifest_log "_snapdir_manifest_for_files_in_dir '${dir}' '${file}'"
 		# run the command in the background but send stdout to stderr in the foreground
 		_snapdir_manifest_file_manifest "$file" &
 	done <<<"$files"
