@@ -7,6 +7,9 @@ endif
 
 API_DOC_TARGETS=$(patsubst %, docs/api/%.md, $(SNAPDIR_BIN_FILES))
 
+test:
+	./snapdir-test
+
 .PHONY: docs
 docs: $(API_DOC_TARGETS)
 
@@ -22,3 +25,24 @@ docs/api/%.md: %
 
 utils/qa-fixtures/tested-commands.sh: $(SNAPDIR_BIN_FILES)
 	_SNAPDIR_RUN_LOG_PATH="$$(pwd)/utils/qa-fixtures/tested-commands.sh" ./snapdir-test integration
+
+build: docs
+
+install:
+	@INSTALL_DIR="$(DESTDIR)$(PREFIX)" && \
+	INSTALL_DIR="$${INSTALL_DIR:-/usr/local/bin/}" && \
+	mkdir -p "$${INSTALL_DIR}" && \
+	cp snapdir* "$${INSTALL_DIR%/}/"
+	@command -v snapdir
+	@snapdir -v
+
+install-linked:
+	@INSTALL_DIR="$(DESTDIR)$(PREFIX)" && \
+	INSTALL_DIR="$${INSTALL_DIR:-/usr/local/bin/}" && \
+	mkdir -p "$${INSTALL_DIR}" && \
+	for bin_file in $(SNAPDIR_BIN_FILES); do \
+		rm -f "$${INSTALL_DIR%/}/$$(basename $$bin_file)" && \
+		ln -s "$$(pwd)/$$bin_file" "$${INSTALL_DIR%/}/$$(basename $$bin_file)"; \
+	done
+	@command -v snapdir
+	@snapdir -v
