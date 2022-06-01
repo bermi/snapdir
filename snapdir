@@ -57,6 +57,9 @@
 #
 # ### Environment variables
 #
+#     SNAPDIR_CACHE_DIR              Where are the object cache files stored?
+#                                    Defaults to $HOME/.snapdir/cache and will be
+#                                    overridden by --cache-dir.
 #     SNAPDIR_MANIFEST_CONTEXT       Context string for deriving key in keyed mode.
 #     SNAPDIR_SYSTEM_EXCLUDE_DIRS    Directories to exclude on --exclude="%system%".
 #
@@ -90,7 +93,7 @@ _SNAPDIR="snapdir"
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	_SNAPDIR="$(basename "${BASH_SOURCE[0]}")"
 fi
-_SNAPDIR_VERSION="0.3.1"
+_SNAPDIR_VERSION="0.4.0"
 
 set -eEuo pipefail
 IFS=$'\n\t'
@@ -1384,6 +1387,7 @@ _snapdir_export_env_defaults() {
 	set -eEuo pipefail
 	local command="${1:-none}"
 
+	_SNAPDIR_VERBOSE=${_SNAPDIR_VERBOSE:-"false"}
 	_SNAPDIR_CREATE_MISSING_BASE_DIR=false
 	_SNAPDIR_REQUIRE_STAGED_ID=false
 	if [[ $command == "pull" ]]; then
@@ -1391,11 +1395,12 @@ _snapdir_export_env_defaults() {
 	elif [[ $command == "id" ]] || [[ $command == "manifest" ]] || [[ $command == "push" ]]; then
 		_SNAPDIR_REQUIRE_STAGED_ID=true
 	fi
-
-	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR:-"${HOME:-~}/.cache/${_SNAPDIR}/"}"
+	local default_cache_dir="${HOME:-~}/.cache/${_SNAPDIR}/"
+	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR:-${SNAPDIR_CACHE_DIR:-$default_cache_dir}}"
 	# remove trailing slash from _SNAPDIR_CACHE_DIR
 	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR%/}"
-	_SNAPDIR_VERBOSE=${_SNAPDIR_VERBOSE:-"false"}
+	_snapdir_log "Using cache directory '${_SNAPDIR_CACHE_DIR}'"
+
 	_SNAPDIR_FORCE=${_SNAPDIR_FORCE:-"false"}
 	_SNAPDIR_CWD="${_SNAPDIR_CWD:-$(pwd)}"
 	_SNAPDIR_BIN_DIR="$(dirname "${_SNAPDIR_BIN_PATH}")"

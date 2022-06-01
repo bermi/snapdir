@@ -55,6 +55,9 @@ Create, audit and distribute authenticated directory snapshots.
 
 ### Environment variables
 
+    SNAPDIR_CACHE_DIR              Where are the object cache files stored?
+                                   Defaults to $HOME/.snapdir/cache and will be
+                                   overridden by --cache-dir.
     SNAPDIR_MANIFEST_CONTEXT       Context string for deriving key in keyed mode.
     SNAPDIR_SYSTEM_EXCLUDE_DIRS    Directories to exclude on --exclude="%system%".
 
@@ -225,7 +228,7 @@ Usage:
         --id="${ID}" \
         [--(dryrun|verbose|force|linked)] \
         [--cache-dir="${CACHE_DIR}"] \
-        [--paths="${COMMA_SEPARATED_PATH_PREFIXES}"] \
+        [--paths="${COMMA_SEPARATED_PATH_PATTERNS}"] \
         ["${DIR}"]
 
 Returns: No output unless in --verbose mode. Exit code 1 in case of error.
@@ -256,7 +259,7 @@ Usage:
         --id="${ID}" \
         [--(dryrun|verbose|force|linked)] \
         [--cache-dir="${CACHE_DIR}"] \
-        [--paths="${COMMA_SEPARATED_PATH_PREFIXES}"] \
+        [--paths="${COMMA_SEPARATED_PATH_PATTERNS}"] \
         ["${DIR}"]
 
 Returns: No output unless in --verbose mode. Exit code 1 in case of error.
