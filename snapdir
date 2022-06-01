@@ -1399,7 +1399,6 @@ _snapdir_export_env_defaults() {
 	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR:-${SNAPDIR_CACHE_DIR:-$default_cache_dir}}"
 	# remove trailing slash from _SNAPDIR_CACHE_DIR
 	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR%/}"
-	_snapdir_log "Using cache directory '${_SNAPDIR_CACHE_DIR}'"
 
 	_SNAPDIR_FORCE=${_SNAPDIR_FORCE:-"false"}
 	_SNAPDIR_CWD="${_SNAPDIR_CWD:-$(pwd)}"
