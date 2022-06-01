@@ -91,7 +91,7 @@ snapdir_s3_store_get_push_command() {
 			echo "Manifest already exists, skipping push";
 		else
 			SECONDS=0
-			aws s3 sync --only-show-errors --follow-symlinks --no-guess-mime-type "${source_dir%/}/.objects/" "${store%/}/.objects/";
+			aws s3 sync --only-show-errors --follow-symlinks --no-guess-mime-type --size-only "${source_dir%/}/.objects/" "${store%/}/.objects/";
 			aws s3 cp --only-show-errors --follow-symlinks --no-guess-mime-type "${source_dir%/}/${manifest_rel_path#/}" "$remote_manifest_path";
 			echo "Done pushing ${id} after \$SECONDS seconds";
 		fi
@@ -613,7 +613,7 @@ ${bar_md5sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 
 		# --------------------------------------------------------------------------------
 		check "should issue valid sync command "
-		grep -q 'aws s3 sync --only-show-errors --follow-symlinks --no-guess-mime-type "[^"]*/.objects/" "s3://[^"]*/.objects/"' <<<"${result}" || fail "Expected to find 'aws s3 sync --no-guess-mime-type \"${_dir}/.objects/\" \"s3://.*/.objects/\"' in '$result'" && pass
+		grep -q 'aws s3 sync --only-show-errors --follow-symlinks --no-guess-mime-type --size-only "[^"]*/.objects/" "s3://[^"]*/.objects/"' <<<"${result}" || fail "Expected to find 'aws s3 sync --no-guess-mime-type --size-only \"${_dir}/.objects/\" \"s3://.*/.objects/\"' in '$result'" && pass
 
 		# --------------------------------------------------------------------------------
 		check "should try to fetch the manifest"

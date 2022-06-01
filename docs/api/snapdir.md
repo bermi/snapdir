@@ -11,12 +11,16 @@ Create, audit and distribute authenticated directory snapshots.
     --cache-dir=DIR        Directory where the object cache is stored.
     --debug                Enable debug output.
     --dryrun               Run without making any changes.
+    --exclude=PATTERN      Excludes paths matching PATTERN.
+                           set to "%system%" to default to
+                           $SNAPDIR_SYSTEM_EXCLUDE_DIRS
     --force                Force an action to run.
     --help, -h             Prints help message.
     --id=ID                Manifest ID to use.
     --keep                 Keeps the staging directory.
     --linked               Use symlinks instead of copies.
-    --path=PATH            Partial path for checkout operations.
+    --paths=PATTERN        Only includes paths matching PATTERN
+                           when checking out manifests.
     --purge                Purges objects with invalid checksums.
     --store=URI            Store URI protocol://location/path.
     --verbose              Enable verbose output.
@@ -51,9 +55,8 @@ Create, audit and distribute authenticated directory snapshots.
 
 ### Environment variables
 
-    SNAPDIR_MANIFEST_CONTEXT    Context string for deriving key in keyed mode.
-                                This only works with b3sum.
-    SNAPDIR_MANIFEST_EXCLUDE    Default grep -v rule for --exclude="system".
+    SNAPDIR_MANIFEST_CONTEXT       Context string for deriving key in keyed mode.
+    SNAPDIR_SYSTEM_EXCLUDE_DIRS    Directories to exclude on --exclude="%system%".
 
 ### Examples
 
@@ -221,7 +224,8 @@ Usage:
         --store="${STORE}" \
         --id="${ID}" \
         [--(dryrun|verbose|force|linked)] \
-        [--cache-dir="${CACHE_DIR}"]
+        [--cache-dir="${CACHE_DIR}"] \
+        [--paths="${COMMA_SEPARATED_PATH_PREFIXES}"] \
         ["${DIR}"]
 
 Returns: No output unless in --verbose mode. Exit code 1 in case of error.
@@ -251,7 +255,8 @@ Usage:
         --store="${STORE}" \
         --id="${ID}" \
         [--(dryrun|verbose|force|linked)] \
-        [--cache-dir="${CACHE_DIR}"]
+        [--cache-dir="${CACHE_DIR}"] \
+        [--paths="${COMMA_SEPARATED_PATH_PREFIXES}"] \
         ["${DIR}"]
 
 Returns: No output unless in --verbose mode. Exit code 1 in case of error.
@@ -269,6 +274,9 @@ Examples:
 
     # hardlinks files instead of copying them
     snapdir checkout --store="${STORE}" --id="${ID}" --linked "${DIR}"
+
+    # only include paths matching the given prefixes
+    snapdir checkout --store="${STORE}" --id="${ID}" --paths="configs,i18n" "${DIR}"
 
 ### snapdir stage
 

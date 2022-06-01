@@ -13,12 +13,16 @@
 #     --cache-dir=DIR        Directory where the object cache is stored.
 #     --debug                Enable debug output.
 #     --dryrun               Run without making any changes.
+#     --exclude=PATTERN      Excludes paths matching PATTERN.
+#                            set to "%system%" to default to
+#                            $SNAPDIR_SYSTEM_EXCLUDE_DIRS
 #     --force                Force an action to run.
 #     --help, -h             Prints help message.
 #     --id=ID                Manifest ID to use.
 #     --keep                 Keeps the staging directory.
 #     --linked               Use symlinks instead of copies.
-#     --path=PATH            Partial path for checkout operations.
+#     --paths=PATTERN        Only includes paths matching PATTERN
+#                            when checking out manifests.
 #     --purge                Purges objects with invalid checksums.
 #     --store=URI            Store URI protocol://location/path.
 #     --verbose              Enable verbose output.
@@ -53,9 +57,8 @@
 #
 # ### Environment variables
 #
-#     SNAPDIR_MANIFEST_CONTEXT    Context string for deriving key in keyed mode.
-#                                 This only works with b3sum.
-#     SNAPDIR_MANIFEST_EXCLUDE    Default grep -v rule for --exclude="system".
+#     SNAPDIR_MANIFEST_CONTEXT       Context string for deriving key in keyed mode.
+#     SNAPDIR_SYSTEM_EXCLUDE_DIRS    Directories to exclude on --exclude="%system%".
 #
 # ### Examples
 #
@@ -457,7 +460,8 @@ snapdir_pull() {
 	#         --store="${STORE}" \
 	#         --id="${ID}" \
 	#         [--(dryrun|verbose|force|linked)] \
-	#         [--cache-dir="${CACHE_DIR}"]
+	#         [--cache-dir="${CACHE_DIR}"] \
+	#         [--paths="${COMMA_SEPARATED_PATH_PATTERNS}"] \
 	#         ["${DIR}"]
 	#
 	# Returns: No output unless in --verbose mode. Exit code 1 in case of error.
@@ -485,6 +489,13 @@ snapdir_pull() {
 			echo "error: snapdir_pull failed after ${_SNAPDIR_MAX_RETRIES} retries" >&2
 			return 1
 		fi
+	fi
+
+	# Do we have a local cache of the snapshot? No need to fetch
+	# just run checkout
+	if [[ ${_SNAPDIR_MANIFEST:-""} != "" ]]; then
+		snapdir_checkout "${base_dir}"
+		return 0
 	fi
 
 	# stage the directory before checking it out if exists
@@ -531,7 +542,8 @@ snapdir_checkout() {
 	#         --store="${STORE}" \
 	#         --id="${ID}" \
 	#         [--(dryrun|verbose|force|linked)] \
-	#         [--cache-dir="${CACHE_DIR}"]
+	#         [--cache-dir="${CACHE_DIR}"] \
+	#         [--paths="${COMMA_SEPARATED_PATH_PATTERNS}"] \
 	#         ["${DIR}"]
 	#
 	# Returns: No output unless in --verbose mode. Exit code 1 in case of error.
@@ -550,6 +562,9 @@ snapdir_checkout() {
 	#     # hardlinks files instead of copying them
 	#     snapdir checkout --store="${STORE}" --id="${ID}" --linked "${DIR}"
 	#
+	#     # only include paths matching the given prefixes
+	#     snapdir checkout --store="${STORE}" --id="${ID}" --paths="configs,i18n" "${DIR}"
+	#
 	set -eEuo pipefail
 	local base_dir
 	base_dir="$(_snapdir_get_base_dir "${1:-"."}" false)"
@@ -564,10 +579,6 @@ snapdir_checkout() {
 		echo "Manifest not found locally. Did you forget to fetch ${snapdir_id} from the store?" >&2
 		return 1
 	}
-	local only_path=""
-	if [[ ${_SNAPDIR_PATH:-""} != "" ]]; then
-		only_path="$(_snapdir_absolute_path "${base_dir}/${_SNAPDIR_PATH}")"
-	fi
 
 	local actual_manifest
 	actual_manifest="$(_SNAPDIR_VERBOSE=false _SNAPDIR_DEBUG=false _SNAPDIR_ID="" _SNAPDIR_MANIFEST="" "${_SNAPDIR_BIN_PATH}" manifest "$base_dir" 2>/dev/null || echo "")"
@@ -578,7 +589,7 @@ snapdir_checkout() {
 	local additions_manifest
 	# we only want new additions made to the manifest. diff will sometimes include
 	# an extra space after the + symbol
-	additions_manifest="$(echo "${manifest_diff}" | grep '^+' | sed -E 's#^(\+) ?##' || echo "")"
+	additions_manifest="$(echo "${manifest_diff}" | grep '^+' | sed -E 's#^(\+) ?##' | _snapdir_manifest_filter_by_paths "${_SNAPDIR_PATHS:-""}" || echo "")"
 
 	# We store all state changes in associative arrays so that they only get applied if there are no errors
 	local directories=()
@@ -601,14 +612,6 @@ snapdir_checkout() {
 		local object_dir
 		local absolute_path
 		absolute_path="$(_snapdir_absolute_path "${base_dir}/${relative_path}")"
-		# When providing --path we only want to include the files starting with that path
-		if [[ ${only_path} != "" ]]; then
-			if grep -v -q "^${only_path}" <<<"${absolute_path}"; then
-				continue
-			fi
-			object_dir="$(dirname "${absolute_path}")"
-			test -d "$object_dir" || directories+=("$object_dir")
-		fi
 		if [[ ${type} == "D" ]]; then
 			test -d "$absolute_path" || directories+=("$absolute_path")
 		else
@@ -629,6 +632,8 @@ snapdir_checkout() {
 					success_messages+=("Existing ${absolute_path} file overwritten via --force flag.")
 				fi
 			fi
+			object_dir="$(dirname "${absolute_path}")"
+			test -d "$object_dir" || directories+=("$object_dir")
 			_snapdir_log "Checking out ${absolute_path} with checksum ${checksum}"
 			source_files+=("$cache_path")
 			target_files+=("$absolute_path")
@@ -642,9 +647,6 @@ snapdir_checkout() {
 		local absolute_path
 		for relative_path in ${unchanged_files}; do
 			absolute_path="$(_snapdir_absolute_path "${base_dir}/${relative_path}")"
-			if [[ ${only_path} != "" ]] && grep -v -q "^${only_path}" <<<"${absolute_path}"; then
-				continue
-			fi
 			_snapdir_log "${absolute_path} is up to date"
 		done
 
@@ -981,7 +983,7 @@ _snapdir_run() (
 	set -eEuo pipefail
 	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults"
 	local boolean_args="debug|force|linked|keep|purge|stage|verbose|dryrun"
-	local value_required_args="id|store|cache_dir|path|exclude"
+	local value_required_args="id|store|cache_dir|paths|exclude"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
 
 	parse_argument_key() {
@@ -1362,7 +1364,7 @@ _snapdir_set_manifest_from_stdin_or_id() {
 			fi
 			local dir_candidate="$_SNAPDIR_MANIFEST"
 			# remove lines that don't match the manifest format
-			_SNAPDIR_MANIFEST="$(echo "${_SNAPDIR_MANIFEST}" | grep -E "(D|F) [0-9]+ [a-f0-9]+ [0-9]+ .*" || echo "")"
+			_SNAPDIR_MANIFEST="$(echo "${_SNAPDIR_MANIFEST}" | grep -E "(D|F) [0-9]+ [a-f0-9]{64} [0-9]+ .*" || echo "")"
 			if [[ ${_SNAPDIR_MANIFEST} == "" ]]; then
 				if test -d "$dir_candidate"; then
 					unset _SNAPDIR_MANIFEST
@@ -1434,6 +1436,32 @@ _snapdir_export_store_vars() {
 			_SNAPDIR_STORE_BASE_DIR="$(echo "$_SNAPDIR_STORE" | cut -d'/' -f4-)"
 			export _SNAPDIR_STORE_BASE_DIR
 		fi
+	fi
+}
+
+_snapdir_manifest_filter_by_paths() {
+	# Reads a manifest from stdin and keeps only matching --paths
+	local paths="${1:-${_SNAPDIR_PATHS:-""}}"
+	if [[ ${paths} != "" ]]; then
+		# trim leading and trailing ' from _SNAPDIR_PATHS using bash variable trimming
+		paths=${paths#\'}
+		paths=${paths%\'}
+		local include_paths
+		local paths_re=""
+		IFS=',' read -ra include_paths <<<"${paths}"
+		for include_path in "${include_paths[@]}"; do
+			# remove leading ./
+			include_path="${include_path#./}"
+			# remove leading / or ~
+			paths_re="${paths_re}|$include_path"
+		done
+		# remove leading '|'
+		paths_re=${paths_re##'|'}
+		if [[ $paths_re != "" ]]; then
+			cat | grep -E "^(D|F) [0-9]+ [a-f0-9]{64} [0-9]+ (\.|\./|/)?($paths_re)" || echo ""
+		fi
+	else
+		cat
 	fi
 }
 
@@ -1737,29 +1765,29 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		! test -f "${_dir}/bar" || fail "Unexpected bar found on ${_dir}/. It should only contain 'foo' contents. Command output: '${result}'" && pass
 		clean_files
 
-		check "should checkout a single file with --path"
-		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} --path=foo "${_dir}" 2>&1 || echo "")
+		check "should checkout a single file with --paths"
+		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} --paths=foo "${_dir}" 2>&1 || echo "")
 		! test -f "${_dir}/bar" || fail "Unexpected bar found on ${_dir}/. It should only contain 'foo'. Command output: '${result}'"
 		test -f "${_dir}/foo" || fail "Failed to checkout ${_dir}/foo. Command output: '${result}'" && pass
 		clean_files
 
-		check "should checkout a single directory with --path"
+		check "should checkout a single directory with --paths"
 		clean_files
-		result=$("${snapshot}" checkout --verbose --id=${nested_manifest_id} --path=a "${_dir}" 2>&1 || echo "")
+		result=$("${snapshot}" checkout --verbose --id=${nested_manifest_id} --paths=a "${_dir}" 2>&1 || echo "")
 		! test -f "${_dir}/b/b1/bar" || fail "Unexpected bar found on ${_dir}/b/b1/bar. It should only contain '${_dir}/a/a1/foo'. Command output: '${result}'"
 		test -f "${_dir}/a/a1/foo" || fail "Failed to checkout ${_dir}/a/a1/foo. Command output: '${result}'" && pass
 		clean_files
 
-		check "should ignore leading ./ on --path"
+		check "should ignore leading ./ on --paths"
 		clean_files
-		result=$("${snapshot}" checkout --verbose --id=${nested_manifest_id} --path=./a "${_dir}" 2>&1 || echo "")
+		result=$("${snapshot}" checkout --verbose --id=${nested_manifest_id} --paths=./a "${_dir}" 2>&1 || echo "")
 		! test -f "${_dir}/b/b1/bar" || fail "Unexpected bar found on ${_dir}/b/b1/bar. It should only contain '${_dir}/a/a1/foo'. Command output: '${result}'"
 		test -f "${_dir}/a/a1/foo" || fail "Failed to checkout ${_dir}/a/a1/foo. Command output: '${result}'" && pass
 		clean_files
 
-		check "should ignore trailing / on --path"
+		check "should ignore trailing / on --paths"
 		clean_files
-		result=$("${snapshot}" checkout --verbose --id=${nested_manifest_id} --path=a/ "${_dir}" 2>&1 || echo "")
+		result=$("${snapshot}" checkout --verbose --id=${nested_manifest_id} --paths=a/ "${_dir}" 2>&1 || echo "")
 		! test -f "${_dir}/b/b1/bar" || fail "Unexpected bar found on ${_dir}/b/b1/bar. It should only contain '${_dir}/a/a1/foo'. Command output: '${result}'"
 		test -f "${_dir}/a/a1/foo" || fail "Failed to checkout ${_dir}/a/a1/foo. Command output: '${result}'" && pass
 		clean_files
