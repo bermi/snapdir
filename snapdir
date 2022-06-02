@@ -743,6 +743,7 @@ snapdir_stage() {
 	local snapdir_id
 	snapdir_id="$(snapdir_manifest "$base_dir" | grep -v "^#" | b3sum --no-names -)"
 	_SNAPDIR_ID="${snapdir_id}"
+
 	local staging_directory
 	staging_directory="$(mktemp -d -t "${_SNAPDIR}"_"${snapdir_id}".XXXXXXXXXX)"
 
@@ -1111,39 +1112,48 @@ _snapdir_cache_objects() {
 	local base_dir
 	base_dir="$(_snapdir_get_base_dir "${1:-""}")"
 	local manifest="${_SNAPDIR_MANIFEST:-$(snapdir_manifest "${base_dir}")}"
-	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
-	local checksum
-	local rel_path
-	local object_rel_path
-	local object_rel_dir
-	local cache_path
-	local line_parts
 	local manifest_files
 	manifest_files="$(echo "${manifest}" | grep '^F ' || echo "")"
 
 	for line in $manifest_files; do
-		IFS=' ' read -r -a line_parts <<<"${line}"
-		checksum="${line_parts[2]}"
-		object_rel_path="$(_snapdir_get_object_rel_path "${checksum}")"
-		rel_path="${line_parts[4]}"
-		file_path="$(_snapdir_absolute_path "${base_dir}/${rel_path}")"
-		# Caches the object and verifies the checksum
-		cache_path="$cache_dir/${object_rel_path}"
-
-		# prevent overwriting unchanged files in order to avoid unnecessary inotify events
-		if ! test -f "${cache_path}"; then
-			_snapdir_log "Caching ${cache_path}"
-			object_rel_dir="$(dirname "${object_rel_path}")"
-			mkdir -p "$cache_dir/${object_rel_dir}"
-			# Files on the cache should be immutable
-			# TODO: On COW filesystems, it will be more
-			# efficient to link the file instead of copying it.
-			cp "${file_path}" "${cache_path}"
-			chmod 600 "${cache_path}"
-		else
-			_snapdir_log "Object cache for ${file_path} alredy exists"
-		fi
+		_snapdir_cache_file_object_from_manifest "${base_dir}" "${line}" &
 	done
+	wait
+}
+
+_snapdir_cache_file_object_from_manifest() {
+	# Caches a single file manifest entry from a directory into the local cache.
+	set -eEuo pipefail
+	local base_dir="${1:?Missing base_dir}"
+	local manifest_line="${2:?Missing manifest_line}"
+	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
+	local cache_path
+	local object_rel_path
+	local object_rel_dir
+	local checksum
+	local rel_path
+	local line_parts
+	IFS=' ' read -r -a line_parts <<<"${manifest_line}"
+	checksum="${line_parts[2]}"
+	object_rel_path="$(_snapdir_get_object_rel_path "${checksum}")"
+	rel_path="${line_parts[4]}"
+	file_path="$(_snapdir_absolute_path "${base_dir}/${rel_path}")"
+	# Caches the object and verifies the checksum
+	cache_path="$cache_dir/${object_rel_path}"
+
+	# prevent overwriting unchanged files in order to avoid unnecessary inotify events
+	if ! test -f "${cache_path}"; then
+		_snapdir_log "Caching ${cache_path}"
+		object_rel_dir="$(dirname "${object_rel_path}")"
+		mkdir -p "$cache_dir/${object_rel_dir}"
+		# Files on the cache should be immutable
+		# TODO: On COW filesystems, it will be more
+		# efficient to link the file instead of copying it.
+		nice cp "${file_path}" "${cache_path}"
+		chmod 600 "${cache_path}"
+	else
+		_snapdir_log "Object cache for ${file_path} alredy exists"
+	fi
 }
 
 _snapdir_cache_manifest() {
@@ -1892,10 +1902,11 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		generate_files
 		"${snapshot}" stage "${_dir}" >/dev/null
 		clean_files
-		${snapshot} checkout --force --id="${simple_manifest_id}" "${_dir}"
-		${snapshot} checkout --force --id="${nested_manifest_id}" "${_dir}"
+		generate_nested_files
+		"${snapshot}" stage "${_dir}" >/dev/null
+		clean_files
 		check "should have cached files"
-		find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g' | grep -q "^6$" || fail "Expected 6 files in cache, instead got '$(find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g')'" && pass
+		find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g' | grep -q "^14$" || fail "Expected 14 files in cache, instead got '$(find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g')'" && pass
 		check "should clear cache files"
 		result="$(${snapshot} flush-cache 2>&1 || echo "")"
 		! test -d "${_SNAPDIR_CACHE_DIR}/" || fail "Cache directory found after flushing cache ${_SNAPDIR_CACHE_DIR}/. Command output: '$result'" && pass
