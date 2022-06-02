@@ -136,6 +136,8 @@ _snapdir_test_utils() {
 		export _SNAPDIR_TEST_TMP_DIR
 		export _SNAPDIR_CWD="$_SNAPDIR_TEST_TMP_DIR"
 		export _SNAPDIR_CACHE_DIR="${_SNAPDIR_TEST_TMP_DIR}/.cache/${_SNAPDIR_MODULE_NAME}"
+		export SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR}"
+		export _SNAPDIR_MANIFEST_CACHE_DIR="${_SNAPDIR_CACHE_DIR}"
 
 		cd "$_SNAPDIR_TEST_TMP_DIR" || return 1
 
@@ -164,6 +166,7 @@ _snapdir_test_utils() {
 		fi
 		_SNAPDIR_TEST_TEARDOWN_COMPLETE=true
 		teardown_suite
+		rm -rf "$_SNAPDIR_TEST_TMP_DIR"
 		# exit with not ok if _SNAPDIR_TEST_TOTAL_CHECKS is not zero
 		if [[ $_SNAPDIR_TESTS_PENDING_CHECKS -gt 0 ]]; then
 			echo "not ok ${_SNAPDIR_TESTS_PENDING_CHECKS}..${_SNAPDIR_TEST_TOTAL_CHECKS} - ${_SNAPDIR_TESTS_PENDING_CHECKS} ${_SNAPDIR_TEST_SUITE_DESCRIPTION} tests pending" >&2

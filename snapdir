@@ -931,6 +931,7 @@ snapdir_flush_cache() {
 	set -eEuo pipefail
 	local cache_dir="${_SNAPDIR_CACHE_DIR:?Missing --cache-dir option}"
 	rm -rf "${cache_dir}"
+	"${_SNAPDIR_BIN_DIR}/snapdir-manifest" flush-cache
 }
 
 ######  ####### #######    #    #     # #       #######  #####
@@ -1395,7 +1396,7 @@ _snapdir_export_env_defaults() {
 	elif [[ $command == "id" ]] || [[ $command == "manifest" ]] || [[ $command == "push" ]]; then
 		_SNAPDIR_REQUIRE_STAGED_ID=true
 	fi
-	local default_cache_dir="${HOME:-~}/.cache/${_SNAPDIR}/"
+	local default_cache_dir="${HOME:-~}/.cache/snapdir/"
 	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR:-${SNAPDIR_CACHE_DIR:-$default_cache_dir}}"
 	# remove trailing slash from _SNAPDIR_CACHE_DIR
 	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR%/}"
@@ -1886,11 +1887,15 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		# snapshot flush-cache (cleans cache)
 		# --------------------------------------------------------------------------------
 		describe "snapshot flush-cache"
+		rm -rf "${_SNAPDIR_CACHE_DIR}"
+		clean_files
+		generate_files
+		"${snapshot}" stage "${_dir}" >/dev/null
 		clean_files
 		${snapshot} checkout --force --id="${simple_manifest_id}" "${_dir}"
 		${snapshot} checkout --force --id="${nested_manifest_id}" "${_dir}"
 		check "should have cached files"
-		find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g' | grep -q "^4$" || fail "Expected 4 files in cache, instead got '$(find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g')'" && pass
+		find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g' | grep -q "^6$" || fail "Expected 6 files in cache, instead got '$(find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g')'" && pass
 		check "should clear cache files"
 		result="$(${snapshot} flush-cache 2>&1 || echo "")"
 		! test -d "${_SNAPDIR_CACHE_DIR}/" || fail "Cache directory found after flushing cache ${_SNAPDIR_CACHE_DIR}/. Command output: '$result'" && pass

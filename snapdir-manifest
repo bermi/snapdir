@@ -350,6 +350,16 @@ else
 	}
 fi
 
+_snapdir_manifest_get_path_for_dir_cache() {
+	# gets a path for the cache for a directory
+	set -eEuo pipefail
+	local dir_path=$1
+	echo "$_SNAPDIR_MANIFEST_CACHE_DIR/$({
+		echo "${dir_path} ${SNAPDIR_MANIFEST_CONTEXT:-""}"
+		ls -al "$dir_path"
+	} | _snapdir_manifest_checksum)"
+}
+
 ######  #     # #     #
 #     # #     # ##    #
 #     # #     # # #   #
@@ -497,7 +507,7 @@ _snapdir_manifest_define_find_fn() {
 			# shellcheck disable=SC2086
 			find $_snapdir_manifest_find_flags "$1" -type d | grep -E -v "$_SNAPDIR_MANIFEST_EXCLUDE"
 		}
-		_snapdir_manifest_find_files() {
+		_snapdir_manifest_get_files_in_dir() {
 			set -eEuo pipefail
 			# shellcheck disable=SC2086
 			find $_snapdir_manifest_find_flags "$1" -maxdepth 1 -type f | grep -E -v "$_SNAPDIR_MANIFEST_EXCLUDE"
@@ -508,7 +518,7 @@ _snapdir_manifest_define_find_fn() {
 			# shellcheck disable=SC2086
 			find $_snapdir_manifest_find_flags "$1" -type d
 		}
-		_snapdir_manifest_find_files() {
+		_snapdir_manifest_get_files_in_dir() {
 			set -eEuo pipefail
 			# shellcheck disable=SC2086
 			find $_snapdir_manifest_find_flags "$1" -maxdepth 1 -type f
@@ -545,11 +555,11 @@ _snapdir_manifest_file_manifest() {
 	if [[ ${_SNAPDIR_MANIFEST_CACHE} == "true" ]]; then
 		cache_path="$(_snapdir_manifest_get_path_for_file_cache "$1")"
 		if ! test -f "$cache_path"; then
-			_snapdir_manifest_log "cache miss, computing checksum for: $1"
+			_snapdir_manifest_log "cache miss for file, computing checksum for: $1"
 			checksum=$(_snapdir_manifest_checksum "$1")
 			_snapdir_manifest_format_file_manifest_line "$1" "$checksum" | tee "$cache_path"
 		else
-			_snapdir_manifest_log "cache hit for $1"
+			_snapdir_manifest_log "cache hit for file $1"
 			cat "$cache_path"
 		fi
 	else
@@ -562,8 +572,27 @@ _snapdir_manifest_file_manifest() {
 _snapdir_manifest_for_files_in_dir() {
 	set -eEuo pipefail
 	local dir="$1"
+	local cache_path
+
+	if [[ ${_SNAPDIR_MANIFEST_CACHE} == "true" ]]; then
+		cache_path="$(_snapdir_manifest_get_path_for_dir_cache "$dir")"
+		if ! test -f "$cache_path"; then
+			_snapdir_manifest_log "cache miss for dir, computing checksum for: $dir"
+			_snapdir_manifest_for_files_in_dir_no_cache "$dir" | tee "$cache_path"
+		else
+			_snapdir_manifest_log "cache hit for dir $dir"
+			cat "$cache_path"
+		fi
+	else
+		_snapdir_manifest_log "computing checksum for: $dir"
+		_snapdir_manifest_for_files_in_dir_no_cache "$dir"
+	fi
+}
+
+_snapdir_manifest_for_files_in_dir_no_cache() {
+	local dir="$1"
 	local files
-	files=$(_snapdir_manifest_find_files "$1")
+	files=$(_snapdir_manifest_get_files_in_dir "$dir")
 	if [[ $files == "" ]]; then
 		return
 	fi
@@ -656,7 +685,13 @@ _snapdir_manifest_export_env_defaults() {
 	_SNAPDIR_MANIFEST_VERSION="0.1.1"
 
 	_SNAPDIR_MANIFEST_CACHE=${_SNAPDIR_MANIFEST_CACHE:-false}
-	_SNAPDIR_MANIFEST_CACHE_DIR="${_SNAPDIR_MANIFEST_CACHE_DIR:-"${HOME:-~}/.cache/${_SNAPDIR_MANIFEST}/"}"
+
+	local default_cache_dir="${HOME:-~}/.cache/snapdir/"
+	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR:-${SNAPDIR_CACHE_DIR:-$default_cache_dir}}"
+	# remove trailing slash from _SNAPDIR_CACHE_DIR
+	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR%/}"
+	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR:-${SNAPDIR_CACHE_DIR:-$default_cache_dir}}"
+	_SNAPDIR_MANIFEST_CACHE_DIR="${_SNAPDIR_MANIFEST_CACHE_DIR:-"${_SNAPDIR_CACHE_DIR}"}"
 	_SNAPDIR_MANIFEST_VERBOSE=${_SNAPDIR_MANIFEST_VERBOSE:-"false"}
 	_SNAPDIR_MANIFEST_CACHE_ID="${_SNAPDIR_MANIFEST_CACHE_ID:-""}"
 
@@ -930,6 +965,12 @@ F 600 67117d2a91c432d4db173671029b61d7ff437f7f87d153db1bf83b34b5833743 4 ./r1f"
 		grep -q "${expected_cached} 314572843" <<<"$result" || fail
 		end=$(date +%s)
 		uncached_duration=$((end - start))
+
+		check "cache first run"
+		! grep -q "cache hit" <<<"$result" || fail "Unexpected cache hit on result: '$result'"
+		grep -q "cache miss for dir" <<<"$result" || fail "Expected cache miss for dir on result: '$result'"
+		grep -q "cache miss for file" <<<"$result" || fail "Expected cache miss for file on result: '$result'" && pass
+
 		start=$(date +%s)
 		result=$($snapdir_manifest --checksum-bin "${_SNAPDIR_MANIFEST_CHECKSUM_BIN}" --cache --verbose --cache-dir "${testing_dir}/cache" "${testing_dir}/files" 2>&1 || true)
 		grep -q "${expected_cached} 314572843" <<<"$result" || fail
@@ -944,10 +985,13 @@ F 600 67117d2a91c432d4db173671029b61d7ff437f7f87d153db1bf83b34b5833743 4 ./r1f"
 		fi
 
 		check "cache misses"
-		test "$(grep -c "cache miss" <<<"$result")" == "0" || fail "unexpected cache misses" && pass
+		! grep -q "cache miss" <<<"$result" || fail "Unexpected cache miss on result: '$result'" && pass
 
-		check "cache hits"
-		test "$(grep -c "cache hit" <<<"$result")" == "9" || fail "expected 9 cache hits" && pass
+		check "dir cache hits"
+		grep -q "cache hit for dir" <<<"$result" || fail "Expected cache hit for dir on result: '$result'" && pass
+
+		check "no file cache hits because already captured by dir cache"
+		! grep -q "cache hit for file" <<<"$result" || fail "Unexpected cache hit for file on result: '$result'" && pass
 
 		rm -rf "${testing_dir}"/files/large
 
@@ -1012,6 +1056,7 @@ F 600 67117d2a91c432d4db173671029b61d7ff437f7f87d153db1bf83b34b5833743 4 ./r1f"
 	}
 
 	run_tests
+	# run_tests_without_teardown
 
 )
 
