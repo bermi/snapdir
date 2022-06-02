@@ -1150,7 +1150,7 @@ _snapdir_cache_file_object_from_manifest() {
 		# TODO: On COW filesystems, it will be more
 		# efficient to link the file instead of copying it.
 		nice cp "${file_path}" "${cache_path}"
-		chmod 600 "${cache_path}"
+		nice chmod 600 "${cache_path}"
 	else
 		_snapdir_log "Object cache for ${file_path} alredy exists"
 	fi
