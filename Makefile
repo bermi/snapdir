@@ -19,6 +19,10 @@ pre-commit: docs
 pre-push:
 	./utils/verify-docs.sh
 
+lint:
+	echo "$(SNAPDIR_BIN_FILES)" | xargs shellcheck
+	echo "$(SNAPDIR_BIN_FILES)" | xargs shfmt -w -s
+
 docs/api/%.md: %
 	echo "Generating API docs for $*"
 	DEBUG=false ./utils/generate-docs.sh $* > docs/api/$*.md
