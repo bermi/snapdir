@@ -182,21 +182,20 @@ snapdir_manifest_generate() {
 	local result=""
 	local files_in_dir_manifest=""
 
-	local _snapdir_tmp_file
-	local _snapdir_tmp_file2
-	_snapdir_tmp_file="$(mktemp -t "${_SNAPDIR_MANIFEST}".XXXXXXXXXX)"
-	_snapdir_tmp_file2="$(mktemp -t "${_SNAPDIR_MANIFEST}".XXXXXXXXXX)"
+	local _snapdir_tmp_dir
+	_snapdir_tmp_dir="$(mktemp -d -t "${_SNAPDIR_MANIFEST}".XXXXXXXXXX)"
 	# shellcheck disable=SC2064
-	trap "rm -f '$_snapdir_tmp_file' '$_snapdir_tmp_file2'" EXIT
+	trap "rm -rf '$_snapdir_tmp_dir'" EXIT
 
-	{
-		for dir in $dirs; do
-			# extract everything on the left side of the first space from dir
-			dir=${dir#* }
-			_snapdir_manifest_for_files_in_dir "${dir}" || echo "" &
-		done
-		wait
-	} | sort -u >"$_snapdir_tmp_file"
+	# First generate the checksum for all the files in the manifest
+	# and save them to a tmp file.
+	for dir in $dirs; do
+		level=${dir%% *}
+		# extract everything on the left side of the first space from dir
+		dir=${dir#* }
+		_snapdir_manifest_for_files_in_dir "${dir}" >"$_snapdir_tmp_dir/$level-$(echo "$dir" | _snapdir_manifest_checksum)" &
+	done
+	wait
 
 	for dir in $dirs; do
 		level=${dir%% *}
@@ -206,11 +205,7 @@ snapdir_manifest_generate() {
 			candidate_dirs="$_previous_level_dir_memory"
 			_previous_level_dir_memory=""
 		fi
-		files_in_dir_manifest=$(grep " $dir/[^/]*$" "$_snapdir_tmp_file" || echo "")
-		# remove lines that have already been processed
-		comm -23 "$_snapdir_tmp_file" <(echo "$files_in_dir_manifest") >"$_snapdir_tmp_file2"
-		mv "$_snapdir_tmp_file2" "$_snapdir_tmp_file"
-
+		files_in_dir_manifest=$(cat "$_snapdir_tmp_dir/$level-$(echo "$dir" | _snapdir_manifest_checksum)")
 		partial_manifest=$(_snapdir_manifest_generate_partial_dir_manifest "${dir}" "${candidate_dirs}" "${files_in_dir_manifest}")
 		result="$_level_accumulator
 $partial_manifest"
