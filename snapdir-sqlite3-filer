@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+
+# # snapdir-sqlite3-filer
+#
+# ## Description:
+#
+#     Reference implementation of snapdir filer using
+#     a local sqlite3 database.
+#
+# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
+
+set -eEuo pipefail
+IFS=$'\n\t'
+
+snapdir_sqlite3_filer_save() {
+	# Saves into the DB a new manifest entry. This is called
+	# after the manifest has been saved to disk.
+	set -eEuo pipefail
+  local dir="${1:?Missing dir}"
+  local snapdir_id="${2:?Missing manifest id}"
+	local size="${3:?Missing size}"
+	local parent_snapdir_id
+	parent_snapdir_id="$(sqlite3 "${SNAPDIR_SQLITE3_FILER_DB_PATH}" <<-EOF
+		SELECT snapdir_id FROM manifest_log 
+			WHERE dir_name = '${dir}'
+		ORDER BY created_at DESC LIMIT 1;
+	EOF
+	)"
+	# subsequent snapshots will not be logged
+	if [[ "${parent_snapdir_id}" == "${snapdir_id}" ]]; then
+		echo "# snapdir_id:$snapdir_id parent_snapdir_id:$parent_snapdir_id"
+		return 0
+	fi
+	parent_snapdir_id="${parent_snapdir_id:-"NULL"}"
+	sqlite3 "${SNAPDIR_SQLITE3_FILER_DB_PATH}" <<-EOF
+		INSERT INTO manifest_log 
+			(dir_name, snapdir_id, parent_snapdir_id, size)
+		VALUES 
+			('$dir', '$snapdir_id', NULLIF('$parent_snapdir_id', 'NULL'), $size);
+	EOF
+	if [[ "$parent_snapdir_id" != "NULL" ]]; then
+		echo "$parent_snapdir_id"
+	fi
+}
+
+snapdir_sqlite3_filer_directories() {
+	# shows unique directories tracked by the filer
+	set -eEuo pipefail
+	sqlite3 "${SNAPDIR_SQLITE3_FILER_DB_PATH}" <<-EOF
+		SELECT json_object(
+			'created_at', strftime('%Y-%m-%dT%H:%M:%SZ', created_at),
+			'snapdir_id', snapdir_id,
+			'size', size,
+			'dir_name', dir_name
+		)
+		FROM manifest_log GROUP BY dir_name ORDER BY created_at DESC;
+	EOF
+}
+
+snapdir_sqlite3_filer_ancestors() {
+	# shows ancestors for a given snapdir_id
+	set -eEuo pipefail
+	local snapdir_id="${1:?Missing snapdir_id}"
+	sqlite3 "${SNAPDIR_SQLITE3_FILER_DB_PATH}" <<-EOF
+		SELECT json_object(
+			'created_at', strftime('%Y-%m-%dT%H:%M:%SZ', created_at),
+			'snapdir_id', parent_snapdir_id,
+			'size', size,
+			'dir_name', dir_name
+		)
+		FROM manifest_log WHERE (
+			snapdir_id = '$snapdir_id' AND parent_snapdir_id IS NOT NULL
+		) ORDER BY created_at DESC;
+	EOF
+}
+
+snapdir_sqlite3_filer_versions() {
+	# prints a list of snapdir_ids and their creation dates as timestamps for a given directory
+	set -eEuo pipefail
+	local dir="${1:?Missing dir}"
+	sqlite3 "${SNAPDIR_SQLITE3_FILER_DB_PATH}" <<-EOF
+		SELECT json_object(
+			'created_at', strftime('%Y-%m-%dT%H:%M:%SZ', created_at),
+			'snapdir_id', snapdir_id,
+			'size', size
+		)
+		FROM manifest_log WHERE dir_name='$dir' ORDER BY created_at DESC;
+	EOF
+}
+
+_snapdir_sqlite3_filer_run() (
+	set -eEuo pipefail
+
+	# Saves the command into the run log for debugging, documentation, etc.
+	if [[ ${ENVIRONMENT:-""} == "test" ]] && [[ ${_SNAPDIR_RUN_LOG_PATH:-""} != "" ]] && test -f "${_SNAPDIR_RUN_LOG_PATH:-""}"; then
+		# shellcheck disable=SC2145
+		echo "snapdir-sqlite3-filer ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
+	fi
+
+	local subcommands="save|versions|directories|ancestors"
+	local boolean_args="debug|verbose"
+	local value_required_args="filer"
+	local legal_argument_keys="${boolean_args}|${value_required_args}"
+
+	_snapdir_sqlite3_filer_parse_argument_key() {
+		sed -E 's|^--?|_SNAPDIR_SQLITE3_FILER_|; s|-|_|g;' <<<"${1^^}"
+	}
+
+	_snapdir_sqlite3_filer_validate_option() {
+		set -eEuo pipefail
+		grep -q -E "^_SNAPDIR_SQLITE3_FILER_(${legal_argument_keys^^})$" <<<"${1}" || {
+			echo "error: Unknown option: ${1//_SNAPDIR_SQLITE3_FILER_/}" | tr '[:upper:]' '[:lower:]' >&2
+			echo "Valid options are: --(${legal_argument_keys})" >&2
+			exit 1
+		}
+	}
+
+	_snapdir_sqlite3_filer_help() {
+		_snapdir_sqlite3_filer_export_env_defaults
+		local command="${1:-""}"
+		if [[ ${command} == "" ]]; then
+			sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_SQLITE3_FILER_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+		else
+			_snapdir_command_help "snapdir_sqlite3_filer_${command//-/_}" <"$_SNAPDIR_SQLITE3_FILER_BIN_PATH" | more
+		fi
+		exit 0
+	}
+
+	local command=""
+	local positional_args=""
+	local key
+	local value
+	local is_boolean
+	local subcommand_candidate="${1:-"$command"}"
+	local show_help=false
+
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		save | versions | directories | ancestors)
+			command="$1"
+			shift
+			;;
+		help | -h | --help)
+			show_help=true
+			shift
+			;;
+		version | -v | --version)
+			echo "${_SNAPDIR_VERSION}"
+			exit 0
+			;;
+		# export all --*=* flags as _SNAPDIR_SQLITE3_FILER_* env vars
+		--*=* | -*=*)
+			key="$(_snapdir_sqlite3_filer_parse_argument_key "${1%%=*}")"
+			_snapdir_sqlite3_filer_validate_option "$key"
+			export "$key"="${1#*=}"
+			shift
+			;;
+		# export all --* * flags as _SNAPDIR_SQLITE3_FILER_* env vars
+		--*)
+			is_boolean=$(grep -q -E "^--?(${boolean_args})$" <<<"${1}" && echo true || echo false)
+			key="$(_snapdir_sqlite3_filer_parse_argument_key "${1}")"
+			_snapdir_sqlite3_filer_validate_option "$key"
+			shift
+			value="${1:-true}"
+			# if key is in boolean_args
+			if [[ ${is_boolean} == "false" ]] && [[ ${value:0:1} != "-" ]]; then
+				# since this might be the last arg, this will always be truthy
+				shift || true
+			else
+				value="true"
+			fi
+			export "${key}"="${value}"
+			;;
+		*)
+			positional_args="${positional_args}${1} "
+			shift
+			;;
+		esac
+	done
+
+	if [[ ${show_help} == "true" ]]; then
+		_snapdir_sqlite3_filer_help "$command"
+	fi
+
+	# if command is not set, show help
+	if [[ ${command:-""} == "" ]]; then
+		echo "Uknown command '$subcommand_candidate'. Valid commands are: ${subcommands}" >&2
+		echo "Try: snapdir-sqlite3-filer --help" >&2
+		return 1
+	fi
+
+	_snapdir_sqlite3_filer_export_env_defaults
+	# env | grep _snapdir_sqlite3_filer_ | sort
+	eval "snapdir_sqlite3_filer_${command//-/_} $positional_args ${*:2}"
+)
+
+_snapdir_sqlite3_filer_ensure_db() {
+	if test -f "${SNAPDIR_SQLITE3_FILER_DB_PATH}"; then
+		# Updates the version so that we can determine the
+		# version in which each manifest_log entry was created.
+		sqlite3 "${SNAPDIR_SQLITE3_FILER_DB_PATH}"  <<-EOF
+		INSERT OR IGNORE INTO snapdir_versions (version) VALUES ("${_SNAPDIR_VERSION}");
+		EOF
+		return 0
+	fi
+	mkdir -p "$(dirname "${SNAPDIR_SQLITE3_FILER_DB_PATH}")"
+	# creates a sqlite3 db with the following tables:
+	# - manifest_log: id, parent_id, dirname, created_at
+	sqlite3 "${SNAPDIR_SQLITE3_FILER_DB_PATH}" <<-EOF
+		CREATE TABLE snapdir_versions (
+			version TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (version, created_at)
+		);
+		CREATE TABLE manifest_log (
+			snapdir_id TEXT,
+			parent_snapdir_id TEXT,
+			size INTEGER DEFAULT 0,
+			dir_name TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+	EOF
+
+	# Sets the version of the db to help with upgrades
+	sqlite3 "${SNAPDIR_SQLITE3_FILER_DB_PATH}" <<-EOF
+		INSERT INTO snapdir_versions (version) VALUES ("${_SNAPDIR_VERSION}");
+	EOF
+}
+
+_snapdir_sqlite3_filer_export_env_defaults() {
+	# Environment variables
+	set -eEuo pipefail
+	command -v sqlite3 >/dev/null || {
+		echo "error: sqlite3 is not installed and it's required for the disk filer." >&2
+		exit 1
+	}
+	local default_filer_path="/var/lib/snapdir/sqlite3_filer.db"
+	SNAPDIR_SQLITE3_FILER_DB_PATH="${SNAPDIR_SQLITE3_FILER_DB_PATH:-$default_filer_path}"
+	export SNAPDIR_SQLITE3_FILER_DB_PATH
+	_snapdir_sqlite3_filer_ensure_db
+}
+
+#       ####### #######  #####  #######  #####
+#          #    #       #     #    #    #     #
+#          #    #       #          #    #
+#          #    #####    #####     #     #####
+#          #    #             #    #          #
+#          #    #       #     #    #    #     #
+#          #    #######  #####     #     #####
+snapdir_sqlite3_filer_test() (
+	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	set -eEuo pipefail
+
+	# Import test utilities
+	# shellcheck disable=SC1091 source=./snapdir-test
+	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_SQLITE3_FILER_BIN_PATH}"
+
+	teardown_suite() {
+		rm -rf "$_SNAPDIR_TEST_TMP_DIR/filer"
+	}
+
+	test_suite() {
+		set -eEuo pipefail
+		local snapdir="$_SNAPDIR_BIN_PATH"
+		local result=""
+		local _dir="${_SNAPDIR_TEST_TMP_DIR}/files"
+		local foo_checksum="49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
+		local foo_path="49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
+		local bar_checksum="b3199d36d434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
+		local bar_path="b31/99d/36d/434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
+		local simple_manifest_id="aa91e498f401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d"
+		local simple_manifest_path="aa9/1e4/98f/401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d"
+		local store="file://${_SNAPDIR_TEST_TMP_DIR}/store"
+		export SNAPDIR_SQLITE3_FILER_DB_PATH="${_SNAPDIR_TEST_TMP_DIR}/filer.db"
+
+		# --------------------------------------------------------------------------------
+		# snapdir save
+		# --------------------------------------------------------------------------------
+		describe "snapdir save"
+		generate_files
+
+    check "save by default should use filer"
+		result=$("${snapdir}" save "${_dir}" 2>&1 || echo "")
+    echo "$result"
+	}
+
+	run_tests
+	# run_tests_without_teardown
+)
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+	_snapdir_sqlite3_filer_readlink() {
+		echo "$(cd "$(dirname "$1")" || echo "" && pwd)/$(basename "$1")"
+	}
+else
+
+	_snapdir_sqlite3_filer_readlink() {
+		readlink -f "$1"
+	}
+fi
+
+#######
+#       #    # ##### #####  #   # #####   ####  # #    # #####
+#       ##   #   #   #    #  # #  #    # #    # # ##   #   #
+#####   # #  #   #   #    #   #   #    # #    # # # #  #   #
+#       #  # #   #   #####    #   #####  #    # # #  # #   #
+#       #   ##   #   #   #    #   #      #    # # #   ##   #
+####### #    #   #   #    #   #   #       ####  # #    #   #
+
+# Run if is not sourced
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	# Get the absolute path to ${BASH_SOURCE[0]}
+	export _SNAPDIR_SQLITE3_FILER_BIN_PATH="${_SNAPDIR_SQLITE3_FILER_BIN_PATH:-$(_snapdir_sqlite3_filer_readlink "${BASH_SOURCE[0]}")}"
+	# import snapdir functions and environment variables,
+	# we'll need them to resolve directories, logging and testing.
+	_SNAPDIR_BIN_PATH="$(dirname "${_SNAPDIR_SQLITE3_FILER_BIN_PATH}")/snapdir"
+	if ! test -f "$_SNAPDIR_BIN_PATH"; then
+		if snapdir -v 2>/dev/null >/dev/null; then
+			_SNAPDIR_BIN_PATH="snapdir"
+		else
+			echo "error: Could not find snapdir binary"
+			exit 1
+		fi
+	fi
+	# shellcheck disable=SC1090
+	. "$_SNAPDIR_BIN_PATH"
+	_snapdir_sqlite3_filer_run "${@:1}"
+else
+	_snapdir_sqlite3_filer_export_env_defaults
+fi
