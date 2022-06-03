@@ -14,11 +14,11 @@ IFS=$'\n\t'
 
 snapdir_sqlite3_logger_log() {
 	set -eEuo pipefail
-  local event="${_SNAPDIR_SQLITE3_LOGGER_EVENT:?Missing --event}"
-  local id="${_SNAPDIR_SQLITE3_LOGGER_ID:?Missing --id}"
-  local context="${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:?Missing --context}"
+	local event="${_SNAPDIR_SQLITE3_LOGGER_EVENT:?Missing --event}"
+	local id="${_SNAPDIR_SQLITE3_LOGGER_ID:?Missing --id}"
+	local context="${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:?Missing --context}"
 	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
-		INSERT INTO event_log (event, id, context) VALUES ('${event}', '${id}', '${context}');
+		INSERT INTO snapdir_event_log (event, id, context) VALUES ('${event}', '${id}', '${context}');
 	EOF
 	snapdir_sqlite3_logger_save "${context}" "$id"
 }
@@ -27,22 +27,23 @@ snapdir_sqlite3_logger_save() {
 	# Saves into the DB a new manifest entry. This is called
 	# after the manifest has been saved to disk.
 	set -eEuo pipefail
-  local context="${1:-${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:?Missing --context}}"
+	local context="${1:-${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:?Missing --context}}"
 	local id="${2:-${_SNAPDIR_SQLITE3_LOGGER_ID:?Missing --id}}"
 	local previous_id
-	previous_id="$(sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
-		SELECT id FROM snapshots 
-			WHERE context='${context}'
-		ORDER BY created_at DESC LIMIT 1;
-	EOF
+	previous_id="$(
+		sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
+			SELECT id FROM snapdir_history 
+				WHERE context='${context}'
+			ORDER BY created_at DESC LIMIT 1;
+		EOF
 	)"
-	# subsequent snapshots will not be logged
-	if [[ "${previous_id}" == "${id}" ]]; then
+	# subsequent snapdir_history will not be logged
+	if [[ ${previous_id} == "${id}" ]]; then
 		return 0
 	fi
 	previous_id="${previous_id:-"NULL"}"
 	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
-		INSERT INTO snapshots 
+		INSERT INTO snapdir_history 
 			(context, id, previous_id)
 		VALUES 
 			('$context', '$id', NULLIF('$previous_id', 'NULL'));
@@ -58,8 +59,8 @@ snapdir_sqlite3_logger_contexts() {
 			'id', s1.id,
 			'context', s1.context
 		)
-		FROM snapshots s1
-			LEFT JOIN snapshots s2
+		FROM snapdir_history s1
+			LEFT JOIN snapdir_history s2
 				ON s1.context = s2.context
 				AND s1.created_at < s2.created_at
 		WHERE s2.id IS NULL
@@ -72,7 +73,7 @@ snapdir_sqlite3_logger_ancestors() {
 	local id="${_SNAPDIR_SQLITE3_LOGGER_ID:?Missing --id}"
 	local context="${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:-""}"
 	local context_condition=""
-	if [[ "$context" != "" ]]; then
+	if [[ $context != "" ]]; then
 		context_condition=" AND context='${context//\'/\'\'}'"
 	fi
 
@@ -82,23 +83,23 @@ snapdir_sqlite3_logger_ancestors() {
 			'id', previous_id,
 			'context', context
 		)
-		FROM snapshots WHERE (
+		FROM snapdir_history WHERE (
 			id = '$id' AND previous_id IS NOT NULL $context_condition
 		) ORDER BY created_at DESC;
 	EOF
 }
 
-snapdir_sqlite3_logger_versions() {
+snapdir_sqlite3_logger_revisions() {
 	# prints a list of ids and their creation dates as timestamps for a given context
 	set -eEuo pipefail
-  local context="${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:?Missing --context}"
+	local context="${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:?Missing --context}"
 	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
 		SELECT json_object(
 			'created_at', STRFTIME('%Y-%m-%d %H:%M:%f', created_at),
 			'id', id,
 			'previous_id', previous_id
 		)
-		FROM snapshots WHERE context='$context' ORDER BY created_at DESC;
+		FROM snapdir_history WHERE context='$context' ORDER BY created_at DESC;
 	EOF
 }
 
@@ -111,7 +112,7 @@ _snapdir_sqlite3_logger_run() (
 		echo "snapdir-sqlite3-logger ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
 	fi
 
-	local subcommands="save|versions|contexts|ancestors|log"
+	local subcommands="save|revisions|contexts|ancestors|log"
 	local boolean_args="debug|verbose"
 	local value_required_args="id|context|event"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
@@ -129,48 +130,48 @@ _snapdir_sqlite3_logger_run() (
 		}
 	}
 
-_snapdir_sqlite3_logger_ensure_db() {
-	if test -f "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}"; then
-		# if "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" is older than "${_SNAPDIR_BIN_DIR}/snapdir"
-		# attempt to set the version
-		if [[ "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" -ot "${_SNAPDIR_BIN_DIR}/snapdir" ]]; then
-			# Updates the version so that we can determine the
-			# version in which each snapshots entry was created.
-			sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}"  <<-EOF
-			INSERT OR IGNORE INTO snapdir_versions (version) VALUES ("${_SNAPDIR_VERSION}");
-			EOF
+	_snapdir_sqlite3_logger_ensure_db() {
+		if test -f "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}"; then
+			# if "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" is older than "${_SNAPDIR_BIN_DIR}/snapdir"
+			# attempt to set the version
+			if [[ ${SNAPDIR_SQLITE3_LOGGER_DB_PATH} -ot "${_SNAPDIR_BIN_DIR}/snapdir" ]]; then
+				# Updates the version so that we can determine the
+				# version in which each snapdir_history entry was created.
+				sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
+					INSERT OR IGNORE INTO snapdir_system (version) VALUES ("${_SNAPDIR_VERSION}");
+				EOF
+			fi
+			return 0
 		fi
-		return 0
-	fi
-	mkdir -p "$(dirname "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}")"
-	# creates a sqlite3 db with the following tables:
-	# - snapshots: id, previous_id, dirname, created_at
-	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
-		CREATE TABLE snapdir_versions (
-			version TEXT CHECK(version REGEXP '^[0-9]+.[0-9]+.[0-9]+$' AND length(version) < 16),
-			created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')),
-			PRIMARY KEY (version, created_at)
-		);
-		CREATE TABLE event_log (
-			event TEXT NOT NULL CHECK(event REGEXP '^[a-z]{,128}$'),
-			id TEXT NOT NULL CHECK(id REGEXP '^[a-f0-9]{64}$'),
-			context TEXT CHECK(context REGEXP '^(/|[a-z0-9]*://)'),
-			created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))
-		);
-		# context, id, previous_id
-		CREATE TABLE snapshots (
-			id TEXT NOT NULL CHECK(id REGEXP '^[a-f0-9]{64}$'),
-			previous_id TEXT CHECK(previous_id REGEXP '^[a-f0-9]{64}$'),
-			context TEXT CHECK(context REGEXP '^(/|[a-z0-9]*://)'),
-			created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))
-		);
-	EOF
+		mkdir -p "$(dirname "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}")"
+		# creates a sqlite3 db with the following tables:
+		# - snapdir_history: id, previous_id, dirname, created_at
+		sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
+			CREATE TABLE snapdir_system (
+				version TEXT CHECK(version REGEXP '^[0-9]+.[0-9]+.[0-9]+$' AND length(version) < 16),
+				created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')),
+				PRIMARY KEY (version, created_at)
+			);
+			CREATE TABLE snapdir_event_log (
+				event TEXT NOT NULL CHECK(event REGEXP '^[a-z]{,128}$'),
+				id TEXT NOT NULL CHECK(id REGEXP '^[a-f0-9]{64}$'),
+				context TEXT CHECK(context REGEXP '^(/|[a-z0-9]*://)'),
+				created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))
+			);
+			# context, id, previous_id
+			CREATE TABLE snapdir_history (
+				id TEXT NOT NULL CHECK(id REGEXP '^[a-f0-9]{64}$'),
+				previous_id TEXT CHECK(previous_id REGEXP '^[a-f0-9]{64}$'),
+				context TEXT CHECK(context REGEXP '^(/|[a-z0-9]*://)'),
+				created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))
+			);
+		EOF
 
-	# Sets the version of the db to help with upgrades
-	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
-		INSERT INTO snapdir_versions (version) VALUES ("${_SNAPDIR_VERSION}");
-	EOF
-}
+		# Sets the version of the db to help with upgrades
+		sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
+			INSERT INTO snapdir_system (version) VALUES ("${_SNAPDIR_VERSION}");
+		EOF
+	}
 
 	_snapdir_sqlite3_logger_help() {
 		_snapdir_sqlite3_logger_export_env_defaults
@@ -193,7 +194,7 @@ _snapdir_sqlite3_logger_ensure_db() {
 
 	while [ $# -gt 0 ]; do
 		case "$1" in
-		save | versions | contexts | ancestors | log | test)
+		save | revisions | contexts | ancestors | log | test)
 			command="$1"
 			shift
 			;;
@@ -295,18 +296,18 @@ snapdir_sqlite3_logger_test() (
 		# --------------------------------------------------------------------------------
 		describe "log"
 
-    check "should prevent invalid id"
+		check "should prevent invalid id"
 		result=$("$logger" log --event "manifest" --context "/foo/bar" --id "invalid" 2>&1 || echo "")
-    grep -q "CHECK constraint failed: id" <<<"$result" || fail "Expected error message for id. Got: '$result'" && pass
+		grep -q "CHECK constraint failed: id" <<<"$result" || fail "Expected error message for id. Got: '$result'" && pass
 
-    check "should prevent relative paths for context"
+		check "should prevent relative paths for context"
 		result=$("$logger" log --event "manifest" --context "foo/bar" --id "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789" 2>&1 || echo "")
-    grep -q "CHECK constraint failed: context" <<<"$result" || fail "Expected error message for context. Got: '$result'" && pass
+		grep -q "CHECK constraint failed: context" <<<"$result" || fail "Expected error message for context. Got: '$result'" && pass
 
-    check "should save event"
+		check "should save event"
 		result=$("$logger" log --event "manifest" --context "s3://foo" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" 2>&1 || echo "")
-    test "$result" == "" || fail "Unexpected output: '$result'"
-		test "$(sqlite3 "$SNAPDIR_SQLITE3_LOGGER_DB_PATH" "select event,id,context from event_log")" == "manifest|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|s3://foo" && pass
+		test "$result" == "" || fail "Unexpected output: '$result'"
+		test "$(sqlite3 "$SNAPDIR_SQLITE3_LOGGER_DB_PATH" "select event,id,context from snapdir_event_log")" == "manifest|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|s3://foo" && pass
 
 		# --------------------------------------------------------------------------------
 		"$logger" log --event "manifest" --context "s3://bar" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -352,17 +353,17 @@ snapdir_sqlite3_logger_test() (
 		test "$(echo "$result" | wc -l)" == "1" || fail "Found more ancestors than expected."
 		pass
 
-		describe "versions"
+		describe "revisions"
 
-		check "should not return versions for an invalid context"
-		result="$("$logger" versions --context "/not/avail" 2>&1 || echo "")"
+		check "should not return revisions for an invalid context"
+		result="$("$logger" revisions --context "/not/avail" 2>&1 || echo "")"
 		test "$result" == "" || fail "Unexpected output: '$result'" && pass
 
-		check "should return versions for a valid context"
-		result="$("$logger" versions --context "s3://bar" 2>&1 || echo "")"
-		grep "id\":\"ccc" <<<"$result" | grep -q "previous_id\":\"aaaaa" || fail "Expected id 'ccc...' with previous_id 'aaa...'. Got: '$result'"
-		grep "id\":\"aaa" <<<"$result" | grep -q "previous_id\":null" || fail "Expected id 'aaa...' with previous_id 'null'. Got: '$result'"
-		test "$(echo "$result" | wc -l)" == "2" || fail "Found more versions than expected."
+		check "should return revisions for a valid context"
+		result="$("$logger" revisions --context "s3://bar" 2>&1 || echo "")"
+		grep 'id":"ccc' <<<"$result" | grep -q 'previous_id":"aaaaa' || fail "Expected id 'ccc...' with previous_id 'aaa...'. Got: '$result'"
+		grep 'id":"aaa' <<<"$result" | grep -q 'previous_id":null' || fail "Expected id 'aaa...' with previous_id 'null'. Got: '$result'"
+		test "$(echo "$result" | wc -l)" == "2" || fail "Found more revisions than expected."
 		pass
 
 	}

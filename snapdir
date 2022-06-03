@@ -48,14 +48,14 @@
 #                                    it out the given path.
 #     push --store= [--id=] [PATH]   Pushes a snapshot to a store given its path or
 #                                    a staged manifest ID.
+#     revisions --context=           Get a list of snapdir IDs created on a
+#                                    context (store or abs path). Requires --logger.
 #     stage DIR                      Saves into the local cache a snapshot of
 #                                    a directory.
 #     test                           Runs unit tests for snapdir.
 #     verify --id= [--purge]         Verifies the integrity of a staged snapshot.
 #     verify-cache [--purge]         Verifies the integrity of the local cache.
 #     version                        Prints the version.
-#     versions --context=            Get a list of snapdir IDs created on a context.
-#                                    Requires --logger.
 #
 # ### Arguments
 #
@@ -878,12 +878,12 @@ snapdir_verify() {
 	fi
 }
 
-#     #####  ####### #     # ####### ####### #     # #######  #####          
-#    #     # #     # ##    #    #    #        #   #     #    #     #         
-#    #       #     # # #   #    #    #         # #      #    #               
-#    #       #     # #  #  #    #    #####      #       #     #####          
-#    #       #     # #   # #    #    #         # #      #          #         
-#    #     # #     # #    ##    #    #        #   #     #    #     #         
+#     #####  ####### #     # ####### ####### #     # #######  #####
+#    #     # #     # ##    #    #    #        #   #     #    #     #
+#    #       #     # # #   #    #    #         # #      #    #
+#    #       #     # #  #  #    #    #####      #       #     #####
+#    #       #     # #   # #    #    #         # #      #          #
+#    #     # #     # #    ##    #    #        #   #     #    #     #
 #     #####  ####### #     #    #    ####### #     #    #     #####
 
 snapdir_contexts() {
@@ -912,13 +912,13 @@ snapdir_contexts() {
 	"${_SNAPDIR_LOGGER_BIN_PATH}" contexts
 }
 
-#       #    #     #  #####  #######  #####  ####### ####### ######   #####  
-#      # #   ##    # #     # #       #     #    #    #     # #     # #     # 
-#     #   #  # #   # #       #       #          #    #     # #     # #       
-#    #     # #  #  # #       #####    #####     #    #     # ######   #####  
-#    ####### #   # # #       #             #    #    #     # #   #         # 
-#    #     # #    ## #     # #       #     #    #    #     # #    #  #     # 
-#    #     # #     #  #####  #######  #####     #    ####### #     #  #####  
+#       #    #     #  #####  #######  #####  ####### ####### ######   #####
+#      # #   ##    # #     # #       #     #    #    #     # #     # #     #
+#     #   #  # #   # #       #       #          #    #     # #     # #
+#    #     # #  #  # #       #####    #####     #    #     # ######   #####
+#    ####### #   # # #       #             #    #    #     # #   #         #
+#    #     # #    ## #     # #       #     #    #    #     # #    #  #     #
+#    #     # #     #  #####  #######  #####     #    ####### #     #  #####
 
 snapdir_ancestors() {
 	# Get a list of ancestor snapdir IDs and the context where they where created.
@@ -949,20 +949,20 @@ snapdir_ancestors() {
 	"${_SNAPDIR_LOGGER_BIN_PATH}" ancestors --id="${id}"
 }
 
-#    #     # ####### ######   #####  ### ####### #     #  #####              
-#    #     # #       #     # #     #  #  #     # ##    # #     #             
-#    #     # #       #     # #        #  #     # # #   # #                   
-#    #     # #####   ######   #####   #  #     # #  #  #  #####              
-#     #   #  #       #   #         #  #  #     # #   # #       #             
-#      # #   #       #    #  #     #  #  #     # #    ## #     #             
-#       #    ####### #     #  #####  ### ####### #     #  #####              
+######  ####### #     # ###  #####  ### ####### #     #  #####
+#     # #       #     #  #  #     #  #  #     # ##    # #     #
+#     # #       #     #  #  #        #  #     # # #   # #
+######  #####   #     #  #   #####   #  #     # #  #  #  #####
+#   #   #        #   #   #        #  #  #     # #   # #       #
+#    #  #         # #    #  #     #  #  #     # #    ## #     #
+#     # #######    #    ###  #####  ### ####### #     #  #####
 
-snapdir_versions() {
+snapdir_revisions() {
 	# Get a list of snapdir IDs created on a specific context.
 	#
 	# Usage:
 	#
-	#     snapdir versions \
+	#     snapdir revisions \
 	#         --context="${ABSOLUTE_DIR_NAME_OR_STORE_URI}" \
 	#         [--logger="sqlite3"]
 	#
@@ -977,24 +977,23 @@ snapdir_versions() {
 	#
 	# Example:
 	#
-	#     # Gets a list of versions stored on a store
-	#     snapdir versions --context="s3://my-bucket/some/path"
+	#     # Gets a list of revisions stored on a store
+	#     snapdir revisions --context="s3://my-bucket/some/path"
 	#
-	#     # Gets a list of versions stored on a local directory
-	#     snapdir versions --context="/home/user/some/path"
+	#     # Gets a list of revisions stored on a local directory
+	#     snapdir revisions --context="/home/user/some/path"
 	#
 	set -eEuo pipefail
 	local dir="${_SNAPDIR_DIR:-""}"
-  local store="${_SNAPDIR_STORE:-""}"
-  local context="${_SNAPDIR_CONTEXT:-"${dir}${store}"}"
-  if [[ "$context" == "" ]]; then
-    echo "Missing --context" >&2
-    return 1
-  fi
+	local store="${_SNAPDIR_STORE:-""}"
+	local context="${_SNAPDIR_CONTEXT:-"${dir}${store}"}"
+	if [[ $context == "" ]]; then
+		echo "Missing --context" >&2
+		return 1
+	fi
 	_snapdir_ensure_logger
-	"${_SNAPDIR_LOGGER_BIN_PATH}" versions --context="${context}"
+	"${_SNAPDIR_LOGGER_BIN_PATH}" revisions --context="${context}"
 }
-
 
 #    #     # ####### ######  ### ####### #     #     #####     #     #####  #     # #######
 #    #     # #       #     #  #  #        #   #     #     #   # #   #     # #     # #
@@ -1120,7 +1119,7 @@ _snapdir_run() (
 	fi
 
 	set -eEuo pipefail
-	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults|contexts|ancestors|versions"
+	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults|contexts|ancestors|revisions"
 	local boolean_args="debug|force|linked|keep|purge|stage|verbose|dryrun|context"
 	local value_required_args="id|store|cache_dir|paths|exclude|logger"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
@@ -1172,7 +1171,7 @@ _snapdir_run() (
 	local options=""
 	while [ $# -gt 0 ]; do
 		case "$1" in
-		manifest | id | stage | checkout | fetch | pull | push | verify | verify-cache | flush-cache | test | defaults | contexts | ancestors | versions)
+		manifest | id | stage | checkout | fetch | pull | push | verify | verify-cache | flush-cache | test | defaults | contexts | ancestors | revisions)
 			# if command is already set, compain about multiple commands
 			if [ -n "$command" ]; then
 				echo "error: multiple commands specified: $command $1" >&2
@@ -1579,7 +1578,7 @@ _snapdir_tmp_id() {
 
 _snapdir_ensure_logger() {
 	set -eEuo pipefail
-	if [[ "${_SNAPDIR_LOGGER_BIN_PATH:-""}" == "" ]]; then
+	if [[ ${_SNAPDIR_LOGGER_BIN_PATH:-""} == "" ]]; then
 		echo "error: Missing SNAPDIR_LOGGER or --logger" >&2
 		return 1
 	fi
@@ -1588,9 +1587,9 @@ _snapdir_ensure_logger() {
 _snapdir_enable_event_logger() {
 	_SNAPDIR_LOGGER_BIN_PATH=""
 	local logger="${SNAPDIR_LOGGER:-"${_SNAPDIR_LOGGER:-""}"}"
-	if [[ "$logger" != "" ]]; then
+	if [[ $logger != "" ]]; then
 		_SNAPDIR_LOGGER_BIN_PATH="${_SNAPDIR_BIN_DIR}/snapdir-${logger}-logger"
-		command -v "$_SNAPDIR_LOGGER_BIN_PATH" > /dev/null || {
+		command -v "$_SNAPDIR_LOGGER_BIN_PATH" >/dev/null || {
 			echo "error: Logger '${logger}' not found." >&2
 			return 1
 		}
@@ -1599,7 +1598,7 @@ _snapdir_enable_event_logger() {
 
 _snapdir_log_event() {
 	set -eEuo pipefail
-	if [[ "${_SNAPDIR_LOGGER_BIN_PATH:-""}" != "" ]]; then
+	if [[ ${_SNAPDIR_LOGGER_BIN_PATH:-""} != "" ]]; then
 		local event="${1:?Missing event as arg 1}"
 		local snapdir_id="${2:?Missing snapdir_id as arg 2}"
 		local context="${3:?Missing context as arg 3}"
@@ -2102,25 +2101,24 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		result="$("${snapshot}" version)"
 		echo "${result}" | grep -q "^[0-9]*\.[0-9]*\.[0-9]*$" || fail "Expected semver version, got: ${result}" && pass
 
-
 		# --------------------------------------------------------------------------------
 		# snapshot logger methods
 		# --------------------------------------------------------------------------------
 		describe "snapshot logger methods"
-		if [[ "${SNAPDIR_LOGGER-""}" != "" ]]; then
+		if [[ ${SNAPDIR_LOGGER-""} != "" ]]; then
 			check "should get contexts"
-			result=$("${snapshot}" contexts 2>&1 || echo "");
+			result=$("${snapshot}" contexts 2>&1 || echo "")
 			grep -E -q "($nested_manifest_id|$simple_manifest_id)" <<<"$result" || fail "Expected contexts to contain '${nested_manifest_id}' or '${simple_manifest_id}', got: '$result'"
 			pass
-			
+
 			check "should get ancestors"
-			result=$("${snapshot}" ancestors --id="${nested_manifest_id}" 2>&1 || echo "");
+			result=$("${snapshot}" ancestors --id="${nested_manifest_id}" 2>&1 || echo "")
 			grep -q "id\":\"${simple_manifest_id}\"" <<<"$result" || fail "Expected simple manifest id to be ancestor of nested manifest id, got: '$result'"
 			pass
 
-			check "should get versions"
-			result=$("${snapshot}" versions --context="${_dir}" 2>&1 || echo "");
-			tail -1 <<<"$result" | grep -q "previous_id\":null" || fail "Unexpected previous_id on last version"
+			check "should get revisions"
+			result=$("${snapshot}" revisions --context="${_dir}" 2>&1 || echo "")
+			tail -1 <<<"$result" | grep -q 'previous_id":null' || fail "Unexpected previous_id on last version"
 			grep -q "id\":\"${simple_manifest_id}\",\"previous_id\":\"${nested_manifest_id}" <<<"$result" || fail "Expected nested/simple manifest id back and forth"
 			grep -q "id\":\"${nested_manifest_id}\",\"previous_id\":\"${simple_manifest_id}" <<<"$result" || fail "Expected nested/simple manifest id back and forth"
 			pass
@@ -2128,7 +2126,7 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		else
 			skip "should get contexts"
 			skip "should get ancestors"
-			skip "should get versions"
+			skip "should get revisions"
 		fi
 	}
 
