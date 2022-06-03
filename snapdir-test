@@ -124,6 +124,7 @@ _snapdir_test_run_logger_tests() {
 	dir="$(dirname "${BASH_SOURCE[0]}")"
 	echo "# integration tests"
 	if command -v "sqlite3" >/dev/null; then
+		export SNAPDIR_SQLITE3_LOGGER_DB_PATH="$(pwd)/snapdir-tests.db"
 		"$dir"/snapdir-sqlite3-logger test
 		SNAPDIR_LOGGER=sqlite3 "$dir"/snapdir test
 	else
@@ -181,6 +182,7 @@ _snapdir_test_utils() {
 		_SNAPDIR_TEST_TEARDOWN_COMPLETE=true
 		teardown_suite
 		rm -rf "$_SNAPDIR_TEST_TMP_DIR"
+		rm -rf "$(pwd)/snapdir-tests.db"
 		# exit with not ok if _SNAPDIR_TEST_TOTAL_CHECKS is not zero
 		if [[ $_SNAPDIR_TESTS_PENDING_CHECKS -gt 0 ]]; then
 			echo "not ok ${_SNAPDIR_TESTS_PENDING_CHECKS}..${_SNAPDIR_TEST_TOTAL_CHECKS} - ${_SNAPDIR_TESTS_PENDING_CHECKS} ${_SNAPDIR_TEST_SUITE_DESCRIPTION} tests pending" >&2
