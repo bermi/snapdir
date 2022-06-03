@@ -118,6 +118,19 @@ _snapdir_test_run_integration_tests() {
 	echo "# integration tests completed in ${SECONDS} seconds"
 }
 
+_snapdir_test_run_logger_tests() {
+	set -eEuo pipefail
+	local dir
+	dir="$(dirname "${BASH_SOURCE[0]}")"
+	echo "# integration tests"
+	if command -v "sqlite3" >/dev/null; then
+		"$dir"/snapdir-sqlite3-logger test
+		SNAPDIR_LOGGER=sqlite3 "$dir"/snapdir test
+	else
+		echo "# skipping sqlite3 logger test, sqlite3 not found locally" >&2
+	fi
+}
+
 _snapdir_test_utils() {
 	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
 	set -eEuo pipefail
@@ -138,6 +151,7 @@ _snapdir_test_utils() {
 		export _SNAPDIR_CACHE_DIR="${_SNAPDIR_TEST_TMP_DIR}/.cache/${_SNAPDIR_MODULE_NAME}"
 		export SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR}"
 		export _SNAPDIR_MANIFEST_CACHE_DIR="${_SNAPDIR_CACHE_DIR}"
+		export SNAPDIR_SQLITE3_LOGGER_DB_PATH="${_SNAPDIR_TEST_TMP_DIR}/logger.db"
 
 		cd "$_SNAPDIR_TEST_TMP_DIR" || return 1
 
@@ -388,6 +402,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 		fi
 	fi
 	_snapdir_test_run_unit_tests
+	_snapdir_test_run_logger_tests
 	# was integration passed?
 	if [[ ${1:-} == integration ]]; then
 		_snapdir_test_run_integration_tests

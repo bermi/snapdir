@@ -788,8 +788,10 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 		fi
 	fi
 	export _SNAPDIR_BIN_PATH
+	# We use  <<<"" to avoid capturing snapdir from captuing stdin
+	# when sourced.
 	# shellcheck disable=SC1090
-	. "$_SNAPDIR_BIN_PATH"
+	. "$_SNAPDIR_BIN_PATH" <<<""
 	_snapdir_s3_store_run "${@:1}"
 else
 	_snapdir_s3_store_export_env_defaults

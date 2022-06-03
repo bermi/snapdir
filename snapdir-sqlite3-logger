@@ -1,0 +1,414 @@
+#!/usr/bin/env bash
+
+# # snapdir-sqlite3-logger
+#
+# ## Description:
+#
+#     Reference implementation of snapdir logger using
+#     a local sqlite3 database.
+#
+# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
+
+set -eEuo pipefail
+IFS=$'\n\t'
+
+snapdir_sqlite3_logger_log() {
+	set -eEuo pipefail
+  local event="${_SNAPDIR_SQLITE3_LOGGER_EVENT:?Missing --event}"
+  local id="${_SNAPDIR_SQLITE3_LOGGER_ID:?Missing --id}"
+  local context="${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:?Missing --context}"
+	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
+		INSERT INTO event_log (event, id, context) VALUES ('${event}', '${id}', '${context}');
+	EOF
+	snapdir_sqlite3_logger_save "${context}" "$id"
+}
+
+snapdir_sqlite3_logger_save() {
+	# Saves into the DB a new manifest entry. This is called
+	# after the manifest has been saved to disk.
+	set -eEuo pipefail
+  local context="${1:-${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:?Missing --context}}"
+	local id="${2:-${_SNAPDIR_SQLITE3_LOGGER_ID:?Missing --id}}"
+	local previous_id
+	previous_id="$(sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
+		SELECT id FROM snapshots 
+			WHERE context='${context}'
+		ORDER BY created_at DESC LIMIT 1;
+	EOF
+	)"
+	# subsequent snapshots will not be logged
+	if [[ "${previous_id}" == "${id}" ]]; then
+		return 0
+	fi
+	previous_id="${previous_id:-"NULL"}"
+	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
+		INSERT INTO snapshots 
+			(context, id, previous_id)
+		VALUES 
+			('$context', '$id', NULLIF('$previous_id', 'NULL'));
+	EOF
+}
+
+snapdir_sqlite3_logger_contexts() {
+	# shows unique contexts and their latest snapshot
+	set -eEuo pipefail
+	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
+		SELECT json_object(
+			'created_at', STRFTIME('%Y-%m-%d %H:%M:%f', s1.created_at),
+			'id', s1.id,
+			'context', s1.context
+		)
+		FROM snapshots s1
+			LEFT JOIN snapshots s2
+				ON s1.context = s2.context
+				AND s1.created_at < s2.created_at
+		WHERE s2.id IS NULL
+	EOF
+}
+
+snapdir_sqlite3_logger_ancestors() {
+	# shows ancestors for a given id
+	set -eEuo pipefail
+	local id="${_SNAPDIR_SQLITE3_LOGGER_ID:?Missing --id}"
+	local context="${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:-""}"
+	local context_condition=""
+	if [[ "$context" != "" ]]; then
+		context_condition=" AND context='${context//\'/\'\'}'"
+	fi
+
+	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
+		SELECT json_object(
+			'created_at', STRFTIME('%Y-%m-%d %H:%M:%f', created_at),
+			'id', previous_id,
+			'context', context
+		)
+		FROM snapshots WHERE (
+			id = '$id' AND previous_id IS NOT NULL $context_condition
+		) ORDER BY created_at DESC;
+	EOF
+}
+
+snapdir_sqlite3_logger_versions() {
+	# prints a list of ids and their creation dates as timestamps for a given context
+	set -eEuo pipefail
+  local context="${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:?Missing --context}"
+	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
+		SELECT json_object(
+			'created_at', STRFTIME('%Y-%m-%d %H:%M:%f', created_at),
+			'id', id,
+			'previous_id', previous_id
+		)
+		FROM snapshots WHERE context='$context' ORDER BY created_at DESC;
+	EOF
+}
+
+_snapdir_sqlite3_logger_run() (
+	set -eEuo pipefail
+
+	# Saves the event into the run log for debugging, documentation, etc.
+	if [[ ${ENVIRONMENT:-""} == "test" ]] && [[ ${_SNAPDIR_RUN_LOG_PATH:-""} != "" ]] && test -f "${_SNAPDIR_RUN_LOG_PATH:-""}"; then
+		# shellcheck disable=SC2145
+		echo "snapdir-sqlite3-logger ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
+	fi
+
+	local subcommands="save|versions|contexts|ancestors|log"
+	local boolean_args="debug|verbose"
+	local value_required_args="id|context|event"
+	local legal_argument_keys="${boolean_args}|${value_required_args}"
+
+	_snapdir_sqlite3_logger_parse_argument_key() {
+		sed -E 's|^--?|_SNAPDIR_SQLITE3_LOGGER_|; s|-|_|g;' <<<"${1^^}"
+	}
+
+	_snapdir_sqlite3_logger_validate_option() {
+		set -eEuo pipefail
+		grep -q -E "^_SNAPDIR_SQLITE3_LOGGER_(${legal_argument_keys^^})$" <<<"${1}" || {
+			echo "error: Unknown option: ${1//_SNAPDIR_SQLITE3_LOGGER_/}" | tr '[:upper:]' '[:lower:]' >&2
+			echo "Valid options are: --(${legal_argument_keys})" >&2
+			exit 1
+		}
+	}
+
+_snapdir_sqlite3_logger_ensure_db() {
+	if test -f "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}"; then
+		# if "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" is older than "${_SNAPDIR_BIN_DIR}/snapdir"
+		# attempt to set the version
+		if [[ "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" -ot "${_SNAPDIR_BIN_DIR}/snapdir" ]]; then
+			# Updates the version so that we can determine the
+			# version in which each snapshots entry was created.
+			sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}"  <<-EOF
+			INSERT OR IGNORE INTO snapdir_versions (version) VALUES ("${_SNAPDIR_VERSION}");
+			EOF
+		fi
+		return 0
+	fi
+	mkdir -p "$(dirname "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}")"
+	# creates a sqlite3 db with the following tables:
+	# - snapshots: id, previous_id, dirname, created_at
+	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
+		CREATE TABLE snapdir_versions (
+			version TEXT CHECK(version REGEXP '^[0-9]+.[0-9]+.[0-9]+$' AND length(version) < 16),
+			created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')),
+			PRIMARY KEY (version, created_at)
+		);
+		CREATE TABLE event_log (
+			event TEXT NOT NULL CHECK(event REGEXP '^[a-z]{,128}$'),
+			id TEXT NOT NULL CHECK(id REGEXP '^[a-f0-9]{64}$'),
+			context TEXT CHECK(context REGEXP '^(/|[a-z0-9]*://)'),
+			created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))
+		);
+		# context, id, previous_id
+		CREATE TABLE snapshots (
+			id TEXT NOT NULL CHECK(id REGEXP '^[a-f0-9]{64}$'),
+			previous_id TEXT CHECK(previous_id REGEXP '^[a-f0-9]{64}$'),
+			context TEXT CHECK(context REGEXP '^(/|[a-z0-9]*://)'),
+			created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))
+		);
+	EOF
+
+	# Sets the version of the db to help with upgrades
+	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
+		INSERT INTO snapdir_versions (version) VALUES ("${_SNAPDIR_VERSION}");
+	EOF
+}
+
+	_snapdir_sqlite3_logger_help() {
+		_snapdir_sqlite3_logger_export_env_defaults
+		local command="${1:-""}"
+		if [[ ${command} == "" ]]; then
+			sed '/# LICENSE: MIT Copyright (c) 2022 Bermi Ferrer/q; 1,2d' "$_SNAPDIR_SQLITE3_LOGGER_BIN_PATH" | sed -E 's|^# ?||g; $d' | more
+		else
+			_snapdir_command_help "snapdir_sqlite3_logger_${command//-/_}" <"$_SNAPDIR_SQLITE3_LOGGER_BIN_PATH" | more
+		fi
+		exit 0
+	}
+
+	local command=""
+	local positional_args=""
+	local key
+	local value
+	local is_boolean
+	local subcommand_candidate="${1:-"$command"}"
+	local show_help=false
+
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		save | versions | contexts | ancestors | log | test)
+			command="$1"
+			shift
+			;;
+		help | -h | --help)
+			show_help=true
+			shift
+			;;
+		version | -v | --version)
+			echo "${_SNAPDIR_VERSION}"
+			exit 0
+			;;
+		# export all --*=* flags as _SNAPDIR_SQLITE3_LOGGER_* env vars
+		--*=* | -*=*)
+			key="$(_snapdir_sqlite3_logger_parse_argument_key "${1%%=*}")"
+			_snapdir_sqlite3_logger_validate_option "$key"
+			export "$key"="${1#*=}"
+			shift
+			;;
+		# export all --* * flags as _SNAPDIR_SQLITE3_LOGGER_* env vars
+		--*)
+			is_boolean=$(grep -q -E "^--?(${boolean_args})$" <<<"${1}" && echo true || echo false)
+			key="$(_snapdir_sqlite3_logger_parse_argument_key "${1}")"
+			_snapdir_sqlite3_logger_validate_option "$key"
+			shift
+			value="${1:-true}"
+			# if key is in boolean_args
+			if [[ ${is_boolean} == "false" ]] && [[ ${value:0:1} != "-" ]]; then
+				# since this might be the last arg, this will always be truthy
+				shift || true
+			else
+				value="true"
+			fi
+			export "${key}"="${value}"
+			;;
+		*)
+			positional_args="${positional_args}${1} "
+			shift
+			;;
+		esac
+	done
+
+	if [[ ${show_help} == "true" ]]; then
+		_snapdir_sqlite3_logger_help "$command"
+	fi
+
+	# if command is not set, show help
+	if [[ ${command:-""} == "" ]]; then
+		echo "Uknown command '$subcommand_candidate'. Valid commands are: ${subcommands}" >&2
+		echo "Try: snapdir-sqlite3-logger --help" >&2
+		return 1
+	fi
+
+	_snapdir_sqlite3_logger_export_env_defaults
+	# env | grep _snapdir_sqlite3_logger_ | sort
+	eval "snapdir_sqlite3_logger_${command//-/_} $positional_args ${*:2}"
+)
+
+_snapdir_sqlite3_logger_export_env_defaults() {
+	# Environment variables
+	set -eEuo pipefail
+	command -v sqlite3 >/dev/null || {
+		echo "error: sqlite3 is not installed and it's required for the disk logger." >&2
+		exit 1
+	}
+	local default_logger_path="/var/lib/snapdir/sqlite3_logger.db"
+	SNAPDIR_SQLITE3_LOGGER_DB_PATH="${SNAPDIR_SQLITE3_LOGGER_DB_PATH:-$default_logger_path}"
+	export SNAPDIR_SQLITE3_LOGGER_DB_PATH
+	_snapdir_sqlite3_logger_ensure_db
+}
+
+#       ####### #######  #####  #######  #####
+#          #    #       #     #    #    #     #
+#          #    #       #          #    #
+#          #    #####    #####     #     #####
+#          #    #             #    #          #
+#          #    #       #     #    #    #     #
+#          #    #######  #####     #     #####
+snapdir_sqlite3_logger_test() (
+	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	set -eEuo pipefail
+
+	# Import test utilities
+	# shellcheck disable=SC1091 source=./snapdir-test
+	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_SQLITE3_LOGGER_BIN_PATH}"
+
+	teardown_suite() {
+		rm -rf "$_SNAPDIR_TEST_TMP_DIR/logger"
+	}
+
+	test_suite() {
+		set -eEuo pipefail
+		local logger="$_SNAPDIR_SQLITE3_LOGGER_BIN_PATH"
+		export SNAPDIR_SQLITE3_LOGGER_DB_PATH="${_SNAPDIR_TEST_TMP_DIR}/logger.db"
+		local result
+		_snapdir_sqlite3_logger_export_env_defaults
+
+		# --------------------------------------------------------------------------------
+		# log events
+		# --------------------------------------------------------------------------------
+		describe "log"
+
+    check "should prevent invalid id"
+		result=$("$logger" log --event "manifest" --context "/foo/bar" --id "invalid" 2>&1 || echo "")
+    grep -q "CHECK constraint failed: id" <<<"$result" || fail "Expected error message for id. Got: '$result'" && pass
+
+    check "should prevent relative paths for context"
+		result=$("$logger" log --event "manifest" --context "foo/bar" --id "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789" 2>&1 || echo "")
+    grep -q "CHECK constraint failed: context" <<<"$result" || fail "Expected error message for context. Got: '$result'" && pass
+
+    check "should save event"
+		result=$("$logger" log --event "manifest" --context "s3://foo" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" 2>&1 || echo "")
+    test "$result" == "" || fail "Unexpected output: '$result'"
+		test "$(sqlite3 "$SNAPDIR_SQLITE3_LOGGER_DB_PATH" "select event,id,context from event_log")" == "manifest|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|s3://foo" && pass
+
+		# --------------------------------------------------------------------------------
+		"$logger" log --event "manifest" --context "s3://bar" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		"$logger" log --event "manifest" --context "/local/foo" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		"$logger" log --event "manifest" --context "/local/foo" --id "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		"$logger" log --event "manifest" --context "/local/foo" --id "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		"$logger" log --event "manifest" --context "s3://bar" --id "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		# --------------------------------------------------------------------------------
+
+		local contexts
+		contexts="$("$logger" contexts)"
+
+		describe "contexts"
+		check "include content names"
+		grep -q "s3://foo" <<<"$contexts" || fail "Expected context 's3://foo'. Got: '$contexts'"
+		grep -q "s3://bar" <<<"$contexts" || fail "Expected context 's3://foo'. Got: '$contexts'"
+		grep -q "/local/foo" <<<"$contexts" || fail "Expected context 's3://foo'. Got: '$contexts'" && pass
+
+		check "include latest ids"
+		grep "s3://foo" <<<"$contexts" | grep -q "aaaaaa" || fail "Expected context 's3://foo' to have ID aaaaaa.... Got: '$contexts'"
+		grep "s3://bar" <<<"$contexts" | grep -q "cccccc" || fail "Expected context 's3://bar' to have ID cccc.... Got: '$contexts'"
+		grep "/local/foo" <<<"$contexts" | grep -q "cccccc" || fail "Expected context '/local/foo' to have ID cccc.... Got: '$contexts'" && pass
+
+		check "total number of contexts"
+		test "$(echo "$contexts" | wc -l)" == "3" || fail "Found more contexts than expected." && pass
+
+		describe "ancestors"
+
+		check "should return empty list for a root id"
+		result="$("$logger" ancestors --id aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
+		test "$result" == "" || fail "Unexpected output: '$result'" && pass
+
+		result="$("$logger" ancestors --id cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc)"
+		check "should include all ancestors"
+		grep "s3://bar" <<<"$result" | grep -q "aaaaaaa" || fail "Expected ancestor 'aaaaaa...'. Got: '$result'"
+		grep "/local/foo" <<<"$result" | grep -q "bbbbbbb" || fail "Expected ancestor 'bbbb...'. Got: '$result'"
+		test "$(echo "$result" | wc -l)" == "2" || fail "Found more ancestors than expected."
+		pass
+
+		result="$("$logger" ancestors --context "s3://bar" --id cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc)"
+		check "should include only ancestors in a given context"
+		grep "s3://bar" <<<"$result" | grep -q "aaaaaaa" || fail "Expected ancestor 'aaaaaa...'. Got: '$result'"
+		test "$(echo "$result" | wc -l)" == "1" || fail "Found more ancestors than expected."
+		pass
+
+		describe "versions"
+
+		check "should not return versions for an invalid context"
+		result="$("$logger" versions --context "/not/avail" 2>&1 || echo "")"
+		test "$result" == "" || fail "Unexpected output: '$result'" && pass
+
+		check "should return versions for a valid context"
+		result="$("$logger" versions --context "s3://bar" 2>&1 || echo "")"
+		grep "id\":\"ccc" <<<"$result" | grep -q "previous_id\":\"aaaaa" || fail "Expected id 'ccc...' with previous_id 'aaa...'. Got: '$result'"
+		grep "id\":\"aaa" <<<"$result" | grep -q "previous_id\":null" || fail "Expected id 'aaa...' with previous_id 'null'. Got: '$result'"
+		test "$(echo "$result" | wc -l)" == "2" || fail "Found more versions than expected."
+		pass
+
+	}
+
+	run_tests
+	# run_tests_without_teardown
+)
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+	_snapdir_sqlite3_logger_readlink() {
+		echo "$(cd "$(dirname "$1")" || echo "" && pwd)/$(basename "$1")"
+	}
+else
+
+	_snapdir_sqlite3_logger_readlink() {
+		readlink -f "$1"
+	}
+fi
+
+#######
+#       #    # ##### #####  #   # #####   ####  # #    # #####
+#       ##   #   #   #    #  # #  #    # #    # # ##   #   #
+#####   # #  #   #   #    #   #   #    # #    # # # #  #   #
+#       #  # #   #   #####    #   #####  #    # # #  # #   #
+#       #   ##   #   #   #    #   #      #    # # #   ##   #
+####### #    #   #   #    #   #   #       ####  # #    #   #
+
+# Run if is not sourced
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	# Get the absolute path to ${BASH_SOURCE[0]}
+	export _SNAPDIR_SQLITE3_LOGGER_BIN_PATH="${_SNAPDIR_SQLITE3_LOGGER_BIN_PATH:-$(_snapdir_sqlite3_logger_readlink "${BASH_SOURCE[0]}")}"
+	# import snapdir functions and environment variables,
+	# we'll need them to resolve context, logging and testing.
+	_SNAPDIR_BIN_PATH="$(dirname "${_SNAPDIR_SQLITE3_LOGGER_BIN_PATH}")/snapdir"
+	if ! test -f "$_SNAPDIR_BIN_PATH"; then
+		if snapdir -v 2>/dev/null >/dev/null; then
+			_SNAPDIR_BIN_PATH="snapdir"
+		else
+			echo "error: Could not find snapdir binary"
+			exit 1
+		fi
+	fi
+	# we don't want snapdir to capture the stdin for the logger script
+	# shellcheck disable=SC1090
+	. "$_SNAPDIR_BIN_PATH" <<<""
+	_snapdir_sqlite3_logger_run "${@:1}"
+else
+	_snapdir_sqlite3_logger_export_env_defaults
+fi
