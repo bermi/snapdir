@@ -971,7 +971,7 @@ snapdir_revisions() {
 	#     {
 	#         "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
 	#         "id": "${SNAPDIR_ID}",
-	#         "parent_id": "${PARENT_SNAPDIR_ID}",
+	#         "previous_id": "${PREVIOUS_SNAPDIR_ID}",
 	#         "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
 	#     }
 	#

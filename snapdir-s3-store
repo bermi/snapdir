@@ -530,6 +530,8 @@ snapdir_s3_store_test() (
 	# shellcheck disable=SC1091 source=./snapdir-test
 	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_S3_STORE_BIN_PATH}"
 
+	unset SNAPDIR_LOGGER
+
 	setup_suite() {
 		set -eEuo pipefail
 		_SNAPDIR_TEST_STORE="${_SNAPDIR_S3_STORE_STORE}${_SNAPDIR_TEST_TMP_DIR}"

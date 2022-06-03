@@ -2,10 +2,13 @@
 
 # # snapdir-sqlite3-logger
 #
-# ## Description:
+# Logs manifest and push events to a sqlite3 database and allows
+# basic querying of the database.
 #
-#     Reference implementation of snapdir logger using
-#     a local sqlite3 database.
+# ## Background:
+#
+#  This is Reference implementation of snapdir logger using
+#  a local sqlite3 database.
 #
 # LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 
@@ -13,6 +16,11 @@ set -eEuo pipefail
 IFS=$'\n\t'
 
 snapdir_sqlite3_logger_log() {
+	# Receives a log message from a a snapdir event.
+	#
+	# This is the only write interface for the logger and will
+	# so far it's only called after manifest generation and
+	# store pushing.
 	set -eEuo pipefail
 	local event="${_SNAPDIR_SQLITE3_LOGGER_EVENT:?Missing --event}"
 	local id="${_SNAPDIR_SQLITE3_LOGGER_ID:?Missing --id}"
@@ -24,8 +32,10 @@ snapdir_sqlite3_logger_log() {
 }
 
 snapdir_sqlite3_logger_save() {
-	# Saves into the DB a new manifest entry. This is called
-	# after the manifest has been saved to disk.
+	# Saves an entry on the snapdir_history table.
+	#
+	# This is not called directly by snapdir but is called
+	# the snapdir_sqlite3_logger_log function on a new subshell.
 	set -eEuo pipefail
 	local context="${1:-${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:?Missing --context}}"
 	local id="${2:-${_SNAPDIR_SQLITE3_LOGGER_ID:?Missing --id}}"
@@ -51,7 +61,24 @@ snapdir_sqlite3_logger_save() {
 }
 
 snapdir_sqlite3_logger_contexts() {
-	# shows unique contexts and their latest snapshot
+	# Lists contexts tracked by the looger. These include local directories and stores.
+	#
+	# Usage:
+	#
+	#     snapdir-sqlite3-logger contexts
+	#
+	# Returns: JSON lines of the form:
+	#
+	#     {
+	#         "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
+	#         "id": "${SNAPDIR_ID}",
+	#         "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#     }
+	#
+	# Example:
+	#
+	#     snapdir-sqlite3-logger contexts
+	#
 	set -eEuo pipefail
 	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF
 		SELECT json_object(
@@ -68,7 +95,27 @@ snapdir_sqlite3_logger_contexts() {
 }
 
 snapdir_sqlite3_logger_ancestors() {
-	# shows ancestors for a given id
+	# Get a list of ancestor snapdir IDs and the context where they where created.
+	#
+	# Usage:
+	#
+	#     snapdir-sqlite3-logger ancestors \
+	#         --id="${SNAPDIR_ID}" \
+	#         [--context="${ABSOLUTE_DIR_NAME_OR_STORE_URI}"]
+	#
+	# Returns: JSON lines of the form:
+	#
+	#     {
+	#         "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
+	#         "id": "${PARENT_SNAPDIR_ID}",
+	#         "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#     }
+	#
+	# Examples:
+	#
+	#     snapdir-sqlite3-logger ancestors --id="${SNAPDIR_ID}"
+	#     snapdir-sqlite3-logger ancestors --id="${SNAPDIR_ID}" --context="s3://some-bucket/"
+	#
 	set -eEuo pipefail
 	local id="${_SNAPDIR_SQLITE3_LOGGER_ID:?Missing --id}"
 	local context="${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:-""}"
@@ -90,7 +137,30 @@ snapdir_sqlite3_logger_ancestors() {
 }
 
 snapdir_sqlite3_logger_revisions() {
-	# prints a list of ids and their creation dates as timestamps for a given context
+	# Get a list of snapdir IDs created on a specific context.
+	#
+	# Usage:
+	#
+	#     snapdir-sqlite3-logger revisions \
+	#         --context="${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#
+	# Returns: JSON lines of the form:
+	#
+	#     {
+	#         "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
+	#         "id": "${SNAPDIR_ID}",
+	#         "previous_id": "${PREVIOUS_SNAPDIR_ID}",
+	#         "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#     }
+	#
+	# Example:
+	#
+	#     # Gets a list of revisions stored on a store
+	#     snapdir-sqlite3-logger revisions --context="s3://my-bucket/some/path"
+	#
+	#     # Gets a list of revisions stored on a local directory
+	#     snapdir-sqlite3-logger revisions --context="/home/user/some/path"
+	#
 	set -eEuo pipefail
 	local context="${_SNAPDIR_SQLITE3_LOGGER_CONTEXT:?Missing --context}"
 	sqlite3 "${SNAPDIR_SQLITE3_LOGGER_DB_PATH}" <<-EOF

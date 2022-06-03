@@ -384,7 +384,8 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 		_snapdir_test_help
 		exit 0
 	fi
-
+	# avoid trashing the user logger if they are running the test suite
+	unset SNAPDIR_LOGGER
 	export _SNAPDIR_TEST_BIN_PATH="${_SNAPDIR_TEST_BIN_PATH:-$(_snapdir_test_readlink "${BASH_SOURCE[0]}")}"
 	export ENVIRONMENT="test"
 	_SNAPDIR_BIN_PATH="$(dirname "${_SNAPDIR_TEST_BIN_PATH}")/snapdir"

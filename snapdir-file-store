@@ -489,6 +489,7 @@ snapdir_file_store_test() (
 	# Import test utilities
 	# shellcheck disable=SC1091 source=./snapdir-test
 	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_FILE_STORE_BIN_PATH}"
+	unset SNAPDIR_LOGGER
 
 	teardown_suite() {
 		rm -rf "$_SNAPDIR_TEST_TMP_DIR/store"
