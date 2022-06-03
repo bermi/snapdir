@@ -124,6 +124,7 @@ _snapdir_test_run_logger_tests() {
 	dir="$(dirname "${BASH_SOURCE[0]}")"
 	echo "# integration tests"
 	if command -v "sqlite3" >/dev/null; then
+		echo "# using sqlite3 --version: $(sqlite3 --version)"
 		export SNAPDIR_SQLITE3_LOGGER_DB_PATH="$(pwd)/snapdir-tests.db"
 		"$dir"/snapdir-sqlite3-logger test
 		SNAPDIR_LOGGER=sqlite3 "$dir"/snapdir test
