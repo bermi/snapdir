@@ -2126,11 +2126,9 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 			pass
 
 		else
-			echo "skipped: should get contexts"
-			echo "skipped: should get ancestors"
-			echo "skipped: should get versions"
-			# pass the checks from the if/else block above
-			pass && pass && pass
+			skip "should get contexts"
+			skip "should get ancestors"
+			skip "should get versions"
 		fi
 	}
 
