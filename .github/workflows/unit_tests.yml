@@ -54,7 +54,8 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          brew install coreutils b3sum bash sqlite
+          brew install coreutils b3sum bash
+          brew install sqlite --with-json1
       - name: Check out the repo
         uses: actions/checkout@v3
       - name: Test snapdir
