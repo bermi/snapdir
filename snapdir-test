@@ -118,18 +118,26 @@ _snapdir_test_run_integration_tests() {
 	echo "# integration tests completed in ${SECONDS} seconds"
 }
 
-_snapdir_test_run_logger_tests() {
+_snapdir_test_run_catalog_tests() {
 	set -eEuo pipefail
 	local dir
 	dir="$(dirname "${BASH_SOURCE[0]}")"
 	echo "# integration tests"
 	if command -v "sqlite3" >/dev/null; then
-		echo "# using sqlite3 --version: $(sqlite3 --version)"
-		export SNAPDIR_SQLITE3_LOGGER_DB_PATH="$(pwd)/snapdir-tests.db"
-		"$dir"/snapdir-sqlite3-logger test
-		SNAPDIR_LOGGER=sqlite3 "$dir"/snapdir test
+		local sqlite_min_date="2021-06-18"
+		local sqlite_release_date
+		sqlite_release_date="$(sqlite3 --version | cut -d ' ' -f 2)"
+		# only if sqlite_release_date is greater than the min date
+		if [[ $sqlite_release_date < $sqlite_min_date ]]; then
+			echo "# skipping sqlite3 test. sqlite3 version $(sqlite3 --version) is less than 3.36" >&2
+		else
+			echo "# using sqlite3 --version: $(sqlite3 --version)"
+			export SNAPDIR_SQLITE3_CATALOG_DB_PATH
+			"$dir"/snapdir-sqlite3-catalog test
+			SNAPDIR_CATALOG=sqlite3 "$dir"/snapdir test
+		fi
 	else
-		echo "# skipping sqlite3 logger test, sqlite3 not found locally" >&2
+		echo "# skipping sqlite3 catalog test, sqlite3 not found locally" >&2
 	fi
 }
 
@@ -153,7 +161,7 @@ _snapdir_test_utils() {
 		export _SNAPDIR_CACHE_DIR="${_SNAPDIR_TEST_TMP_DIR}/.cache/${_SNAPDIR_MODULE_NAME}"
 		export SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR}"
 		export _SNAPDIR_MANIFEST_CACHE_DIR="${_SNAPDIR_CACHE_DIR}"
-		export SNAPDIR_SQLITE3_LOGGER_DB_PATH="${_SNAPDIR_TEST_TMP_DIR}/logger.db"
+		export SNAPDIR_SQLITE3_CATALOG_DB_PATH="${_SNAPDIR_TEST_TMP_DIR}/catalog.db"
 
 		cd "$_SNAPDIR_TEST_TMP_DIR" || return 1
 
@@ -183,7 +191,6 @@ _snapdir_test_utils() {
 		_SNAPDIR_TEST_TEARDOWN_COMPLETE=true
 		teardown_suite
 		rm -rf "$_SNAPDIR_TEST_TMP_DIR"
-		rm -rf "$(pwd)/snapdir-tests.db"
 		# exit with not ok if _SNAPDIR_TEST_TOTAL_CHECKS is not zero
 		if [[ $_SNAPDIR_TESTS_PENDING_CHECKS -gt 0 ]]; then
 			echo "not ok ${_SNAPDIR_TESTS_PENDING_CHECKS}..${_SNAPDIR_TEST_TOTAL_CHECKS} - ${_SNAPDIR_TESTS_PENDING_CHECKS} ${_SNAPDIR_TEST_SUITE_DESCRIPTION} tests pending" >&2
@@ -380,6 +387,8 @@ else
 	}
 fi
 
+export ENVIRONMENT="test"
+
 # Run if is not sourced
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	# does ${1:-} matches -h, --help or help?
@@ -387,10 +396,9 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 		_snapdir_test_help
 		exit 0
 	fi
-	# avoid trashing the user logger if they are running the test suite
-	unset SNAPDIR_LOGGER
+	# avoid trashing the user catalog if they are running the test suite
+	unset SNAPDIR_CATALOG
 	export _SNAPDIR_TEST_BIN_PATH="${_SNAPDIR_TEST_BIN_PATH:-$(_snapdir_test_readlink "${BASH_SOURCE[0]}")}"
-	export ENVIRONMENT="test"
 	_SNAPDIR_BIN_PATH="$(dirname "${_SNAPDIR_TEST_BIN_PATH}")/snapdir"
 
 	if [[ ${1:-} == integration ]]; then
@@ -406,7 +414,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 		fi
 	fi
 	_snapdir_test_run_unit_tests
-	_snapdir_test_run_logger_tests
+	_snapdir_test_run_catalog_tests
 	# was integration passed?
 	if [[ ${1:-} == integration ]]; then
 		_snapdir_test_run_integration_tests

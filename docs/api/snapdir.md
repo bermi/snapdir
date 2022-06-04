@@ -9,7 +9,7 @@ Create, audit and distribute authenticated directory snapshots.
 ### Options
 
     --cache-dir=DIR        Directory where the object cache is stored.
-    --context=DIR|STORE    Context for logger queries.
+    --context=DIR|STORE    Context for catalog queries.
     --debug                Enable debug output.
     --dryrun               Run without making any changes.
     --exclude=PATTERN      Excludes paths matching PATTERN.
@@ -20,7 +20,7 @@ Create, audit and distribute authenticated directory snapshots.
     --id=ID                Manifest ID to use.
     --keep                 Keeps the staging directory.
     --linked               Use symlinks instead of copies.
-    --logger=NAME          Logger to use. Defaults to $SNAPDIR_LOGGER.
+    --catalog=NAME         Catalog adapter to use. Defaults to $SNAPDIR_CATALOG.
     --paths=PATTERN        Only includes paths matching PATTERN
                            when checking out manifests.
     --purge                Purges objects with invalid checksums.
@@ -31,10 +31,10 @@ Create, audit and distribute authenticated directory snapshots.
 ### Commands
 
     ancestors --id=                Get a list of ancestor snapdir IDs their context.
-                                   Requires --logger.
+                                   Requires --catalog.
     checkout --id= [--linked] DIR  Checkout a snapshot to a directory.
     contexts                       Lists directories and stores where snapshots
-                                   have been taken or published. Requires --logger.
+                                   have been taken or published. Requires --catalog.
     defaults                       Prints default settings and arguments.
     fetch --id= --store=           Fetch a snapshot from a store.
     flush-cache                    Flushes the local cache.
@@ -47,7 +47,7 @@ Create, audit and distribute authenticated directory snapshots.
     push --store= [--id=] [PATH]   Pushes a snapshot to a store given its path or
                                    a staged manifest ID.
     revisions --context=           Get a list of snapdir IDs created on a
-                                   context (store or abs path). Requires --logger.
+                                   context (store or abs path). Requires --catalog.
     stage DIR                      Saves into the local cache a snapshot of
                                    a directory.
     test                           Runs unit tests for snapdir.
@@ -67,7 +67,7 @@ Create, audit and distribute authenticated directory snapshots.
                                    overridden by --cache-dir.
     SNAPDIR_MANIFEST_CONTEXT       Context string for deriving key in keyed mode.
     SNAPDIR_SYSTEM_EXCLUDE_DIRS    Directories to exclude on --exclude="%system%".
-    SNAPDIR_LOGGER                 Default logger to use when no --logger is
+    SNAPDIR_CATALOG                 Default catalog to use when no --catalog is
                                    provided. Defaults to none.
 
 ### Examples
@@ -341,7 +341,7 @@ Lists contexts tracked by the looger. These include local directories and stores
 Usage:
 
     snapdir contexts \
-        [--logger="sqlite3"]
+        [--catalog="sqlite3"]
 
 Returns: JSON lines of the form:
 
@@ -353,7 +353,7 @@ Returns: JSON lines of the form:
 
 Example:
 
-    # Use the default logger defined by SNAPDIR_LOGGER
+    # Use the default catalog defined by SNAPDIR_CATALOG
     snapdir contexts
 
 ### snapdir ancestors
@@ -365,7 +365,7 @@ Usage:
     snapdir ancestors \
         --id="${SNAPDIR_ID}" \
         [--context="${ABSOLUTE_DIR_NAME_OR_STORE_URI}"] \
-        [--logger="sqlite3"]
+        [--catalog="sqlite3"]
 
 Returns: JSON lines of the form:
 
@@ -377,7 +377,7 @@ Returns: JSON lines of the form:
 
 Example:
 
-    # Use the default logger defined by SNAPDIR_LOGGER
+    # Use the default catalog defined by SNAPDIR_CATALOG
     snapdir ancestors --id="${SNAPDIR_ID}"
 
 ### snapdir revisions
@@ -388,7 +388,7 @@ Usage:
 
     snapdir revisions \
         --context="${ABSOLUTE_DIR_NAME_OR_STORE_URI}" \
-        [--logger="sqlite3"]
+        [--catalog="sqlite3"]
 
 Returns: JSON lines of the form:
 
