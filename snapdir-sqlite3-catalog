@@ -200,22 +200,9 @@ _snapdir_sqlite3_catalog_run() (
 		}
 	}
 
-	_snapdir_ensure_sqlite_version() {
-		set -eEuo pipefail
-		local sqlite_min_date="2021-06-18"
-		local sqlite_release_date
-		sqlite_release_date="$(sqlite3 --version | cut -d ' ' -f 2)"
-		# only if sqlite_release_date is greater than the min date
-		if [[ $sqlite_release_date < $sqlite_min_date ]]; then
-			echo "sqlite3 version $(sqlite3 --version) is less than 3.36" >&2
-			exit 1
-		fi
-	}
-
 	_snapdir_sqlite3_catalog_ensure_db() {
 		set -eEuo pipefail
 		if test -f "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}"; then
-			_snapdir_ensure_sqlite_version
 			# if "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" is older than "${_SNAPDIR_BIN_DIR}/snapdir"
 			# attempt to set the version
 			if [[ ${SNAPDIR_SQLITE3_CATALOG_DB_PATH} -ot "${_SNAPDIR_BIN_DIR}/snapdir" ]]; then
@@ -232,20 +219,20 @@ _snapdir_sqlite3_catalog_run() (
 		# - snapdir_history: id, previous_id, dirname, created_at
 		sqlite3 "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 			CREATE TABLE snapdir_system (
-				version TEXT CHECK(version REGEXP '^[0-9]+.[0-9]+.[0-9]+$' AND length(version) < 16),
+				version TEXT CHECK(length(version) < 16),
 				created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')),
 				PRIMARY KEY (version, created_at)
 			);
 			CREATE TABLE snapdir_event_log (
-				event TEXT NOT NULL CHECK(event REGEXP '^[a-z]{,128}$'),
-				id TEXT NOT NULL CHECK(id REGEXP '^[a-f0-9]{64}$'),
-				context TEXT CHECK(context REGEXP '^(/|[a-z0-9]*://)'),
+				event TEXT NOT NULL CHECK(length(event) <= 128),
+				id TEXT NOT NULL CHECK(length(id) = 64),
+				context TEXT NOT NULL CHECK(length(context) < 4096),
 				created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))
 			);
 			CREATE TABLE snapdir_history (
-				id TEXT NOT NULL CHECK(id REGEXP '^[a-f0-9]{64}$'),
-				previous_id TEXT CHECK(previous_id REGEXP '^[a-f0-9]{64}$'),
-				context TEXT CHECK(context REGEXP '^(/|[a-z0-9]*://)'),
+				id TEXT NOT NULL CHECK(length(id) = 64),
+				previous_id TEXT CHECK(length(previous_id) = 64),
+				context TEXT NOT NULL CHECK(length(context) < 4096),
 				created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))
 			);
 		EOF
@@ -381,11 +368,7 @@ snapdir_sqlite3_catalog_test() (
 
 		check "should prevent invalid id"
 		result=$("$catalog" log --event "manifest" --context "/foo/bar" --id "invalid" 2>&1 || echo "")
-		grep -q "CHECK constraint failed: id" <<<"$result" || fail "Expected error message for id. Got: '$result'" && pass
-
-		check "should prevent relative paths for context"
-		result=$("$catalog" log --event "manifest" --context "foo/bar" --id "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789" 2>&1 || echo "")
-		grep -q "CHECK constraint failed: context" <<<"$result" || fail "Expected error message for context. Got: '$result'" && pass
+		grep -E -q "CHECK constraint failed.+id" <<<"$result" || fail "Expected error message for id. Got: '$result'" && pass
 
 		check "should save event"
 		result=$("$catalog" log --event "manifest" --context "s3://foo" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" 2>&1 || echo "")
@@ -415,7 +398,7 @@ snapdir_sqlite3_catalog_test() (
 		grep "/local/foo" <<<"$contexts" | grep -q "cccccc" || fail "Expected context '/local/foo' to have ID cccc.... Got: '$contexts'" && pass
 
 		check "total number of contexts"
-		test "$(echo "$contexts" | wc -l)" == "3" || fail "Found more contexts than expected." && pass
+		test "$(echo "$contexts" | grep -c .)" == "3" || fail "Found more contexts than expected." && pass
 
 		describe "ancestors"
 
@@ -427,13 +410,13 @@ snapdir_sqlite3_catalog_test() (
 		check "should include all ancestors"
 		grep "s3://bar" <<<"$result" | grep -q "aaaaaaa" || fail "Expected ancestor 'aaaaaa...'. Got: '$result'"
 		grep "/local/foo" <<<"$result" | grep -q "bbbbbbb" || fail "Expected ancestor 'bbbb...'. Got: '$result'"
-		test "$(echo "$result" | wc -l)" == "2" || fail "Found more ancestors than expected."
+		test "$(echo "$result" | grep -c .)" == "2" || fail "Found more ancestors than expected."
 		pass
 
 		result="$("$catalog" ancestors --context "s3://bar" --id cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc)"
 		check "should include only ancestors in a given context"
 		grep "s3://bar" <<<"$result" | grep -q "aaaaaaa" || fail "Expected ancestor 'aaaaaa...'. Got: '$result'"
-		test "$(echo "$result" | wc -l)" == "1" || fail "Found more ancestors than expected."
+		test "$(echo "$result" | grep -c .)" == "1" || fail "Found more ancestors than expected."
 		pass
 
 		describe "revisions"
@@ -446,7 +429,7 @@ snapdir_sqlite3_catalog_test() (
 		result="$("$catalog" revisions --context "s3://bar" 2>&1 || echo "")"
 		grep 'id":"ccc' <<<"$result" | grep -q 'previous_id":"aaaaa' || fail "Expected id 'ccc...' with previous_id 'aaa...'. Got: '$result'"
 		grep 'id":"aaa' <<<"$result" | grep -q 'previous_id":null' || fail "Expected id 'aaa...' with previous_id 'null'. Got: '$result'"
-		test "$(echo "$result" | wc -l)" == "2" || fail "Found more revisions than expected."
+		test "$(echo "$result" | grep -c .)" == "2" || fail "Found more revisions than expected."
 		pass
 
 	}
