@@ -368,7 +368,7 @@ snapdir_sqlite3_catalog_test() (
 
 		check "should prevent invalid id"
 		result=$("$catalog" log --event "manifest" --context "/foo/bar" --id "invalid" 2>&1 || echo "")
-		grep -E -q "CHECK constraint failed.+id" <<<"$result" || fail "Expected error message for id. Got: '$result'" && pass
+		grep -E -q "CHECK.+failed" <<<"$result" || fail "Expected error message for id. Got: '$result'" && pass
 
 		check "should save event"
 		result=$("$catalog" log --event "manifest" --context "s3://foo" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" 2>&1 || echo "")
