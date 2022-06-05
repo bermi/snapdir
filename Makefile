@@ -54,11 +54,11 @@ install-linked:
 release:
 	@CURRENT_VERSION="$$(./snapdir --version)" && \
 	echo "Current version: $$CURRENT_VERSION" && \
-	echo -n "New version: " && \
-	read NEW_VERSION && \
+	printf "New version: " && \
+	read -r NEW_VERSION && \
 	echo "New version: $$NEW_VERSION" && \
-	sed -i "s/$$CURRENT_VERSION/$$NEW_VERSION/" ./snapdir && \
-	sed -i "s/$$CURRENT_VERSION/$$NEW_VERSION/" ./snapdir-manifest && \
+	sed -i '' "s/$$CURRENT_VERSION/$$NEW_VERSION/g" snapdir && \
+	sed -i '' "s/$$CURRENT_VERSION/$$NEW_VERSION/g" snapdir-manifest && \
 	make docs && \
 	git add ./snapdir ./snapdir-manifest ./docs/api/ && \
 	git commit -m "Bumping version to $$NEW_VERSION" && \

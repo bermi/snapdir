@@ -711,7 +711,7 @@ _snapdir_manifest_export_env_defaults() {
 	if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 		_SNAPDIR_MANIFEST="$(basename "${BASH_SOURCE[0]}")"
 	fi
-	_SNAPDIR_MANIFEST_VERSION="0.4.1"
+	_SNAPDIR_MANIFEST_VERSION="0.4.2"
 
 	_SNAPDIR_MANIFEST_CACHE=${_SNAPDIR_MANIFEST_CACHE:-false}
 
