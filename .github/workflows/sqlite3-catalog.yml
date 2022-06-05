@@ -2,7 +2,7 @@ name: sqlite3 catalog
 on:
   schedule:
     # Once a month to ensure future
-    # aws cli versions are tested
+    # sqlite3 versions are tested
     - cron: "1 0 * * 1"
   # Only when pushing to main branch
   push:

@@ -61,7 +61,7 @@ snapdir_sqlite3_catalog_save() {
 }
 
 snapdir_sqlite3_catalog_contexts() {
-	# Lists contexts tracked by the looger. These include local directories and stores.
+	# Lists contexts tracked by the catalog. These include local directories and stores.
 	#
 	# Usage:
 	#
