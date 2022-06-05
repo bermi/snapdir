@@ -50,3 +50,18 @@ install-linked:
 	done
 	@command -v snapdir
 	@snapdir -v
+
+release:
+	@CURRENT_VERSION="$$(./snapdir --version)" && \
+	echo "Current version: $$CURRENT_VERSION" && \
+	echo -n "New version: " && \
+	read NEW_VERSION && \
+	echo "New version: $$NEW_VERSION" && \
+	sed -i "s/$$CURRENT_VERSION/$$NEW_VERSION/" ./snapdir && \
+	sed -i "s/$$CURRENT_VERSION/$$NEW_VERSION/" ./snapdir-manifest && \
+	make docs && \
+	git add ./snapdir ./snapdir-manifest ./docs/api/ && \
+	git commit -m "Bumping version to $$NEW_VERSION" && \
+	git tag -a v$$NEW_VERSION -m "Release $$NEW_VERSION" && \
+	git push main && \
+	git push origin v$$NEW_VERSION
