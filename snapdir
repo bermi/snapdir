@@ -102,7 +102,7 @@ _SNAPDIR="snapdir"
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	_SNAPDIR="$(basename "${BASH_SOURCE[0]}")"
 fi
-_SNAPDIR_VERSION="0.4.0"
+_SNAPDIR_VERSION="0.4.1"
 
 set -eEuo pipefail
 IFS=$'\n\t'

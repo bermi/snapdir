@@ -36,8 +36,6 @@
 set -eEuo pipefail
 IFS=$'\n\t'
 
-_SNAPDIR_S3_STORE_VERSION="0.1.1"
-
 #       ### #     # ####### ####### ######  #######    #     #####  #######
 #        #  ##    #    #    #       #     # #         # #   #     # #
 #        #  # #   #    #    #       #     # #        #   #  #       #
@@ -322,7 +320,7 @@ _snapdir_s3_store_run() (
 			shift
 			;;
 		version | -v | --version)
-			echo "${_SNAPDIR_S3_STORE_VERSION}"
+			echo "${_SNAPDIR_VERSION}"
 			exit 0
 			;;
 		# export all --*=* flags as _SNAPDIR_S3_STORE_* env vars
