@@ -114,3 +114,10 @@ Usage:
 Environment variables:
 
 - SNAPDIR_B2_STORE_APPLICATION_KEY
+- SNAPDIR_B2_STORE_APPLICATION_KEY_ID
+
+Example:
+
+    SNAPDIR_B2_STORE_APPLICATION_KEY=my-application-key \
+    SNAPDIR_B2_STORE_APPLICATION_KEY_ID=my-application-key-id \
+    snapdir-b2-store test --store="b2://my-bucket/my-directory"

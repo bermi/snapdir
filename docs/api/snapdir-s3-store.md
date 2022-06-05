@@ -118,3 +118,15 @@ Requires valid AWS credentials in your system.
 You can override the default aws credentials by setting the environment variables:
 
 - SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID
+- SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY
+
+Usage:
+
+    snapdir-s3-store-test --store="${STORE}"
+
+Example:
+
+    SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE \
+    SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY \
+    AWS_DEFAULT_REGION=us-east-1 \
+    snapdir-s3-store-test --store="s3://my-bucket/my-prefix"
