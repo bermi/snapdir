@@ -336,7 +336,7 @@ Examples:
 
 ### snapdir contexts
 
-Lists contexts tracked by the looger. These include local directories and stores.
+Lists contexts tracked by the catalog. These include local directories and stores.
 
 Usage:
 

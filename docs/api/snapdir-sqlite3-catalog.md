@@ -27,7 +27,7 @@ the snapdir_sqlite3_catalog_log function on a new subshell.
 
 ### snapdir-sqlite3-catalog contexts
 
-Lists contexts tracked by the looger. These include local directories and stores.
+Lists contexts tracked by the catalog. These include local directories and stores.
 
 Usage:
 
