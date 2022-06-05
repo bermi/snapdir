@@ -63,5 +63,5 @@ release:
 	git add ./snapdir ./snapdir-manifest ./docs/api/ && \
 	git commit -m "Bumping version to $$NEW_VERSION" && \
 	git tag -a v$$NEW_VERSION -m "Release $$NEW_VERSION" && \
-	git push main && \
+	git push && \
 	git push origin v$$NEW_VERSION
