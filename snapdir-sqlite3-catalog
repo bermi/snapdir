@@ -25,7 +25,7 @@ snapdir_sqlite3_catalog_log() {
 	local event="${_SNAPDIR_SQLITE3_CATALOG_EVENT:?Missing --event}"
 	local id="${_SNAPDIR_SQLITE3_CATALOG_ID:?Missing --id}"
 	local context="${_SNAPDIR_SQLITE3_CATALOG_CONTEXT:?Missing --context}"
-	sqlite3 "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
+	"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 		INSERT INTO snapdir_event_log (event, id, context) VALUES ('${event}', '${id}', '${context}');
 	EOF
 	snapdir_sqlite3_catalog_save "${context}" "$id"
@@ -41,7 +41,7 @@ snapdir_sqlite3_catalog_save() {
 	local id="${2:-${_SNAPDIR_SQLITE3_CATALOG_ID:?Missing --id}}"
 	local previous_id
 	previous_id="$(
-		sqlite3 "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
+		"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 			SELECT id FROM snapdir_history 
 				WHERE context='${context}'
 			ORDER BY created_at DESC LIMIT 1;
@@ -52,7 +52,7 @@ snapdir_sqlite3_catalog_save() {
 		return 0
 	fi
 	previous_id="${previous_id:-"NULL"}"
-	sqlite3 "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
+	"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 		INSERT INTO snapdir_history 
 			(context, id, previous_id)
 		VALUES 
@@ -80,7 +80,7 @@ snapdir_sqlite3_catalog_contexts() {
 	#     snapdir-sqlite3-catalog contexts
 	#
 	set -eEuo pipefail
-	sqlite3 "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
+	"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 		SELECT json_object(
 			'created_at', STRFTIME('%Y-%m-%d %H:%M:%f', s1.created_at),
 			'id', s1.id,
@@ -124,7 +124,7 @@ snapdir_sqlite3_catalog_ancestors() {
 		context_condition=" AND context='${context//\'/\'\'}'"
 	fi
 
-	sqlite3 "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
+	"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 		SELECT json_object(
 			'created_at', STRFTIME('%Y-%m-%d %H:%M:%f', created_at),
 			'id', previous_id,
@@ -163,7 +163,7 @@ snapdir_sqlite3_catalog_revisions() {
 	#
 	set -eEuo pipefail
 	local context="${_SNAPDIR_SQLITE3_CATALOG_CONTEXT:?Missing --context}"
-	sqlite3 "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
+	"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 		SELECT json_object(
 			'created_at', STRFTIME('%Y-%m-%d %H:%M:%f', created_at),
 			'id', id,
@@ -208,7 +208,7 @@ _snapdir_sqlite3_catalog_run() (
 			if [[ ${SNAPDIR_SQLITE3_CATALOG_DB_PATH} -ot "${_SNAPDIR_BIN_DIR}/snapdir" ]]; then
 				# Updates the version so that we can determine the
 				# version in which each snapdir_history entry was created.
-				sqlite3 "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
+				"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 					INSERT OR IGNORE INTO snapdir_system (version) VALUES ("${_SNAPDIR_VERSION}");
 				EOF
 			fi
@@ -217,7 +217,7 @@ _snapdir_sqlite3_catalog_run() (
 		mkdir -p "$(dirname "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}")"
 		# creates a sqlite3 db with the following tables:
 		# - snapdir_history: id, previous_id, dirname, created_at
-		sqlite3 "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
+		"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 			CREATE TABLE snapdir_system (
 				version TEXT CHECK(length(version) < 16),
 				created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')),
@@ -238,7 +238,7 @@ _snapdir_sqlite3_catalog_run() (
 		EOF
 
 		# Sets the version of the db to help with upgrades
-		sqlite3 "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
+		"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 			INSERT INTO snapdir_system (version) VALUES ("${_SNAPDIR_VERSION}");
 		EOF
 	}
@@ -325,10 +325,6 @@ _snapdir_sqlite3_catalog_run() (
 _snapdir_sqlite3_catalog_export_env_defaults() {
 	# Environment variables
 	set -eEuo pipefail
-	command -v sqlite3 >/dev/null || {
-		echo "error: sqlite3 is not installed and it's required for the disk catalog." >&2
-		exit 1
-	}
 	local default_catalog_path="${HOME:-~}/.snapdir/catalog-${ENVIRONMENT:-production}.sqlite3.db"
 	SNAPDIR_SQLITE3_CATALOG_DB_PATH="${SNAPDIR_SQLITE3_CATALOG_DB_PATH:-$default_catalog_path}"
 	export SNAPDIR_SQLITE3_CATALOG_DB_PATH
@@ -373,7 +369,7 @@ snapdir_sqlite3_catalog_test() (
 		check "should save event"
 		result=$("$catalog" log --event "manifest" --context "s3://foo" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" 2>&1 || echo "")
 		test "$result" == "" || fail "Unexpected output: '$result'"
-		test "$(sqlite3 "$SNAPDIR_SQLITE3_CATALOG_DB_PATH" "select event,id,context from snapdir_event_log")" == "manifest|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|s3://foo" && pass
+		test "$("$SNAPDIR_SQLITE3_BIN" "$SNAPDIR_SQLITE3_CATALOG_DB_PATH" "select event,id,context from snapdir_event_log")" == "manifest|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|s3://foo" && pass
 
 		# --------------------------------------------------------------------------------
 		"$catalog" log --event "manifest" --context "s3://bar" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -464,6 +460,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	# import snapdir functions and environment variables,
 	# we'll need them to resolve context, logging and testing.
 	_SNAPDIR_BIN_PATH="$(dirname "${_SNAPDIR_SQLITE3_CATALOG_BIN_PATH}")/snapdir"
+	SNAPDIR_SQLITE3_BIN="${SNAPDIR_SQLITE3_BIN:-$(command -v sqlite3 2>/dev/null || echo "")}"
 	if ! test -f "$_SNAPDIR_BIN_PATH"; then
 		if snapdir -v 2>/dev/null >/dev/null; then
 			_SNAPDIR_BIN_PATH="snapdir"
@@ -471,6 +468,10 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 			echo "error: Could not find snapdir binary"
 			exit 1
 		fi
+	fi
+	if [[ "$SNAPDIR_SQLITE3_BIN" == "" ]]; then
+		echo "error: sqlite3 is not installed and it's required for the disk catalog." >&2
+		exit 1
 	fi
 	# we don't want snapdir to capture the stdin for the catalog script
 	# shellcheck disable=SC1090

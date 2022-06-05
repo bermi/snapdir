@@ -54,11 +54,12 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          brew upgrade
           brew install coreutils b3sum bash
-          brew install sqlite3 --with-json1
+          command -v sqlite3
+          "$(command -v sqlite3)" --version
+          /usr/bin/sqlite3 --version
       - name: Check out the repo
         uses: actions/checkout@v3
       - name: Test snapdir
         run: |
-          ./snapdir-test
+          SNAPDIR_SQLITE3_BIN=/usr/bin/sqlite3 ./snapdir-test
