@@ -11,7 +11,7 @@
 # ### Options
 #
 #     --cache-dir=DIR        Directory where the object cache is stored.
-#     --context=DIR|STORE    Context for catalog queries.
+#     --catalog=NAME         Catalog adapter to use. Defaults to $SNAPDIR_CATALOG.
 #     --debug                Enable debug output.
 #     --dryrun               Run without making any changes.
 #     --exclude=PATTERN      Excludes paths matching PATTERN.
@@ -22,7 +22,7 @@
 #     --id=ID                Manifest ID to use.
 #     --keep                 Keeps the staging directory.
 #     --linked               Use symlinks instead of copies.
-#     --catalog=NAME         Catalog adapter to use. Defaults to $SNAPDIR_CATALOG.
+#     --location=DIR|STORE   Context for catalog queries.
 #     --paths=PATTERN        Only includes paths matching PATTERN
 #                            when checking out manifests.
 #     --purge                Purges objects with invalid checksums.
@@ -32,24 +32,24 @@
 #
 # ### Commands
 #
-#     ancestors --id=                Get a list of ancestor snapdir IDs their context.
+#     ancestors --id=                Get a list of ancestor snapdir IDs their location.
 #                                    Requires --catalog.
 #     checkout --id= [--linked] DIR  Checkout a snapshot to a directory.
-#     contexts                       Lists directories and stores where snapshots
-#                                    have been taken or published. Requires --catalog.
 #     defaults                       Prints default settings and arguments.
 #     fetch --id= --store=           Fetch a snapshot from a store.
 #     flush-cache                    Flushes the local cache.
 #     help [COMMAND]                 Prints help information.
 #     id [PATH]                      Prints the manifest ID of a directory
 #                                    or manifest provided via stdin.
+#     locations                      Lists directories and stores where snapshots
+#                                    have been taken or published. Requires --catalog.
 #     manifest PATH                  Prints the manifest of a directory.
 #     pull --id= --store= PATH       Fetches a snapshot from a store and checks
 #                                    it out the given path.
 #     push --store= [--id=] [PATH]   Pushes a snapshot to a store given its path or
 #                                    a staged manifest ID.
-#     revisions --context=           Get a list of snapdir IDs created on a
-#                                    context (store or abs path). Requires --catalog.
+#     revisions --location=          Get a list of snapdir IDs created on a
+#                                    location (store or abs path). Requires --catalog.
 #     stage DIR                      Saves into the local cache a snapshot of
 #                                    a directory.
 #     test                           Runs unit tests for snapdir.
@@ -67,10 +67,10 @@
 #     SNAPDIR_CACHE_DIR              Where are the object cache files stored?
 #                                    Defaults to $HOME/.snapdir/cache and will be
 #                                    overridden by --cache-dir.
+#     SNAPDIR_CATALOG                Default catalog to use when no --catalog is
+#                                    provided. Defaults to none.
 #     SNAPDIR_MANIFEST_CONTEXT       Context string for deriving key in keyed mode.
 #     SNAPDIR_SYSTEM_EXCLUDE_DIRS    Directories to exclude on --exclude="%system%".
-#     SNAPDIR_CATALOG                 Default catalog to use when no --catalog is
-#                                    provided. Defaults to none.
 #
 # ### Examples
 #
@@ -886,12 +886,12 @@ snapdir_verify() {
 #    #     # #     # #    ##    #    #        #   #     #    #     #
 #     #####  ####### #     #    #    ####### #     #    #     #####
 
-snapdir_contexts() {
-	# Lists contexts tracked by the catalog. These include local directories and stores.
+snapdir_locations() {
+	# Lists locations tracked by the catalog. These include local directories and stores.
 	#
 	# Usage:
 	#
-	#     snapdir contexts \
+	#     snapdir locations \
 	#         [--catalog="sqlite3"]
 	#
 	# Returns: JSON lines of the form:
@@ -899,17 +899,17 @@ snapdir_contexts() {
 	#     {
 	#         "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
 	#         "id": "${SNAPDIR_ID}",
-	#         "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#         "location": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
 	#     }
 	#
 	# Example:
 	#
 	#     # Use the default catalog defined by SNAPDIR_CATALOG
-	#     snapdir contexts
+	#     snapdir locations
 	#
 	set -eEuo pipefail
 	_snapdir_ensure_catalog
-	"${_SNAPDIR_CATALOG_BIN_PATH}" contexts
+	"${_SNAPDIR_CATALOG_BIN_PATH}" locations
 }
 
 #       #    #     #  #####  #######  #####  ####### ####### ######   #####
@@ -921,13 +921,13 @@ snapdir_contexts() {
 #    #     # #     #  #####  #######  #####     #    ####### #     #  #####
 
 snapdir_ancestors() {
-	# Get a list of ancestor snapdir IDs and the context where they where created.
+	# Get a list of ancestor snapdir IDs and the location where they where created.
 	#
 	# Usage:
 	#
 	#     snapdir ancestors \
 	#         --id="${SNAPDIR_ID}" \
-	#         [--context="${ABSOLUTE_DIR_NAME_OR_STORE_URI}"] \
+	#         [--location="${ABSOLUTE_DIR_NAME_OR_STORE_URI}"] \
 	#         [--catalog="sqlite3"]
 	#
 	# Returns: JSON lines of the form:
@@ -935,7 +935,7 @@ snapdir_ancestors() {
 	#     {
 	#         "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
 	#         "id": "${PARENT_SNAPDIR_ID}",
-	#         "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#         "location": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
 	#     }
 	#
 	# Example:
@@ -958,12 +958,12 @@ snapdir_ancestors() {
 #     # #######    #    ###  #####  ### ####### #     #  #####
 
 snapdir_revisions() {
-	# Get a list of snapdir IDs created on a specific context.
+	# Get a list of snapdir IDs created on a specific location.
 	#
 	# Usage:
 	#
 	#     snapdir revisions \
-	#         --context="${ABSOLUTE_DIR_NAME_OR_STORE_URI}" \
+	#         --location="${ABSOLUTE_DIR_NAME_OR_STORE_URI}" \
 	#         [--catalog="sqlite3"]
 	#
 	# Returns: JSON lines of the form:
@@ -972,27 +972,27 @@ snapdir_revisions() {
 	#         "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
 	#         "id": "${SNAPDIR_ID}",
 	#         "previous_id": "${PREVIOUS_SNAPDIR_ID}",
-	#         "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#         "location": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
 	#     }
 	#
 	# Example:
 	#
 	#     # Gets a list of revisions stored on a store
-	#     snapdir revisions --context="s3://my-bucket/some/path"
+	#     snapdir revisions --location="s3://my-bucket/some/path"
 	#
 	#     # Gets a list of revisions stored on a local directory
-	#     snapdir revisions --context="/home/user/some/path"
+	#     snapdir revisions --location="/home/user/some/path"
 	#
 	set -eEuo pipefail
 	local dir="${_SNAPDIR_DIR:-""}"
 	local store="${_SNAPDIR_STORE:-""}"
-	local context="${_SNAPDIR_CONTEXT:-"${dir}${store}"}"
-	if [[ $context == "" ]]; then
-		echo "Missing --context" >&2
+	local location="${_SNAPDIR_LOCATION:-"${dir}${store}"}"
+	if [[ $location == "" ]]; then
+		echo "Missing --location" >&2
 		return 1
 	fi
 	_snapdir_ensure_catalog
-	"${_SNAPDIR_CATALOG_BIN_PATH}" revisions --context="${context}"
+	"${_SNAPDIR_CATALOG_BIN_PATH}" revisions --location="${location}"
 }
 
 #    #     # ####### ######  ### ####### #     #     #####     #     #####  #     # #######
@@ -1119,8 +1119,8 @@ _snapdir_run() (
 	fi
 
 	set -eEuo pipefail
-	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults|contexts|ancestors|revisions"
-	local boolean_args="debug|force|linked|keep|purge|stage|verbose|dryrun|context"
+	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults|locations|ancestors|revisions"
+	local boolean_args="debug|force|linked|keep|purge|stage|verbose|dryrun|location"
 	local value_required_args="id|store|cache_dir|paths|exclude|catalog"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
 
@@ -1171,7 +1171,7 @@ _snapdir_run() (
 	local options=""
 	while [ $# -gt 0 ]; do
 		case "$1" in
-		manifest | id | stage | checkout | fetch | pull | push | verify | verify-cache | flush-cache | test | defaults | contexts | ancestors | revisions)
+		manifest | id | stage | checkout | fetch | pull | push | verify | verify-cache | flush-cache | test | defaults | locations | ancestors | revisions)
 			# if command is already set, compain about multiple commands
 			if [ -n "$command" ]; then
 				echo "error: multiple commands specified: $command $1" >&2
@@ -1601,11 +1601,11 @@ _snapdir_log_event() {
 	if [[ ${_SNAPDIR_CATALOG_BIN_PATH:-""} != "" ]]; then
 		local event="${1:?Missing event as arg 1}"
 		local snapdir_id="${2:?Missing snapdir_id as arg 2}"
-		local context="${3:?Missing context as arg 3}"
+		local location="${3:?Missing location as arg 3}"
 		"$_SNAPDIR_CATALOG_BIN_PATH" log \
 			--event="$event" \
 			--id="$snapdir_id" \
-			--context="$context"
+			--location="$location"
 	fi
 }
 
@@ -1742,7 +1742,8 @@ snapdir_test() (
 		local result=""
 		local expected=""
 		local _dir="${_SNAPDIR_TEST_TMP_DIR}/files"
-		local snapshot="${_SNAPDIR_BIN_PATH}"
+		local snapdir="${_SNAPDIR_BIN_PATH}"
+		local store="file://${_SNAPDIR_TEST_TMP_DIR}/store"
 		local foo_checksum="49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
 		local foo_path="49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92"
 		local bar_checksum="b3199d36d434044e6778b77d13f8dbaba32a73d9522c1ae8d0f73ef1ff14e71f"
@@ -1760,41 +1761,41 @@ F 600 $foo_checksum 4 ./foo"
 		generate_files
 		describe "snapshot manifest for '${_dir}'"
 		check "should generate manifest"
-		result=$("${snapshot}" manifest "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" manifest "${_dir}" 2>&1 || echo "")
 		expected="$simple_manifest"
 		test "$result" == "$expected" || fail "Unexpected manifest '$result', expected '$expected'" && pass
 
 		check "should generate manifest reading dir from stdin"
-		result=$(echo "${_dir}" | "${snapshot}" manifest 2>&1 || echo "")
+		result=$(echo "${_dir}" | "${snapdir}" manifest 2>&1 || echo "")
 		test "$result" == "$simple_manifest" || fail "Unexpected manifest '$result', expected '$simple_manifest'" && pass
 
 		check "should not generate manifest for explicit --id if it's not in the local cache"
-		result=$("${snapshot}" manifest --id "${simple_manifest_id}" 2>&1 || echo "")
+		result=$("${snapdir}" manifest --id "${simple_manifest_id}" 2>&1 || echo "")
 		expected="error: Manifest for snapdir ID '${simple_manifest_id}' not found in the local cache. Snapshots must be fetched or staged locally first."
 		test "$result" == "$expected" || fail "Expected error '$result' to be: '$expected'" && pass
 
 		# saving to stage so we can reference it by id
 		check "should stage when generating manifest with the --stage option"
-		result=$("${snapshot}" manifest --verbose --stage "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" manifest --verbose --stage "${_dir}" 2>&1 || echo "")
 		grep -q "Staging manifest" <<<"$result" || fail "Expected 'Staging manifest' message on '$result' verbose output" && pass
-		# "${snapshot}" stage "${_dir}"
+		# "${snapdir}" stage "${_dir}"
 
 		check "should generate manifest reading id from --id"
-		result=$("${snapshot}" manifest --id "${simple_manifest_id}" 2>&1 || echo "")
+		result=$("${snapdir}" manifest --id "${simple_manifest_id}" 2>&1 || echo "")
 		test "$result" == "$simple_manifest" || fail "Unexpected manifest '$result', expected '$simple_manifest'" && pass
 
 		check "should complain about non existing --id"
-		result=$("${snapshot}" manifest --id "${simple_manifest_id::-1}" 2>&1 || echo "")
+		result=$("${snapdir}" manifest --id "${simple_manifest_id::-1}" 2>&1 || echo "")
 		test "$result" == "error: Manifest ID '${simple_manifest_id::-1}' is not a valid BLAKE3 checksum." || fail "Unexpected manifest '$result', expected invalid BLAKE3 checksum error" && pass
 
 		check "should generate manifest reading id from stdin"
-		result=$(echo "${simple_manifest_id}" | "${snapshot}" manifest 2>&1 || echo "")
+		result=$(echo "${simple_manifest_id}" | "${snapdir}" manifest 2>&1 || echo "")
 		test "$result" == "$simple_manifest" || fail "Unexpected manifest '$result', expected '$simple_manifest'" && pass
 
 		check "should --exclude files when generating manifest"
 		mkdir -p "${_dir}/.ignored/"
 		echo "ignored file" >"${_dir}/.ignored/ignored_file"
-		result=$("${snapshot}" manifest --exclude=".ignored" "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" manifest --exclude=".ignored" "${_dir}" 2>&1 || echo "")
 		rm -rf "${_dir}/.ignored/"
 		expected="$simple_manifest"
 		test "$result" == "$expected" || fail "Unexpected manifest '$result', expected '$expected'" && pass
@@ -1806,14 +1807,14 @@ F 600 $foo_checksum 4 ./foo"
 		generate_files
 		describe "snapshot id"
 		check "should generate snapshot id"
-		result=$("${snapshot}" id "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" id "${_dir}" 2>&1 || echo "")
 		test "$result" == "$simple_manifest_id" || fail "Unexpected snapshot id '$result', expected '$simple_manifest_id'" && pass
 		clean_files
 
 		generate_nested_files
 		describe "snapshot nested id"
 		check "should generate snapshot id for nested files"
-		result=$("${snapshot}" id "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" id "${_dir}" 2>&1 || echo "")
 		test "$result" == "$nested_manifest_id" || fail "Unexpected nested snapshot id '$result'" && pass
 		clean_files
 
@@ -1823,12 +1824,12 @@ F 600 $foo_checksum 4 ./foo"
 		clean_files
 		describe "snapshot id from stdin manifest"
 		check "should generate snapshot id from a manifest provided on stdin, even when no  files are present"
-		result=$(echo "$simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
+		result=$(echo "$simple_manifest" | "${snapdir}" id "${_dir}" 2>&1 || echo "")
 		expected="$simple_manifest_id"
 		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
 
 		check "should prevent malformated stdin manifests"
-		result=$(echo "foo bar" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
+		result=$(echo "foo bar" | "${snapdir}" id "${_dir}" 2>&1 || echo "")
 		expected="error: Manifest or manifest ID provided through stdin is invalid."
 		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
 
@@ -1836,7 +1837,7 @@ F 600 $foo_checksum 4 ./foo"
 		check "should generate snapshot id from a manifest provided on stdin, even when no  files are present"
 		result=$(echo "# a comment
 # another comment
-$simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
+$simple_manifest" | "${snapdir}" id "${_dir}" 2>&1 || echo "")
 		expected="$simple_manifest_id"
 		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
 
@@ -1846,7 +1847,7 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		generate_files
 		describe "snapshot stage files"
 		check "should stage files in manifest"
-		result=$("${snapshot}" stage --keep "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" stage --keep "${_dir}" 2>&1 || echo "")
 		expected="${_SNAPDIR}_$simple_manifest_id"
 		grep -q "$expected" <<<"$result" || fail "Unexpected directory name '${result}'. Expected '${expected}'" && pass
 		check "should have created the staging directory"
@@ -1861,8 +1862,8 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		generate_files
 		describe "snapshot manifest should not include staged files"
 		check "should generate manifest without staged files"
-		"${snapshot}" stage "${_dir}" >/dev/null
-		result=$("${snapshot}" manifest "${_dir}" 2>&1 || echo "")
+		"${snapdir}" stage "${_dir}" >/dev/null
+		result=$("${snapdir}" manifest "${_dir}" 2>&1 || echo "")
 		expected="$simple_manifest"
 		test "$result" == "$expected" || fail "Unexpected manifest '$result'" && pass
 		clean_files
@@ -1871,8 +1872,8 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		describe "snapshot stage idempotency"
 		check "should ignore .stage directories when generating manifest"
 		result=$(
-			"${snapshot}" stage --keep "${_dir}" >/dev/null || true
-			"${snapshot}" stage --keep "${_dir}" 2>&1 || echo ""
+			"${snapdir}" stage --keep "${_dir}" >/dev/null || true
+			"${snapdir}" stage --keep "${_dir}" 2>&1 || echo ""
 		)
 		# There should only be one directory matching "${_dir}/.${_SNAPDIR}-"*
 		# shellcheck disable=SC2010
@@ -1883,7 +1884,7 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		generate_nested_files
 		describe "snapshot stage nested files"
 		check "should stage nested files in manifest"
-		result=$("${snapshot}" stage --keep "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" stage --keep "${_dir}" 2>&1 || echo "")
 		expected="${_SNAPDIR}_$nested_manifest_id"
 		grep -q "$expected" <<<"$result" || fail "Unexpected directory name '$result'" && pass
 		check "should have created the staging directory"
@@ -1894,7 +1895,7 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		clean_files
 
 		generate_files
-		result=$("${snapshot}" stage "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" stage "${_dir}" 2>&1 || echo "")
 		check "should return just the snapshot id when --keep is not specified"
 		test "$result" == "$simple_manifest_id" || fail "Unexpected snapshot id '$result'" && pass
 		clean_files
@@ -1907,37 +1908,37 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		# --------------------------------------------------------------------------------
 		describe "snapshot checkout files"
 		generate_files
-		"${snapshot}" stage "${_dir}" >/dev/null
+		"${snapdir}" stage "${_dir}" >/dev/null
 		clean_files
 
 		check "should not be able got generate an id for missing directory"
-		result=$("${snapshot}" id "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" id "${_dir}" 2>&1 || echo "")
 		expected="error: Base directory .* does not exist."
 		grep -q "$expected" <<<"$result" || fail "Expected error '$expected' but got '$result'" && pass
 
 		check "should checkout files from the local cache"
-		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
 		[[ "$(grep -c "Checking out" <<<"$result")" == 2 ]] || fail "Expected two checkout messages, instead got '${result}'" && pass
 
 		check "should not checkout up to date files"
-		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
 		[[ "$(grep -c "is up to date" <<<"$result")" == 2 ]] || fail "Expected two up to date messages, instead got '${result}'" && pass
 
 		check "should generate a consistent id for checkout data"
-		result=$("${snapshot}" id "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" id "${_dir}" 2>&1 || echo "")
 		expected="$simple_manifest_id"
 		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
 
 		check "should fail if file is modified"
 		echo "not foo" >"${_dir}/foo"
-		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
 		expected="File.*${_dir}/foo already exists. To override file, use the --force flag."
 		grep -q "not foo" "${_dir}/foo" || fail "Expected ${_dir}/foo to contain 'not foo', instead got '$(cat "${_dir}/foo")'"
 		grep -q "${expected}" <<<"${result}" || fail "Expected '${expected}', instead got '${result}'" && pass
 
 		check "should override modified files when --force is used"
 		echo "not foo" >"${_dir}/foo"
-		result=$("${snapshot}" checkout --verbose --force --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" checkout --verbose --force --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
 		expected="Existing.*${_dir}/foo file overwritten via --force flag."
 		grep -q "^foo$" "${_dir}/foo" || fail "Expected ${_dir}/foo to contain 'foo', instead got '$(cat "${_dir}/foo")'"
 		grep -q "${expected}" <<<"${result}" || fail "Expected '${expected}', instead got '${result}'" && pass
@@ -1946,40 +1947,40 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		clean_files
 		mkdir -p "${_dir}"
 		echo "only-foo-should-exist" >"${_dir}/foo"
-		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" checkout --verbose --id=${simple_manifest_id} "${_dir}" 2>&1 || echo "")
 		! test -f "${_dir}/bar" || fail "Unexpected bar found on ${_dir}/. It should only contain 'foo' contents. Command output: '${result}'" && pass
 		clean_files
 
 		check "should checkout a single file with --paths"
-		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} --paths=foo "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" checkout --verbose --id=${simple_manifest_id} --paths=foo "${_dir}" 2>&1 || echo "")
 		! test -f "${_dir}/bar" || fail "Unexpected bar found on ${_dir}/. It should only contain 'foo'. Command output: '${result}'"
 		test -f "${_dir}/foo" || fail "Failed to checkout ${_dir}/foo. Command output: '${result}'" && pass
 		clean_files
 
 		check "should checkout a single directory with --paths"
 		clean_files
-		result=$("${snapshot}" checkout --verbose --id=${nested_manifest_id} --paths=a "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" checkout --verbose --id=${nested_manifest_id} --paths=a "${_dir}" 2>&1 || echo "")
 		! test -f "${_dir}/b/b1/bar" || fail "Unexpected bar found on ${_dir}/b/b1/bar. It should only contain '${_dir}/a/a1/foo'. Command output: '${result}'"
 		test -f "${_dir}/a/a1/foo" || fail "Failed to checkout ${_dir}/a/a1/foo. Command output: '${result}'" && pass
 		clean_files
 
 		check "should ignore leading ./ on --paths"
 		clean_files
-		result=$("${snapshot}" checkout --verbose --id=${nested_manifest_id} --paths=./a "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" checkout --verbose --id=${nested_manifest_id} --paths=./a "${_dir}" 2>&1 || echo "")
 		! test -f "${_dir}/b/b1/bar" || fail "Unexpected bar found on ${_dir}/b/b1/bar. It should only contain '${_dir}/a/a1/foo'. Command output: '${result}'"
 		test -f "${_dir}/a/a1/foo" || fail "Failed to checkout ${_dir}/a/a1/foo. Command output: '${result}'" && pass
 		clean_files
 
 		check "should ignore trailing / on --paths"
 		clean_files
-		result=$("${snapshot}" checkout --verbose --id=${nested_manifest_id} --paths=a/ "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" checkout --verbose --id=${nested_manifest_id} --paths=a/ "${_dir}" 2>&1 || echo "")
 		! test -f "${_dir}/b/b1/bar" || fail "Unexpected bar found on ${_dir}/b/b1/bar. It should only contain '${_dir}/a/a1/foo'. Command output: '${result}'"
 		test -f "${_dir}/a/a1/foo" || fail "Failed to checkout ${_dir}/a/a1/foo. Command output: '${result}'" && pass
 		clean_files
 
 		clean_files
 		check "should checkout files as links"
-		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} --linked "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" checkout --verbose --id=${simple_manifest_id} --linked "${_dir}" 2>&1 || echo "")
 		[[ "$(grep -c "Checking out" <<<"$result")" == 2 ]] || fail "Expected two checkout messages, instead got ${result}"
 		grep -q "^foo$" "${_dir}/foo" || fail "Expected ${_dir}/foo to contain 'foo', instead got '$(cat "${_dir}/foo")'"
 		if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -1989,13 +1990,13 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		fi
 
 		check "should generate a consistent id for checkout data as links"
-		result=$("${snapshot}" id "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" id "${_dir}" 2>&1 || echo "")
 		expected="$simple_manifest_id"
 		test "$result" == "$expected" || fail "Unexpected snapshot id '$result'" && pass
 		clean_files
 
 		check "should checkout to a non existing relative directory"
-		result=$("${snapshot}" checkout --verbose --id=${simple_manifest_id} "snapdir-test-relative-dir" 2>&1 || echo "")
+		result=$("${snapdir}" checkout --verbose --id=${simple_manifest_id} "snapdir-test-relative-dir" 2>&1 || echo "")
 		[[ "$(grep -c "Checking out" <<<"$result")" == 2 ]] || fail "Expected two checkout messages, instead got ${result}"
 		grep -q "^foo$" "snapdir-test-relative-dir/foo" || fail "Expected snapdir-test-relative-dir/foo to contain 'foo', instead got '$(cat "snapdir-test-relative-dir/foo")'" && pass
 		rm -rf "snapdir-test-relative-dir"
@@ -2005,7 +2006,7 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		# --------------------------------------------------------------------------------
 
 		check "should verify manifest"
-		result=$("${snapshot}" verify --verbose --id=${simple_manifest_id} 2>&1 || echo "")
+		result=$("${snapdir}" verify --verbose --id=${simple_manifest_id} 2>&1 || echo "")
 		grep -q "${simple_manifest_path}: OK" <<<"${result}" || fail "Failed to verify manifest got: '${result}'" && pass
 
 		check "should verify objects"
@@ -2016,18 +2017,18 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 
 		check "should complain about a missing object"
 		rm -rf "${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
-		result=$("${snapshot}" verify --verbose --id=${simple_manifest_id} 2>&1 || echo "")
+		result=$("${snapdir}" verify --verbose --id=${simple_manifest_id} 2>&1 || echo "")
 		grep -q "${foo_path}: FAILED" <<<"${result}" || fail "Failed to verify ${foo_path} got: '${result}'" && pass
 
 		check "should complain about a corrupted object"
 		echo "corrupted" >"${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
-		result=$("${snapshot}" verify --verbose --id=${simple_manifest_id} 2>&1 || echo "")
+		result=$("${snapdir}" verify --verbose --id=${simple_manifest_id} 2>&1 || echo "")
 		grep -q "${foo_path}: FAILED" <<<"${result}" || fail "Failed to dectect tampered ${foo_path} got: '${result}'" && pass
 
 		check "should purge corrupted"
 		rm -rf "${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
 		echo "corrupted" >"${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
-		result=$("${snapshot}" verify --verbose --purge --id=${simple_manifest_id} 2>&1 || echo "")
+		result=$("${snapdir}" verify --verbose --purge --id=${simple_manifest_id} 2>&1 || echo "")
 		grep -q "${foo_path}: FAILED" <<<"${result}" || fail "Failed to dectect tampered ${foo_path} got: '${result}'"
 		! test -f "${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}" || fail "Should have purged '${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}' command output: '${result}'" && pass
 		clean_files
@@ -2036,11 +2037,11 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		echo "corrupted" >"${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
 		generate_files
 		check "should warn about purged object"
-		result=$("${snapshot}" verify --verbose --purge --id=${simple_manifest_id} 2>&1 || echo "")
+		result=$("${snapdir}" verify --verbose --purge --id=${simple_manifest_id} 2>&1 || echo "")
 		grep -q "warning: Removing corrupted objects" <<<"${result}" || fail "Failed to warn about purged object got: '${result}'" && pass
-		result=$("${snapshot}" stage --verbose "${_dir}" 2>&1 || echo "")
+		result=$("${snapdir}" stage --verbose "${_dir}" 2>&1 || echo "")
 		check "should restore tampered after a new stage"
-		result=$("${snapshot}" verify --verbose --id=${simple_manifest_id} 2>&1 || echo "")
+		result=$("${snapdir}" verify --verbose --id=${simple_manifest_id} 2>&1 || echo "")
 		grep -q "${foo_path}: OK" <<<"${result}" || fail "Failed to verify ${foo_path} got: '${result}'" && pass
 		clean_files
 
@@ -2050,17 +2051,17 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 
 		check "should complain about a corrupted object"
 		echo "corrupted" >"${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
-		result=$("${snapshot}" verify-cache 2>&1 || echo "")
+		result=$("${snapdir}" verify-cache 2>&1 || echo "")
 		grep -q "Checksum mismatch for ${foo_checksum}" <<<"${result}" || fail "Failed to dectect tampered ${foo_path} got: '${result}'" && pass
 
 		check "should purge corrupted"
 		echo "corrupted" >"${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}"
-		result=$("${snapshot}" verify-cache --purge 2>&1 || echo "")
+		result=$("${snapdir}" verify-cache --purge 2>&1 || echo "")
 		grep -q "Checksum mismatch for ${foo_checksum}" <<<"${result}" || fail "Failed to dectect tampered ${foo_path} got: '${result}'"
 		! test -f "${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}" || fail "Should have purged '${_SNAPDIR_CACHE_DIR}/.objects/${foo_path}' command output: '${result}'" && pass
 		clean_files
 		generate_files
-		"${snapshot}" stage "${_dir}" >/dev/null
+		"${snapdir}" stage "${_dir}" >/dev/null
 		clean_files
 
 		# --------------------------------------------------------------------------------
@@ -2070,15 +2071,15 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		rm -rf "${_SNAPDIR_CACHE_DIR}"
 		clean_files
 		generate_files
-		"${snapshot}" stage "${_dir}" >/dev/null
+		"${snapdir}" stage "${_dir}" >/dev/null
 		clean_files
 		generate_nested_files
-		"${snapshot}" stage "${_dir}" >/dev/null
+		"${snapdir}" stage "${_dir}" >/dev/null
 		clean_files
 		check "should have cached files"
 		find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g' | grep -q "^14$" || fail "Expected 14 files in cache, instead got '$(find "${_SNAPDIR_CACHE_DIR}/" -type f -print 2>/dev/null | wc -l | sed 's/ //g')'" && pass
 		check "should clear cache files"
-		result="$(${snapshot} flush-cache 2>&1 || echo "")"
+		result="$(${snapdir} flush-cache 2>&1 || echo "")"
 		! test -d "${_SNAPDIR_CACHE_DIR}/" || fail "Cache directory found after flushing cache ${_SNAPDIR_CACHE_DIR}/. Command output: '$result'" && pass
 		clean_files
 
@@ -2087,9 +2088,9 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		# --------------------------------------------------------------------------------
 		describe "snapshot checkout without cache"
 		clean_files
-		${snapshot} flush-cache
+		${snapdir} flush-cache
 		check "should complain about missing cache"
-		result="$(${snapshot} checkout --verbose --id="${simple_manifest_id}" "${_dir}" 2>&1 || echo "")"
+		result="$(${snapdir} checkout --verbose --id="${simple_manifest_id}" "${_dir}" 2>&1 || echo "")"
 		grep -q "Did you forget to fetch" <<<"${result}" || fail "Expected 'Did you forget to fetch...', instead got '${result}'" && pass
 		clean_files
 
@@ -2098,7 +2099,7 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		# --------------------------------------------------------------------------------
 		describe "snapshot version"
 		check "should output semver version"
-		result="$("${snapshot}" version)"
+		result="$("${snapdir}" version)"
 		echo "${result}" | grep -q "^[0-9]*\.[0-9]*\.[0-9]*$" || fail "Expected semver version, got: ${result}" && pass
 
 		# --------------------------------------------------------------------------------
@@ -2106,25 +2107,30 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		# --------------------------------------------------------------------------------
 		describe "snapshot catalog methods"
 		if [[ ${SNAPDIR_CATALOG-""} != "" ]]; then
-			check "should get contexts"
-			result=$("${snapshot}" contexts 2>&1 || echo "")
-			grep -E -q "($nested_manifest_id|$simple_manifest_id)" <<<"$result" || fail "Expected contexts to contain '${nested_manifest_id}' or '${simple_manifest_id}', got: '$result'"
+			check "should get locations"
+			generate_files
+			"${snapdir}" push --store "${store}" "${_dir}" >/dev/null
+			result=$("${snapdir}" locations 2>&1 || echo "")
+
+			grep -E -q "($nested_manifest_id|$simple_manifest_id)" <<<"$result" || fail "Expected locations to contain '${nested_manifest_id}' or '${simple_manifest_id}', got: '$result'"
+			grep -E -q '"location":"/' <<<"$result" || fail "Expected locations to contain '/', got: '$result'"
+			grep -E -q '"location":"file://' <<<"$result" || fail "Expected locations to contain 'file://', got: '$result'"
 			pass
 
 			check "should get ancestors"
-			result=$("${snapshot}" ancestors --id="${nested_manifest_id}" 2>&1 || echo "")
+			result=$("${snapdir}" ancestors --id="${nested_manifest_id}" 2>&1 || echo "")
 			grep -q "id\":\"${simple_manifest_id}\"" <<<"$result" || fail "Expected simple manifest id to be ancestor of nested manifest id, got: '$result'"
 			pass
 
 			check "should get revisions"
-			result=$("${snapshot}" revisions --context="${_dir}" 2>&1 || echo "")
+			result=$("${snapdir}" revisions --location="${_dir}" 2>&1 || echo "")
 			tail -1 <<<"$result" | grep -q 'previous_id":null' || fail "Unexpected previous_id as the last revision of result: '$result'"
 			grep -q "id\":\"${simple_manifest_id}\",\"previous_id\":\"${nested_manifest_id}" <<<"$result" || fail "Expected nested/simple manifest id back and forth"
 			grep -q "id\":\"${nested_manifest_id}\",\"previous_id\":\"${simple_manifest_id}" <<<"$result" || fail "Expected nested/simple manifest id back and forth"
 			pass
 
 		else
-			skip "should get contexts"
+			skip "should get locations"
 			skip "should get ancestors"
 			skip "should get revisions"
 		fi

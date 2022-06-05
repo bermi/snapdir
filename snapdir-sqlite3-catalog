@@ -7,8 +7,64 @@
 #
 # ## Background:
 #
-#  This is Reference implementation of snapdir catalog using
-#  a local sqlite3 database.
+# This is Reference implementation of snapdir catalog using
+# a local sqlite3 database. The methods in this file are
+# called by the snapdir script.
+#
+# ## Usage
+#
+#     snapdir-sqlite3-catalog [OPTIONS] [SUBCOMMAND]
+#
+# ### Options
+#
+#     --event=name           Event name that triggered a log entry.
+#     --debug                Enable debug output.
+#     --help, -h             Prints help message.
+#     --id=ID                Manifest ID to use.
+#     --location=DIR|STORE   Location for catalog queries.
+#     --verbose              Enable verbose output.
+#     --version, -v          Prints version.
+#
+# ### Commands
+#
+#     ancestors --id=                 Get a list of ancestor snapdir IDs their location.
+#     help [COMMAND]                  Prints help information.
+#     locations                       Lists directories and stores where snapshots
+#                                     have been taken or published.
+#     log --id= --event= --location=  Saves an event. Calls save under the hood.
+#     revisions --location=           Get a list of snapdir IDs created on a
+#                                     location (store or abs path).
+#     save --id= --location=          Saves an entry and sets it's ancestor.
+#     test                            Runs unit tests.
+#     version                         Prints the version.
+#
+# ### Environment variables
+#
+#     SNAPDIR_SQLITE3_BIN               Path to sqlite3 binary with json support.
+#     SNAPDIR_SQLITE3_CATALOG_DB_PATH   Path where the database will be created.
+#                                       Defaults to ~/.snapdir/catalog-production.sqlite3.db.
+# ### Examples
+#
+#     # Saves a log entry to the database for newly generated manifest.
+#     snapdir-sqlite3-catalog log --event "manifest" --id "${SNAP_MANIFEST_ID}" --location "/some/dir"
+#
+#     # Saves a log entry to the database for newly pushed manifest.
+#     snapdir-sqlite3-catalog log --event "push" --id "${SNAP_MANIFEST_ID}" --location "s3://some-bucket/"
+#
+#     # Lists all locations and stores where snapshots have been taken or published.
+#     snapdir-sqlite3-catalog locations
+#
+#     # shows all the ancestors of a given snapdir ID.
+#     snapdir-sqlite3-catalog ancestors --id="${SNAPDIR_ID}"
+#
+#     # shows all ancestors for a given snapdir ID in a given location.
+#     snapdir-sqlite3-catalog ancestors --id="${SNAPDIR_ID}" --location="s3://some-bucket/"
+#
+#     # Gets a list of revisions stored on a store
+#     snapdir-sqlite3-catalog revisions --location="s3://my-bucket/some/path"
+#
+#     # Gets a list of revisions stored on a local directory
+#     snapdir-sqlite3-catalog revisions --location="/home/user/some/path"
 #
 # LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 
@@ -18,17 +74,24 @@ IFS=$'\n\t'
 snapdir_sqlite3_catalog_log() {
 	# Receives a log message from a a snapdir event.
 	#
-	# This is the only write interface for the catalog and will
-	# so far it's only called after manifest generation and
-	# store pushing.
+	# This is the only write interface for the catalog.
+	# Called after manifest generation and store pushing.
+	#
+	# Usage:
+	#
+	#     snapdir-sqlite3-catalog log \
+	#         --event="$EVENT_NAME" \
+	#         --location="${LOCATION}" \
+	#         --id="${ID}"
+	#
 	set -eEuo pipefail
 	local event="${_SNAPDIR_SQLITE3_CATALOG_EVENT:?Missing --event}"
 	local id="${_SNAPDIR_SQLITE3_CATALOG_ID:?Missing --id}"
-	local context="${_SNAPDIR_SQLITE3_CATALOG_CONTEXT:?Missing --context}"
+	local location="${_SNAPDIR_SQLITE3_CATALOG_LOCATION:?Missing --location}"
 	"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
-		INSERT INTO snapdir_event_log (event, id, context) VALUES ('${event}', '${id}', '${context}');
+		INSERT INTO snapdir_event_log (event, id, location) VALUES ('${event}', '${id}', '${location}');
 	EOF
-	snapdir_sqlite3_catalog_save "${context}" "$id"
+	snapdir_sqlite3_catalog_save "${location}" "$id"
 }
 
 snapdir_sqlite3_catalog_save() {
@@ -36,14 +99,21 @@ snapdir_sqlite3_catalog_save() {
 	#
 	# This is not called directly by snapdir but is called
 	# the snapdir_sqlite3_catalog_log function on a new subshell.
+	#
+	# Usage:
+	#
+	#     snapdir-sqlite3-catalog save \
+	#         --location="${LOCATION}" \
+	#         --id="${ID}"
+	#
 	set -eEuo pipefail
-	local context="${1:-${_SNAPDIR_SQLITE3_CATALOG_CONTEXT:?Missing --context}}"
+	local location="${1:-${_SNAPDIR_SQLITE3_CATALOG_LOCATION:?Missing --location}}"
 	local id="${2:-${_SNAPDIR_SQLITE3_CATALOG_ID:?Missing --id}}"
 	local previous_id
 	previous_id="$(
 		"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 			SELECT id FROM snapdir_history 
-				WHERE context='${context}'
+				WHERE location='${location}'
 			ORDER BY created_at DESC LIMIT 1;
 		EOF
 	)"
@@ -54,95 +124,95 @@ snapdir_sqlite3_catalog_save() {
 	previous_id="${previous_id:-"NULL"}"
 	"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 		INSERT INTO snapdir_history 
-			(context, id, previous_id)
+			(location, id, previous_id)
 		VALUES 
-			('$context', '$id', NULLIF('$previous_id', 'NULL'));
+			('$location', '$id', NULLIF('$previous_id', 'NULL'));
 	EOF
 }
 
-snapdir_sqlite3_catalog_contexts() {
-	# Lists contexts tracked by the catalog. These include local directories and stores.
+snapdir_sqlite3_catalog_locations() {
+	# Lists locations tracked by the catalog. These include local directories and stores.
 	#
 	# Usage:
 	#
-	#     snapdir-sqlite3-catalog contexts
+	#     snapdir-sqlite3-catalog locations
 	#
 	# Returns: JSON lines of the form:
 	#
 	#     {
 	#         "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
 	#         "id": "${SNAPDIR_ID}",
-	#         "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#         "location": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
 	#     }
 	#
 	# Example:
 	#
-	#     snapdir-sqlite3-catalog contexts
+	#     snapdir-sqlite3-catalog locations
 	#
 	set -eEuo pipefail
 	"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 		SELECT json_object(
 			'created_at', STRFTIME('%Y-%m-%d %H:%M:%f', s1.created_at),
 			'id', s1.id,
-			'context', s1.context
+			'location', s1.location
 		)
 		FROM snapdir_history s1
 			LEFT JOIN snapdir_history s2
-				ON s1.context = s2.context
+				ON s1.location = s2.location
 				AND s1.created_at < s2.created_at
 		WHERE s2.id IS NULL
 	EOF
 }
 
 snapdir_sqlite3_catalog_ancestors() {
-	# Get a list of ancestor snapdir IDs and the context where they where created.
+	# Get a list of ancestor snapdir IDs and the location where they where created.
 	#
 	# Usage:
 	#
 	#     snapdir-sqlite3-catalog ancestors \
 	#         --id="${SNAPDIR_ID}" \
-	#         [--context="${ABSOLUTE_DIR_NAME_OR_STORE_URI}"]
+	#         [--location="${ABSOLUTE_DIR_NAME_OR_STORE_URI}"]
 	#
 	# Returns: JSON lines of the form:
 	#
 	#     {
 	#         "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
 	#         "id": "${PARENT_SNAPDIR_ID}",
-	#         "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#         "location": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
 	#     }
 	#
 	# Examples:
 	#
 	#     snapdir-sqlite3-catalog ancestors --id="${SNAPDIR_ID}"
-	#     snapdir-sqlite3-catalog ancestors --id="${SNAPDIR_ID}" --context="s3://some-bucket/"
+	#     snapdir-sqlite3-catalog ancestors --id="${SNAPDIR_ID}" --location="s3://some-bucket/"
 	#
 	set -eEuo pipefail
 	local id="${_SNAPDIR_SQLITE3_CATALOG_ID:?Missing --id}"
-	local context="${_SNAPDIR_SQLITE3_CATALOG_CONTEXT:-""}"
-	local context_condition=""
-	if [[ $context != "" ]]; then
-		context_condition=" AND context='${context//\'/\'\'}'"
+	local location="${_SNAPDIR_SQLITE3_CATALOG_LOCATION:-""}"
+	local location_condition=""
+	if [[ $location != "" ]]; then
+		location_condition=" AND location='${location//\'/\'\'}'"
 	fi
 
 	"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 		SELECT json_object(
 			'created_at', STRFTIME('%Y-%m-%d %H:%M:%f', created_at),
 			'id', previous_id,
-			'context', context
+			'location', location
 		)
 		FROM snapdir_history WHERE (
-			id = '$id' AND previous_id IS NOT NULL $context_condition
+			id = '$id' AND previous_id IS NOT NULL $location_condition
 		) ORDER BY created_at DESC;
 	EOF
 }
 
 snapdir_sqlite3_catalog_revisions() {
-	# Get a list of snapdir IDs created on a specific context.
+	# Get a list of snapdir IDs created on a specific location.
 	#
 	# Usage:
 	#
 	#     snapdir-sqlite3-catalog revisions \
-	#         --context="${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#         --location="${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
 	#
 	# Returns: JSON lines of the form:
 	#
@@ -150,26 +220,26 @@ snapdir_sqlite3_catalog_revisions() {
 	#         "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
 	#         "id": "${SNAPDIR_ID}",
 	#         "previous_id": "${PREVIOUS_SNAPDIR_ID}",
-	#         "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#         "location": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
 	#     }
 	#
-	# Example:
+	# Example2:
 	#
 	#     # Gets a list of revisions stored on a store
-	#     snapdir-sqlite3-catalog revisions --context="s3://my-bucket/some/path"
+	#     snapdir-sqlite3-catalog revisions --location="s3://my-bucket/some/path"
 	#
 	#     # Gets a list of revisions stored on a local directory
-	#     snapdir-sqlite3-catalog revisions --context="/home/user/some/path"
+	#     snapdir-sqlite3-catalog revisions --location="/home/user/some/path"
 	#
 	set -eEuo pipefail
-	local context="${_SNAPDIR_SQLITE3_CATALOG_CONTEXT:?Missing --context}"
+	local location="${_SNAPDIR_SQLITE3_CATALOG_LOCATION:?Missing --location}"
 	"${SNAPDIR_SQLITE3_BIN}" "${SNAPDIR_SQLITE3_CATALOG_DB_PATH}" <<-EOF
 		SELECT json_object(
 			'created_at', STRFTIME('%Y-%m-%d %H:%M:%f', created_at),
 			'id', id,
 			'previous_id', previous_id
 		)
-		FROM snapdir_history WHERE context='$context' ORDER BY created_at DESC;
+		FROM snapdir_history WHERE location='$location' ORDER BY created_at DESC;
 	EOF
 }
 
@@ -182,9 +252,9 @@ _snapdir_sqlite3_catalog_run() (
 		echo "snapdir-sqlite3-catalog ${@}" >>"${_SNAPDIR_RUN_LOG_PATH}"
 	fi
 
-	local subcommands="save|revisions|contexts|ancestors|log"
+	local subcommands="save|revisions|locations|ancestors|log"
 	local boolean_args="debug|verbose"
-	local value_required_args="id|context|event"
+	local value_required_args="id|location|event"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
 
 	_snapdir_sqlite3_catalog_parse_argument_key() {
@@ -226,13 +296,13 @@ _snapdir_sqlite3_catalog_run() (
 			CREATE TABLE snapdir_event_log (
 				event TEXT NOT NULL CHECK(length(event) <= 128),
 				id TEXT NOT NULL CHECK(length(id) = 64),
-				context TEXT NOT NULL CHECK(length(context) < 4096),
+				location TEXT NOT NULL CHECK(length(location) < 4096),
 				created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))
 			);
 			CREATE TABLE snapdir_history (
 				id TEXT NOT NULL CHECK(length(id) = 64),
 				previous_id TEXT CHECK(length(previous_id) = 64),
-				context TEXT NOT NULL CHECK(length(context) < 4096),
+				location TEXT NOT NULL CHECK(length(location) < 4096),
 				created_at DATETIME DEFAULT(STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))
 			);
 		EOF
@@ -264,7 +334,7 @@ _snapdir_sqlite3_catalog_run() (
 
 	while [ $# -gt 0 ]; do
 		case "$1" in
-		save | revisions | contexts | ancestors | log | test)
+		save | revisions | locations | ancestors | log | test)
 			command="$1"
 			shift
 			;;
@@ -369,38 +439,38 @@ snapdir_sqlite3_catalog_test() (
 		describe "log"
 
 		check "should prevent invalid id"
-		result=$("$catalog" log --event "manifest" --context "/foo/bar" --id "invalid" 2>&1 || echo "")
+		result=$("$catalog" log --event "manifest" --location "/foo/bar" --id "invalid" 2>&1 || echo "")
 		grep -E -q "CHECK.+failed" <<<"$result" || fail "Expected error message for id. Got: '$result'" && pass
 
 		check "should save event"
-		result=$("$catalog" log --event "manifest" --context "s3://foo" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" 2>&1 || echo "")
+		result=$("$catalog" log --event "manifest" --location "s3://foo" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" 2>&1 || echo "")
 		test "$result" == "" || fail "Unexpected output: '$result'"
-		test "$("$SNAPDIR_SQLITE3_BIN" "$SNAPDIR_SQLITE3_CATALOG_DB_PATH" "select event,id,context from snapdir_event_log")" == "manifest|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|s3://foo" && pass
+		test "$("$SNAPDIR_SQLITE3_BIN" "$SNAPDIR_SQLITE3_CATALOG_DB_PATH" "select event,id,location from snapdir_event_log")" == "manifest|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|s3://foo" && pass
 
 		# --------------------------------------------------------------------------------
-		"$catalog" log --event "manifest" --context "s3://bar" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-		"$catalog" log --event "manifest" --context "/local/foo" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-		"$catalog" log --event "manifest" --context "/local/foo" --id "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-		"$catalog" log --event "manifest" --context "/local/foo" --id "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-		"$catalog" log --event "manifest" --context "s3://bar" --id "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		"$catalog" log --event "manifest" --location "s3://bar" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		"$catalog" log --event "manifest" --location "/local/foo" --id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		"$catalog" log --event "manifest" --location "/local/foo" --id "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		"$catalog" log --event "manifest" --location "/local/foo" --id "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		"$catalog" log --event "manifest" --location "s3://bar" --id "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 		# --------------------------------------------------------------------------------
 
-		local contexts
-		contexts="$("$catalog" contexts)"
+		local locations
+		locations="$("$catalog" locations)"
 
-		describe "contexts"
-		check "include content names"
-		grep -q "s3://foo" <<<"$contexts" || fail "Expected context 's3://foo'. Got: '$contexts'"
-		grep -q "s3://bar" <<<"$contexts" || fail "Expected context 's3://foo'. Got: '$contexts'"
-		grep -q "/local/foo" <<<"$contexts" || fail "Expected context 's3://foo'. Got: '$contexts'" && pass
+		describe "locations"
+		check "include location names"
+		grep -q "s3://foo" <<<"$locations" || fail "Expected location 's3://foo'. Got: '$locations'"
+		grep -q "s3://bar" <<<"$locations" || fail "Expected location 's3://foo'. Got: '$locations'"
+		grep -q "/local/foo" <<<"$locations" || fail "Expected location 's3://foo'. Got: '$locations'" && pass
 
 		check "include latest ids"
-		grep "s3://foo" <<<"$contexts" | grep -q "aaaaaa" || fail "Expected context 's3://foo' to have ID aaaaaa.... Got: '$contexts'"
-		grep "s3://bar" <<<"$contexts" | grep -q "cccccc" || fail "Expected context 's3://bar' to have ID cccc.... Got: '$contexts'"
-		grep "/local/foo" <<<"$contexts" | grep -q "cccccc" || fail "Expected context '/local/foo' to have ID cccc.... Got: '$contexts'" && pass
+		grep "s3://foo" <<<"$locations" | grep -q "aaaaaa" || fail "Expected location 's3://foo' to have ID aaaaaa.... Got: '$locations'"
+		grep "s3://bar" <<<"$locations" | grep -q "cccccc" || fail "Expected location 's3://bar' to have ID cccc.... Got: '$locations'"
+		grep "/local/foo" <<<"$locations" | grep -q "cccccc" || fail "Expected location '/local/foo' to have ID cccc.... Got: '$locations'" && pass
 
-		check "total number of contexts"
-		test "$(echo "$contexts" | grep -c .)" == "3" || fail "Found more contexts than expected." && pass
+		check "total number of locations"
+		test "$(echo "$locations" | grep -c .)" == "3" || fail "Found more locations than expected." && pass
 
 		describe "ancestors"
 
@@ -415,20 +485,20 @@ snapdir_sqlite3_catalog_test() (
 		test "$(echo "$result" | grep -c .)" == "2" || fail "Found more ancestors than expected."
 		pass
 
-		result="$("$catalog" ancestors --context "s3://bar" --id cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc)"
-		check "should include only ancestors in a given context"
+		result="$("$catalog" ancestors --location "s3://bar" --id cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc)"
+		check "should include only ancestors in a given location"
 		grep "s3://bar" <<<"$result" | grep -q "aaaaaaa" || fail "Expected ancestor 'aaaaaa...'. Got: '$result'"
 		test "$(echo "$result" | grep -c .)" == "1" || fail "Found more ancestors than expected."
 		pass
 
 		describe "revisions"
 
-		check "should not return revisions for an invalid context"
-		result="$("$catalog" revisions --context "/not/avail" 2>&1 || echo "")"
+		check "should not return revisions for an invalid location"
+		result="$("$catalog" revisions --location "/not/avail" 2>&1 || echo "")"
 		test "$result" == "" || fail "Unexpected output: '$result'" && pass
 
-		check "should return revisions for a valid context"
-		result="$("$catalog" revisions --context "s3://bar" 2>&1 || echo "")"
+		check "should return revisions for a valid location"
+		result="$("$catalog" revisions --location "s3://bar" 2>&1 || echo "")"
 		grep 'id":"ccc' <<<"$result" | grep -q 'previous_id":"aaaaa' || fail "Expected id 'ccc...' with previous_id 'aaa...'. Got: '$result'"
 		grep 'id":"aaa' <<<"$result" | grep -q 'previous_id":null' || fail "Expected id 'aaa...' with previous_id 'null'. Got: '$result'"
 		test "$(echo "$result" | grep -c .)" == "2" || fail "Found more revisions than expected."
@@ -464,7 +534,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	# Get the absolute path to ${BASH_SOURCE[0]}
 	export _SNAPDIR_SQLITE3_CATALOG_BIN_PATH="${_SNAPDIR_SQLITE3_CATALOG_BIN_PATH:-$(_snapdir_sqlite3_catalog_readlink "${BASH_SOURCE[0]}")}"
 	# import snapdir functions and environment variables,
-	# we'll need them to resolve context, logging and testing.
+	# we'll need them to resolve location, logging and testing.
 	_SNAPDIR_BIN_PATH="$(dirname "${_SNAPDIR_SQLITE3_CATALOG_BIN_PATH}")/snapdir"
 	SNAPDIR_SQLITE3_BIN="${SNAPDIR_SQLITE3_BIN:-$(command -v sqlite3 2>/dev/null || echo "")}"
 	if ! test -f "$_SNAPDIR_BIN_PATH"; then
