@@ -13,7 +13,7 @@ In its current incarnation, pre v1.0 [Snapdir] has been implemented as independe
 | [`snapdir-file-store`](./snapdir-file-store) | Storage backend using the filesystem.                                                                             | [manual](./docs/api/snapdir-file-store.md)                    | ![unit tests status] |
 | [`snapdir-s3-store`](./snapdir-s3-store)     | Storage backend using Amazon S3.                                                                                  | [manual](./docs/api/snapdir-s3-store.md)                      | ![s3 status]         |
 | [`snapdir-b2-store`](./snapdir-b2-store)     | Storage backend using Backblaze B2.                                                                               | [README](./docs/snapdir-b2-store.md) [manual](./docs/api/snapdir-b2-store.md) | ![b2 status]         |
-| [`snapdir-sqlite3-logger`](./snapdir-sqlite3-logger) | Basic logging of generated and pushed manifests.                                                          | [manual](./docs/api/snapdir-sqlite3-logger.md) | ![logger status]         |
+| [`snapdir-sqlite3-catalog`](./snapdir-sqlite3-catalog) | Basic logging of generated and pushed manifests.                                                          | [manual](./docs/api/snapdir-sqlite3-catalog.md) | ![catalog status]         |
 | [bermi/snapdir] docker image                 | 8MB Docker image containing snapdir and all its dependencies.                                                     | [install](./docs/api/snapdir-docker.md)                       | ![docker status]     |
 
 
@@ -158,7 +158,7 @@ LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
   [unit tests status]: https://github.com/bermi/snapdir/actions/workflows/unit_tests.yml/badge.svg
   [b2 status]: https://github.com/bermi/snapdir/actions/workflows/b2-store.yml/badge.svg
   [s3 status]: https://github.com/bermi/snapdir/actions/workflows/s3-store.yml/badge.svg
-  [logger status]: https://github.com/bermi/snapdir/actions/workflows/sqlite3-logger.yml/badge.svg
+  [catalog status]: https://github.com/bermi/snapdir/actions/workflows/sqlite3-catalog.yml/badge.svg
   [docs status]: https://github.com/bermi/snapdir/actions/workflows/docs.yml/badge.svg
   [docker status]: https://github.com/bermi/snapdir/actions/workflows/build.yml/badge.svg
   [Snapdir]: https://github.com/bermi/snapdir
