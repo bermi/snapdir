@@ -11,13 +11,6 @@
 set -eEuo pipefail
 IFS=$'\n\t'
 
-# By default this script will take the name of the current file
-_SNAPDIR_FILE_STORE="snapdir-file-store"
-if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
-	_SNAPDIR_FILE_STORE="$(basename "${BASH_SOURCE[0]}")"
-fi
-_SNAPDIR_FILE_STORE_VERSION="0.1.1"
-
 #       ### #     # ####### ####### ######  #######    #     #####  #######
 #        #  ##    #    #    #       #     # #         # #   #     # #
 #        #  # #   #    #    #       #     # #        #   #  #       #
@@ -424,7 +417,7 @@ _snapdir_file_store_run() (
 			shift
 			;;
 		version | -v | --version)
-			echo "${_SNAPDIR_FILE_STORE_VERSION}"
+			echo "${_SNAPDIR_VERSION}"
 			exit 0
 			;;
 		# export all --*=* flags as _SNAPDIR_FILE_STORE_* env vars
@@ -464,7 +457,7 @@ _snapdir_file_store_run() (
 	# if command is not set, show help
 	if [[ ${command:-""} == "" ]]; then
 		echo "Uknown command '$subcommand_candidate'. Valid commands are: ${subcommands}" >&2
-		echo "Try: ${_SNAPDIR_FILE_STORE} --help" >&2
+		echo "Try: snapdir-file-store --help" >&2
 		return 1
 	fi
 
@@ -490,12 +483,18 @@ _snapdir_file_store_export_env_defaults() {
 #          #    #       #     #    #    #     #
 #          #    #######  #####     #     #####
 snapdir_file_store_test() (
-	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	# Runs the tests for the file store
+	#
+	# Usage:
+	#
+	#     snapdir-file-store test
+	#
 	set -eEuo pipefail
 
 	# Import test utilities
 	# shellcheck disable=SC1091 source=./snapdir-test
 	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_FILE_STORE_BIN_PATH}"
+	unset SNAPDIR_CATALOG
 
 	teardown_suite() {
 		rm -rf "$_SNAPDIR_TEST_TMP_DIR/store"
@@ -728,8 +727,10 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 			exit 1
 		fi
 	fi
+	# We use  <<<"" to avoid capturing snapdir from captuing stdin
+	# when sourced.
 	# shellcheck disable=SC1090
-	. "$_SNAPDIR_BIN_PATH"
+	. "$_SNAPDIR_BIN_PATH" <<<""
 	_snapdir_file_store_run "${@:1}"
 else
 	_snapdir_file_store_export_env_defaults

@@ -105,4 +105,12 @@ Usage:
 
 ### snapdir-b2-store test
 
-note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+Runs the tests for the b2 store
+
+Usage:
+
+    snapdir-b2-store test --store="${STORE}"
+
+Environment variables:
+
+- SNAPDIR_B2_STORE_APPLICATION_KEY

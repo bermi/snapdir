@@ -508,13 +508,32 @@ _snapdir_b2_store_get_remote_sha1sums() {
 #          #    #             #    #          #
 #          #    #       #     #    #    #     #
 #          #    #######  #####     #     #####
+# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
 snapdir_b2_store_test() (
-	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	# Runs the tests for the b2 store
+	#
+	# Usage:
+	#
+	#     snapdir-b2-store test --store="${STORE}"
+	#
+	# Environment variables:
+	#
+	# - SNAPDIR_B2_STORE_APPLICATION_KEY
+	# - SNAPDIR_B2_STORE_APPLICATION_KEY_ID
+	#
+	# Example:
+	#
+	#     SNAPDIR_B2_STORE_APPLICATION_KEY=my-application-key \
+	#     SNAPDIR_B2_STORE_APPLICATION_KEY_ID=my-application-key-id \
+	#     snapdir-b2-store test --store="b2://my-bucket/my-directory"
+	#
 	set -eEuo pipefail
 
 	# Import test utilities
 	# shellcheck disable=SC1091 source=./snapdir-test
 	. "${_SNAPDIR_BIN_DIR}/snapdir-test" "${_SNAPDIR_B2_STORE_BIN_PATH}"
+
+	unset SNAPDIR_CATALOG
 
 	setup_suite() {
 		set -eEuo pipefail
@@ -775,8 +794,10 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 			exit 1
 		fi
 	fi
+	# We use  <<<"" to avoid capturing snapdir from captuing stdin
+	# when sourced.
 	# shellcheck disable=SC1090
-	. "$_SNAPDIR_BIN_PATH"
+	. "$_SNAPDIR_BIN_PATH" <<<""
 	_snapdir_b2_store_run "${@:1}"
 else
 	_snapdir_b2_store_export_env_defaults

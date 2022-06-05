@@ -11,6 +11,7 @@
 # ### Options
 #
 #     --cache-dir=DIR        Directory where the object cache is stored.
+#     --context=DIR|STORE    Context for catalog queries.
 #     --debug                Enable debug output.
 #     --dryrun               Run without making any changes.
 #     --exclude=PATTERN      Excludes paths matching PATTERN.
@@ -21,6 +22,7 @@
 #     --id=ID                Manifest ID to use.
 #     --keep                 Keeps the staging directory.
 #     --linked               Use symlinks instead of copies.
+#     --catalog=NAME         Catalog adapter to use. Defaults to $SNAPDIR_CATALOG.
 #     --paths=PATTERN        Only includes paths matching PATTERN
 #                            when checking out manifests.
 #     --purge                Purges objects with invalid checksums.
@@ -30,8 +32,11 @@
 #
 # ### Commands
 #
-#
+#     ancestors --id=                Get a list of ancestor snapdir IDs their context.
+#                                    Requires --catalog.
 #     checkout --id= [--linked] DIR  Checkout a snapshot to a directory.
+#     contexts                       Lists directories and stores where snapshots
+#                                    have been taken or published. Requires --catalog.
 #     defaults                       Prints default settings and arguments.
 #     fetch --id= --store=           Fetch a snapshot from a store.
 #     flush-cache                    Flushes the local cache.
@@ -43,6 +48,8 @@
 #                                    it out the given path.
 #     push --store= [--id=] [PATH]   Pushes a snapshot to a store given its path or
 #                                    a staged manifest ID.
+#     revisions --context=           Get a list of snapdir IDs created on a
+#                                    context (store or abs path). Requires --catalog.
 #     stage DIR                      Saves into the local cache a snapshot of
 #                                    a directory.
 #     test                           Runs unit tests for snapdir.
@@ -62,6 +69,8 @@
 #                                    overridden by --cache-dir.
 #     SNAPDIR_MANIFEST_CONTEXT       Context string for deriving key in keyed mode.
 #     SNAPDIR_SYSTEM_EXCLUDE_DIRS    Directories to exclude on --exclude="%system%".
+#     SNAPDIR_CATALOG                 Default catalog to use when no --catalog is
+#                                    provided. Defaults to none.
 #
 # ### Examples
 #
@@ -194,7 +203,9 @@ snapdir_manifest() {
 		snapdir_stage "${1:-""}" >/dev/null
 	fi
 
+	_SNAPDIR_ID="$(snapdir_id)"
 	echo "${_SNAPDIR_MANIFEST}"
+	_snapdir_log_event "manifest" "${_SNAPDIR_ID}" "$snapdir_dir_abs_path"
 }
 
 #       ### ######
@@ -243,6 +254,7 @@ snapdir_id() {
 	fi
 	_SNAPDIR_ID="$(echo "$manifest" | grep -v "^#" | b3sum --no-names -)"
 	echo "$_SNAPDIR_ID"
+	export _SNAPDIR_ID
 }
 
 ######  #     #  #####  #     #
@@ -339,6 +351,8 @@ snapdir_push() {
 		rm -rf "${_snapdir_tmp_dir}"
 	fi
 	echo "${_SNAPDIR_ID}"
+
+	_snapdir_log_event "push" "${_SNAPDIR_ID}" "$store"
 }
 
 ####### ####### #######  #####  #     #
@@ -804,6 +818,8 @@ snapdir_stage() {
 		rm -rf "$staging_directory"
 		echo "$snapdir_id"
 	fi
+
+	_snapdir_log_event "stage" "${snapdir_id}" "${base_dir}"
 }
 
 #       #     # ####### ######  ### ####### #     #
@@ -860,6 +876,123 @@ snapdir_verify() {
 	else
 		_snapdir_check_integrity
 	fi
+}
+
+#     #####  ####### #     # ####### ####### #     # #######  #####
+#    #     # #     # ##    #    #    #        #   #     #    #     #
+#    #       #     # # #   #    #    #         # #      #    #
+#    #       #     # #  #  #    #    #####      #       #     #####
+#    #       #     # #   # #    #    #         # #      #          #
+#    #     # #     # #    ##    #    #        #   #     #    #     #
+#     #####  ####### #     #    #    ####### #     #    #     #####
+
+snapdir_contexts() {
+	# Lists contexts tracked by the catalog. These include local directories and stores.
+	#
+	# Usage:
+	#
+	#     snapdir contexts \
+	#         [--catalog="sqlite3"]
+	#
+	# Returns: JSON lines of the form:
+	#
+	#     {
+	#         "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
+	#         "id": "${SNAPDIR_ID}",
+	#         "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#     }
+	#
+	# Example:
+	#
+	#     # Use the default catalog defined by SNAPDIR_CATALOG
+	#     snapdir contexts
+	#
+	set -eEuo pipefail
+	_snapdir_ensure_catalog
+	"${_SNAPDIR_CATALOG_BIN_PATH}" contexts
+}
+
+#       #    #     #  #####  #######  #####  ####### ####### ######   #####
+#      # #   ##    # #     # #       #     #    #    #     # #     # #     #
+#     #   #  # #   # #       #       #          #    #     # #     # #
+#    #     # #  #  # #       #####    #####     #    #     # ######   #####
+#    ####### #   # # #       #             #    #    #     # #   #         #
+#    #     # #    ## #     # #       #     #    #    #     # #    #  #     #
+#    #     # #     #  #####  #######  #####     #    ####### #     #  #####
+
+snapdir_ancestors() {
+	# Get a list of ancestor snapdir IDs and the context where they where created.
+	#
+	# Usage:
+	#
+	#     snapdir ancestors \
+	#         --id="${SNAPDIR_ID}" \
+	#         [--context="${ABSOLUTE_DIR_NAME_OR_STORE_URI}"] \
+	#         [--catalog="sqlite3"]
+	#
+	# Returns: JSON lines of the form:
+	#
+	#     {
+	#         "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
+	#         "id": "${PARENT_SNAPDIR_ID}",
+	#         "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#     }
+	#
+	# Example:
+	#
+	#     # Use the default catalog defined by SNAPDIR_CATALOG
+	#     snapdir ancestors --id="${SNAPDIR_ID}"
+	#
+	set -eEuo pipefail
+	local id="${_SNAPDIR_ID:?Missing --id}"
+	_snapdir_ensure_catalog
+	"${_SNAPDIR_CATALOG_BIN_PATH}" ancestors --id="${id}"
+}
+
+######  ####### #     # ###  #####  ### ####### #     #  #####
+#     # #       #     #  #  #     #  #  #     # ##    # #     #
+#     # #       #     #  #  #        #  #     # # #   # #
+######  #####   #     #  #   #####   #  #     # #  #  #  #####
+#   #   #        #   #   #        #  #  #     # #   # #       #
+#    #  #         # #    #  #     #  #  #     # #    ## #     #
+#     # #######    #    ###  #####  ### ####### #     #  #####
+
+snapdir_revisions() {
+	# Get a list of snapdir IDs created on a specific context.
+	#
+	# Usage:
+	#
+	#     snapdir revisions \
+	#         --context="${ABSOLUTE_DIR_NAME_OR_STORE_URI}" \
+	#         [--catalog="sqlite3"]
+	#
+	# Returns: JSON lines of the form:
+	#
+	#     {
+	#         "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
+	#         "id": "${SNAPDIR_ID}",
+	#         "previous_id": "${PREVIOUS_SNAPDIR_ID}",
+	#         "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+	#     }
+	#
+	# Example:
+	#
+	#     # Gets a list of revisions stored on a store
+	#     snapdir revisions --context="s3://my-bucket/some/path"
+	#
+	#     # Gets a list of revisions stored on a local directory
+	#     snapdir revisions --context="/home/user/some/path"
+	#
+	set -eEuo pipefail
+	local dir="${_SNAPDIR_DIR:-""}"
+	local store="${_SNAPDIR_STORE:-""}"
+	local context="${_SNAPDIR_CONTEXT:-"${dir}${store}"}"
+	if [[ $context == "" ]]; then
+		echo "Missing --context" >&2
+		return 1
+	fi
+	_snapdir_ensure_catalog
+	"${_SNAPDIR_CATALOG_BIN_PATH}" revisions --context="${context}"
 }
 
 #    #     # ####### ######  ### ####### #     #     #####     #     #####  #     # #######
@@ -986,9 +1119,9 @@ _snapdir_run() (
 	fi
 
 	set -eEuo pipefail
-	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults"
-	local boolean_args="debug|force|linked|keep|purge|stage|verbose|dryrun"
-	local value_required_args="id|store|cache_dir|paths|exclude"
+	local subcommands="manifest|id|stage|checkout|fetch|pull|push|verify|verify-cache|flush-cache|test|defaults|contexts|ancestors|revisions"
+	local boolean_args="debug|force|linked|keep|purge|stage|verbose|dryrun|context"
+	local value_required_args="id|store|cache_dir|paths|exclude|catalog"
 	local legal_argument_keys="${boolean_args}|${value_required_args}"
 
 	parse_argument_key() {
@@ -1035,9 +1168,10 @@ _snapdir_run() (
 	local is_boolean
 	local subcommand_candidate="${1:-""}"
 	local show_help=false
+	local options=""
 	while [ $# -gt 0 ]; do
 		case "$1" in
-		manifest | id | stage | checkout | fetch | pull | push | verify | verify-cache | flush-cache | test | defaults)
+		manifest | id | stage | checkout | fetch | pull | push | verify | verify-cache | flush-cache | test | defaults | contexts | ancestors | revisions)
 			# if command is already set, compain about multiple commands
 			if [ -n "$command" ]; then
 				echo "error: multiple commands specified: $command $1" >&2
@@ -1059,6 +1193,7 @@ _snapdir_run() (
 			key="$(parse_argument_key "${1%%=*}")"
 			validate_option "$key"
 			export "$key"="${1#*=}"
+			options="${options} $key=\"${1#*=}\""
 			shift
 			;;
 		# export all --* * flags as _SNAPDIR_* env vars
@@ -1102,6 +1237,7 @@ _snapdir_run() (
 	fi
 
 	_snapdir_export_env_defaults "${command}"
+	_snapdir_enable_event_catalog
 	eval "snapdir_${command//-/_} $positional_args ${*:2}"
 )
 
@@ -1260,6 +1396,7 @@ _snapdir_get_base_dir() {
 		return 1
 	fi
 	echo "${base_dir}"
+	export _SNAPDIR_BASE_DIR="${base_dir}"
 }
 
 _snapdir_command_help() {
@@ -1437,6 +1574,39 @@ _snapdir_tmp_id() {
 	# Caveat: in macOS the resolution is not nanoseconds but in seconds, therefore
 	# we include a random suffix to reduce the chance of collisions.
 	echo "${RANDOM:-""}$(date +%s%N).tmp"
+}
+
+_snapdir_ensure_catalog() {
+	set -eEuo pipefail
+	if [[ ${_SNAPDIR_CATALOG_BIN_PATH:-""} == "" ]]; then
+		echo "error: Missing SNAPDIR_CATALOG or --catalog" >&2
+		return 1
+	fi
+}
+
+_snapdir_enable_event_catalog() {
+	_SNAPDIR_CATALOG_BIN_PATH=""
+	local catalog_adapter="${SNAPDIR_CATALOG:-"${_SNAPDIR_CATALOG:-""}"}"
+	if [[ $catalog_adapter != "" ]]; then
+		_SNAPDIR_CATALOG_BIN_PATH="${_SNAPDIR_BIN_DIR}/snapdir-${catalog_adapter}-catalog"
+		command -v "$_SNAPDIR_CATALOG_BIN_PATH" >/dev/null || {
+			echo "error: Catalog adapter '${catalog_adapter}' not found." >&2
+			return 1
+		}
+	fi
+}
+
+_snapdir_log_event() {
+	set -eEuo pipefail
+	if [[ ${_SNAPDIR_CATALOG_BIN_PATH:-""} != "" ]]; then
+		local event="${1:?Missing event as arg 1}"
+		local snapdir_id="${2:?Missing snapdir_id as arg 2}"
+		local context="${3:?Missing context as arg 3}"
+		"$_SNAPDIR_CATALOG_BIN_PATH" log \
+			--event="$event" \
+			--id="$snapdir_id" \
+			--context="$context"
+	fi
 }
 
 _snapdir_export_store_vars() {
@@ -1930,6 +2100,34 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 		check "should output semver version"
 		result="$("${snapshot}" version)"
 		echo "${result}" | grep -q "^[0-9]*\.[0-9]*\.[0-9]*$" || fail "Expected semver version, got: ${result}" && pass
+
+		# --------------------------------------------------------------------------------
+		# snapshot catalog methods
+		# --------------------------------------------------------------------------------
+		describe "snapshot catalog methods"
+		if [[ ${SNAPDIR_CATALOG-""} != "" ]]; then
+			check "should get contexts"
+			result=$("${snapshot}" contexts 2>&1 || echo "")
+			grep -E -q "($nested_manifest_id|$simple_manifest_id)" <<<"$result" || fail "Expected contexts to contain '${nested_manifest_id}' or '${simple_manifest_id}', got: '$result'"
+			pass
+
+			check "should get ancestors"
+			result=$("${snapshot}" ancestors --id="${nested_manifest_id}" 2>&1 || echo "")
+			grep -q "id\":\"${simple_manifest_id}\"" <<<"$result" || fail "Expected simple manifest id to be ancestor of nested manifest id, got: '$result'"
+			pass
+
+			check "should get revisions"
+			result=$("${snapshot}" revisions --context="${_dir}" 2>&1 || echo "")
+			tail -1 <<<"$result" | grep -q 'previous_id":null' || fail "Unexpected previous_id as the last revision of result: '$result'"
+			grep -q "id\":\"${simple_manifest_id}\",\"previous_id\":\"${nested_manifest_id}" <<<"$result" || fail "Expected nested/simple manifest id back and forth"
+			grep -q "id\":\"${nested_manifest_id}\",\"previous_id\":\"${simple_manifest_id}" <<<"$result" || fail "Expected nested/simple manifest id back and forth"
+			pass
+
+		else
+			skip "should get contexts"
+			skip "should get ancestors"
+			skip "should get revisions"
+		fi
 	}
 
 	run_tests

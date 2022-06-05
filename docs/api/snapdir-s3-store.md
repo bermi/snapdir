@@ -111,4 +111,10 @@ Usage:
 
 ### snapdir-s3-store test
 
-note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+Run integration tests for the s3 store.
+
+Requires valid AWS credentials in your system.
+
+You can override the default aws credentials by setting the environment variables:
+
+- SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID

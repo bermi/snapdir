@@ -85,4 +85,8 @@ set -eEuo pipefail
 
 ### snapdir-file-store test
 
-note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+Runs the tests for the file store
+
+Usage:
+
+    snapdir-file-store test

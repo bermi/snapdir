@@ -2,3 +2,4 @@ tmp
 .vscode/*.log
 .env
 utils/qa-fixtures/latest-guide-commands.txt
+.DS_Store

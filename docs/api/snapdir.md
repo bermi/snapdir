@@ -9,6 +9,7 @@ Create, audit and distribute authenticated directory snapshots.
 ### Options
 
     --cache-dir=DIR        Directory where the object cache is stored.
+    --context=DIR|STORE    Context for catalog queries.
     --debug                Enable debug output.
     --dryrun               Run without making any changes.
     --exclude=PATTERN      Excludes paths matching PATTERN.
@@ -19,6 +20,7 @@ Create, audit and distribute authenticated directory snapshots.
     --id=ID                Manifest ID to use.
     --keep                 Keeps the staging directory.
     --linked               Use symlinks instead of copies.
+    --catalog=NAME         Catalog adapter to use. Defaults to $SNAPDIR_CATALOG.
     --paths=PATTERN        Only includes paths matching PATTERN
                            when checking out manifests.
     --purge                Purges objects with invalid checksums.
@@ -28,8 +30,11 @@ Create, audit and distribute authenticated directory snapshots.
 
 ### Commands
 
-
+    ancestors --id=                Get a list of ancestor snapdir IDs their context.
+                                   Requires --catalog.
     checkout --id= [--linked] DIR  Checkout a snapshot to a directory.
+    contexts                       Lists directories and stores where snapshots
+                                   have been taken or published. Requires --catalog.
     defaults                       Prints default settings and arguments.
     fetch --id= --store=           Fetch a snapshot from a store.
     flush-cache                    Flushes the local cache.
@@ -41,6 +46,8 @@ Create, audit and distribute authenticated directory snapshots.
                                    it out the given path.
     push --store= [--id=] [PATH]   Pushes a snapshot to a store given its path or
                                    a staged manifest ID.
+    revisions --context=           Get a list of snapdir IDs created on a
+                                   context (store or abs path). Requires --catalog.
     stage DIR                      Saves into the local cache a snapshot of
                                    a directory.
     test                           Runs unit tests for snapdir.
@@ -60,6 +67,8 @@ Create, audit and distribute authenticated directory snapshots.
                                    overridden by --cache-dir.
     SNAPDIR_MANIFEST_CONTEXT       Context string for deriving key in keyed mode.
     SNAPDIR_SYSTEM_EXCLUDE_DIRS    Directories to exclude on --exclude="%system%".
+    SNAPDIR_CATALOG                 Default catalog to use when no --catalog is
+                                   provided. Defaults to none.
 
 ### Examples
 
@@ -324,6 +333,79 @@ Examples:
 
     # verify and purge invalid objects from the cache
     snapdir verify --id="${ID}" --purge
+
+### snapdir contexts
+
+Lists contexts tracked by the catalog. These include local directories and stores.
+
+Usage:
+
+    snapdir contexts \
+        [--catalog="sqlite3"]
+
+Returns: JSON lines of the form:
+
+    {
+        "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
+        "id": "${SNAPDIR_ID}",
+        "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+    }
+
+Example:
+
+    # Use the default catalog defined by SNAPDIR_CATALOG
+    snapdir contexts
+
+### snapdir ancestors
+
+Get a list of ancestor snapdir IDs and the context where they where created.
+
+Usage:
+
+    snapdir ancestors \
+        --id="${SNAPDIR_ID}" \
+        [--context="${ABSOLUTE_DIR_NAME_OR_STORE_URI}"] \
+        [--catalog="sqlite3"]
+
+Returns: JSON lines of the form:
+
+    {
+        "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
+        "id": "${PARENT_SNAPDIR_ID}",
+        "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+    }
+
+Example:
+
+    # Use the default catalog defined by SNAPDIR_CATALOG
+    snapdir ancestors --id="${SNAPDIR_ID}"
+
+### snapdir revisions
+
+Get a list of snapdir IDs created on a specific context.
+
+Usage:
+
+    snapdir revisions \
+        --context="${ABSOLUTE_DIR_NAME_OR_STORE_URI}" \
+        [--catalog="sqlite3"]
+
+Returns: JSON lines of the form:
+
+    {
+        "created_at": "YYYY-MM-DD HH:MM:SS.SSS",
+        "id": "${SNAPDIR_ID}",
+        "previous_id": "${PREVIOUS_SNAPDIR_ID}",
+        "context": "${ABSOLUTE_DIR_NAME_OR_STORE_URI}"
+    }
+
+Example:
+
+    # Gets a list of revisions stored on a store
+    snapdir revisions --context="s3://my-bucket/some/path"
+
+    # Gets a list of revisions stored on a local directory
+    snapdir revisions --context="/home/user/some/path"
 
 ### snapdir verify-cache
 
