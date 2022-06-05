@@ -13,7 +13,7 @@ In its current incarnation, pre v1.0 [Snapdir] has been implemented as independe
 | [`snapdir-file-store`](./snapdir-file-store) | Storage backend using the filesystem.                                                                             | [manual](./docs/api/snapdir-file-store.md)                    | ![unit tests status] |
 | [`snapdir-s3-store`](./snapdir-s3-store)     | Storage backend using Amazon S3.                                                                                  | [manual](./docs/api/snapdir-s3-store.md)                      | ![s3 status]         |
 | [`snapdir-b2-store`](./snapdir-b2-store)     | Storage backend using Backblaze B2.                                                                               | [README](./docs/snapdir-b2-store.md) [manual](./docs/api/snapdir-b2-store.md) | ![b2 status]         |
-| [`snapdir-sqlite3-catalog`](./snapdir-sqlite3-catalog) | Basic logging of generated and pushed manifests.                                                          | [manual](./docs/api/snapdir-sqlite3-catalog.md) | ![catalog status]         |
+| [`snapdir-sqlite3-catalog`](./snapdir-sqlite3-catalog) | Basic catalog of local and remote manifests.                                                          | [manual](./docs/api/snapdir-sqlite3-catalog.md) | ![catalog status]         |
 | [bermi/snapdir] docker image                 | 8MB Docker image containing snapdir and all its dependencies.                                                     | [install](./docs/api/snapdir-docker.md)                       | ![docker status]     |
 
 

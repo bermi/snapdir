@@ -96,4 +96,8 @@ Example:
 
 ### snapdir-sqlite3-catalog test
 
-note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+Runs tests for the snapdir-sqlite3-catalog
+
+Usage:
+
+    snapdir-sqlite3-catalog test

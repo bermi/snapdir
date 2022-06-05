@@ -487,10 +487,14 @@ _snapdir_s3_store_export_env_defaults() {
 	# override the AWS_ACCESS_KEY_ID and SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY environment
 	# variables.
 
-	export SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID="${SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID:-${AWS_ACCESS_KEY_ID:?Missing SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID}}"
-	export SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY="${SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY:-${AWS_SECRET_ACCESS_KEY:?Missing SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY}}"
-	export AWS_ACCESS_KEY_ID="$SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID"
-	export AWS_SECRET_ACCESS_KEY="$SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY"
+	export SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID="${SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID:-${AWS_ACCESS_KEY_ID:-""}}"
+	export SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY="${SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY:-${AWS_SECRET_ACCESS_KEY:-""}}"
+	if [[ $AWS_ACCESS_KEY_ID != "" ]]; then
+		# These variables might not be needed when using the aws command line tool
+		# and running from an aws instance.
+		export AWS_ACCESS_KEY_ID="$SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID"
+		export AWS_SECRET_ACCESS_KEY="$SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY"
+	fi
 	: "${_SNAPDIR_STORE_BUCKET:?Missing _SNAPDIR_STORE_BUCKET}"
 }
 
@@ -522,8 +526,28 @@ _snapdir_s3_store_get_remote_md5sums() {
 #          #    #             #    #          #
 #          #    #       #     #    #    #     #
 #          #    #######  #####     #     #####
+# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
 snapdir_s3_store_test() (
-	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	# Run integration tests for the s3 store.
+	#
+	# Requires valid AWS credentials in your system.
+	#
+	# You can override the default aws credentials by setting the environment variables:
+	#
+	# - SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID
+	# - SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY
+	#
+	# Usage:
+	#
+	#     snapdir-s3-store-test --store="${STORE}"
+	#
+	# Example:
+	#
+	#     SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE \
+	#     SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY \
+	#     AWS_DEFAULT_REGION=us-east-1 \
+	#     snapdir-s3-store-test --store="s3://my-bucket/my-prefix"
+	#
 	set -eEuo pipefail
 
 	# Import test utilities

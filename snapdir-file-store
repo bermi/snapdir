@@ -483,7 +483,12 @@ _snapdir_file_store_export_env_defaults() {
 #          #    #       #     #    #    #     #
 #          #    #######  #####     #     #####
 snapdir_file_store_test() (
-	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	# Runs the tests for the file store
+	#
+	# Usage:
+	#
+	#     snapdir-file-store test
+	#
 	set -eEuo pipefail
 
 	# Import test utilities

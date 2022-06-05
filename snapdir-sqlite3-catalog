@@ -338,8 +338,14 @@ _snapdir_sqlite3_catalog_export_env_defaults() {
 #          #    #             #    #          #
 #          #    #       #     #    #    #     #
 #          #    #######  #####     #     #####
+# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
 snapdir_sqlite3_catalog_test() (
-	# note: using subshell – '(' instead of '{' – to avoid leaking helper functions
+	# Runs tests for the snapdir-sqlite3-catalog
+	#
+	# Usage:
+	#
+	#     snapdir-sqlite3-catalog test
+	#
 	set -eEuo pipefail
 
 	# Import test utilities
