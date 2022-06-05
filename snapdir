@@ -2118,7 +2118,7 @@ $simple_manifest" | "${snapshot}" id "${_dir}" 2>&1 || echo "")
 
 			check "should get revisions"
 			result=$("${snapshot}" revisions --context="${_dir}" 2>&1 || echo "")
-			tail -1 <<<"$result" | grep -q 'previous_id":null' || fail "Unexpected previous_id on last version"
+			tail -1 <<<"$result" | grep -q 'previous_id":null' || fail "Unexpected previous_id as the last revision of result: '$result'"
 			grep -q "id\":\"${simple_manifest_id}\",\"previous_id\":\"${nested_manifest_id}" <<<"$result" || fail "Expected nested/simple manifest id back and forth"
 			grep -q "id\":\"${nested_manifest_id}\",\"previous_id\":\"${simple_manifest_id}" <<<"$result" || fail "Expected nested/simple manifest id back and forth"
 			pass

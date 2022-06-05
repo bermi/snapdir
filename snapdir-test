@@ -145,6 +145,9 @@ _snapdir_test_utils() {
 
 		rm -rf /tmp/"${_SNAPDIR_MODULE_NAME}"_tests*
 		_SNAPDIR_TEST_TMP_DIR="$(mktemp -d -t "${_SNAPDIR_MODULE_NAME}"_tests.XXXXXXXXXX)"
+		# get the realpath to the tmp dir, on macos it might be prefixed with /private
+		_SNAPDIR_TEST_TMP_DIR=$(realpath "$_SNAPDIR_TEST_TMP_DIR")
+
 		umask 077 "$_SNAPDIR_TEST_TMP_DIR"
 
 		export _SNAPDIR_TEST_TMP_DIR

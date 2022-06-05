@@ -469,7 +469,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 			exit 1
 		fi
 	fi
-	if [[ "$SNAPDIR_SQLITE3_BIN" == "" ]]; then
+	if [[ $SNAPDIR_SQLITE3_BIN == "" ]]; then
 		echo "error: sqlite3 is not installed and it's required for the disk catalog." >&2
 		exit 1
 	fi

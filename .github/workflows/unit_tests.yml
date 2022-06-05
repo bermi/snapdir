@@ -34,7 +34,7 @@ jobs:
 
   test-ubuntu-latest:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - name: Install dependencies
         run: |
@@ -55,11 +55,10 @@ jobs:
       - name: Install dependencies
         run: |
           brew install coreutils b3sum bash
-          command -v sqlite3
-          "$(command -v sqlite3)" --version
-          /usr/bin/sqlite3 --version
       - name: Check out the repo
         uses: actions/checkout@v3
       - name: Test snapdir
         run: |
+          # By default github actions will use /Users/runner/Library/Android/sdk/platform-tools/sqlite3
+          # which does not include json support.
           SNAPDIR_SQLITE3_BIN=/usr/bin/sqlite3 ./snapdir-test
