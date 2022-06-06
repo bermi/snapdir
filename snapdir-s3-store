@@ -18,6 +18,7 @@
 #
 # - SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID: The application key for the AWS S3 bucket. Defaults to AWS_ACCESS_KEY_ID.
 # - SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY: The application key ID for the AWS S3 bucket. Defaults to AWS_SECRET_ACCESS_KEY.
+# - SNAPDIR_S3_STORE_ENDPOINT_URL: Define an alternative S3 backend by setting the `aws --endpoint-url=` option.
 #
 # The aws cli tool requires a `AWS_DEFAULT_REGION` to be set.
 #
@@ -30,6 +31,12 @@
 #     aws sts get-caller-identity
 #
 # If you encounter issues, run `aws configure` to configure your credentials.
+#
+# ## S3 Compatible backends
+#
+# This store has been tested with S3 compatible backends such as SeaweedFS.
+#
+# For this to work, you'll have to define a `SNAPDIR_S3_STORE_ENDPOINT_URL` environment variable.
 #
 # LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 
@@ -80,6 +87,11 @@ snapdir_s3_store_get_push_command() {
 	# remove leading slash
 	remote_manifest_path="${remote_manifest_path#/}"
 
+	local aws_options=""
+	if [[ ${SNAPDIR_S3_STORE_ENDPOINT_URL:-""} != "" ]]; then
+		aws_options=" --endpoint-url ${SNAPDIR_S3_STORE_ENDPOINT_URL}"
+	fi
+
 	# only push when the manifest does not exist
 	# first push objects then the manifest
 	cat <<-EOF
@@ -89,8 +101,8 @@ snapdir_s3_store_get_push_command() {
 			echo "Manifest already exists, skipping push";
 		else
 			SECONDS=0
-			aws s3 sync --only-show-errors --follow-symlinks --no-guess-mime-type --size-only "${source_dir%/}/.objects/" "${store%/}/.objects/";
-			aws s3 cp --only-show-errors --follow-symlinks --no-guess-mime-type "${source_dir%/}/${manifest_rel_path#/}" "$remote_manifest_path";
+			aws${aws_options} s3 sync --only-show-errors --follow-symlinks --no-guess-mime-type --size-only "${source_dir%/}/.objects/" "${store%/}/.objects/";
+			aws${aws_options} s3 cp --only-show-errors --follow-symlinks --no-guess-mime-type "${source_dir%/}/${manifest_rel_path#/}" "$remote_manifest_path";
 			echo "Done pushing ${id} after \$SECONDS seconds";
 		fi
 	EOF
@@ -433,7 +445,13 @@ _snapdir_s3_fetch_to_cache() {
 	local s3_path="s3://${_SNAPDIR_STORE_BUCKET}/${remote_relative_path}"
 
 	# download the file from s3
-	aws s3 cp --only-show-errors --no-guess-mime-type "${s3_path}" "${tmp_target_path}" || {
+	{
+		if [[ ${SNAPDIR_S3_STORE_ENDPOINT_URL:-""} != "" ]]; then
+			aws --endpoint-url "${SNAPDIR_S3_STORE_ENDPOINT_URL}" s3 cp --only-show-errors --no-guess-mime-type "${s3_path}" "${tmp_target_path}"
+		else
+			aws s3 cp --only-show-errors --no-guess-mime-type "${s3_path}" "${tmp_target_path}"
+		fi
+	} || {
 		echo "WARNING: Failed with command: 'aws s3 cp --only-show-errors --no-guess-mime-type \"${s3_path}\" \"${tmp_target_path}\";" >&2
 	}
 
@@ -493,6 +511,7 @@ _snapdir_s3_store_export_env_defaults() {
 		export AWS_ACCESS_KEY_ID="$SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID"
 		export AWS_SECRET_ACCESS_KEY="$SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY"
 	fi
+
 	: "${_SNAPDIR_STORE_BUCKET:?Missing _SNAPDIR_STORE_BUCKET}"
 }
 
@@ -501,7 +520,13 @@ _snapdir_s3_store_get_remote_md5sums() {
 	# You should not rely on this method for anything other than testing
 	# since it is very slow and does not support pagination.
 	set -eEuo pipefail
-	aws s3api list-objects-v2 --bucket "${_SNAPDIR_STORE_BUCKET}" --prefix "${1:?Missing remote directory}" |
+	{
+		if [[ ${SNAPDIR_S3_STORE_ENDPOINT_URL:-""} != "" ]]; then
+			aws --endpoint-url "${SNAPDIR_S3_STORE_ENDPOINT_URL}" s3api list-objects-v2 --bucket "${_SNAPDIR_STORE_BUCKET}" --prefix "${1:?Missing remote directory}"
+		else
+			aws s3api list-objects-v2 --bucket "${_SNAPDIR_STORE_BUCKET}" --prefix "${1:?Missing remote directory}"
+		fi
+	} |
 		grep -E '"(Key|ETag)":' |
 		cut -d':' -f2 |
 		sed 's|[,"\\ ]||g' |
@@ -571,8 +596,10 @@ snapdir_s3_store_test() (
 			}
 			echo "verifying aws --version"
 			aws --version
-			echo "verifying aws caller identity"
-			aws sts get-caller-identity
+			if [[ ${SNAPDIR_S3_STORE_ENDPOINT_URL:-""} == "" ]]; then
+				echo "verifying aws caller identity"
+				aws sts get-caller-identity
+			fi
 		) 2>&1 | sed 's|^|# |' || return 1
 	}
 
@@ -584,7 +611,11 @@ snapdir_s3_store_test() (
 		{
 			echo "cleaning up remote s3 temporary test data"
 			mkdir -p /tmp/empty-dir
-			aws s3 sync --only-show-errors --delete "/tmp/empty-dir/" "${_SNAPDIR_TEST_STORE}/"
+			if [[ ${SNAPDIR_S3_STORE_ENDPOINT_URL:-""} != "" ]]; then
+				aws --endpoint-url "${SNAPDIR_S3_STORE_ENDPOINT_URL}" s3 sync --only-show-errors --delete "/tmp/empty-dir/" "${_SNAPDIR_TEST_STORE}/"
+			else
+				aws s3 sync --only-show-errors --delete "/tmp/empty-dir/" "${_SNAPDIR_TEST_STORE}/"
+			fi
 			rmdir /tmp/empty-dir
 		} 2>&1 | sed 's|^|# |' || true
 	}
@@ -637,7 +668,7 @@ ${bar_md5sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 
 		# --------------------------------------------------------------------------------
 		check "should issue valid sync command "
-		grep -q 'aws s3 sync --only-show-errors --follow-symlinks --no-guess-mime-type --size-only "[^"]*/.objects/" "s3://[^"]*/.objects/"' <<<"${result}" || fail "Expected to find 'aws s3 sync --no-guess-mime-type --size-only \"${_dir}/.objects/\" \"s3://.*/.objects/\"' in '$result'" && pass
+		grep -E -q 'aws .*s3 sync --only-show-errors --follow-symlinks --no-guess-mime-type --size-only "[^"]*/.objects/" "s3://[^"]*/.objects/"' <<<"${result}" || fail "Expected to find 'aws s3 sync --no-guess-mime-type --size-only \"${_dir}/.objects/\" \"s3://.*/.objects/\"' in '$result'" && pass
 
 		# --------------------------------------------------------------------------------
 		check "should try to fetch the manifest"
@@ -739,11 +770,19 @@ ${bar_md5sum}  ${store_dir}/.objects/${bar_path}" | sort -k2)
 		cp "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}.original"
 		echo "tampered" >"${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}"
 
-		aws s3 cp --only-show-errors "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" "s3://${_SNAPDIR_STORE_BUCKET}/${_SNAPDIR_CACHE_DIR#/}/.manifests/${simple_manifest_path}" >/dev/null
+		if [[ ${SNAPDIR_S3_STORE_ENDPOINT_URL:-""} != "" ]]; then
+			aws --endpoint-url "${SNAPDIR_S3_STORE_ENDPOINT_URL}" s3 cp --only-show-errors "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" "s3://${_SNAPDIR_STORE_BUCKET}/${_SNAPDIR_CACHE_DIR#/}/.manifests/${simple_manifest_path}" >/dev/null
+		else
+			aws s3 cp --only-show-errors "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" "s3://${_SNAPDIR_STORE_BUCKET}/${_SNAPDIR_CACHE_DIR#/}/.manifests/${simple_manifest_path}" >/dev/null
+		fi
 		result=$("${snapdir}" fetch --dryrun --store "${store}" --id "${simple_manifest_id}" 2>&1 || echo "")
 		# restore tampered file
 		mv "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}.original" "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}"
-		aws s3 cp --only-show-errors "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" "s3://${_SNAPDIR_STORE_BUCKET}/${_SNAPDIR_CACHE_DIR#/}/.manifests/${simple_manifest_path}" >/dev/null
+		if [[ ${SNAPDIR_S3_STORE_ENDPOINT_URL:-""} != "" ]]; then
+			aws --endpoint-url "${SNAPDIR_S3_STORE_ENDPOINT_URL}" s3 cp --only-show-errors "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" "s3://${_SNAPDIR_STORE_BUCKET}/${_SNAPDIR_CACHE_DIR#/}/.manifests/${simple_manifest_path}" >/dev/null
+		else
+			aws s3 cp --only-show-errors "${_SNAPDIR_CACHE_DIR}/.manifests/${simple_manifest_path}" "s3://${_SNAPDIR_STORE_BUCKET}/${_SNAPDIR_CACHE_DIR#/}/.manifests/${simple_manifest_path}" >/dev/null
+		fi
 		grep -q "error: Manifest for snapshot '${simple_manifest_id}' does not match the snapshot id." <<<"${result}" || fail "Expected 'error: Manifest for snapshot '${simple_manifest_id}' does not match the snapshot id.' but got '$result'" && pass
 
 		# --------------------------------------------------------------------------------

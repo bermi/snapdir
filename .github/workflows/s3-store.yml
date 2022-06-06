@@ -20,12 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget curl unzip
-          sudo wget -q "https://github.com/BLAKE3-team/BLAKE3/releases/download/1.3.1/b3sum_linux_x64_bin" -O /usr/local/bin/b3sum
-          sudo chmod +x /usr/local/bin/b3sum
       - name: Check out the repo
         uses: actions/checkout@v3
       - name: Set up Docker Buildx
@@ -47,11 +41,46 @@ jobs:
             --entrypoint /bin/bash \
             amazon/aws-cli \
             -c "snapdir-s3-store test --store s3://snapdir-test-bucket"
-      # - name: Setup upterm session
-      #   uses: lhotari/action-upterm@v1
-      #   if: ${{ failure() }}
-      #   with:
-      #     ## limits ssh access and adds the ssh public key for the user which triggered the workflow
-      #     # limit-access-to-actor: true
-      #     ## limits ssh access and adds the ssh public keys of the listed GitHub users
-      #     limit-access-to-users: bermi
+  seaweedfs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget curl unzip
+          sudo wget -q "https://github.com/BLAKE3-team/BLAKE3/releases/download/1.3.1/b3sum_linux_x64_bin" -O /usr/local/bin/b3sum
+          sudo chmod +x /usr/local/bin/b3sum
+          wget -qO- https://github.com/chrislusf/seaweedfs/releases/download/3.09/linux_amd64.tar.gz | sudo tar xvz -C /usr/local/bin
+      - name: Check out the repo
+        uses: actions/checkout@v3
+      - name: seaweedfs integration test
+        run: |
+          export AWS_ACCESS_KEY_ID=none
+          export AWS_SECRET_ACCESS_KEY=none
+          export AWS_REGION=us-east-1
+          export SNAPDIR_S3_STORE_ENDPOINT_URL=http://localhost:8333
+
+          echo "# [setup] Starting seaweedfs"
+          mkdir ~/seaweed-test-data
+          # redirect both stdout and stderr to a file
+          weed server -dir=~/seaweed-test-data -s3 > ~/seaweed.log 2>&1 &
+          SERVER_PID=$!
+          tail -f ~/seaweed.log | sed -E 's/^/# [seaweed] /' 1>&2 &
+          TAIL_PID=$!
+
+          echo "# [setup] Creating test bucket"
+          # run command until it succeeds
+          while ! aws --endpoint-url http://localhost:8333 s3 mb s3://snapdir-test 2>/dev/null; do
+            echo "# [setup] Waiting for seaweedfs to start" >&2
+            sleep 1
+          done
+
+          kill $TAIL_PID
+
+          ./snapdir-s3-store test --store s3://snapdir-test
+
+          kill $SERVER_PID
+
+          rm -rf ~/seaweed-test-data
+          rm -rf ~/seaweed.log

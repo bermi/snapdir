@@ -16,6 +16,7 @@ Expose the `snapdir-s3-store` file to a directory in your `PATH` to enabling it 
 
 - SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID: The application key for the AWS S3 bucket. Defaults to AWS_ACCESS_KEY_ID.
 - SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY: The application key ID for the AWS S3 bucket. Defaults to AWS_SECRET_ACCESS_KEY.
+- SNAPDIR_S3_STORE_ENDPOINT_URL: Define an alternative S3 backend by setting the `aws --endpoint-url=` option.
 
 The aws cli tool requires a `AWS_DEFAULT_REGION` to be set.
 
@@ -28,6 +29,12 @@ Check your credentials with the command:
     aws sts get-caller-identity
 
 If you encounter issues, run `aws configure` to configure your credentials.
+
+## S3 Compatible backends
+
+This store has been tested with S3 compatible backends such as SeaweedFS.
+
+For this to work, you'll have to define a `SNAPDIR_S3_STORE_ENDPOINT_URL` environment variable.
 
 ## API Reference
 
