@@ -65,7 +65,7 @@
 # ### Environment variables
 #
 #     SNAPDIR_CACHE_DIR              Where are the object cache files stored?
-#                                    Defaults to $HOME/.snapdir/cache and will be
+#                                    Defaults to $HOME/.cache/snapdir and will be
 #                                    overridden by --cache-dir.
 #     SNAPDIR_CATALOG                Default catalog to use when no --catalog is
 #                                    provided. Defaults to none.
@@ -1543,7 +1543,10 @@ _snapdir_export_env_defaults() {
 	elif [[ $command == "id" ]] || [[ $command == "manifest" ]] || [[ $command == "push" ]]; then
 		_SNAPDIR_REQUIRE_STAGED_ID=true
 	fi
-	local default_cache_dir="${HOME:-~}/.cache/snapdir/"
+	local default_base_cache_dir="${XDG_CACHE_HOME:-"${HOME:-~}/.cache"}"
+	# remove trailing slash from default_base_cache_dir
+	default_base_cache_dir="${default_base_cache_dir%/}"
+	local default_cache_dir="${default_base_cache_dir}/snapdir/"
 	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR:-${SNAPDIR_CACHE_DIR:-$default_cache_dir}}"
 	# remove trailing slash from _SNAPDIR_CACHE_DIR
 	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR%/}"

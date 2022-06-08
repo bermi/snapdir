@@ -1,7 +1,7 @@
 FROM ubuntu:22.04
 
 RUN apt-get update && \
-  apt-get install -y b3sum wget shellcheck shfmt git curl unzip build-essential && \
+  apt-get install -y b3sum wget shellcheck shfmt git curl unzip sqlite3 build-essential && \
   apt-get clean -y
 
 WORKDIR /workdir

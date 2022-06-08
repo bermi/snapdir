@@ -395,7 +395,9 @@ _snapdir_sqlite3_catalog_run() (
 _snapdir_sqlite3_catalog_export_env_defaults() {
 	# Environment variables
 	set -eEuo pipefail
-	local default_catalog_path="${HOME:-~}/.snapdir/catalog-${ENVIRONMENT:-production}.sqlite3.db"
+	local default_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+	default_data_home="${default_data_home%/}"
+	local default_catalog_path="${default_data_home}/snapdir/catalog-${ENVIRONMENT:-production}.sqlite3.db"
 	SNAPDIR_SQLITE3_CATALOG_DB_PATH="${SNAPDIR_SQLITE3_CATALOG_DB_PATH:-$default_catalog_path}"
 	export SNAPDIR_SQLITE3_CATALOG_DB_PATH
 	_snapdir_sqlite3_catalog_ensure_db

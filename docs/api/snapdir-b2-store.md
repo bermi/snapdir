@@ -27,8 +27,8 @@ The b2 store requires authentication before it can be used. You can authenticate
 
 ### snapdir-b2-store get-push-command
 
-Gets the command for pushing the contents of the staging directory
-Backblaze b2.
+Gets the command for syncing the contents of the staging directory
+to Backblaze b2.
 The staging directory is a temporary directory that is used sync
 the contents of a specific manifest to the b2 bucket.
 We rely on 'b2 sync' tool to do the actual push and integrity

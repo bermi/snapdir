@@ -40,8 +40,8 @@ For this to work, you'll have to define a `SNAPDIR_S3_STORE_ENDPOINT_URL` enviro
 
 ### snapdir-s3-store get-push-command
 
-Gets the command for pushing the contents of the staging directory
-Amazon S3.
+Gets the command for syncing the contents of the staging directory
+to Amazon S3.
 The staging directory is a temporary directory that is used sync
 the contents of a specific manifest to the s3 bucket.
 We rely on 'aws s3' and 'aws s3api' to do the actual push and integrity

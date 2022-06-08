@@ -63,7 +63,7 @@ Create, audit and distribute authenticated directory snapshots.
 ### Environment variables
 
     SNAPDIR_CACHE_DIR              Where are the object cache files stored?
-                                   Defaults to $HOME/.snapdir/cache and will be
+                                   Defaults to $HOME/.cache/snapdir and will be
                                    overridden by --cache-dir.
     SNAPDIR_CATALOG                Default catalog to use when no --catalog is
                                    provided. Defaults to none.

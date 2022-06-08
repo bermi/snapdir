@@ -715,7 +715,10 @@ _snapdir_manifest_export_env_defaults() {
 
 	_SNAPDIR_MANIFEST_CACHE=${_SNAPDIR_MANIFEST_CACHE:-false}
 
-	local default_cache_dir="${HOME:-~}/.cache/snapdir/"
+	local default_base_cache_dir="${XDG_CACHE_HOME:-"${HOME:-~}/.cache"}"
+	# remove trailing slash from default_base_cache_dir
+	default_base_cache_dir="${default_base_cache_dir%/}"
+	local default_cache_dir="${default_base_cache_dir}/snapdir/"
 	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR:-${SNAPDIR_CACHE_DIR:-$default_cache_dir}}"
 	# remove trailing slash from _SNAPDIR_CACHE_DIR
 	_SNAPDIR_CACHE_DIR="${_SNAPDIR_CACHE_DIR%/}"

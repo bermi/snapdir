@@ -536,24 +536,25 @@ snapdir_b2_store_test() (
 	setup_suite() {
 		set -eEuo pipefail
 		_SNAPDIR_TEST_STORE="${_SNAPDIR_B2_STORE_STORE}${_SNAPDIR_TEST_TMP_DIR}"
+		local cache_base_dir="${XDG_CACHE_HOME:-$HOME/.cache}"
 
-		export PATH="$HOME/.cache/snapdir/bin:$PATH"
+		export PATH="${cache_base_dir}/snapdir/bin:$PATH"
 		{
 			b2 version >/dev/null || {
-				mkdir -p "$HOME/.cache/snapdir/bin"
+				mkdir -p "${cache_base_dir}/snapdir/bin"
 				local bin_path="b2-linux"
 				if [[ "$(uname -s)" == "Darwin" ]]; then
 					bin_path="b2-darwin"
 				fi
 
-				wget -q "https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v3.4.0/${bin_path}" -O "$HOME/.cache/snapdir/bin/b2" || {
+				wget -q "https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v3.4.0/${bin_path}" -O "${cache_base_dir}/snapdir/bin/b2" || {
 					echo "ERROR: Failed to download b2 binary" >&2
-					rm -rf "$HOME/.cache/snapdir/bin/b2"
+					rm -rf "${cache_base_dir}/snapdir/bin/b2"
 					exit 1
 				}
-				chmod +x "$HOME/.cache/snapdir/bin/b2"
-				"$HOME/.cache/snapdir/bin/b2" version | grep -q "version 3.4.0" || {
-					echo "Expected $HOME/.cache/snapdir/bin/b2 to be on version 3.4.0" >&2
+				chmod +x "${cache_base_dir}/snapdir/bin/b2"
+				"${cache_base_dir}/snapdir/bin/b2" version | grep -q "version 3.4.0" || {
+					echo "Expected ${cache_base_dir}/snapdir/bin/b2 to be on version 3.4.0" >&2
 					exit 1
 				}
 			}
@@ -579,7 +580,8 @@ snapdir_b2_store_test() (
 
 	test_suite() {
 		set -eEuo pipefail
-		export PATH="$HOME/.cache/snapdir/bin:$PATH"
+		local cache_base_dir="${XDG_CACHE_HOME:-$HOME/.cache}"
+		export PATH="${cache_base_dir}/snapdir/bin:$PATH"
 		local snapdir="$_SNAPDIR_BIN_PATH"
 		local b2store="$_SNAPDIR_B2_STORE_BIN_PATH"
 		local result=""
