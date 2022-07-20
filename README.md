@@ -105,16 +105,41 @@ Check the [authoring stores documentation](./docs/authoring-stores.md) for more 
 
 ## Installation
 
-Snapdir requires [snapdir-manifest] and \[b3sum\] for creating
-manifests.
+Snapdir requires [BLAKE3] for hashing and HMAC signing and optionally sqlite
+to query local snapshots.
 
-After installing the dependencies, download the [snapdir] script and
-save it somewhere in your `PATH`.
+To verify your dependencies are on your `$PATH` run:
 
 ```bash
-wget -p https://raw.githubusercontent.com/bermi/snapdir/main/snapdir -O snapdir
-chmod +x snapdir
-mv snapdir-manifest /usr/local/bin/
+command -v b3sum
+command -v sqlite3
+```
+
+To install the dependencies on debian flavored distributions you can run:
+
+```bash
+apt-get install -y wget sqlite3
+wget -q "https://github.com/BLAKE3-team/BLAKE3/releases/download/1.3.1/b3sum_linux_x64_bin" -O /usr/local/bin/b3sum
+chmod +x /usr/local/bin/b3sum
+```
+
+At a minimum, snapdir requires the `snapdir` and `snapdir-manifest` scripts to
+be on your path.
+
+The following command installs the following scripts: `snapdir`,
+`snapdir-manifest`, `snapdir-s3-store`, `snapdir-test` and `snapdir-sqlite3-catalog`
+in `/usr/local/bin/`
+
+NOTE: This command will not work while the repo is private. Checkout the code
+instead and copy the scripts when needed or add the snapdir directory to your
+PATH.
+
+```bash
+for script in snapdir snapdir-manifest snapdir-s3-store snapdir-sqlite3-catalog snapdir-test; do
+    wget -p "https://raw.githubusercontent.com/bermi/snapdir/main/${script}" -O "$script"
+    chmod +x "$script"
+    mv "$script" /usr/local/bin/
+done
 ```
 
 ## Try without installing
@@ -140,6 +165,18 @@ alias snapdir='docker run -it --rm \
     bermi/snapdir'
 ```
 
+## Development
+
+Checkout this repo and run
+
+```bash
+./snapdir-test
+```
+
+to run test that don't interface with remote resources.
+
+Check `.github/workflows` for examples on how to run integration tests
+against remote stores.
 
 
 ### Alternatives
@@ -169,3 +206,4 @@ LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
   [BermiLabs]: https://bermilabs.com
   [Git LFS]: https://git-lfs.github.com/
   [ostree]: https://ostreedev.github.io/ostree/introduction/
+  [BLAKE3]: https://github.com/BLAKE3-team/BLAKE3
