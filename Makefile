@@ -80,7 +80,7 @@ publish-website:
 	find tmp/website-docs/api/ -type f -exec sed -i '' 's|docs/|../|g' {} \;
 	command -v retype 2>&1 >/dev/null || npm install retypeapp --global
 	cd tmp/website-docs && retype build
-	cp utils/tmp/website.dockerfile tmp/website/Dockerfile
+	cp utils/website.dockerfile tmp/website/Dockerfile
 	cp docs/images/favicon.ico tmp/website/favicon.ico
 	cd tmp/website && \
 		gcloud builds submit --tag gcr.io/$${GCP_PROJECT}/tmp/website-snapdir && \

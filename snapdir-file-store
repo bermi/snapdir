@@ -2,9 +2,7 @@
 
 # # snapdir-file-store
 #
-# ## Description:
-#
-#     Reference implementation of snapdir store using the filesystem.
+# Reference implementation of snapdir store using the filesystem.
 #
 # LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 

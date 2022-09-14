@@ -1,8 +1,6 @@
 # snapdir-file-store
 
-## Description:
-
-    Reference implementation of snapdir store using the filesystem.
+Reference implementation of snapdir store using the filesystem.
 
 ## API Reference
 

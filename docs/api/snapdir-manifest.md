@@ -1,8 +1,6 @@
 # snapdir-manifest
 
-Description:
-
-    Generate authenticated directory structure manifests using Merkle trees.
+Generate authenticated directory structure manifests using Merkle trees.
 
 ## Usage
 

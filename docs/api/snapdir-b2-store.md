@@ -1,6 +1,6 @@
 # snapdir-b2-store
 
- Snapdir store backed by Backblaze B2.
+Snapdir store backed by Backblaze B2.
 
 ## Usage
 

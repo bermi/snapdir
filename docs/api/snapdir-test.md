@@ -1,8 +1,6 @@
 # snapdir-test
 
-## Description:
-
-    Test utilities and runner for snapdir commands.
+Test utilities and runner for snapdir commands.
 
 ## Usage:
 
