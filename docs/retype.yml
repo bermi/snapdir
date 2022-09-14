@@ -1,5 +1,5 @@
 input: ./ 
-output: ../.website
+output: ../website
 url: snapdir.org
 
 branding:
@@ -32,7 +32,7 @@ edit:
   base: "docs"
   branch: "main"
   label: "Edit this page"
-favicon: images/favicon.ico
+
 generator:
   recase: none
 search:

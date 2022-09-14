@@ -67,12 +67,22 @@ release:
 	git push origin v$$NEW_VERSION
 
 
-.PHONY: .website
-.website:
+website-dev:
+	command -v retype 2>&1 >/dev/null || npm install retypeapp --global
+	cd docs && retype watch
+
+.PHONY: publish-website
+publish-website:
 	: $${GCP_PROJECT:?"Missing GCP_PROJECT"}
-	rm -rf .website
-	cd docs && retype build
-	cp utils/website.dockerfile .website/Dockerfile
-	cd .website && \
-		gcloud builds submit --tag gcr.io/$${GCP_PROJECT}/website-snapdir && \
-		gcloud run deploy --image gcr.io/$${GCP_PROJECT}/website-snapdir
+	rm -rf tmp/website tmp/website-docs
+	mkdir -p tmp
+	cp -R docs tmp/website-docs
+	find tmp/website-docs/api/ -type f -exec sed -i '' 's|docs/|../|g' {} \;
+	command -v retype 2>&1 >/dev/null || npm install retypeapp --global
+	cd tmp/website-docs && retype build
+	cp utils/tmp/website.dockerfile tmp/website/Dockerfile
+	cp docs/images/favicon.ico tmp/website/favicon.ico
+	cd tmp/website && \
+		gcloud builds submit --tag gcr.io/$${GCP_PROJECT}/tmp/website-snapdir && \
+		gcloud run deploy --image gcr.io/$${GCP_PROJECT}/tmp/website-snapdir
+	rm -rf tmp/website tmp/website-docs

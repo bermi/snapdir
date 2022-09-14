@@ -87,7 +87,7 @@ Where:
   directories, we sort the checksum of the objects in the directory
   and then concatenate them without spaces or newlines between them to
   compute the checksum. Check the manual example in the [understanding
-  manifests guide](../understanding-manifests.md).
+  manifests guide](docs/understanding-manifests.md).
   Duplicated checksums are removed before the checksum is computed.
 - *`SIZE`*: The size of the file or directory contents in bytes. It
   does not include the size for the directory metadata as reported by
