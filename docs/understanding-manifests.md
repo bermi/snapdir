@@ -1,4 +1,4 @@
-# Undestanding snapdir manifests
+# Manifest Guide
 
 This guide will help you to understand what the command
 [snapdir-manifest] does under the hood and how third-party tools could

@@ -1,4 +1,4 @@
-# Snapdir b2 store
+# snapdir-b2-store
 
 The `snapdir-b2-store` provides support for using Backblaze's B2 storage.
 

@@ -108,7 +108,7 @@ Usage:
         [--stage] \
         "${DIR}"
 
-Returns: [A snapdir manifest](docs/understanding-manifests.md) as
+Returns: [A snapdir manifest](../understanding-manifests.md) as
          a UTF-8 encoded string.
 
 Examples:

@@ -1,4 +1,4 @@
-# Snapdir Guide
+# Guide
 
 This guide will show you how to use Snapdir through the command line.
 

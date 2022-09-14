@@ -65,3 +65,14 @@ release:
 	git tag -a v$$NEW_VERSION -m "Release $$NEW_VERSION" && \
 	git push && \
 	git push origin v$$NEW_VERSION
+
+
+.PHONY: .website
+.website:
+	: $${GCP_PROJECT:?"Missing GCP_PROJECT"}
+	rm -rf .website
+	cd docs && retype build
+	cp utils/website.dockerfile .website/Dockerfile
+	cd .website && \
+		gcloud builds submit --tag gcr.io/$${GCP_PROJECT}/website-snapdir && \
+		gcloud run deploy --image gcr.io/$${GCP_PROJECT}/website-snapdir

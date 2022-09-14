@@ -1,4 +1,4 @@
-# Snapdir store authoring guide
+# Store authoring guide
 
 [Snapdir] delegates to stores the task of persisting fetching files on
 long-term storage.

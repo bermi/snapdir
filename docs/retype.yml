@@ -4,28 +4,26 @@ url: snapdir.org
 
 branding:
   title: Snapdir
-  logo: images/snapdir-logo.png
-  logoDark: static/logo-dark.png
-  logoAlign: left
-  label: Authenticated Directory Snapshots
-  colors:
-    label:
-      text: "#ffffff"
-      background: "#ff0000"
+  # logo: images/snapdir-logo.png
+  # logoDark: static/logo-dark.png
+  logoAlign: right
 
-# # -----------------------------------------------------------------------------
+links: # A list of custom links to add to the top bar of the generated website.
+       # See also: footer.links
+  - text: About
+    link: ./
+  - text: API
+    link: ./api/snapdir
+  - text: Guide
+    link: ./guide
+  - text: Code
+    link: https://github.com/bermi/snapdir/
 
-# links: # A list of custom links to add to the top bar of the generated website.
-#        # See also: footer.links
-#   - text: Home      # The text to use for the link
-#     link: https://snapdir.org/ # Link to an internal file or external URL.
-#   - text: API
-#     link: /api.md   # Link to an internal file or external URL.
-#     icon: gear      # A custom icon name, :emoji:, <svg>, or path to a file.
-#     iconAlign: left # Icon alignment, to the left or right. Default is left.
-#     target: blank   # Custom target. Use blank to open link in a new window.
+meta:
+  title: " | Snapdir.org - Sharing directory snapshots"
 
-# # -----------------------------------------------------------------------------
+exclude:
+  - "snapdir-b2-store-readme.md"
 
 footer:
   copyright: "© Bermi Ferrer 2022."
@@ -36,7 +34,7 @@ edit:
   label: "Edit this page"
 favicon: images/favicon.ico
 generator:
-  recase: all
+  recase: none
 search:
   hotkeys:
     - "/"

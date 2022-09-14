@@ -230,7 +230,7 @@ LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
 
   [Merkle trees]: https://en.wikipedia.org/wiki/Merkle_tree
   [single-file bash script]: https://github.com/bermi/snapdir/blob/main/snapdir-manifest
-  [snapdir-manifest]: https://github.com/bermi/snapdir
+  [snapdir-manifest]: api/snapdir-manifest
   [content-addressable storage applications]: https://en.wikipedia.org/wiki/Content-addressable_storage
   [hierarchical storage management (HSM)]: https://en.wikipedia.org/wiki/Hierarchical_storage_management
   [conflict-free replicated data type (CRDT)]: https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type
@@ -242,4 +242,4 @@ LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
   [Sigstore]: https://www.sigstore.dev/
   [cosign]: https://github.com/sigstore/cosign
   [mtree]: https://www.freebsd.org/cgi/man.cgi?mtree(8)
-  [contributing guide]: CONTRIBUTING.md
+  [contributing guide]: https://github.com/bermi/snapdir/blob/main/CONTRIBUTING.md

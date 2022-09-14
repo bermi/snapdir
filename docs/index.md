@@ -1,7 +1,5 @@
 # Snapdir
 
-Authenticated Directory Snapshots.
-
 ## What is snapdir?
 
 Snapdir is a tool for creating and restoring snapshots of directories.
@@ -38,7 +36,6 @@ We decided to open source it could be used by others to implement
 [CRDT][conflict-free replicated data type] strategies on eventually
 consistent read-heavy applications.
 
-
 ## Usage
 
 ### Prerequisites
@@ -65,17 +62,15 @@ chmod +x /usr/local/bin/b3sum
 
 [Snapdir] has been implemented as independent and tested bash scripts.
 
-| program        
-                              | description                                                                                                       | docs  ![docs status]                  | status               |
+| program | description                                                                                                       | docs  ![docs status]                  | status               |
 |----------------------------------------------|-------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------|----------------------|
-| [`snapdir`](./snapdir)                       | Snapshotting, verification and sharing of directories     with pluggable storage backends.                        | [install](./docs/install.md), [manual](./docs/api/snapdir.md) | ![unit tests status] |
-| [`snapdir-manifest`](./snapdir-manifest)     | Standalone tool for creating directory snapshot manifests that can be versioned controlled and audited by humans. | [README](./docs/snapdir-manifest.md) [manual](./docs/api/snapdir-manifest.md) | ![unit tests status] |
-| [`snapdir-file-store`](./snapdir-file-store) | Storage backend using the filesystem.                                                                             | [manual](./docs/api/snapdir-file-store.md)                    | ![unit tests status] |
-| [`snapdir-s3-store`](./snapdir-s3-store)     | Storage backend using Amazon S3.                                                                                  | [manual](./docs/api/snapdir-s3-store.md)                      | ![s3 status]         |
-| [`snapdir-b2-store`](./snapdir-b2-store)     | Storage backend using Backblaze B2.                                                                               | [README](./docs/snapdir-b2-store.md) [manual](./docs/api/snapdir-b2-store.md) | ![b2 status]         |
-| [`snapdir-sqlite3-catalog`](./snapdir-sqlite3-catalog) | Basic catalog of local and remote manifests.                                                          | [manual](./docs/api/snapdir-sqlite3-catalog.md) | ![catalog status]         |
-| [bermi/snapdir] docker image                 | 8MB Docker image containing snapdir and all its dependencies.                                                     | [install](./docs/api/snapdir-docker.md)                       | ![docker status]     |
-
+| [`snapdir`](https://github.com/bermi/snapdir/tree/main/snapdir)                       | Snapshotting, verification and sharing of directories     with pluggable storage backends.                        | [install](./install.md), [manual](./api/snapdir.md) | ![unit tests status] |
+| [`snapdir-manifest`](https://github.com/bermi/snapdir/tree/main/snapdir-manifest)     | Standalone tool for creating directory snapshot manifests that can be versioned controlled and audited by humans. | [manual](./api/snapdir-manifest.md) | ![unit tests status] |
+| [`snapdir-file-store`](https://github.com/bermi/snapdir/tree/main/snapdir-file-store) | Storage backend using the filesystem.                                                                             | [manual](./api/snapdir-file-store.md)                    | ![unit tests status] |
+| [`snapdir-s3-store`](https://github.com/bermi/snapdir/tree/main/snapdir-s3-store)     | Storage backend using Amazon S3.                                                                                  | [manual](./api/snapdir-s3-store.md)                      | ![s3 status]         |
+| [`snapdir-b2-store`](https://github.com/bermi/snapdir/tree/main/snapdir-b2-store)     | Storage backend using Backblaze B2.                                                                               | [README](./api/snapdir-b2-store.md) [manual](./api/snapdir-b2-store.md) | ![b2 status]         |
+| [`snapdir-sqlite3-catalog`](https://github.com/bermi/snapdir/tree/main/snapdir-sqlite3-catalog) | Basic catalog of local and remote manifests.                                                          | [manual](./api/snapdir-sqlite3-catalog.md) | ![catalog status]         |
+| [bermi/snapdir] docker image                 | 8MB Docker image containing snapdir and all its dependencies.                                                     | docker pull bermi/snapdir                       | ![docker status]     |
 
 At a minimum, snapdir requires the `snapdir` and `snapdir-manifest` scripts to
 be on your `$PATH`.
@@ -105,7 +100,6 @@ docker run -it --rm \
     bermi/snapdir manifest /target
 ```
 
-
 ## Contributing
 
 Snapdir is licensed under the MIT License and contributions are welcome! Please check the [contributing guidelines](https://github.com/bermi/snapdir/blob/main/CONTRIBUTING.md) and visit the [github repo](https://github.com/bermi/snapdir) for more information.
@@ -128,7 +122,6 @@ There are many other tools that might be better suited for your particular use c
 We use `Snapdir` in conjunction with some of the tools mentioned above.
 None of them met the simplicity, ergonomics and auditability goals we had in mind when defining `Snapdir`.
 
-
   [unit tests status]: https://github.com/bermi/snapdir/actions/workflows/unit_tests.yml/badge.svg
   [b2 status]: https://github.com/bermi/snapdir/actions/workflows/b2-store.yml/badge.svg
   [s3 status]: https://github.com/bermi/snapdir/actions/workflows/s3-store.yml/badge.svg
@@ -137,10 +130,6 @@ None of them met the simplicity, ergonomics and auditability goals we had in min
   [docker status]: https://github.com/bermi/snapdir/actions/workflows/build.yml/badge.svg
   [Snapdir]: https://github.com/bermi/snapdir
   [conflict-free replicated data type]: https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type
-  [documentation for more information]: https://github.com/bermi/snapdir/tree/main/docs/
-  [snapdir-manifest]: https://github.com/bermi/snapdir/tree/main/snapdir-manifest-README.md
   [bermi/snapdir]: https://hub.docker.com/r/bermi/snapdir/tags
   [BermiLabs]: https://bermilabs.com
-  [Git LFS]: https://git-lfs.github.com/
-  [ostree]: https://ostreedev.github.io/ostree/introduction/
   [BLAKE3]: https://github.com/BLAKE3-team/BLAKE3

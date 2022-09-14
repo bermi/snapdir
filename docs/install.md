@@ -1,4 +1,4 @@
-# Installing Snapdir
+# Installation
 
 [snapdir] is implemented as a series of bash 5 scripts that need to be
 saved somewhere in your `PATH`. It also relies on [b3sum] for
