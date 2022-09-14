@@ -77,11 +77,11 @@ Example:
 
 ### snapdir-file-store fetch-object
 
-set -eEuo pipefail
+Fetches a single object from the store.
 
 ### snapdir-file-store commit-object
 
-set -eEuo pipefail
+Commits a single object to the store.
 
 ### snapdir-file-store test
 

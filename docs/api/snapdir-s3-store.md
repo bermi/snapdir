@@ -57,8 +57,6 @@ Gets the command for echoing the contents of a manifest given its ID.
 This method does not save the manifest on the cache (that's done by
 snapdir), it just prints the contents of the manifest.
 
-All
-
 Example:
 
 			snapdir-s3-store get-manifest-command --id "${id}" --store "${store}"

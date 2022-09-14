@@ -231,12 +231,14 @@ snapdir_file_store_commit_manifest() {
 }
 
 snapdir_file_store_fetch_object() {
+	# Fetches a single object from the store.
 	set -eEuo pipefail
 	local log_file="${_SNAPDIR_FILE_STORE_LOG_FILE:?Missing --log-file}"
 	_snapdir_file_store_persit | tee "$log_file"
 }
 
 snapdir_file_store_commit_object() {
+	# Commits a single object to the store.
 	set -eEuo pipefail
 	local log_file="${_SNAPDIR_FILE_STORE_LOG_FILE:?Missing --log-file}"
 	_snapdir_file_store_persit | tee "$log_file"

@@ -123,8 +123,8 @@ Examples:
     # excludes files matching the pattern
     snapdir manifest --exclude ".ignore" "${DIR}"
 
-			# exclude commonly ignored files, such as .git and .DS_Store
-			snapdir manifest --exclude "%common%" "${DIR}"
+   # exclude commonly ignored files, such as .git and .DS_Store
+   snapdir manifest --exclude "%common%" "${DIR}"
 
     # excludes files matching the pattern while
     # keeping the default common pattern
@@ -200,7 +200,7 @@ Examples:
     # pushes the stdin provided snapshot id to a store
     snapdir id "${DIR}" | snapdir push --store="${STORE}"
 
-	 # show the snapdir-$adapter-store command that would be executed
+  # show the snapdir-$adapter-store command that would be executed
     # for a dry run
     snapdir push --store="${STORE}" --verbose --dryrun "${DIR}"
 
@@ -319,6 +319,7 @@ Examples:
 Verifies the integrity of a snapshot.
 
 Usage:
+
     snapdir verify \
         --id="${ID}" \
         [--cache-dir="${CACHE_DIR}"]
