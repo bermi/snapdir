@@ -26,7 +26,7 @@ Snapdir is a userspace cli program with the following features:
 - Generates manifests and unique identifiers of the
   contents of directories and files.
 - Saves and restores data from pluggable storage
-  backends such as Amazon S3 and Google Cloud Storage.
+  backends such as Amazon S3 and Backblaze B2.
 - Verifies the integrity of the data using cryptographic
   hashes.
 - UNIX-style composability.
@@ -124,15 +124,11 @@ chmod +x /usr/local/bin/b3sum
 ```
 
 At a minimum, snapdir requires the `snapdir` and `snapdir-manifest` scripts to
-be on your path.
+be on your `$PATH`.
 
 The following command installs the following scripts: `snapdir`,
 `snapdir-manifest`, `snapdir-s3-store`, `snapdir-test` and `snapdir-sqlite3-catalog`
 in `/usr/local/bin/`
-
-NOTE: This command will not work while the repo is private. Checkout the code
-instead and copy the scripts when needed or add the snapdir directory to your
-PATH.
 
 ```bash
 for script in snapdir snapdir-manifest snapdir-s3-store snapdir-sqlite3-catalog snapdir-test; do

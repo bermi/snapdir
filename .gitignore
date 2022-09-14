@@ -1,5 +1,6 @@
-tmp
-.vscode/*.log
-.env
-utils/qa-fixtures/latest-guide-commands.txt
 .DS_Store
+.env
+.vscode/*.log
+.website
+tmp
+utils/qa-fixtures/latest-guide-commands.txt
