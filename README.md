@@ -16,7 +16,6 @@ In its current incarnation, pre v1.0 [Snapdir] has been implemented as independe
 | [`snapdir-sqlite3-catalog`](./snapdir-sqlite3-catalog) | Basic catalog of local and remote manifests.                                                          | [manual](./docs/api/snapdir-sqlite3-catalog.md) | ![catalog status]         |
 | [bermi/snapdir] docker image                 | 8MB Docker image containing snapdir and all its dependencies.                                                     | docker pull bermi/snapdir                       | ![docker status]     |
 
-
 The main [goal](./README.md#design-goals) of [Snapdir] pre v1.0 is to define [an auditable manifest format](./docs/understanding-manifests.md) easy to support and implement in all programming languages.
 
 ## What is Snapdir?
@@ -53,40 +52,39 @@ We decided to open source it could be used by others to implement
 [CRDT][conflict-free replicated data type] strategies on eventually
 consistent read-heavy applications.
 
-
 ### Design goals
 
--   Manifest format and specification should be simple to understand by
+- Manifest format and specification should be simple to understand by
     humans and simple to implement.
--   Manifest format should be auditable and suitable for tracking under
+- Manifest format should be auditable and suitable for tracking under
     version control.
--   Simple and intuitive CLI interface for working with files and
+- Simple and intuitive CLI interface for working with files and
     directories with UNIX-style composability and no configuration
     required.
--   Use external object backends like Amazon S3 for persistence
+- Use external object backends like Amazon S3 for persistence
     and sharing, and structure simple to expose via HTTP.
--   Allow files to be replicated and updated concurrently without
+- Allow files to be replicated and updated concurrently without
     coordination.
--   Optional deduplication of files by using links to cached files.
--   Allow balancing performance and correctness by offering off-process
+- Optional deduplication of files by using links to cached files.
+- Allow balancing performance and correctness by offering off-process
     integrity checks and deduplication.
--   Allow verifying snapshots using cryptographic hashes and standard
+- Allow verifying snapshots using cryptographic hashes and standard
     UNIX tools.
--   Use of deterministic ID's to replicate and share snapshots.
--   Performant and efficient post v1.0.0 release using a compiled language.
+- Use of deterministic ID's to replicate and share snapshots.
+- Performant and efficient post v1.0.0 release using a compiled language.
 
 ### Non-goals
 
-While this project remains a prototype built for experimentation, we 
+While this project remains a prototype built for experimentation, we
 expect some features to be missing from the `bash` version.
 
--   Multiple Operating Systems support. Only Linux and macOS (with bash>5) are supported.
--   Compression or encryption of files at rest. While this might be
+- Multiple Operating Systems support. Only Linux and macOS (with bash>5) are supported.
+- Compression or encryption of files at rest. While this might be
     desirable, it will complicate the `snapdir` manifests spec.
--   Real-time or streaming files are not efficient targets for
+- Real-time or streaming files are not efficient targets for
     [snapdir], as it assumes files are immutable and the format needs to
     be human-readable.
--   ACL's and authentication. Remote object backends are well suited for
+- ACL's and authentication. Remote object backends are well suited for
     this.
 
 ## Pluggable Stores
@@ -126,16 +124,12 @@ chmod +x /usr/local/bin/b3sum
 At a minimum, snapdir requires the `snapdir` and `snapdir-manifest` scripts to
 be on your `$PATH`.
 
-The following command installs the following scripts: `snapdir`,
-`snapdir-manifest`, `snapdir-s3-store`, `snapdir-test` and `snapdir-sqlite3-catalog`
+The [utils/install.sh](utils/install.sh) command installs the following scripts: `snapdir`,
+`snapdir-manifest`, `snapdir-s3-store`, `snapdir-b2-store`, `snapdir-test` and `snapdir-sqlite3-catalog`
 in `/usr/local/bin/`
 
 ```bash
-for script in snapdir snapdir-manifest snapdir-s3-store snapdir-sqlite3-catalog snapdir-test; do
-    wget -p "https://raw.githubusercontent.com/bermi/snapdir/main/${script}" -O "$script"
-    chmod +x "$script"
-    mv "$script" /usr/local/bin/
-done
+wget -O - https://raw.githubusercontent.com/bermi/snapdir/main/utils/install.sh | bash
 ```
 
 ## Try without installing
@@ -174,7 +168,6 @@ to run test that don't interface with remote resources.
 Check `.github/workflows` for examples on how to run integration tests
 against remote stores.
 
-
 ### Alternatives
 
 There are many other tools that might be better suited for your particular use case. For example: [ostree](https://ostreedev.github.io/ostree/introduction/), [mtree](https://www.freebsd.org/cgi/man.cgi?mtree\(8\)), [Git LFS](https://git-lfs.github.com/), [DVC](https://dvc.org/), [Syncthing](https://syncthing.net/), [BitTorrent](https://en.wikipedia.org/wiki/BitTorrent), [DAT](https://dat-ecosystem.org/), [git](https://git-scm.com/), [HDF5](https://en.wikipedia.org/wiki/Hierarchical_Data_Format), [tar](https://www.gnu.org/software/tar/), [Btrfs](https://en.wikipedia.org/wiki/Btrfs), [ZFS](https://en.wikipedia.org/wiki/ZFS), [IPFS](https://ipfs.io/), [Perkeep](https://perkeep.org/), [SeaweedFS](https://github.com/chrislusf/seaweedfs),
@@ -182,7 +175,6 @@ There are many other tools that might be better suited for your particular use c
 
 We use `Snapdir` in conjunction with some of the tools mentioned above.
 None of them met the simplicity, ergonomics and auditability goals we had in mind when defining `Snapdir`.
-
 
 ## License
 
@@ -196,10 +188,6 @@ LICENSE: MIT Copyright (c) 2022 Bermi Ferrer
   [docker status]: https://github.com/bermi/snapdir/actions/workflows/build.yml/badge.svg
   [Snapdir]: https://github.com/bermi/snapdir
   [conflict-free replicated data type]: https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type
-  [documentation for more information]: https://github.com/bermi/snapdir/tree/main/docs/
-  [snapdir-manifest]: https://github.com/bermi/snapdir/tree/main/snapdir-manifest-README.md
   [bermi/snapdir]: https://hub.docker.com/r/bermi/snapdir/tags
   [BermiLabs]: https://bermilabs.com
-  [Git LFS]: https://git-lfs.github.com/
-  [ostree]: https://ostreedev.github.io/ostree/introduction/
   [BLAKE3]: https://github.com/BLAKE3-team/BLAKE3

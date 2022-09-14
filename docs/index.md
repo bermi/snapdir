@@ -62,6 +62,15 @@ chmod +x /usr/local/bin/b3sum
 
 [Snapdir] has been implemented as independent and tested bash scripts.
 
+To install them all on `/usr/local/bin/` you can run:
+
+```bash
+wget -O - https://raw.githubusercontent.com/bermi/snapdir/main/utils/install.sh | bash
+```
+
+At a minimum, snapdir requires the `snapdir` and `snapdir-manifest` scripts to
+be on your `$PATH`.
+
 | program | description                                                                                                       | docs  ![docs status]                  | status               |
 |----------------------------------------------|-------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------|----------------------|
 | [`snapdir`](https://github.com/bermi/snapdir/tree/main/snapdir)                       | Snapshotting, verification and sharing of directories     with pluggable storage backends.                        | [install](./install.md), [manual](./api/snapdir.md) | ![unit tests status] |
@@ -71,21 +80,6 @@ chmod +x /usr/local/bin/b3sum
 | [`snapdir-b2-store`](https://github.com/bermi/snapdir/tree/main/snapdir-b2-store)     | Storage backend using Backblaze B2.                                                                               | [README](./api/snapdir-b2-store.md) [manual](./api/snapdir-b2-store.md) | ![b2 status]         |
 | [`snapdir-sqlite3-catalog`](https://github.com/bermi/snapdir/tree/main/snapdir-sqlite3-catalog) | Basic catalog of local and remote manifests.                                                          | [manual](./api/snapdir-sqlite3-catalog.md) | ![catalog status]         |
 | [bermi/snapdir] docker image                 | 8MB Docker image containing snapdir and all its dependencies.                                                     | docker pull bermi/snapdir                       | ![docker status]     |
-
-At a minimum, snapdir requires the `snapdir` and `snapdir-manifest` scripts to
-be on your `$PATH`.
-
-The following command installs the following scripts: `snapdir`,
-`snapdir-manifest`, `snapdir-s3-store`, `snapdir-test` and `snapdir-sqlite3-catalog`
-in `/usr/local/bin/`
-
-```bash
-for script in snapdir snapdir-manifest snapdir-s3-store snapdir-sqlite3-catalog snapdir-test; do
-    wget -p "https://raw.githubusercontent.com/bermi/snapdir/main/${script}" -O "$script"
-    chmod +x "$script"
-    mv "$script" /usr/local/bin/
-done
-```
 
 ### Via Docker
 

@@ -31,6 +31,12 @@ system.
 
 You can grab the commands from the [releases page].
 
+Or install them in `/usr/local/bin/` with the following command
+
+```bash
+wget -O - https://raw.githubusercontent.com/bermi/snapdir/main/utils/install.sh | bash
+```
+
 ## Docker image
 
 You can try [snapdir] using the Docker image [bermi/snapdir].
@@ -54,7 +60,6 @@ find ./snapdir -maxdepth 1 -perm /u=x,g=x,o=x  -type f -exec cp {} /usr/local/bi
 You can verify that the installation is working by running:
 
     snapdir-test
-
 
   [b3sum]: https://github.com/BLAKE3-team/BLAKE3/tree/master/b3sum
   [snapdir]: https://github.com/bermi/snapdir/blob/main/snapdir
