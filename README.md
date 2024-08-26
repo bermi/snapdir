@@ -139,10 +139,10 @@ You can try [snapdir] using the Docker image [bermi/snapdir]
 ```bash
 target_dir=./ # specify a target directory
 # using -v to mount the target directory on the docker container
-docker run -it --rm \
+docker run --platform linux/amd64 -it --rm \
     -v "$(realpath $target_dir):/target" \
     -v "${HOME}/.cache/snapdir:/root/.cache/snapdir" \
-    bermi/snapdir /target
+    bermi/snapdir manifest /target
 ```
 
 The following `alias` will expose your current directory as `/target`
