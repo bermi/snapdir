@@ -1,0 +1,11 @@
+# Keep this repo tab-indented for shell scripts, independent of any
+# parent-directory .editorconfig. shfmt honors EditorConfig, so without
+# this an ancestor config (e.g. ~/code/.editorconfig with indent_style=space)
+# would rewrite every script on format/lint.
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+indent_style = tab
