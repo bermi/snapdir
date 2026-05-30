@@ -488,3 +488,84 @@ snapdir pull --verbose --store "${STORE}" "${DIR}"
 snapdir-s3-store get-fetch-files-command --id "${ID}" --store "${STORE}" "${DIR}"
 snapdir-s3-store ensure-no-errors --store "${STORE}" "${DIR}"
 # check: should pull the files
+snapdir-gcs-store test --store "${STORE}"
+# describe: snapdir push --dryrun
+snapdir stage "${DIR}"
+snapdir-manifest --cache "${DIR}"
+snapdir-manifest --cache "${DIR}"
+snapdir push --verbose --dryrun --store "${STORE}" "${DIR}"
+snapdir-manifest --cache "${DIR}"
+snapdir-manifest --cache "${DIR}"
+snapdir-manifest --cache "${DIR}"
+snapdir-gcs-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
+# check: should sync objects before manifests
+# check: should issue valid sync command
+# check: should try to fetch the manifest
+# check: should include --quiet
+# describe: snapdir push
+snapdir push --verbose --store "${STORE}" "${DIR}"
+snapdir-manifest --cache "${DIR}"
+snapdir-manifest --cache "${DIR}"
+snapdir-manifest --cache "${DIR}"
+snapdir-gcs-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
+snapdir-gcs-store get-manifest --id "${ID}" --store "${STORE}"
+snapdir-gcs-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store "${STORE}"
+# check: should succeed with manifest id
+# describe: snapdir-gcs-store get-manifest
+# check: should get manifest from remote
+snapdir-gcs-store get-manifest --id "${ID}" --store "${STORE}"
+snapdir-gcs-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store "${STORE}"
+snapdir-gcs-store ensure-no-errors --store "${STORE}" "${DIR}"
+# check: should avoid pushing if the manifest already exists
+snapdir push --id "${ID}" --verbose --store "${STORE}"
+snapdir manifest "${DIR}"
+snapdir-manifest --cache "${DIR}"
+snapdir-gcs-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
+snapdir-gcs-store get-manifest --id "${ID}" --store "${STORE}"
+snapdir-gcs-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store "${STORE}"
+snapdir-gcs-store ensure-no-errors --store "${STORE}" "${DIR}"
+# check: should only respond with manifest id when not --verbose
+snapdir push --id "${ID}" --store "${STORE}"
+snapdir manifest "${DIR}"
+snapdir-manifest --cache "${DIR}"
+snapdir-gcs-store get-push-command --id "${ID}" --staging-dir "${STAGING_DIR}"
+snapdir-gcs-store get-manifest --id "${ID}" --store "${STORE}"
+snapdir-gcs-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store "${STORE}"
+snapdir-gcs-store ensure-no-errors --store "${STORE}" "${DIR}"
+# describe: snapdir fetch
+snapdir fetch --dryrun --store "${STORE}"
+snapdir-gcs-store get-manifest-command --id "${ID}" --store "${STORE}"
+snapdir-gcs-store get-manifest --id "${ID}" --store "${STORE}"
+snapdir-gcs-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store "${STORE}"
+snapdir-gcs-store ensure-no-errors --store "${STORE}" "${DIR}"
+snapdir-gcs-store get-fetch-files-command --id "${ID}" --store "${STORE}" "${DIR}"
+# check: should call get-manifest
+# check: should have not persisted the manifest on the cache
+# check: should have not persisted objects on the cache
+snapdir fetch --store "${STORE}"
+snapdir-gcs-store get-manifest-command --id "${ID}" --store "${STORE}"
+snapdir-gcs-store get-manifest --id "${ID}" --store "${STORE}"
+snapdir-gcs-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store "${STORE}"
+snapdir-gcs-store ensure-no-errors --store "${STORE}" "${DIR}"
+snapdir-gcs-store get-fetch-files-command --id "${ID}" --store "${STORE}" "${DIR}"
+snapdir-gcs-store ensure-no-errors --store "${STORE}" "${DIR}"
+snapdir-gcs-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
+snapdir-gcs-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --log-file "${LOG_PATH}"
+# check: should fetch the manifest
+# check: should fetch the objects
+# check: non existing manifest should fail
+snapdir fetch --store "${STORE}"
+snapdir-gcs-store get-manifest-command --id "${ID}" --store "${STORE}"
+snapdir-gcs-store get-manifest --id "${ID}" --store "${STORE}"
+snapdir-gcs-store fetch --store "${STORE}" --target-path "${TARGET_PATH}" --store "${STORE}"
+# check: should fail when the manifest has been tampered with
+snapdir fetch --dryrun --store "${STORE}"
+# describe: snapdir fetch
+snapdir pull --dryrun --verbose --store "${STORE}" "${DIR}"
+snapdir manifest "${DIR}"
+snapdir-manifest --cache "${DIR}"
+# check: no files should have been pulled in --dryrun mode
+snapdir pull --verbose --store "${STORE}" "${DIR}"
+snapdir manifest "${DIR}"
+snapdir-manifest --cache "${DIR}"
+# check: should pull the files
