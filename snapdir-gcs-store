@@ -88,8 +88,16 @@ snapdir_gcs_store_get_push_command() {
 			mkdir -p "${source_dir%/}/.objects/"
 			# Create an empty marker file to ensure the directory is not empty
 			touch "${source_dir%/}/.objects/.empty-marker"
-			# Sync objects
-			gcloud storage rsync --quiet "${source_dir%/}/.objects/" "${store%/}/.objects/";
+			# Sync objects.
+			# Notes:
+			# - The local source path must NOT have a trailing slash -
+			#   'gcloud storage rsync' (>=5.x) errors with "Did not find existing
+			#   container" when a trailing slash is present on a local source.
+			# - snapdir stages objects as symlinks into the cache; rsync ignores
+			#   symlinks by default, so --no-ignore-symlinks is required to upload
+			#   the content they point to (equivalent to 'aws s3 sync --follow-symlinks').
+			# - --recursive is required because objects are nested under sharded dirs.
+			gcloud storage rsync --quiet --recursive --no-ignore-symlinks "${source_dir%/}/.objects" "${store%/}/.objects/";
 			# Make sure the manifests directory exists
 			mkdir -p "$(dirname "${source_dir%/}/${manifest_rel_path#/}")";
 			# Copy manifest
@@ -550,7 +558,7 @@ snapdir_gcs_store_test() (
 		{
 			echo "cleaning up remote GCS temporary test data"
 			mkdir -p /tmp/empty-dir
-			gcloud storage rsync --quiet --delete-unmatched-destination-objects "/tmp/empty-dir/" "${_SNAPDIR_TEST_STORE}/"
+			gcloud storage rsync --quiet --delete-unmatched-destination-objects "/tmp/empty-dir" "${_SNAPDIR_TEST_STORE}/"
 			rmdir /tmp/empty-dir
 		} 2>&1 | sed 's|^|# |' || true
 	}
@@ -595,7 +603,7 @@ F 600 $foo_checksum 4 ./foo"
 
 		# --------------------------------------------------------------------------------
 		check "should issue valid sync command "
-		grep -E -q 'gcloud storage rsync --quiet "[^"]*/.objects/" "gs://[^"]*/.objects/"' <<<"${result}" || fail "Expected to find 'gcloud storage rsync --quiet \"${_dir}/.objects/\" \"gs://.*/.objects/\"' in '$result'" && pass
+		grep -E -q 'gcloud storage rsync --quiet .*"[^"]*/.objects" "gs://[^"]*/.objects/"' <<<"${result}" || fail "Expected to find 'gcloud storage rsync --quiet ... \"${_dir}/.objects\" \"gs://.*/.objects/\"' in '$result'" && pass
 
 		# --------------------------------------------------------------------------------
 		check "should try to fetch the manifest"
