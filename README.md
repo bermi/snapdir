@@ -13,6 +13,7 @@ In its current incarnation, pre v1.0 [Snapdir] has been implemented as independe
 | [`snapdir-file-store`](./snapdir-file-store) | Storage backend using the filesystem.                                                                             | [manual](./docs/api/snapdir-file-store.md)                    | ![unit tests status] |
 | [`snapdir-s3-store`](./snapdir-s3-store)     | Storage backend using Amazon S3.                                                                                  | [manual](./docs/api/snapdir-s3-store.md)                      | ![s3 status]         |
 | [`snapdir-b2-store`](./snapdir-b2-store)     | Storage backend using Backblaze B2.                                                                               | [README](./docs/snapdir-b2-store.md) [manual](./docs/api/snapdir-b2-store.md) | ![b2 status]         |
+| [`snapdir-gcs-store`](./snapdir-gcs-store)   | Storage backend using Google Cloud Storage.                                                                       | [manual](./docs/api/snapdir-gcs-store.md)                     | ![unit tests status] |
 | [`snapdir-sqlite3-catalog`](./snapdir-sqlite3-catalog) | Basic catalog of local and remote manifests.                                                          | [manual](./docs/api/snapdir-sqlite3-catalog.md) | ![catalog status]         |
 | [bermi/snapdir] docker image                 | 8MB Docker image containing snapdir and all its dependencies.                                                     | docker pull bermi/snapdir                       | ![docker status]     |
 
@@ -25,7 +26,7 @@ Snapdir is a userspace cli program with the following features:
 - Generates manifests and unique identifiers of the
   contents of directories and files.
 - Saves and restores data from pluggable storage
-  backends such as Amazon S3 and Backblaze B2.
+  backends such as Amazon S3, Backblaze B2, and Google Cloud Storage.
 - Verifies the integrity of the data using cryptographic
   hashes.
 - UNIX-style composability.
@@ -125,7 +126,7 @@ At a minimum, snapdir requires the `snapdir` and `snapdir-manifest` scripts to
 be on your `$PATH`.
 
 The [utils/install.sh](utils/install.sh) command installs the following scripts: `snapdir`,
-`snapdir-manifest`, `snapdir-s3-store`, `snapdir-b2-store`, `snapdir-test` and `snapdir-sqlite3-catalog`
+`snapdir-manifest`, `snapdir-s3-store`, `snapdir-b2-store`, `snapdir-gcs-store`, `snapdir-test` and `snapdir-sqlite3-catalog`
 in `/usr/local/bin/`
 
 ```bash

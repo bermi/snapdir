@@ -5,7 +5,7 @@ IFS=$'\n\t'
 
 command -v wget >/dev/null 2>&1 || { echo >&2 "Please install wget to download snapdir."; exit 1; }
 
-for script in snapdir snapdir-manifest snapdir-s3-store snapdir-file-store snapdir-b2-store snapdir-sqlite3-catalog snapdir-test; do
+for script in snapdir snapdir-manifest snapdir-s3-store snapdir-file-store snapdir-b2-store snapdir-gcs-store snapdir-sqlite3-catalog snapdir-test; do
     wget -q -4 -p "https://raw.githubusercontent.com/bermi/snapdir/main/${script}" -O "$script"
     chmod +x "$script"
 done
