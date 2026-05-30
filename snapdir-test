@@ -113,6 +113,11 @@ _snapdir_test_run_integration_tests() {
 	else
 		echo "# skipping snapdir-s3-store test. Missing SNAPDIR_S3_STORE_TEST_BUCKET or $dir/snapdir-s3-store" >&2
 	fi
+	if test -f "$dir/snapdir-gcs-store" && [[ ${SNAPDIR_GCS_STORE_TEST_BUCKET:-} != "" ]]; then
+		"$dir/snapdir-gcs-store" test --store "gs://${SNAPDIR_GCS_STORE_TEST_BUCKET}"
+	else
+		echo "# skipping snapdir-gcs-store test. Missing SNAPDIR_GCS_STORE_TEST_BUCKET or $dir/snapdir-gcs-store" >&2
+	fi
 	echo "# integration tests completed in ${SECONDS} seconds"
 }
 
@@ -143,8 +148,12 @@ _snapdir_test_utils() {
 
 		rm -rf /tmp/"${_SNAPDIR_MODULE_NAME}"_tests*
 		_SNAPDIR_TEST_TMP_DIR="$(mktemp -d -t "${_SNAPDIR_MODULE_NAME}"_tests.XXXXXXXXXX)"
-		# get the realpath to the tmp dir, on macos it might be prefixed with /private
-		_SNAPDIR_TEST_TMP_DIR=$(realpath "$_SNAPDIR_TEST_TMP_DIR")
+		# get the realpath to the tmp dir, on macOS it might be prefixed with /private
+		if [[ "$(uname -s)" == "Darwin" ]]; then
+			_SNAPDIR_TEST_TMP_DIR="$(cd "$_SNAPDIR_TEST_TMP_DIR" && pwd)"
+		else
+			_SNAPDIR_TEST_TMP_DIR=$(realpath "$_SNAPDIR_TEST_TMP_DIR")
+		fi
 
 		umask 077 "$_SNAPDIR_TEST_TMP_DIR"
 

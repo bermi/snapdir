@@ -24,7 +24,9 @@ The following scripts are required:
 Depending on what store you choose, you'll need to install one of the following:
 
 - [snapdir-file-store]: File system based store.
-- [snapdir-b2-store]: Backblaze b2 based store.
+- [snapdir-s3-store]: Amazon S3 based store.
+- [snapdir-b2-store]: Backblaze B2 based store.
+- [snapdir-gcs-store]: Google Cloud Storage based store.
 
 Optionally, you can install [snapdir-test] to verify that snapdir works on your
 system.
@@ -66,6 +68,8 @@ You can verify that the installation is working by running:
   [snapdir-manifest]: https://github.com/bermi/snapdir/blob/main/snapdir-manifest
   [snapdir-test]: https://github.com/bermi/snapdir/blob/main/snapdir-test
   [snapdir-file-store]: https://github.com/bermi/snapdir/blob/main/snapdir-file-store
+  [snapdir-s3-store]: https://github.com/bermi/snapdir/blob/main/snapdir-s3-store
   [snapdir-b2-store]: https://github.com/bermi/snapdir/blob/main/snapdir-b2-store
+  [snapdir-gcs-store]: https://github.com/bermi/snapdir/blob/main/snapdir-gcs-store
   [releases page]: https://github.com/bermi/snapdir/releases/
   [bermi/snapdir]: https://hub.docker.com/r/bermi/snapdir/tags

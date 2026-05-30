@@ -9,7 +9,7 @@ The main feature are:
 - Generating manifests and unique identifiers of the
   contents of directories and files.
 - Saving and restores data from pluggable storage
-  backends such as Amazon S3 and Backblaze B2.
+  backends such as Amazon S3, Backblaze B2, and Google Cloud Storage.
 - Verifying the integrity of the data using cryptographic
   hashes.
 - UNIX-style composability.
@@ -78,6 +78,7 @@ be on your `$PATH`.
 | [`snapdir-file-store`](https://github.com/bermi/snapdir/tree/main/snapdir-file-store) | Storage backend using the filesystem.                                                                             | [manual](./api/snapdir-file-store.md)                    | ![unit tests status] |
 | [`snapdir-s3-store`](https://github.com/bermi/snapdir/tree/main/snapdir-s3-store)     | Storage backend using Amazon S3.                                                                                  | [manual](./api/snapdir-s3-store.md)                      | ![s3 status]         |
 | [`snapdir-b2-store`](https://github.com/bermi/snapdir/tree/main/snapdir-b2-store)     | Storage backend using Backblaze B2.                                                                               | [README](./api/snapdir-b2-store.md) [manual](./api/snapdir-b2-store.md) | ![b2 status]         |
+| [`snapdir-gcs-store`](https://github.com/bermi/snapdir/tree/main/snapdir-gcs-store)     | Storage backend using Google Cloud Storage.                                                                        | [manual](./api/snapdir-gcs-store.md) | ![unit tests status]    |
 | [`snapdir-sqlite3-catalog`](https://github.com/bermi/snapdir/tree/main/snapdir-sqlite3-catalog) | Basic catalog of local and remote manifests.                                                          | [manual](./api/snapdir-sqlite3-catalog.md) | ![catalog status]         |
 | [bermi/snapdir] docker image                 | 8MB Docker image containing snapdir and all its dependencies.                                                     | docker pull bermi/snapdir                       | ![docker status]     |
 
