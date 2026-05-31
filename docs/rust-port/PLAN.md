@@ -43,9 +43,13 @@ The manifest spec + golden fixtures. Confirmed from the Bash source:
   excluded).
 - **Symlinks followed by default** (`find -L`); entry inherits the target's type/checksum/size.
   `--no-follow` drops `-L` and excludes symlinks.
-- **Directory checksum (critical):** over direct children's checksums do
-  `cut -d' ' -f3 | sort -u | tr -d '\n'` then hash the concatenation — i.e.
-  **sort + dedup + concatenate with no separators + re-hash**. Root dir checksum = snapshot ID.
+- **Directory checksum (critical):** the `D ./` line's `CHECKSUM` field. Over the direct children's
+  checksums do `cut -d' ' -f3 | sort -u | tr -d '\n'` then hash the concatenation — i.e.
+  **sort + dedup + concatenate with no separators + re-hash**.
+- **Snapshot ID (critical):** `manifest | grep -v '^#' | b3sum --no-names` — BLAKE3 of the **entire
+  `#`-stripped manifest text**, including the trailing newline the oracle's `echo` appends. The
+  snapshot ID is therefore **NOT** the root directory checksum; it is the hash of the whole manifest
+  document, not of any single line's checksum field.
 - **Hash:** default `b3sum --no-names`; escape hatch `--checksum-bin=` (`md5sum`,`sha256sum`, parse
   `cut -d' ' -f1`); keyed mode `SNAPDIR_MANIFEST_CONTEXT` → `b3sum --derive-key=<ctx> --no-names`.
 - **Excludes:** `--exclude` is an extended regex (`grep -E -v`); `%system%` expands a built-in set AND

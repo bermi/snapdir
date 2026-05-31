@@ -199,7 +199,9 @@ gates:
     phase: 2
     owner_agent: docs
     depends_on: [golden-b3]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T02:19:35Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "grep -q 'b3sum' docs/rust-port/PLAN.md && ! grep -Eq 'Root dir checksum = snapshot ID' docs/rust-port/PLAN.md"
     pass_criteria:
