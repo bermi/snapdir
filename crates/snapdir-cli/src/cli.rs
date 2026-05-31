@@ -4,12 +4,19 @@
 //! plus `version`, and the global options shared across commands. Pinned to the
 //! scripts, not the docs (e.g. `--linked`, never `--link`).
 //!
-//! For this gate every subcommand is a stub: it prints a "not implemented"
-//! notice and returns. The real implementations arrive in later phases.
+//! `manifest` and `id` are wired to `snapdir-core`'s in-process walk and emit
+//! oracle-identical stdout (matching `./snapdir-manifest` / `./snapdir id`).
+//! The remaining subcommands are still stubs; their behavior arrives in later
+//! phases.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use snapdir_core::{
+    expand_excludes, snapshot_id, walk, Blake3Hasher, Blake3KeyedHasher, ExcludeMatcher,
+    FollowMode, Hasher, Manifest, Md5Hasher, PathMode, Sha256Hasher, WalkOptions,
+};
 
 /// Content-addressable directory snapshots.
 #[derive(Debug, Parser)]
@@ -103,6 +110,23 @@ pub struct GlobalArgs {
 pub enum Command {
     /// Print the manifest of a directory.
     Manifest {
+        /// Emit absolute paths instead of `./`-relative paths.
+        #[arg(long)]
+        absolute: bool,
+
+        /// Do not follow symbolic links (plain `find` instead of `find -L`).
+        #[arg(long)]
+        no_follow: bool,
+
+        /// Checksum binary to mirror: `b3sum` (default), `md5sum`, `sha256sum`.
+        #[arg(long, value_name = "NAME")]
+        checksum_bin: Option<String>,
+
+        /// Exclude paths matching the extended-regex PATTERN
+        /// (supports the `%system%` / `%common%` macros).
+        #[arg(long, value_name = "PATTERN")]
+        exclude: Option<String>,
+
         /// Directory to describe.
         path: Option<PathBuf>,
     },
@@ -168,29 +192,167 @@ pub enum Command {
 impl Cli {
     /// Dispatch the parsed command.
     ///
-    /// All handlers are stubs for the `cli-skeleton` gate; they emit a
-    /// "not implemented" notice. Real behavior arrives in later gates.
-    pub fn run(&self) {
-        let name = match self.command {
-            Command::Manifest { .. } => "manifest",
-            Command::Id { .. } => "id",
-            Command::Stage { .. } => "stage",
-            Command::Push { .. } => "push",
-            Command::Fetch => "fetch",
-            Command::Pull { .. } => "pull",
-            Command::Checkout { .. } => "checkout",
-            Command::Verify => "verify",
-            Command::VerifyCache => "verify-cache",
-            Command::FlushCache => "flush-cache",
-            Command::Locations => "locations",
-            Command::Ancestors => "ancestors",
-            Command::Revisions => "revisions",
-            Command::Defaults => "defaults",
-            Command::Version => {
-                println!("snapdir {}", env!("CARGO_PKG_VERSION"));
-                return;
+    /// `manifest` and `id` are wired to `snapdir-core`. The remaining
+    /// subcommands are stubs that report "not implemented" via [`Err`]; real
+    /// behavior arrives in later gates.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error raised while resolving the path, building the exclude
+    /// matcher, or walking the tree, plus a "not implemented" error for the
+    /// stubbed subcommands.
+    pub fn run(&self) -> Result<()> {
+        match &self.command {
+            Command::Manifest {
+                absolute,
+                no_follow,
+                checksum_bin,
+                exclude,
+                path,
+            } => {
+                let exclude = exclude.as_deref().or(self.globals.exclude.as_deref());
+                let manifest = self.build_manifest(
+                    path.as_deref(),
+                    *absolute,
+                    *no_follow,
+                    checksum_bin.as_deref(),
+                    exclude,
+                )?;
+                println!("{manifest}");
+                Ok(())
             }
-        };
-        eprintln!("snapdir: `{name}` is not implemented yet");
+            Command::Id { path } => {
+                // `snapdir id` mirrors `./snapdir id`: the snapshot id is the
+                // b3sum of the comment-stripped manifest text. The wrapper
+                // walks with the default checksum (b3sum) and default
+                // path/follow modes; the id is checksum-mode independent here.
+                let exclude = self.globals.exclude.as_deref();
+                let manifest = self.build_manifest(path.as_deref(), false, false, None, exclude)?;
+                let id = snapshot_id(&manifest, &Blake3Hasher::new());
+                println!("{id}");
+                Ok(())
+            }
+            other => {
+                let name = match other {
+                    Command::Stage { .. } => "stage",
+                    Command::Push { .. } => "push",
+                    Command::Fetch => "fetch",
+                    Command::Pull { .. } => "pull",
+                    Command::Checkout { .. } => "checkout",
+                    Command::Verify => "verify",
+                    Command::VerifyCache => "verify-cache",
+                    Command::FlushCache => "flush-cache",
+                    Command::Locations => "locations",
+                    Command::Ancestors => "ancestors",
+                    Command::Revisions => "revisions",
+                    Command::Defaults => "defaults",
+                    Command::Version => {
+                        println!("snapdir {}", env!("CARGO_PKG_VERSION"));
+                        return Ok(());
+                    }
+                    Command::Manifest { .. } | Command::Id { .. } => unreachable!(),
+                };
+                anyhow::bail!("snapdir: `{name}` is not implemented yet")
+            }
+        }
     }
+
+    /// Resolve the argument path, expand excludes, select the hasher, and run
+    /// the in-process walk — the shared wiring behind `manifest` and `id`.
+    fn build_manifest(
+        &self,
+        path: Option<&Path>,
+        absolute: bool,
+        no_follow: bool,
+        checksum_bin: Option<&str>,
+        exclude: Option<&str>,
+    ) -> Result<Manifest> {
+        let root = resolve_root(path).context("resolving manifest path")?;
+
+        // Expand the exclude pattern. `%system%` forces no-follow; the runtime
+        // `$HOME/.cache/` + cache-dir values come from the CLI (core is
+        // env-pure). When no `--exclude` is given there is no filtering.
+        let (home_cache, cache_dir) = exclude_runtime_paths(self.globals.cache_dir.as_deref());
+        let expanded = expand_excludes(exclude.unwrap_or(""), &home_cache, &cache_dir);
+        let matcher = match &expanded.pattern {
+            Some(pattern) => {
+                Some(ExcludeMatcher::new(pattern).context("compiling --exclude pattern")?)
+            }
+            None => None,
+        };
+
+        let follow = if no_follow || expanded.forces_no_follow {
+            FollowMode::NoFollow
+        } else {
+            FollowMode::Follow
+        };
+        let path_mode = if absolute {
+            PathMode::Absolute
+        } else {
+            PathMode::Relative
+        };
+        let options = WalkOptions {
+            follow,
+            path_mode,
+            exclude: matcher,
+        };
+
+        // Select the checksum function. `b3sum` (or unset) is the default; the
+        // CLI reads `SNAPDIR_MANIFEST_CONTEXT` (core stays env-pure) to switch
+        // to keyed BLAKE3. `--checksum-bin` selects md5sum / sha256sum.
+        match checksum_bin {
+            None | Some("b3sum") => {
+                let context = std::env::var("SNAPDIR_MANIFEST_CONTEXT").unwrap_or_default();
+                if context.is_empty() {
+                    walk_with(&root, &options, &Blake3Hasher::new())
+                } else {
+                    walk_with(&root, &options, &Blake3KeyedHasher::new(context))
+                }
+            }
+            Some("md5sum") => walk_with(&root, &options, &Md5Hasher::new()),
+            Some("sha256sum") => walk_with(&root, &options, &Sha256Hasher::new()),
+            Some(other) => {
+                anyhow::bail!("snapdir: unsupported --checksum-bin '{other}'")
+            }
+        }
+    }
+}
+
+/// Walks `root` with the given hasher, mapping the typed [`WalkError`] into an
+/// `anyhow` error with context.
+///
+/// [`WalkError`]: snapdir_core::WalkError
+fn walk_with<H: Hasher>(root: &Path, options: &WalkOptions, hasher: &H) -> Result<Manifest> {
+    walk(root, options, hasher).with_context(|| format!("walking {}", root.display()))
+}
+
+/// Resolves the user's path argument to an absolute path, mirroring the
+/// oracle's `readlink` (`cd "$(dirname)" && pwd`/`basename`): the parent is
+/// made absolute, the basename is appended verbatim. Defaults to the current
+/// directory when no path is given.
+fn resolve_root(path: Option<&Path>) -> Result<PathBuf> {
+    let raw = match path {
+        Some(p) => p.to_path_buf(),
+        None => std::env::current_dir().context("getting current directory")?,
+    };
+    if raw.is_absolute() {
+        return Ok(raw);
+    }
+    let cwd = std::env::current_dir().context("getting current directory")?;
+    Ok(cwd.join(raw))
+}
+
+/// Resolves the runtime values the `%system%` macro interpolates: the
+/// `$HOME/.cache/` directory and the snapdir cache directory. Mirrors the
+/// oracle's `${HOME:-~}/.cache/` and `${XDG_CACHE_HOME:-$HOME/.cache}/snapdir`.
+fn exclude_runtime_paths(cache_dir: Option<&Path>) -> (String, String) {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let home_cache = format!("{home}/.cache/");
+    let cache_dir = if let Some(dir) = cache_dir {
+        dir.display().to_string()
+    } else {
+        let base = std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| format!("{home}/.cache"));
+        format!("{base}/snapdir")
+    };
+    (home_cache, cache_dir)
 }
