@@ -331,7 +331,7 @@ gates:
     depends_on: [freeze-contract]
     status: passed
     passed_at: 2026-05-31T11:58:52Z
-    git_sha: pending
+    git_sha: ee6bbf8
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --locked store"
     pass_criteria:
