@@ -4,10 +4,11 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **4**
-Current gate: `file-store` (phase 4, owner stores) next tick.
-Last passed: `store-trait` @ 2026-05-31T11:58:52Z. 🔑 interop keystone already proven (Phase 3).
-`Store` trait + sharded path helpers (`object_path`/`manifest_path`, `.objects`/`.manifests`, `[0:3][3:6][6:9][9:]`) now in `snapdir-core::store` (sync trait; async SDKs bridge via block_on). Sharded scheme is frozen-by-contract (#2) — guarded by tests + roundtrip/interop gates; object_path/manifest_path changes need human approval.
-Eligible besides file-store: catalog-redb (P6), bench-compile (P7), proptest-roundtrip (P8), rustdoc-doctests (P9) — phase-asc picks file-store.
+Current gate: `external-store-shim` (phase 4, owner stores) next tick (id-asc < file-store-roundtrip).
+Last passed: `file-store` @ 2026-05-31T12:04:31Z. 🔑 interop keystone proven (Phase 3); contract frozen (locks 4/4 OK each tick).
+Sharded scheme frozen-by-contract (#2); object_path/manifest_path changes need human approval.
+⚠ WATCH for `file-store-roundtrip`: Rust `FileStore::push` reads object bytes from the SOURCE tree, whereas Bash `get-push-command` reads from a pre-staged sharded dir — the cross-tool (Bash↔Rust) roundtrip must validate they interoperate.
+Eligible besides external-store-shim/file-store-roundtrip: catalog-redb (P6), bench-compile (P7), proptest-roundtrip (P8), rustdoc-doctests (P9) — phase-asc keeps Phase 4 first.
 
 > **🔒 FROZEN INTERFACES — re-verify EVERY tick (READ STATE step):**
 > `shasum -a 256 -c .gatesmith/golden-fixtures.sha.lock .gatesmith/manifest-format.sha.lock`
@@ -25,7 +26,7 @@ Eligible besides file-store: catalog-redb (P6), bench-compile (P7), proptest-rou
 - Phase 1 (Scaffolding + CI): 6/6 passed ✅
 - Phase 2 (Core manifest/hashing + FREEZE): 7/7 passed ✅ 🔒 FROZEN
 - Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
-- Phase 4 (Store trait + FileStore): 1/4 passed
+- Phase 4 (Store trait + FileStore): 2/4 passed
 - Phase 2 (Core manifest/hashing + FREEZE): 0/5 passed
 - Phase 3 (Interop keystone): 0/2 passed
 - Phase 4 (Store abstraction + FileStore): 0/4 passed
@@ -57,3 +58,4 @@ Eligible besides file-store: catalog-redb (P6), bench-compile (P7), proptest-rou
 - 2026-05-31 — `cli-manifest-wire`: `snapdir manifest`/`id` wired to `snapdir-core` (thin layer; flags→WalkOptions/Hasher; keyed via `SNAPDIR_MANIFEST_CONTEXT`); 7 integration tests byte-identical vs the live oracle. `snapdir id` is checksum-mode-independent (always b3sum), matching the oracle.
 - 2026-05-31 — `interop-diff` 🔑 **KEYSTONE** (human checkpoint): full `tests/interop/run.sh` → 15/15 corpus cases byte-identical Bash↔Rust (manifests + snapshot IDs, all checksum/keyed/no-follow modes); operator signed off. **Byte-for-byte interoperability proven; Phase 3 complete.**
 - 2026-05-31 — `store-trait`: `snapdir-core::store` — `Store` trait (`get_manifest`/`fetch_files`/`push`, sync/object-safe) + sharded path helpers confirmed vs oracle (`snapdir` L1387/1399); 8 tests. Frozen files untouched.
+- 2026-05-31 — `file-store`: `FileStore` (`file://`) impl of the `Store` trait — sharded `.objects`/`.manifests`, push (objects-before-manifest, skip-if-present), fetch (temp + verify BLAKE3 + retry≤5 + atomic rename); 10 tests. Mirrors `./snapdir-file-store`.
