@@ -4,17 +4,17 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **2**
-Current gate: `golden-b3` (phase 2, owner core) next tick.
-Last passed: `dir-merkle` @ 2026-05-31T01:51:01Z.
-Blocked: none. (Phase 2 ends at `freeze-contract`, which freezes the manifest spec + golden fixtures.)
+Current gate: `golden-multi` (phase 2, owner core) next tick — BUT see the open escalation below.
+Last passed: `golden-b3` @ 2026-05-31T01:55:16Z.
+Blocked: **OPEN HUMAN ESCALATION (snapshot-ID contract discrepancy)** — awaiting decision before `freeze-contract`.
 
-> Note for golden-b3: oracle-confirmed that fixture `dba5865c…` is the guide **root of two empty files** (sort -u collapses both `af1349b9…` to one → `blake3(af1349b9…)=dba5865c…`), NOT an empty directory. An empty dir's id is `af1349b9…` (blake3 of empty input). Pin tests to the real oracle derivation.
+> **⚠ CONTRACT DISCREPANCY (escalated to human @ 2026-05-31T01:55:16Z).** The oracle (`snapdir` L259/762/436/776) derives the snapshot ID as `manifest | grep -v '^#' | b3sum --no-names` — BLAKE3 of the **full manifest text** (incl. trailing newline), NOT the root directory checksum. PLAN.md's frozen-contract line "Root dir checksum = snapshot ID", the `dir-merkle` gate description, and `merkle.rs` doc comments + the `snapshot_id_equals_root_directory_checksum` test all encode the doc bug. The `directory_checksum` function is correct (it computes the `D ./` line's CHECKSUM field); only the "= snapshot id" labeling is wrong. golden-b3's tests use the correct derivation (ids c678a299…/8af03a1b…) + a guard test. **Must be corrected before freeze-contract** so the frozen contract and keystone interop gate key on the real snapshot ID.
 
 ## Phase summary
 
 - Phase 0 (Bootstrap): 1/1 passed ✅
 - Phase 1 (Scaffolding + CI): 6/6 passed ✅
-- Phase 2 (Core manifest/hashing + FREEZE): 2/5 passed
+- Phase 2 (Core manifest/hashing + FREEZE): 3/5 passed (golden-multi + freeze-contract remain; freeze gated on the escalation)
 - Phase 2 (Core manifest/hashing + FREEZE): 0/5 passed
 - Phase 3 (Interop keystone): 0/2 passed
 - Phase 4 (Store abstraction + FileStore): 0/4 passed
@@ -35,4 +35,5 @@ Blocked: none. (Phase 2 ends at `freeze-contract`, which freezes the manifest sp
 - 2026-05-31 — `fmt-clean`: `cargo fmt --all --check` clean across the workspace (rustfmt.toml stable-compatible).
 - 2026-05-31 — `ci-matrix-green` (human checkpoint): operator confirmed the full GitHub Actions matrix (Linux/macOS/Windows × MSRV/stable/beta + musl static) green on `rust-port`. **Phase 1 complete.**
 - 2026-05-31 — `manifest-format`: `snapdir-core` manifest line model (`Manifest`/`ManifestEntry`) — Display `TYPE PERM CHECKSUM SIZE PATH`, sort -k5, `#`-comment/empty-line stripping, `./` vs `--absolute`; 15 unit tests, pinned to `./snapdir-manifest`.
-- 2026-05-31 — `dir-merkle`: `directory_checksum` = sort -u + concat(no separator) + rehash of child checksums via in-process `blake3` crate (no b3sum shell-out); `Hasher` trait seam for `--checksum-bin`; root checksum = snapshot id; 7 checksum tests.
+- 2026-05-31 — `dir-merkle`: `directory_checksum` = sort -u + concat(no separator) + rehash of child checksums via in-process `blake3` crate (no b3sum shell-out); `Hasher` trait seam for `--checksum-bin`; 7 checksum tests. (Note: its "root checksum = snapshot id" claim is the doc bug now under escalation.)
+- 2026-05-31 — `golden-b3`: 8 `golden_b3sum` tests reproduce the frozen ids byte-for-byte in-process (empty af1349b9, foo 49dc870d, root D-line dba5865c/4a0732cf, snapshot ids c678a299/8af03a1b). **Surfaced the snapshot-ID contract discrepancy (escalated).**

@@ -161,7 +161,9 @@ gates:
     phase: 2
     owner_agent: core
     depends_on: [dir-merkle]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T01:55:16Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --locked golden_b3sum"
     pass_criteria:
