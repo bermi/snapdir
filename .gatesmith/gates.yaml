@@ -118,7 +118,7 @@ gates:
     depends_on: [ci-config, fmt-clean, clippy-pedantic-clean, cli-skeleton]
     status: passed
     passed_at: 2026-05-31T01:36:48Z
-    git_sha: pending
+    git_sha: 1a90657
     failure_count: 0
     verification_cmd: "echo 'Confirm the GitHub Actions ci.yaml run (incl. the x86_64-unknown-linux-musl static leg) is green for branch rust-port.'"
     pass_criteria:
