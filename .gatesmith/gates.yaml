@@ -359,7 +359,7 @@ gates:
     depends_on: [file-store]
     status: passed
     passed_at: 2026-05-31T12:09:32Z
-    git_sha: pending
+    git_sha: cadf93a
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked shim"
     pass_criteria:
