@@ -345,7 +345,7 @@ gates:
     depends_on: [store-trait]
     status: passed
     passed_at: 2026-05-31T12:04:31Z
-    git_sha: pending
+    git_sha: 12991f8
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked file_store"
     pass_criteria:
