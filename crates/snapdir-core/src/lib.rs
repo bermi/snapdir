@@ -8,12 +8,25 @@
 //! The [`manifest`] module owns the frozen manifest line format
 //! (`PATH_TYPE PERMISSIONS CHECKSUM SIZE PATH`) and its (de)serialization. The
 //! [`merkle`] module owns the directory checksum rule (sort + dedup + concat +
-//! re-hash of the direct children's checksums) and the snapshot id
+//! re-hash of the direct children's checksums), the snapshot id
 //! ([`snapshot_id`] — BLAKE3 of the comment-stripped manifest text, distinct
-//! from the root directory checksum).
+//! from the root directory checksum), and the [`Hasher`] abstraction with its
+//! in-process [`Blake3Hasher`], keyed [`Blake3KeyedHasher`]
+//! (`SNAPDIR_MANIFEST_CONTEXT`), [`Md5Hasher`] and [`Sha256Hasher`]
+//! (`--checksum-bin`) implementations. The [`excludes`] module owns the
+//! `%system%`/`%common%` expansion, the `grep -E -v` matcher, and the
+//! follow/no-follow option semantics.
 
+pub mod excludes;
 pub mod manifest;
 pub mod merkle;
 
+pub use excludes::{
+    expand_excludes, ExcludeError, ExcludeMatcher, ExpandedExclude, FollowMode,
+    COMMON_EXCLUDE_DIRS, SYSTEM_EXCLUDE_DIRS,
+};
 pub use manifest::{Manifest, ManifestEntry, ParseError, PathType};
-pub use merkle::{directory_checksum, snapshot_id, Blake3Hasher, Hasher};
+pub use merkle::{
+    directory_checksum, snapshot_id, Blake3Hasher, Blake3KeyedHasher, Hasher, Md5Hasher,
+    Sha256Hasher,
+};

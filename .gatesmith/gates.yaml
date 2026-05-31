@@ -211,7 +211,6 @@ gates:
     phase: 2
     owner_agent: core
     depends_on: [golden-b3, snapshot-id-core-fix]
-    status: pending
     failure_count: 0
     # GATE-BUMP 2026-05-31T02:10:12Z: the original verification_cmd quoted all five
     # filters as ONE positional ("golden_md5 golden_sha256 ...") — cargo/libtest treats
@@ -222,6 +221,9 @@ gates:
     # mutation; mechanical correction realizing the gate's documented intent.
     bump_reason: "quoted-single-filter ran 0 tests (hollow pass); split into separate libtest filters after -- to actually run the intended tests"
     verification_cmd: "cargo test -p snapdir-core --locked -- golden_md5 golden_sha256 keyed_context exclude no_follow"
+    status: passed
+    passed_at: 2026-05-31T02:10:12Z
+    git_sha: pending
     pass_criteria:
       exit_code: 0
     human_checkpoint: false
