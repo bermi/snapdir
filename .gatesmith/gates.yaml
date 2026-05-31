@@ -135,7 +135,7 @@ gates:
     depends_on: [scaffold-workspace]
     status: passed
     passed_at: 2026-05-31T01:46:33Z
-    git_sha: pending
+    git_sha: 88b3a85
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --locked manifest"
     pass_criteria:
