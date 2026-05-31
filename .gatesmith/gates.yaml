@@ -42,6 +42,7 @@ gates:
     depends_on: [bootstrap-ready]
     status: passed
     passed_at: 2026-05-31T01:18:04Z
+    git_sha: 3799bb1
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked"
     pass_criteria:
