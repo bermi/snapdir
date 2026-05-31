@@ -56,7 +56,9 @@ gates:
     phase: 1
     owner_agent: ci
     depends_on: [scaffold-workspace]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T01:35:00Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "cargo fmt --all --check"
     pass_criteria:
