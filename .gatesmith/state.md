@@ -4,9 +4,9 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **2**
-Current gate: `snapshot-id-core-fix` (phase 2, owner core) next tick — remediation, human-approved.
-Last passed: `golden-b3` @ 2026-05-31T01:55:16Z.
-Resolved escalation: human chose **"Fix before freezing"** (2026-05-31T01:55:16Z). Added remediation gates `snapshot-id-core-fix` (core) + `snapshot-id-doc-fix` (docs); `golden-multi` + `freeze-contract` now depend on them, so the snapshot-ID fix lands before the freeze. Next two core/docs ticks execute the fix, then golden-multi → freeze-contract.
+Current gate: `golden-multi` (phase 2, owner core) next tick (id-asc < snapshot-id-doc-fix).
+Last passed: `snapshot-id-core-fix` @ 2026-05-31T02:06:14Z.
+Resolved escalation: human chose **"Fix before freezing"** (2026-05-31T01:55:16Z). Core fix DONE (`snapshot_id()` added, merkle.rs relabeled). Still pending before freeze: `snapshot-id-doc-fix` (docs — correct PLAN.md) and `golden-multi`; `freeze-contract` depends on both. Remaining eligible: golden-multi + snapshot-id-doc-fix (order irrelevant; freeze gated on both).
 
 > **⚠ CONTRACT DISCREPANCY (escalated to human @ 2026-05-31T01:55:16Z).** The oracle (`snapdir` L259/762/436/776) derives the snapshot ID as `manifest | grep -v '^#' | b3sum --no-names` — BLAKE3 of the **full manifest text** (incl. trailing newline), NOT the root directory checksum. PLAN.md's frozen-contract line "Root dir checksum = snapshot ID", the `dir-merkle` gate description, and `merkle.rs` doc comments + the `snapshot_id_equals_root_directory_checksum` test all encode the doc bug. The `directory_checksum` function is correct (it computes the `D ./` line's CHECKSUM field); only the "= snapshot id" labeling is wrong. golden-b3's tests use the correct derivation (ids c678a299…/8af03a1b…) + a guard test. **Must be corrected before freeze-contract** so the frozen contract and keystone interop gate key on the real snapshot ID.
 
@@ -14,7 +14,7 @@ Resolved escalation: human chose **"Fix before freezing"** (2026-05-31T01:55:16Z
 
 - Phase 0 (Bootstrap): 1/1 passed ✅
 - Phase 1 (Scaffolding + CI): 6/6 passed ✅
-- Phase 2 (Core manifest/hashing + FREEZE): 3/7 passed (remediation gates snapshot-id-core-fix + snapshot-id-doc-fix, then golden-multi + freeze-contract remain)
+- Phase 2 (Core manifest/hashing + FREEZE): 4/7 passed (snapshot-id-doc-fix + golden-multi + freeze-contract remain)
 - Phase 2 (Core manifest/hashing + FREEZE): 0/5 passed
 - Phase 3 (Interop keystone): 0/2 passed
 - Phase 4 (Store abstraction + FileStore): 0/4 passed
@@ -37,3 +37,4 @@ Resolved escalation: human chose **"Fix before freezing"** (2026-05-31T01:55:16Z
 - 2026-05-31 — `manifest-format`: `snapdir-core` manifest line model (`Manifest`/`ManifestEntry`) — Display `TYPE PERM CHECKSUM SIZE PATH`, sort -k5, `#`-comment/empty-line stripping, `./` vs `--absolute`; 15 unit tests, pinned to `./snapdir-manifest`.
 - 2026-05-31 — `dir-merkle`: `directory_checksum` = sort -u + concat(no separator) + rehash of child checksums via in-process `blake3` crate (no b3sum shell-out); `Hasher` trait seam for `--checksum-bin`; 7 checksum tests. (Note: its "root checksum = snapshot id" claim is the doc bug now under escalation.)
 - 2026-05-31 — `golden-b3`: 8 `golden_b3sum` tests reproduce the frozen ids byte-for-byte in-process (empty af1349b9, foo 49dc870d, root D-line dba5865c/4a0732cf, snapshot ids c678a299/8af03a1b). **Surfaced the snapshot-ID contract discrepancy (escalated).**
+- 2026-05-31 — `snapshot-id-core-fix` (remediation): added `snapdir_core::snapshot_id(manifest, hasher)` = BLAKE3 of `Display` text + trailing `\n` (oracle-exact), reproducing c678a299…/8af03a1b…; relabeled `merkle.rs` docs + replaced the misleading test. Contract discrepancy resolved in core.

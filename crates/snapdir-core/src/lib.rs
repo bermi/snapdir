@@ -8,11 +8,12 @@
 //! The [`manifest`] module owns the frozen manifest line format
 //! (`PATH_TYPE PERMISSIONS CHECKSUM SIZE PATH`) and its (de)serialization. The
 //! [`merkle`] module owns the directory checksum rule (sort + dedup + concat +
-//! re-hash of the direct children's checksums); the root directory checksum is
-//! the snapshot id.
+//! re-hash of the direct children's checksums) and the snapshot id
+//! ([`snapshot_id`] — BLAKE3 of the comment-stripped manifest text, distinct
+//! from the root directory checksum).
 
 pub mod manifest;
 pub mod merkle;
 
 pub use manifest::{Manifest, ManifestEntry, ParseError, PathType};
-pub use merkle::{directory_checksum, Blake3Hasher, Hasher};
+pub use merkle::{directory_checksum, snapshot_id, Blake3Hasher, Hasher};
