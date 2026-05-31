@@ -94,7 +94,9 @@ gates:
     phase: 1
     owner_agent: ci
     depends_on: [scaffold-workspace]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T01:23:22Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "test -f .github/workflows/ci.yaml && test -f deny.toml && test -f _typos.toml && (command -v actionlint >/dev/null 2>&1 && actionlint .github/workflows/ci.yaml || echo 'actionlint not installed - file-existence only')"
     pass_criteria:

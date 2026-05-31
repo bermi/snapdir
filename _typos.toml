@@ -1,0 +1,26 @@
+# typos (crate-misspell linter) configuration.
+# Run with: typos
+# Docs: https://github.com/crate-ci/typos
+
+[files]
+# Generated/vendored or binary-ish paths that should not be spell-checked.
+extend-exclude = [
+    "Cargo.lock",
+    "*.snap",
+    "utils/qa-fixtures/**",
+]
+
+[default]
+# Don't flag identifiers inside file paths/URLs etc. as misspellings.
+locale = "en"
+
+[default.extend-words]
+# Project/term allowlist (these are intentional, not typos):
+# "snapdir" is the project name.
+snapdir = "snapdir"
+# blake3 hashing terminology.
+blake = "blake"
+# "ba" / short hex-ish tokens show up in content-address fixtures.
+
+[default.extend-identifiers]
+# crate / API identifiers that look like typos but are intentional.

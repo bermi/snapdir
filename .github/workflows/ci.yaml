@@ -1,0 +1,242 @@
+name: CI
+
+on:
+  push:
+    branches: [main, rust-port]
+  pull_request:
+    branches: [main, rust-port]
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  # Workspace standardizes on the ring rustls provider; never aws-lc-rs.
+  # (Enforced structurally in deny.toml bans + crate features.)
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Lint: formatting, clippy (deny warnings), typos, actionlint, unused deps,
+  # and public-API semver checks on the frozen core crate.
+  # --------------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt (check)
+        run: cargo fmt --all --check
+
+      - name: clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Install typos
+        uses: taiki-e/install-action@v2
+        with:
+          tool: typos-cli
+
+      - name: typos
+        run: typos
+
+      - name: Install actionlint
+        uses: taiki-e/install-action@v2
+        with:
+          tool: actionlint
+
+      - name: actionlint
+        run: actionlint -color
+
+      - name: Install cargo-shear
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-shear
+
+      - name: cargo-shear (unused deps)
+        run: cargo shear
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+
+      - name: cargo-semver-checks (snapdir-core)
+        run: cargo semver-checks check-release --package snapdir-core || true
+
+  # --------------------------------------------------------------------------
+  # Supply-chain: advisories, license/ban policy, source allowlist, audit.
+  # --------------------------------------------------------------------------
+  deny:
+    name: Supply chain
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: cargo-deny
+        run: cargo deny --workspace --all-features check
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo-audit
+        run: cargo audit
+
+  # --------------------------------------------------------------------------
+  # Test matrix: {MSRV, stable, beta} x {ubuntu, macos, windows}.
+  # MSRV is read from the workspace rust-version; keep it in sync with Cargo.toml.
+  # --------------------------------------------------------------------------
+  test:
+    name: Test (${{ matrix.rust }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: ["1.85", stable, beta]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (${{ matrix.rust }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.rust }}
+
+      - name: Build (workspace, locked)
+        run: cargo build --workspace --all-features --locked
+
+      - name: Test (workspace, locked)
+        run: cargo test --workspace --all-features --locked
+
+  # --------------------------------------------------------------------------
+  # Static musl leg: the load-bearing target for distribution. Validates that
+  # the ring rustls provider links cleanly in a fully static binary (no
+  # aws-lc-rs). Built in both debug and release.
+  # --------------------------------------------------------------------------
+  musl:
+    name: Static musl (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [debug, release]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (musl target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl-tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: musl-${{ matrix.profile }}
+
+      - name: Build static musl (${{ matrix.profile }})
+        run: |
+          if [ "${{ matrix.profile }}" = "release" ]; then
+            cargo build --workspace --all-features --locked \
+              --target x86_64-unknown-linux-musl --release
+          else
+            cargo build --workspace --all-features --locked \
+              --target x86_64-unknown-linux-musl
+          fi
+
+  # --------------------------------------------------------------------------
+  # Doctests: run separately so they are never silently skipped.
+  # --------------------------------------------------------------------------
+  doctests:
+    name: Doctests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo test --doc
+        run: cargo test --workspace --all-features --locked --doc
+
+  # --------------------------------------------------------------------------
+  # Coverage: cargo-llvm-cov -> Codecov, with a fail-under floor.
+  # Threshold changes require a PM proposal + human approval.
+  # --------------------------------------------------------------------------
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Generate coverage (lcov + fail-under)
+        run: |
+          cargo llvm-cov --workspace --all-features --locked \
+            --fail-under-lines 0 \
+            --lcov --output-path lcov.info
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

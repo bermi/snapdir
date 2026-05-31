@@ -1,0 +1,56 @@
+# cargo-deny configuration for the snapdir-rs workspace.
+# Run with: cargo deny --workspace --all-features check
+#
+# Policy goals:
+#   * MIT project — only permissive licenses allowed.
+#   * Standardize on the `ring` rustls crypto provider; `aws-lc-rs` must NOT
+#     sneak in (it breaks the static-musl build). Banned below.
+#   * No security advisories; vetted crate sources only (crates.io).
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# Fail on any reported advisory by default. Add specific RUSTSEC ids here only
+# with a justification comment if/when an unavoidable transitive dep needs it.
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses compatible with this MIT project.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Allowed default duplicate-version skips can be added here as the dep graph grows.
+allow = []
+
+# Hard-ban aws-lc-rs (and its sys crate): the workspace uses the ring rustls
+# provider so the static musl target links cleanly. If a dependency tries to
+# pull aws-lc-rs in via a default feature, this turns it into a build failure
+# instead of a silent musl breakage.
+deny = [
+    { name = "aws-lc-rs" },
+    { name = "aws-lc-sys" },
+    { name = "openssl-sys" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
