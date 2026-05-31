@@ -237,7 +237,7 @@ gates:
     depends_on: [golden-b3, golden-multi, snapshot-id-core-fix, snapshot-id-doc-fix]
     status: passed
     passed_at: 2026-05-31T02:22:13Z
-    git_sha: pending
+    git_sha: e3b1e69
     # FROZEN @ 2026-05-31T02:22:13Z (human-approved). SHA locks:
     #   .gatesmith/golden-fixtures.sha.lock   (utils/qa-fixtures/expected-guide-commands.txt)
     #   .gatesmith/manifest-format.sha.lock   (core manifest.rs/merkle.rs/excludes.rs)
