@@ -454,7 +454,9 @@ gates:
     phase: 5
     owner_agent: tests
     depends_on: [s3-store, b2-store, gcs-store, file-store-roundtrip]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T13:02:44Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "bash tests/integration/remote_stores.sh --self-check"
     pass_criteria:
@@ -464,10 +466,27 @@ gates:
     human_checkpoint: false
     description: "Differential remote-store harness: round-trip S3/B2/GCS against emulators (MinIO / B2 sandbox / fake-gcs-server) + Bash<->Rust cross-tool fetch; --self-check validates plumbing without live emulators (real round-trips are the remote-interop human checkpoint)."
 
+  # Prerequisite (PM-sequenced 2026-05-31T13:02:44Z): the remote-stores-harness
+  # teammate found the CLI `resolve_store` (cli.rs) only wires file://; s3/b2/gs bail.
+  # The remote Store impls exist in snapdir-stores but aren't reachable from
+  # push/fetch — so the operator's live remote-interop Rust lanes would fail until
+  # this wiring lands. Plan-implied impl step; GATE-ADD journaled.
+  - id: cli-remote-store-wire
+    phase: 5
+    owner_agent: cli
+    depends_on: [cli-store-wire, s3-store, b2-store, gcs-store]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked remote_store_routing"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Wire CLI resolve_store to route s3://->S3Store, b2://->B2Store, gs://->GcsStore (+ external shim for other schemes) so push/fetch/checkout/pull/verify work against remote stores. Unit test the routing (no live creds)."
+
   - id: remote-interop
     phase: 5
     owner_agent: tests
-    depends_on: [s3-store, b2-store, gcs-store, file-store-roundtrip, remote-stores-harness]
+    depends_on: [s3-store, b2-store, gcs-store, file-store-roundtrip, remote-stores-harness, cli-remote-store-wire]
     status: pending
     failure_count: 0
     verification_cmd: "echo 'Run tests/integration/remote_stores.sh against emulators (fake-gcs-server / MinIO / B2 sandbox) and confirm Bash<->Rust cross-tool interop.'"
