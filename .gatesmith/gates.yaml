@@ -235,7 +235,14 @@ gates:
     phase: 2
     owner_agent: core
     depends_on: [golden-b3, golden-multi, snapshot-id-core-fix, snapshot-id-doc-fix]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T02:22:13Z
+    git_sha: pending
+    # FROZEN @ 2026-05-31T02:22:13Z (human-approved). SHA locks:
+    #   .gatesmith/golden-fixtures.sha.lock   (utils/qa-fixtures/expected-guide-commands.txt)
+    #   .gatesmith/manifest-format.sha.lock   (core manifest.rs/merkle.rs/excludes.rs)
+    # PM re-verifies both each tick; mismatch = critical alert -> AskUserQuestion.
+    frozen: true
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --locked"
     pass_criteria:
