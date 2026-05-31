@@ -213,7 +213,15 @@ gates:
     depends_on: [golden-b3, snapshot-id-core-fix]
     status: pending
     failure_count: 0
-    verification_cmd: "cargo test -p snapdir-core --locked 'golden_md5 golden_sha256 keyed_context exclude no_follow'"
+    # GATE-BUMP 2026-05-31T02:10:12Z: the original verification_cmd quoted all five
+    # filters as ONE positional ("golden_md5 golden_sha256 ...") — cargo/libtest treats
+    # that as a single space-containing filter that matches ZERO tests yet exits 0 (a
+    # hollow pass proving nothing). Fixed to pass them as separate libtest filters after
+    # `--` (OR-matched), so the gate actually exercises md5/sha256/keyed/exclude/no_follow.
+    # pass_criteria unchanged (exit_code 0). Not a pass-criterion/threshold/value/schema
+    # mutation; mechanical correction realizing the gate's documented intent.
+    bump_reason: "quoted-single-filter ran 0 tests (hollow pass); split into separate libtest filters after -- to actually run the intended tests"
+    verification_cmd: "cargo test -p snapdir-core --locked -- golden_md5 golden_sha256 keyed_context exclude no_follow"
     pass_criteria:
       exit_code: 0
     human_checkpoint: false
