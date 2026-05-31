@@ -21,7 +21,9 @@ gates:
     phase: 0
     owner_agent: generic
     depends_on: []
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T01:16:12Z
+    git_sha: 904b48a
     failure_count: 0
     verification_cmd: "test -f docs/rust-port/PLAN.md && test -f .gatesmith/templates/ci.md && test -f .gatesmith/templates/core.md"
     pass_criteria:
