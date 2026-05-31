@@ -298,7 +298,7 @@ gates:
     depends_on: [core-walk, cli-skeleton]
     status: passed
     passed_at: 2026-05-31T11:08:59Z
-    git_sha: pending
+    git_sha: f24da42
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked manifest"
     pass_criteria:
