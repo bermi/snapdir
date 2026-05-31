@@ -261,7 +261,7 @@ gates:
     depends_on: [freeze-contract]
     status: passed
     passed_at: 2026-05-31T10:34:09Z
-    git_sha: pending
+    git_sha: 4a6984e
     failure_count: 0
     verification_cmd: "bash tests/interop/run.sh --self-check"
     pass_criteria:
