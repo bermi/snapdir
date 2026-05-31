@@ -82,7 +82,9 @@ gates:
     phase: 1
     owner_agent: cli
     depends_on: [scaffold-workspace]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T01:30:35Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "cargo run -q -p snapdir-cli -- help 2>&1 | grep -Eo 'manifest|id|stage|push|fetch|pull|checkout|verify|verify-cache|flush-cache|locations|ancestors|revisions|defaults' | sort -u | tr '\\n' ' '"
     pass_criteria:

@@ -164,6 +164,14 @@ Then exit. The next ralph tick repeats.
   longer touches that crate's `src/` and must spawn the owner instead. Journaled
   with tag `LANE-FENCE-EXC` on each tick that relies on it.
 
+- **Cargo.lock — generated lockfile.** Any lane that legitimately adds or bumps a
+  dependency in *its own* crate's `Cargo.toml` will mechanically regenerate the root
+  `Cargo.lock` (a ci-lane file). A `Cargo.lock`-only delta accompanying an in-lane
+  `Cargo.toml` dependency change is accepted by the fence (it is a generated artifact,
+  not ci-authored logic). The fence still rejects any non-lockfile change to ci's
+  root files (`Cargo.toml`, `rust-toolchain.toml`, etc.) by a non-ci lane. Journaled
+  with tag `LANE-FENCE-EXC` when relied upon.
+
 ---
 
 ## Output format for the tick

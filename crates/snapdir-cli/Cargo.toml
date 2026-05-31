@@ -18,6 +18,7 @@ snapdir-core.workspace = true
 snapdir-catalog.workspace = true
 snapdir-stores.workspace = true
 anyhow.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
 
 [lints]
 workspace = true
