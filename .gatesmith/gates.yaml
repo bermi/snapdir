@@ -389,7 +389,9 @@ gates:
     phase: 4
     owner_agent: tests
     depends_on: [file-store, cli-skeleton, cli-store-wire, interop-diff]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T12:27:26Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "bash tests/integration/file_store_roundtrip.sh"
     pass_criteria:
