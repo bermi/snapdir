@@ -259,7 +259,9 @@ gates:
     phase: 3
     owner_agent: tests
     depends_on: [freeze-contract]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T10:34:09Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "bash tests/interop/run.sh --self-check"
     pass_criteria:
@@ -269,10 +271,41 @@ gates:
     human_checkpoint: false
     description: "Differential harness exists: generates the fixture corpus and can diff Bash oracle vs Rust binary."
 
+  # -------------------------------------------------------------------
+  # Prerequisite gates (PM-sequenced 2026-05-31T10:34:09Z): the interop-harness
+  # teammate confirmed the KEYSTONE interop-diff cannot pass while the Rust
+  # `snapdir manifest` is a stub. These implement the plan-implied work: a real
+  # filesystem walk in core + wiring the CLI manifest command to it. Plan-implied
+  # implementation steps; not a contract/pass_criteria change. (GATE-ADD journaled.)
+  # -------------------------------------------------------------------
+  - id: core-walk
+    phase: 3
+    owner_agent: core
+    depends_on: [freeze-contract]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --locked walk"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Filesystem walk in snapdir-core: directory tree -> Manifest matching the frozen format (perms via stat, content sizes, dir size = sum of members, symlink-follow default / --no-follow drops, %system%/%common% excludes wired), feeding directory_checksum + snapshot_id. Library-pure (path in, no terminal I/O)."
+
+  - id: cli-manifest-wire
+    phase: 3
+    owner_agent: cli
+    depends_on: [core-walk, cli-skeleton]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked manifest"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Wire `snapdir manifest [--absolute --exclude --no-follow --checksum-bin] <path>` + `snapdir id` to the core walk/manifest/snapshot_id (no longer a stub); emit oracle-identical stdout. CLI integration test over a known tiny tree."
+
   - id: interop-diff
     phase: 3
     owner_agent: tests
-    depends_on: [interop-harness]
+    depends_on: [interop-harness, core-walk, cli-manifest-wire]
     status: pending
     failure_count: 0
     verification_cmd: "bash tests/interop/run.sh"

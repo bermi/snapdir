@@ -4,8 +4,10 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **3**
-Current gate: `interop-harness` (phase 3, owner tests) next tick.
-Last passed: `freeze-contract` @ 2026-05-31T02:22:13Z — **🔒 CONTRACT FROZEN** (human-approved). Phase 2 complete.
+Current gate: `core-walk` (phase 3, owner core) next tick.
+Last passed: `interop-harness` @ 2026-05-31T10:34:09Z.
+Keystone path: `interop-diff` (HARD, human checkpoint) is BLOCKED until the Rust `snapdir manifest` is real. Added prerequisite gates `core-walk` (core FS walk → Manifest) and `cli-manifest-wire` (wire `snapdir manifest`/`id` to core); interop-diff now depends on both. Sequence: core-walk → cli-manifest-wire → interop-diff.
+Oracle quirk (harness-confirmed, for core-walk/cli-manifest-wire): `snapdir-manifest --no-follow` only works **path-first** (`snapdir-manifest <PATH> --no-follow`); the flag-first form silently scans `$PWD`. Match real oracle behavior.
 
 > **🔒 FROZEN INTERFACES — re-verify EVERY tick (READ STATE step):**
 > `shasum -a 256 -c .gatesmith/golden-fixtures.sha.lock .gatesmith/manifest-format.sha.lock`
@@ -22,7 +24,7 @@ Last passed: `freeze-contract` @ 2026-05-31T02:22:13Z — **🔒 CONTRACT FROZEN
 - Phase 0 (Bootstrap): 1/1 passed ✅
 - Phase 1 (Scaffolding + CI): 6/6 passed ✅
 - Phase 2 (Core manifest/hashing + FREEZE): 7/7 passed ✅ 🔒 FROZEN
-- Phase 3 (Interop keystone, HARD): 0/2 passed
+- Phase 3 (Interop keystone, HARD): 1/4 passed (added prereqs core-walk + cli-manifest-wire before interop-diff)
 - Phase 2 (Core manifest/hashing + FREEZE): 0/5 passed
 - Phase 3 (Interop keystone): 0/2 passed
 - Phase 4 (Store abstraction + FileStore): 0/4 passed
@@ -49,3 +51,4 @@ Last passed: `freeze-contract` @ 2026-05-31T02:22:13Z — **🔒 CONTRACT FROZEN
 - 2026-05-31 — `golden-multi`: `Md5Hasher`/`Sha256Hasher`/`Blake3KeyedHasher` (`md-5`/`sha2`/`blake3 derive_key`, no shell-out) + `excludes.rs` (`%system%`/`%common%` sets verbatim from oracle, regex matcher, `FollowMode`); 19 tests. (verification_cmd GATE-BUMP-fixed from a hollow 0-test filter.)
 - 2026-05-31 — `snapshot-id-doc-fix`: corrected PLAN.md frozen-contract (snapshot ID = b3sum of `#`-stripped manifest text, not the root dir checksum). Snapshot-ID discrepancy fully resolved (core + docs) ahead of the freeze.
 - 2026-05-31 — `freeze-contract` (human checkpoint): operator approved the FREEZE. Manifest format + dir-merkle + snapshot-id + checksum modes + excludes + golden fixtures LOCKED via `.gatesmith/*.sha.lock`. **🔒 Phase 2 complete; the contract is now immutable without human approval.**
+- 2026-05-31 — `interop-harness`: `tests/interop/run.sh` differential harness built (deterministic corpus, byte-identical Bash↔Rust diff across all checksum/keyed/no-follow modes); `--self-check` green. Flagged that interop-diff needs the core walk + CLI wiring first → added `core-walk` + `cli-manifest-wire` prereq gates.
