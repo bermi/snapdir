@@ -1,0 +1,23 @@
+[package]
+name = "snapdir-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "snapdir CLI: the `snapdir` binary exposing all subcommands."
+
+[[bin]]
+name = "snapdir"
+path = "src/main.rs"
+
+[dependencies]
+snapdir-core.workspace = true
+snapdir-catalog.workspace = true
+snapdir-stores.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

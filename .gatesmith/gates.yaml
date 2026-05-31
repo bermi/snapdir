@@ -40,7 +40,8 @@ gates:
     phase: 1
     owner_agent: ci
     depends_on: [bootstrap-ready]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T01:18:04Z
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked"
     pass_criteria:

@@ -1,0 +1,16 @@
+[package]
+name = "snapdir-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "snapdir core: manifest format, BLAKE3 merkle hashing, store trait, walk, cache."
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

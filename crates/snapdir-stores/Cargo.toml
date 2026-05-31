@@ -1,0 +1,17 @@
+[package]
+name = "snapdir-stores"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "snapdir stores: FileStore, S3/B2/GCS native SDK stores + external-store shim."
+
+[dependencies]
+snapdir-core.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

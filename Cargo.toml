@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/snapdir-core",
+    "crates/snapdir-catalog",
+    "crates/snapdir-stores",
+    "crates/snapdir-cli",
+]
+
+[workspace.package]
+version = "0.5.0"
+edition = "2021"
+rust-version = "1.85"
+authors = ["Bermi Ferrer <bermi@bermilabs.com>"]
+license = "MIT"
+repository = "https://github.com/bermi/snapdir"
+homepage = "https://github.com/bermi/snapdir"
+description = "Content-addressable directory snapshots — Rust port of snapdir."
+keywords = ["snapshot", "content-addressable", "blake3", "backup"]
+categories = ["command-line-utilities", "filesystem"]
+
+[workspace.dependencies]
+# Internal crates
+snapdir-core = { path = "crates/snapdir-core", version = "0.5.0" }
+snapdir-catalog = { path = "crates/snapdir-catalog", version = "0.5.0" }
+snapdir-stores = { path = "crates/snapdir-stores", version = "0.5.0" }
+
+# Errors: thiserror in libs, anyhow (+ context) in the bin.
+thiserror = "2"
+anyhow = "1"
+
+[workspace.lints.clippy]
+# clippy::pedantic at warn, low priority so targeted opt-outs below win.
+pedantic = { level = "warn", priority = -1 }
+# Targeted, justified opt-outs:
+# - module_name_repetitions: re-exported types intentionally repeat module names.
+module_name_repetitions = "allow"
+# - missing_errors_doc / missing_panics_doc: deferred to the docs phase.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = "thin"
+strip = true

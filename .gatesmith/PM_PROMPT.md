@@ -149,6 +149,18 @@ Then exit. The next ralph tick repeats.
 7. **You never invoke `/ralph-loop:cancel-ralph`.** The human owns end-of-project.
 8. **Frozen interfaces stay frozen.** Any `frozen-interface (see Frozen interfaces above)` interface (SHA pinned in a `.gatesmith/*.sha.lock`) cannot change without human approval. Re-verify its SHA each tick before doing anything else; mismatch is a critical alert.
 
+### Documented lane-fence exceptions
+
+- **scaffold-workspace (ci) — trivial crate stubs.** For the `scaffold-workspace`
+  gate only, the `ci` lane's writable area is extended to include trivial crate
+  stubs under `crates/snapdir-{core,catalog,stores,cli}/` (each crate's `Cargo.toml`
+  plus a minimal `src/lib.rs` or `src/main.rs` that compiles). This is required
+  because the gate's own `pass_criteria` lists those crate `Cargo.toml` files in
+  `files_exist`, and `ci.md` explicitly authorizes ci to "create empty stub crates
+  so `cargo build` succeeds." The fence still rejects any change to crate *logic*
+  beyond trivial stubs, and the respective lanes own all later edits to their crate.
+  Journaled with tag `LANE-FENCE-EXC` on the tick that relies on it.
+
 ---
 
 ## Output format for the tick
