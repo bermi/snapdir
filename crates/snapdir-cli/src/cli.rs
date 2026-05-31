@@ -9,14 +9,17 @@
 //! The remaining subcommands are still stubs; their behavior arrives in later
 //! phases.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use snapdir_core::{
     expand_excludes, snapshot_id, walk, Blake3Hasher, Blake3KeyedHasher, ExcludeMatcher,
-    FollowMode, Hasher, Manifest, Md5Hasher, PathMode, Sha256Hasher, WalkOptions,
+    FollowMode, Hasher, Manifest, ManifestEntry, Md5Hasher, PathMode, PathType, Sha256Hasher,
+    Store, WalkOptions,
 };
+use snapdir_stores::{resolve_adapter, Adapter, FileStore};
 
 /// Content-addressable directory snapshots.
 #[derive(Debug, Parser)]
@@ -232,14 +235,14 @@ impl Cli {
                 println!("{id}");
                 Ok(())
             }
+            Command::Push { path } => self.run_push(path.as_deref()),
+            Command::Fetch => self.run_fetch(),
+            Command::Checkout { dir } => self.run_checkout(dir.as_deref()),
+            Command::Pull { path } => self.run_pull(path.as_deref()),
+            Command::Verify => self.run_verify(),
             other => {
                 let name = match other {
                     Command::Stage { .. } => "stage",
-                    Command::Push { .. } => "push",
-                    Command::Fetch => "fetch",
-                    Command::Pull { .. } => "pull",
-                    Command::Checkout { .. } => "checkout",
-                    Command::Verify => "verify",
                     Command::VerifyCache => "verify-cache",
                     Command::FlushCache => "flush-cache",
                     Command::Locations => "locations",
@@ -250,11 +253,144 @@ impl Cli {
                         println!("snapdir {}", env!("CARGO_PKG_VERSION"));
                         return Ok(());
                     }
-                    Command::Manifest { .. } | Command::Id { .. } => unreachable!(),
+                    Command::Manifest { .. }
+                    | Command::Id { .. }
+                    | Command::Push { .. }
+                    | Command::Fetch
+                    | Command::Checkout { .. }
+                    | Command::Pull { .. }
+                    | Command::Verify => unreachable!(),
                 };
                 anyhow::bail!("snapdir: `{name}` is not implemented yet")
             }
         }
+    }
+
+    /// `snapdir push [--store file://DIR] <path>`: walk `<path>` into a manifest
+    /// and push its objects (objects-before-manifest, skip-if-present) to the
+    /// resolved store. Prints the resulting snapshot id, matching the oracle.
+    fn run_push(&self, path: Option<&Path>) -> Result<()> {
+        let store = self.resolve_store()?;
+        // Push always uses the default checksum surface (b3sum / keyed-b3sum),
+        // relative paths, follow symlinks — the same wiring `snapdir id` uses.
+        let manifest =
+            self.build_manifest(path, false, false, None, self.globals.exclude.as_deref())?;
+        let root = resolve_root(path).context("resolving push path")?;
+        let id = snapshot_id(&manifest, &Blake3Hasher::new());
+        store
+            .push(&manifest, &root)
+            .with_context(|| format!("pushing snapshot {id} to store"))?;
+        println!("{id}");
+        Ok(())
+    }
+
+    /// `snapdir fetch --store … --id <id>`: read+verify the manifest from the
+    /// store, materialize its objects into a scratch tree (the store verifies
+    /// each object's BLAKE3), then file the manifest+objects into the local
+    /// cache so a later `checkout` can reconstruct the tree offline.
+    fn run_fetch(&self) -> Result<()> {
+        let store = self.resolve_store()?;
+        let id = self.require_id()?;
+        let manifest = store
+            .get_manifest(id)
+            .with_context(|| format!("fetching manifest {id} from store"))?;
+
+        // Materialize the verified objects into a scratch tree, then push that
+        // tree into the cache store. This reuses the store's verify/atomic
+        // persist on both legs and lands the cache in the same sharded layout.
+        let scratch = ScratchDir::new("fetch")?;
+        store
+            .fetch_files(&manifest, scratch.path())
+            .with_context(|| format!("fetching objects for snapshot {id}"))?;
+
+        let cache = self.cache_store();
+        cache
+            .push(&manifest, scratch.path())
+            .with_context(|| format!("saving snapshot {id} to the local cache"))?;
+        if self.globals.verbose {
+            eprintln!("SAVED: {id}");
+        }
+        Ok(())
+    }
+
+    /// `snapdir checkout --id <id> <dest>`: read the manifest from the local
+    /// cache, materialize the tree at `<dest>`, and restore each entry's
+    /// permissions so the checked-out tree re-manifests to the same snapshot id.
+    fn run_checkout(&self, dir: Option<&Path>) -> Result<()> {
+        let id = self.require_id()?;
+        let cache = self.cache_store();
+        let manifest = cache.get_manifest(id).with_context(|| {
+            format!("manifest {id} not found locally; did you forget to fetch it?")
+        })?;
+        let dest = resolve_root(dir).context("resolving checkout destination")?;
+        cache
+            .fetch_files(&manifest, &dest)
+            .with_context(|| format!("checking out snapshot {id} to {}", dest.display()))?;
+        restore_permissions(&manifest, &dest)?;
+        Ok(())
+    }
+
+    /// `snapdir pull` = fetch + checkout.
+    fn run_pull(&self, path: Option<&Path>) -> Result<()> {
+        self.run_fetch()?;
+        self.run_checkout(path)
+    }
+
+    /// `snapdir verify --id <id>`: confirm the snapshot in the store is intact —
+    /// the manifest hashes back to `id` and every referenced object is present
+    /// and matches its checksum.
+    fn run_verify(&self) -> Result<()> {
+        let store = self.resolve_store()?;
+        let id = self.require_id()?;
+        let manifest = store
+            .get_manifest(id)
+            .with_context(|| format!("verifying manifest {id}"))?;
+        // fetch_files re-hashes every object as it materializes it, so a
+        // throwaway destination is a full object-integrity check.
+        let scratch = ScratchDir::new("verify")?;
+        store
+            .fetch_files(&manifest, scratch.path())
+            .with_context(|| format!("verifying objects for snapshot {id}"))?;
+        Ok(())
+    }
+
+    /// Resolves `--store` to a concrete backend. For this gate only the built-in
+    /// `file://` backend is wired; other adapters bail with a clear message.
+    fn resolve_store(&self) -> Result<FileStore> {
+        let store_url = self
+            .globals
+            .store
+            .as_deref()
+            .context("missing --store option")?;
+        match resolve_adapter(store_url).context("resolving --store protocol")? {
+            Adapter::File => Ok(FileStore::new(store_url)),
+            other => anyhow::bail!(
+                "snapdir: store adapter `{}` is not implemented yet",
+                other.name()
+            ),
+        }
+    }
+
+    /// The local cache as a `file://`-shaped store, rooted at the resolved cache
+    /// directory. The cache uses the identical sharded layout as a `FileStore`.
+    fn cache_store(&self) -> FileStore {
+        FileStore::from_root(self.cache_dir())
+    }
+
+    /// Resolves the cache directory: `--cache-dir`, else
+    /// `${XDG_CACHE_HOME:-$HOME/.cache}/snapdir` (the oracle default).
+    fn cache_dir(&self) -> PathBuf {
+        if let Some(dir) = &self.globals.cache_dir {
+            return dir.clone();
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        let base = std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| format!("{home}/.cache"));
+        PathBuf::from(format!("{base}/snapdir"))
+    }
+
+    /// Returns the required `--id`, or a clear error naming the missing option.
+    fn require_id(&self) -> Result<&str> {
+        self.globals.id.as_deref().context("missing --id option")
     }
 
     /// Resolve the argument path, expand excludes, select the hasher, and run
@@ -324,6 +460,79 @@ impl Cli {
 /// [`WalkError`]: snapdir_core::WalkError
 fn walk_with<H: Hasher>(root: &Path, options: &WalkOptions, hasher: &H) -> Result<Manifest> {
     walk(root, options, hasher).with_context(|| format!("walking {}", root.display()))
+}
+
+/// Restores each manifest entry's octal permissions onto the materialized tree
+/// at `dest`. The store's `fetch_files` reproduces the bytes and tree shape but
+/// not the modes, so the CLI applies them here — without this the checked-out
+/// tree would re-manifest to a different snapshot id (perms are part of the
+/// manifest text the id hashes). Directories are set after their contents so a
+/// read-only directory mode never blocks writing the files inside it.
+fn restore_permissions(manifest: &Manifest, dest: &Path) -> Result<()> {
+    for entry in manifest.entries() {
+        if entry.path_type == PathType::Directory {
+            continue;
+        }
+        apply_mode(dest, entry)?;
+    }
+    // Directories last, deepest first, so tightening a parent's mode never
+    // blocks setting a child's.
+    let mut dirs: Vec<&_> = manifest
+        .entries()
+        .iter()
+        .filter(|e| e.path_type == PathType::Directory)
+        .collect();
+    dirs.sort_by_key(|e| std::cmp::Reverse(e.path.len()));
+    for entry in dirs {
+        apply_mode(dest, entry)?;
+    }
+    Ok(())
+}
+
+/// Parses a manifest entry's octal permission string and applies it to the
+/// entry's path under `dest`.
+fn apply_mode(dest: &Path, entry: &ManifestEntry) -> Result<()> {
+    let rel = entry.path.strip_prefix("./").unwrap_or(&entry.path);
+    let rel = rel.strip_suffix('/').unwrap_or(rel);
+    let target = if rel.is_empty() {
+        dest.to_path_buf()
+    } else {
+        dest.join(rel)
+    };
+    let mode = u32::from_str_radix(&entry.permissions, 8)
+        .with_context(|| format!("invalid permissions {:?}", entry.permissions))?;
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode))
+        .with_context(|| format!("setting permissions on {}", target.display()))?;
+    Ok(())
+}
+
+/// A scratch directory under the system temp dir, removed on drop. Used as the
+/// throwaway materialization target for `fetch`/`verify`.
+struct ScratchDir {
+    path: PathBuf,
+}
+
+impl ScratchDir {
+    fn new(tag: &str) -> Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("snapdir-cli-{tag}-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&path)
+            .with_context(|| format!("creating scratch dir {}", path.display()))?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 /// Resolves the user's path argument to an absolute path, mirroring the

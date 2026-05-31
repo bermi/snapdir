@@ -4,11 +4,12 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **4**
-Current gate: `cli-store-wire` (phase 4, owner cli) next tick.
-Last passed: `external-store-shim` @ 2026-05-31T12:09:32Z. 🔑 interop keystone proven; contract frozen (locks 4/4 OK each tick).
-Added prereq `cli-store-wire` (wire `snapdir push/fetch/pull/checkout/verify` → stores FileStore + core) before `file-store-roundtrip` (which runs those CLI cmds). Sequence: ✅file-store ✅external-store-shim → cli-store-wire → file-store-roundtrip.
-⚠ WATCH for `file-store-roundtrip`: Rust `FileStore::push` reads object bytes from the SOURCE tree, whereas Bash `get-push-command` reads from a pre-staged sharded dir — the cross-tool (Bash↔Rust) roundtrip must validate they interoperate (cli-store-wire should stage objects to match the Bash push pipeline).
-Eligible besides Phase 4: catalog-redb (P6), bench-compile (P7), proptest-roundtrip (P8), rustdoc-doctests (P9) — phase-asc keeps Phase 4 first.
+Current gate: `file-store-roundtrip` (phase 4, owner tests) next tick — last Phase 4 gate.
+Last passed: `cli-store-wire` @ 2026-05-31T12:20:52Z. 🔑 interop keystone proven; contract frozen (locks 4/4 OK each tick).
+`snapdir push/fetch/checkout/pull/verify` now wired to FileStore+core (file:// only; s3/b2/gcs bail to later gates). checkout restores octal perms so dest re-manifests to the same id.
+⚠ For `file-store-roundtrip` (tests): do end-to-end push→fetch→checkout→verify via the Rust CLI + `file://` AND the **cross-tool Bash↔Rust** check — Rust push reads object bytes from the SOURCE tree vs Bash `get-push-command` from a pre-staged sharded dir; confirm a store dir written by one tool is readable by the other (objects/manifest at identical sharded keys).
+Open (non-blocking) finding: `Store` trait lacks object copy/delete → fetch double-copies; `verify --purge` can't remove corrupt objects yet (revisit at verify-cache/cache-id or a store-API extension).
+Eligible besides Phase 4: catalog-redb (P6), bench-compile (P7), proptest-roundtrip (P8), rustdoc-doctests (P9).
 
 > **🔒 FROZEN INTERFACES — re-verify EVERY tick (READ STATE step):**
 > `shasum -a 256 -c .gatesmith/golden-fixtures.sha.lock .gatesmith/manifest-format.sha.lock`
@@ -26,7 +27,7 @@ Eligible besides Phase 4: catalog-redb (P6), bench-compile (P7), proptest-roundt
 - Phase 1 (Scaffolding + CI): 6/6 passed ✅
 - Phase 2 (Core manifest/hashing + FREEZE): 7/7 passed ✅ 🔒 FROZEN
 - Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
-- Phase 4 (Store trait + FileStore): 3/5 passed (added prereq cli-store-wire before file-store-roundtrip)
+- Phase 4 (Store trait + FileStore): 4/5 passed (only file-store-roundtrip remains)
 - Phase 2 (Core manifest/hashing + FREEZE): 0/5 passed
 - Phase 3 (Interop keystone): 0/2 passed
 - Phase 4 (Store abstraction + FileStore): 0/4 passed
@@ -60,3 +61,4 @@ Eligible besides Phase 4: catalog-redb (P6), bench-compile (P7), proptest-roundt
 - 2026-05-31 — `store-trait`: `snapdir-core::store` — `Store` trait (`get_manifest`/`fetch_files`/`push`, sync/object-safe) + sharded path helpers confirmed vs oracle (`snapdir` L1387/1399); 8 tests. Frozen files untouched.
 - 2026-05-31 — `file-store`: `FileStore` (`file://`) impl of the `Store` trait — sharded `.objects`/`.manifests`, push (objects-before-manifest, skip-if-present), fetch (temp + verify BLAKE3 + retry≤5 + atomic rename); 10 tests. Mirrors `./snapdir-file-store`.
 - 2026-05-31 — `external-store-shim`: `router.rs` (scheme→adapter, `gs`→`gcs` hardcoded, mirrors `snapdir` L1328-1370) + `shim.rs` `ExternalStore` (emit-command contract for third-party `snapdir-*-store` binaries; built-ins stay in-process); 10+5 tests w/ a mock store. → added `cli-store-wire` prereq.
+- 2026-05-31 — `cli-store-wire`: `snapdir push/fetch/checkout/pull/verify` wired to FileStore+core (router-resolved `file://`); checkout restores perms → dest re-manifests to identical id; 2 `store_roundtrip` integration tests.

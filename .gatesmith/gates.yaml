@@ -375,7 +375,9 @@ gates:
     phase: 4
     owner_agent: cli
     depends_on: [file-store, cli-manifest-wire]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T12:20:52Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked store_roundtrip"
     pass_criteria:
