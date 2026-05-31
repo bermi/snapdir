@@ -149,7 +149,7 @@ gates:
     depends_on: [manifest-format]
     status: passed
     passed_at: 2026-05-31T01:51:01Z
-    git_sha: pending
+    git_sha: 960f20e
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --locked checksum"
     pass_criteria:
