@@ -3,10 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-Active phase: **3**
-Current gate: `interop-diff` (phase 3, owner tests, **KEYSTONE HARD GATE + HUMAN CHECKPOINT**) next tick.
-Last passed: `cli-manifest-wire` @ 2026-05-31T11:08:59Z.
-Keystone now UNBLOCKED: ✅interop-harness ✅core-walk ✅cli-manifest-wire → `interop-diff` eligible. The Rust `snapdir manifest`/`id` now produce oracle-identical output (proven over CLI integration tests). Next tick: run the full `bash tests/interop/run.sh` over the whole corpus (all checksum/keyed/no-follow modes), capture the diff result, and escalate to the operator for the keystone byte-identity sign-off. If any real diff appears, it's a core/cli bug → remediate the owning lane, never weaken the harness.
+Active phase: **4**
+Current gate: `store-trait` (phase 4, owner core) next tick.
+Last passed: `interop-diff` @ 2026-05-31T11:26:21Z — 🔑 **KEYSTONE PASSED** (operator-signed-off; 15/15 corpus cases byte-identical Bash↔Rust). Phase 3 complete; byte-for-byte interop PROVEN.
+Newly unblocked by interop-diff: store-trait (P4), catalog-redb (P6), bench-compile (P7), proptest-roundtrip (P8), rustdoc-doctests (P9). Priority picks lowest phase first → store-trait next.
 
 > **🔒 FROZEN INTERFACES — re-verify EVERY tick (READ STATE step):**
 > `shasum -a 256 -c .gatesmith/golden-fixtures.sha.lock .gatesmith/manifest-format.sha.lock`
@@ -23,7 +23,8 @@ Keystone now UNBLOCKED: ✅interop-harness ✅core-walk ✅cli-manifest-wire →
 - Phase 0 (Bootstrap): 1/1 passed ✅
 - Phase 1 (Scaffolding + CI): 6/6 passed ✅
 - Phase 2 (Core manifest/hashing + FREEZE): 7/7 passed ✅ 🔒 FROZEN
-- Phase 3 (Interop keystone, HARD): 3/4 passed (only the keystone interop-diff — a human checkpoint — remains)
+- Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
+- Phase 4 (Store trait + FileStore): 0/4 passed
 - Phase 2 (Core manifest/hashing + FREEZE): 0/5 passed
 - Phase 3 (Interop keystone): 0/2 passed
 - Phase 4 (Store abstraction + FileStore): 0/4 passed
@@ -53,3 +54,4 @@ Keystone now UNBLOCKED: ✅interop-harness ✅core-walk ✅cli-manifest-wire →
 - 2026-05-31 — `interop-harness`: `tests/interop/run.sh` differential harness built (deterministic corpus, byte-identical Bash↔Rust diff across all checksum/keyed/no-follow modes); `--self-check` green. Flagged that interop-diff needs the core walk + CLI wiring first → added `core-walk` + `cli-manifest-wire` prereq gates.
 - 2026-05-31 — `core-walk`: in-process FS walk (`src/walk.rs`) → frozen-format Manifest; 10 tests diff byte-for-byte vs the live `./snapdir-manifest` (b3/md5/sha256, symlink follow/no-follow, excludes). Matched the oracle's lstat-perms/target-checksum symlink rule. Frozen files untouched.
 - 2026-05-31 — `cli-manifest-wire`: `snapdir manifest`/`id` wired to `snapdir-core` (thin layer; flags→WalkOptions/Hasher; keyed via `SNAPDIR_MANIFEST_CONTEXT`); 7 integration tests byte-identical vs the live oracle. `snapdir id` is checksum-mode-independent (always b3sum), matching the oracle.
+- 2026-05-31 — `interop-diff` 🔑 **KEYSTONE** (human checkpoint): full `tests/interop/run.sh` → 15/15 corpus cases byte-identical Bash↔Rust (manifests + snapshot IDs, all checksum/keyed/no-follow modes); operator signed off. **Byte-for-byte interoperability proven; Phase 3 complete.**

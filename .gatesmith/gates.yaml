@@ -310,7 +310,9 @@ gates:
     phase: 3
     owner_agent: tests
     depends_on: [interop-harness, core-walk, cli-manifest-wire]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T11:26:21Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "bash tests/interop/run.sh"
     pass_criteria:
