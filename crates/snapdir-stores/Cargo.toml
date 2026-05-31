@@ -13,5 +13,42 @@ description = "snapdir stores: FileStore, S3/B2/GCS native SDK stores + external
 snapdir-core.workspace = true
 thiserror.workspace = true
 
+# --- S3 store (s3:// + S3-compatible) ---------------------------------------
+# CRITICAL TLS constraint: the shipped binary statically links on musl, so the
+# whole workspace standardizes on the `ring` rustls provider. `aws-lc-rs` is
+# BANNED (deny.toml). The AWS SDK defaults to aws-lc-rs for both its crypto and
+# its default HTTP connector, so we:
+#   * disable default features on aws-config / aws-sdk-s3 (drops the default
+#     aws-lc-rs-backed connector + default crypto),
+#   * build our own `hyper-rustls` HTTP client pinned to the `ring` provider and
+#     hand it to the SDK as a custom `HttpClient`,
+#   * keep `behavior-version-latest` for stable SDK behavior.
+# After building, `grep -i aws-lc Cargo.lock` MUST be empty.
+aws-config = { version = "1", default-features = false, features = [
+    "behavior-version-latest",
+    "rt-tokio",
+    "credentials-process",
+    "sso",
+] }
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "rt-tokio",
+    "sigv4a",
+] }
+aws-smithy-runtime-api = { version = "1", features = ["client", "http-1x"] }
+aws-smithy-runtime = { version = "1", default-features = false, features = [
+    "client",
+    "connector-hyper-0-14-x",
+] }
+# Pin the rustls crypto provider to `ring` everywhere.
+rustls = { version = "0.21", default-features = false, features = ["dangerous_configuration"] }
+hyper-rustls = { version = "0.24", default-features = false, features = [
+    "http1",
+    "http2",
+    "tls12",
+    "native-tokio",
+    "logging",
+] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread"] }
+
 [lints]
 workspace = true

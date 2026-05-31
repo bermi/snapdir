@@ -4,6 +4,7 @@
 //! external-store shim that mirror the Bash oracle's dispatch:
 //!
 //! - [`FileStore`] — the in-process `file://` backend.
+//! - [`S3Store`] — the native AWS-SDK `s3://` backend (ring rustls).
 //! - [`router`] — scheme → adapter resolution, including the hardcoded
 //!   `gs://`→`gcs`/`snapdir-gcs-store` special case from `./snapdir`.
 //! - [`shim`] ([`ExternalStore`]) — the emit-command shim that dispatches
@@ -11,12 +12,14 @@
 //!   `get-manifest-command` / `get-fetch-files-command` / `get-push-command`
 //!   contract.
 //!
-//! The native-SDK S3/B2/GCS stores land in a later gate.
+//! The native-SDK B2/GCS stores land in a later gate.
 
 pub mod file_store;
 pub mod router;
+pub mod s3_store;
 pub mod shim;
 
 pub use file_store::FileStore;
 pub use router::{resolve_adapter, Adapter, RouteError};
+pub use s3_store::{S3Location, S3Store};
 pub use shim::ExternalStore;

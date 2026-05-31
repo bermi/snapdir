@@ -1,0 +1,634 @@
+//! `S3Store`: the `s3://` storage backend, backed by the native AWS SDK.
+//!
+//! An [`S3Store`] targets an `s3://bucket/prefix` location and holds the same
+//! content-addressable layout the Bash oracle (`./snapdir-s3-store`) writes, so
+//! a bucket/prefix is interchangeable between the two implementations:
+//!
+//! ```text
+//! s3://<bucket>/<prefix>/.objects/<sharded checksum>     raw object bytes
+//! s3://<bucket>/<prefix>/.manifests/<sharded snapshot id> manifest text
+//! ```
+//!
+//! Sharding and the relative keys come straight from [`snapdir_core::store`]
+//! ([`object_path`] / [`manifest_path`]); this module never reimplements them.
+//!
+//! # Credentials
+//!
+//! Authentication is delegated entirely to the standard AWS credential chain
+//! via [`aws_config`] (environment variables, shared config/credentials
+//! profiles, SSO, container/instance metadata, …). No bespoke snapdir
+//! credential variables are introduced. An S3-compatible endpoint (`MinIO`,
+//! `SeaweedFS`, …) can be selected with `SNAPDIR_S3_TEST_ENDPOINT` for the
+//! gated live test, or by constructing the store with an explicit endpoint.
+//!
+//! # TLS provider (project-load-bearing)
+//!
+//! The shipped binary must statically link on musl, so the workspace
+//! standardizes on the **`ring`** rustls provider; `aws-lc-rs` is banned. The
+//! AWS SDK defaults to an aws-lc-rs-backed HTTP connector, so this module builds
+//! its own [`hyper_rustls`] HTTPS connector (ring) and hands it to the SDK as a
+//! custom [`HttpClient`](aws_smithy_runtime_api::client::http::HttpClient).
+//!
+//! # Sync trait, async SDK
+//!
+//! The SDK is async. [`S3Store`] owns a private multi-thread `tokio` runtime and
+//! bridges each [`Store`] method with `runtime.block_on(...)`, so no `async`
+//! leaks into `snapdir-core` or the orchestrator (see [`snapdir_core::store`]).
+
+use std::path::Path;
+use std::sync::Arc;
+
+use aws_config::BehaviorVersion;
+use aws_sdk_s3::config::Region;
+use aws_sdk_s3::Client;
+use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
+use snapdir_core::manifest::{Manifest, PathType};
+use snapdir_core::merkle::{Blake3Hasher, Hasher};
+use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
+use tokio::runtime::Runtime;
+
+/// Number of times a fetch is retried when the downloaded bytes fail their
+/// checksum, mirroring the oracle's `_SNAPDIR_S3_STORE_RETRIES` default of 5.
+const MAX_FETCH_RETRIES: u32 = 5;
+
+/// The parsed location an [`S3Store`] targets: an S3 bucket plus a key prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S3Location {
+    /// The bucket name (first path segment of the `s3://` URL).
+    pub bucket: String,
+    /// The key prefix (remaining segments), with no leading or trailing slash.
+    /// Empty when the store points at the bucket root.
+    pub prefix: String,
+}
+
+impl S3Location {
+    /// Parses an `s3://bucket/prefix` URL into its bucket and prefix.
+    ///
+    /// Matches the oracle's derivation (`./snapdir`
+    /// `_snapdir_export_store_vars`): splitting the store URL on `/`, the
+    /// bucket is `cut -f3` (the segment after `s3://`) and the base dir is
+    /// `cut -f4-` (everything after). The prefix has any trailing slash
+    /// stripped, matching `_snapdir_s3_store_get_remote_prefix`.
+    ///
+    /// The `s3://` scheme is optional; a bare `bucket/prefix` is accepted too.
+    #[must_use]
+    pub fn parse(store_url: &str) -> Self {
+        // Drop the scheme (`s3://`, or any `<proto>://`) if present. The oracle
+        // splits the full URL on `/` and takes field 3 as the bucket, which for
+        // `s3://bucket/...` is exactly the segment after the `//`.
+        let without_scheme = match store_url.find("://") {
+            Some(idx) => &store_url[idx + 3..],
+            None => store_url,
+        };
+        let mut parts = without_scheme.splitn(2, '/');
+        let bucket = parts.next().unwrap_or("").to_owned();
+        let prefix = parts.next().unwrap_or("");
+        // Strip a trailing slash (and any leading slash from an empty first
+        // segment edge case); the prefix is joined back with a single `/`.
+        let prefix = prefix
+            .trim_end_matches('/')
+            .trim_start_matches('/')
+            .to_owned();
+        Self { bucket, prefix }
+    }
+
+    /// Returns the full S3 object key for a content object given its checksum,
+    /// i.e. `<prefix>/.objects/<sharded>` (no leading slash).
+    #[must_use]
+    pub fn object_key(&self, checksum: &str) -> String {
+        self.key_for(&object_path(checksum))
+    }
+
+    /// Returns the full S3 object key for a manifest given its snapshot id,
+    /// i.e. `<prefix>/.manifests/<sharded>` (no leading slash).
+    #[must_use]
+    pub fn manifest_key(&self, id: &str) -> String {
+        self.key_for(&manifest_path(id))
+    }
+
+    /// Joins the store prefix with a store-relative path (`.objects/...` or
+    /// `.manifests/...`), producing a leading-slash-free S3 key. Mirrors the
+    /// oracle's `${_SNAPDIR_STORE_BASE_DIR%/}/${source_path#/}` with the
+    /// leading slash trimmed.
+    fn key_for(&self, rel: &str) -> String {
+        let rel = rel.trim_start_matches('/');
+        if self.prefix.is_empty() {
+            rel.to_owned()
+        } else {
+            format!("{}/{rel}", self.prefix)
+        }
+    }
+}
+
+/// A content-addressable store backed by an S3 (or S3-compatible) bucket.
+///
+/// Construct one with [`S3Store::connect`] (resolves the standard AWS
+/// credential chain) or [`S3Store::from_client`] (an already-built SDK client,
+/// e.g. for tests against an emulator).
+pub struct S3Store {
+    client: Client,
+    location: S3Location,
+    runtime: Arc<Runtime>,
+}
+
+impl S3Store {
+    /// Connects to the `s3://bucket/prefix` store, resolving credentials and
+    /// region via the standard AWS chain ([`aws_config::load_defaults`]).
+    ///
+    /// The HTTP client is pinned to the `ring` rustls provider (see the module
+    /// docs). An optional `endpoint_url` selects an S3-compatible backend
+    /// (path-style addressing is enabled when an endpoint is given, as
+    /// emulators rarely support virtual-host addressing).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if the tokio runtime cannot be created or the
+    /// AWS configuration cannot be loaded.
+    pub fn connect(store_url: &str, endpoint_url: Option<&str>) -> Result<Self, StoreError> {
+        let location = S3Location::parse(store_url);
+        let runtime = build_runtime()?;
+
+        let http_client = ring_https_client();
+        let endpoint = endpoint_url.map(ToOwned::to_owned);
+        let client = runtime.block_on(async move {
+            let mut loader =
+                aws_config::defaults(BehaviorVersion::latest()).http_client(http_client.clone());
+            if let Some(ep) = endpoint.as_deref() {
+                loader = loader.endpoint_url(ep);
+            }
+            let shared = loader.load().await;
+            let mut builder = aws_sdk_s3::config::Builder::from(&shared);
+            if endpoint.is_some() {
+                // S3-compatible emulators generally require path-style keys.
+                builder = builder.force_path_style(true);
+            }
+            // Some emulators / configs leave the region unset; S3 still
+            // requires a value to sign requests, so default it.
+            if shared.region().is_none() {
+                builder = builder.region(Region::new("us-east-1"));
+            }
+            Client::from_conf(builder.build())
+        });
+
+        Ok(Self {
+            client,
+            location,
+            runtime: Arc::new(runtime),
+        })
+    }
+
+    /// Builds a store from an already-configured SDK [`Client`] and a parsed
+    /// location, owning a fresh tokio runtime for the sync bridge. Intended for
+    /// tests (e.g. wiring a client at an emulator endpoint).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if the tokio runtime cannot be created.
+    pub fn from_client(client: Client, location: S3Location) -> Result<Self, StoreError> {
+        Ok(Self {
+            client,
+            location,
+            runtime: Arc::new(build_runtime()?),
+        })
+    }
+
+    /// The parsed bucket/prefix this store targets.
+    #[must_use]
+    pub fn location(&self) -> &S3Location {
+        &self.location
+    }
+
+    /// HEAD an object key; `Ok(true)` if it exists, `Ok(false)` if absent.
+    async fn key_exists(&self, key: &str) -> Result<bool, StoreError> {
+        match self
+            .client
+            .head_object()
+            .bucket(&self.location.bucket)
+            .key(key)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(err) => {
+                let svc = err.into_service_error();
+                if svc.is_not_found() {
+                    Ok(false)
+                } else {
+                    Err(backend("S3 HEAD object failed", svc))
+                }
+            }
+        }
+    }
+
+    /// GET an object key's full body, or `None` if it is absent.
+    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        match self
+            .client
+            .get_object()
+            .bucket(&self.location.bucket)
+            .key(key)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let data = resp
+                    .body
+                    .collect()
+                    .await
+                    .map_err(|e| backend("reading S3 object body", e))?;
+                Ok(Some(data.into_bytes().to_vec()))
+            }
+            Err(err) => {
+                let svc = err.into_service_error();
+                if svc.is_no_such_key() {
+                    Ok(None)
+                } else {
+                    Err(backend("S3 GET object failed", svc))
+                }
+            }
+        }
+    }
+
+    /// PUT `bytes` at `key`. S3 PUT is atomic, so no temp-key dance is needed
+    /// (the oracle relies on the same atomicity for manifests/objects).
+    async fn put_bytes(&self, key: &str, bytes: Vec<u8>) -> Result<(), StoreError> {
+        self.client
+            .put_object()
+            .bucket(&self.location.bucket)
+            .key(key)
+            .body(bytes.into())
+            .send()
+            .await
+            .map_err(|e| backend("S3 PUT object failed", e))?;
+        Ok(())
+    }
+
+    /// Downloads `key`, verifying its BLAKE3 against `expected`, retrying up to
+    /// [`MAX_FETCH_RETRIES`] times. Mirrors `_snapdir_s3_fetch_to_cache`.
+    async fn fetch_verified(&self, key: &str, expected: &str) -> Result<Vec<u8>, StoreError> {
+        let hasher = Blake3Hasher::new();
+        let mut attempts_left = MAX_FETCH_RETRIES;
+        loop {
+            match self.get_bytes(key).await? {
+                Some(bytes) => {
+                    let actual = hasher.hash_hex(&bytes);
+                    if actual == expected {
+                        return Ok(bytes);
+                    }
+                    // Mismatched checksum after fetching: retry (the oracle
+                    // decrements its retry budget on the same condition).
+                    attempts_left = attempts_left.saturating_sub(1);
+                    if attempts_left == 0 {
+                        return Err(StoreError::Integrity {
+                            address: format!("s3://{}/{key}", self.location.bucket),
+                            expected: expected.to_owned(),
+                            actual,
+                        });
+                    }
+                }
+                None => {
+                    // Treat a missing key as not-found rather than spinning.
+                    return Err(StoreError::ObjectNotFound {
+                        checksum: expected.to_owned(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+impl Store for S3Store {
+    fn get_manifest(&self, id: &str) -> Result<Manifest, StoreError> {
+        let key = self.location.manifest_key(id);
+        let bytes = self.runtime.block_on(async {
+            match self.get_bytes(&key).await? {
+                Some(b) => Ok(b),
+                None => Err(StoreError::ManifestNotFound { id: id.to_owned() }),
+            }
+        })?;
+
+        let text = String::from_utf8(bytes).map_err(|err| StoreError::Backend {
+            message: format!("manifest {id} is not valid UTF-8"),
+            source: Some(Box::new(err)),
+        })?;
+        let manifest = Manifest::parse(&text)?;
+
+        // Verify the stored manifest hashes back to its snapshot id before
+        // trusting it (oracle: the id check on fetch).
+        let actual = snapdir_core::merkle::snapshot_id(&manifest, &Blake3Hasher::new());
+        if actual != id {
+            return Err(StoreError::Integrity {
+                address: self.location.manifest_key(id),
+                expected: id.to_owned(),
+                actual,
+            });
+        }
+        Ok(manifest)
+    }
+
+    fn fetch_files(&self, manifest: &Manifest, dest: &Path) -> Result<(), StoreError> {
+        self.runtime.block_on(async {
+            for entry in manifest.entries() {
+                let rel = strip_leading_dot_slash(&entry.path);
+                let target = dest.join(rel);
+                match entry.path_type {
+                    PathType::Directory => {
+                        std::fs::create_dir_all(&target)?;
+                    }
+                    PathType::File => {
+                        if let Some(parent) = target.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        let key = self.location.object_key(&entry.checksum);
+                        let bytes = self.fetch_verified(&key, &entry.checksum).await?;
+                        // S3 GET already gave us verified bytes; write to a temp
+                        // sibling then atomically rename into place (atomic on
+                        // one filesystem), matching the oracle's tmp+mv.
+                        write_atomic(&target, &bytes)?;
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn push(&self, manifest: &Manifest, source: &Path) -> Result<(), StoreError> {
+        let hasher = Blake3Hasher::new();
+        let id = snapdir_core::merkle::snapshot_id(manifest, &hasher);
+
+        self.runtime.block_on(async {
+            // Skip-if-present: a present manifest implies all its objects are
+            // present (we always write the manifest last).
+            let manifest_key = self.location.manifest_key(&id);
+            if self.key_exists(&manifest_key).await? {
+                return Ok(());
+            }
+
+            // Push every referenced object that is absent, BEFORE the manifest.
+            for entry in manifest.entries() {
+                if entry.path_type != PathType::File {
+                    continue;
+                }
+                let object_key = self.location.object_key(&entry.checksum);
+                if self.key_exists(&object_key).await? {
+                    // Skip-if-present per object (content-addressable).
+                    continue;
+                }
+                let rel = strip_leading_dot_slash(&entry.path);
+                let object_source = source.join(rel);
+                let bytes = std::fs::read(&object_source)?;
+                // Verify the source still matches its manifest checksum before
+                // upload (the oracle's invalid-source guard).
+                let actual = hasher.hash_hex(&bytes);
+                if actual != entry.checksum {
+                    return Err(StoreError::Integrity {
+                        address: object_source.display().to_string(),
+                        expected: entry.checksum.clone(),
+                        actual,
+                    });
+                }
+                self.put_bytes(&object_key, bytes).await?;
+            }
+
+            // Write the manifest last (verified to hash back to its id),
+            // exactly as the oracle stores `echo "${manifest}"` text.
+            let mut text = manifest.to_string();
+            text.push('\n');
+            let manifest_actual = hasher.hash_hex(text.as_bytes());
+            if manifest_actual != id {
+                return Err(StoreError::Integrity {
+                    address: manifest_key.clone(),
+                    expected: id.clone(),
+                    actual: manifest_actual,
+                });
+            }
+            self.put_bytes(&manifest_key, text.into_bytes()).await?;
+            Ok(())
+        })
+    }
+}
+
+/// Builds the multi-thread tokio runtime that backs the sync bridge.
+fn build_runtime() -> Result<Runtime, StoreError> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| backend("creating tokio runtime for S3Store", e))
+}
+
+/// Builds an AWS-SDK HTTP client backed by `hyper-rustls` using the **`ring`**
+/// crypto provider, with native-root trust anchors. This is the load-bearing
+/// piece that keeps `aws-lc-rs` out of the dependency graph.
+fn ring_https_client() -> aws_smithy_runtime_api::client::http::SharedHttpClient {
+    let tls = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .build();
+    HyperClientBuilder::new().build(tls)
+}
+
+/// Wraps any backend error into [`StoreError::Backend`] with a message.
+fn backend<E>(message: &str, source: E) -> StoreError
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    StoreError::Backend {
+        message: message.to_owned(),
+        source: Some(Box::new(source)),
+    }
+}
+
+/// Writes `bytes` to `target` via a temp sibling + atomic rename (same fs).
+fn write_atomic(target: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let file_name = target
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = match target.parent() {
+        Some(parent) => parent.join(format!("{file_name}.{pid}.{n}.tmp")),
+        None => std::path::PathBuf::from(format!("{file_name}.{pid}.{n}.tmp")),
+    };
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, target)?;
+    Ok(())
+}
+
+/// Strips a leading `./` and a trailing `/` from a manifest path so the
+/// remainder can be joined onto a destination root (shared with `FileStore`).
+fn strip_leading_dot_slash(path: &str) -> &str {
+    let trimmed = path.strip_prefix("./").unwrap_or(path);
+    trimmed.strip_suffix('/').unwrap_or(trimmed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The canonical oracle fixtures from `./snapdir-s3-store`'s test_suite.
+    const FOO_CHECKSUM: &str = "49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92";
+    const FOO_SHARDED: &str = "49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92";
+    const MANIFEST_ID: &str = "aa91e498f401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d";
+    const MANIFEST_SHARDED: &str =
+        "aa9/1e4/98f/401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d";
+
+    #[test]
+    fn s3_store_parses_bucket_and_prefix() {
+        let loc = S3Location::parse("s3://my-bucket/long/term/storage");
+        assert_eq!(loc.bucket, "my-bucket");
+        assert_eq!(loc.prefix, "long/term/storage");
+    }
+
+    #[test]
+    fn s3_store_parse_matches_oracle_cut_fields() {
+        // Oracle: bucket = `cut -d'/' -f3`, base_dir = `cut -d'/' -f4-`.
+        // For "s3://bucket/a/b/c": fields are [s3:,"",bucket,a,b,c].
+        let loc = S3Location::parse("s3://bucket/a/b/c");
+        assert_eq!(loc.bucket, "bucket");
+        assert_eq!(loc.prefix, "a/b/c");
+    }
+
+    #[test]
+    fn s3_store_parse_strips_trailing_slash() {
+        // `_snapdir_s3_store_get_remote_prefix` strips the trailing slash.
+        let loc = S3Location::parse("s3://bucket/prefix/");
+        assert_eq!(loc.bucket, "bucket");
+        assert_eq!(loc.prefix, "prefix");
+    }
+
+    #[test]
+    fn s3_store_parse_bucket_root_has_empty_prefix() {
+        let loc = S3Location::parse("s3://bucket");
+        assert_eq!(loc.bucket, "bucket");
+        assert_eq!(loc.prefix, "");
+
+        let loc_slash = S3Location::parse("s3://bucket/");
+        assert_eq!(loc_slash.bucket, "bucket");
+        assert_eq!(loc_slash.prefix, "");
+    }
+
+    #[test]
+    fn s3_store_parse_accepts_bare_bucket_prefix_without_scheme() {
+        let loc = S3Location::parse("bucket/some/prefix");
+        assert_eq!(loc.bucket, "bucket");
+        assert_eq!(loc.prefix, "some/prefix");
+    }
+
+    #[test]
+    fn s3_store_object_key_matches_sharded_scheme() {
+        let loc = S3Location::parse("s3://b/long/term/storage");
+        assert_eq!(
+            loc.object_key(FOO_CHECKSUM),
+            format!("long/term/storage/.objects/{FOO_SHARDED}")
+        );
+    }
+
+    #[test]
+    fn s3_store_manifest_key_matches_sharded_scheme() {
+        let loc = S3Location::parse("s3://b/long/term/storage");
+        assert_eq!(
+            loc.manifest_key(MANIFEST_ID),
+            format!("long/term/storage/.manifests/{MANIFEST_SHARDED}")
+        );
+    }
+
+    #[test]
+    fn s3_store_keys_have_no_leading_slash_at_bucket_root() {
+        // With an empty prefix the keys are just `.objects/...` / `.manifests/...`.
+        let loc = S3Location::parse("s3://bucket");
+        assert_eq!(
+            loc.object_key(FOO_CHECKSUM),
+            format!(".objects/{FOO_SHARDED}")
+        );
+        assert_eq!(
+            loc.manifest_key(MANIFEST_ID),
+            format!(".manifests/{MANIFEST_SHARDED}")
+        );
+    }
+
+    #[test]
+    fn s3_store_object_key_uses_core_object_path() {
+        // Cross-check that we delegate to the frozen core sharding helper rather
+        // than reimplementing it: the key tail must equal `object_path` output.
+        let loc = S3Location::parse("s3://b");
+        assert_eq!(loc.object_key(FOO_CHECKSUM), object_path(FOO_CHECKSUM));
+    }
+
+    #[test]
+    fn s3_store_strip_leading_dot_slash() {
+        assert_eq!(strip_leading_dot_slash("./foo"), "foo");
+        assert_eq!(strip_leading_dot_slash("./a/b/c"), "a/b/c");
+        assert_eq!(strip_leading_dot_slash("./a/"), "a");
+        assert_eq!(strip_leading_dot_slash("./"), "");
+    }
+
+    // --- Live round-trip, skipped by default --------------------------------
+    //
+    // Requires an S3-compatible endpoint (e.g. MinIO/SeaweedFS) plus AWS
+    // credentials in the environment. Gated behind `SNAPDIR_S3_TEST_ENDPOINT`
+    // and `SNAPDIR_S3_TEST_STORE` (an `s3://bucket/prefix` URL) so it is skipped
+    // unless explicitly configured. Real emulator round-trips + Bash<->Rust
+    // cross-tool checks are the later `remote-interop` gate.
+    #[test]
+    fn s3_store_live_round_trip_when_configured() {
+        use snapdir_core::manifest::ManifestEntry;
+
+        let (Ok(endpoint), Ok(store)) = (
+            std::env::var("SNAPDIR_S3_TEST_ENDPOINT"),
+            std::env::var("SNAPDIR_S3_TEST_STORE"),
+        ) else {
+            eprintln!(
+                "skipping s3_store live round-trip: set SNAPDIR_S3_TEST_ENDPOINT \
+                 and SNAPDIR_S3_TEST_STORE (s3://bucket/prefix) to run it"
+            );
+            return;
+        };
+
+        let hasher = Blake3Hasher::new();
+
+        // Build a tiny source tree + matching manifest.
+        let src = std::env::temp_dir().join(format!("snapdir-s3-live-{}", std::process::id()));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("foo"), b"foo\n").unwrap();
+        let foo_sum = hasher.hash_hex(b"foo\n");
+        let root_sum = snapdir_core::merkle::directory_checksum([foo_sum.as_str()], &hasher);
+        let mut manifest = Manifest::new();
+        manifest.push(ManifestEntry::new(
+            PathType::Directory,
+            "700",
+            root_sum,
+            4,
+            "./",
+        ));
+        manifest.push(ManifestEntry::new(
+            PathType::File,
+            "600",
+            foo_sum,
+            4,
+            "./foo",
+        ));
+        let manifest = Manifest::from_entries(manifest.entries().to_vec());
+        let id = snapdir_core::merkle::snapshot_id(&manifest, &hasher);
+
+        let s3 = S3Store::connect(&store, Some(&endpoint)).expect("connect");
+        s3.push(&manifest, &src).expect("push");
+        let read_back = s3.get_manifest(&id).expect("get_manifest");
+        assert_eq!(read_back, manifest);
+
+        let dest = std::env::temp_dir().join(format!("snapdir-s3-dest-{}", std::process::id()));
+        std::fs::create_dir_all(&dest).unwrap();
+        s3.fetch_files(&read_back, &dest).expect("fetch_files");
+        assert_eq!(std::fs::read(dest.join("foo")).unwrap(), b"foo\n");
+
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+}

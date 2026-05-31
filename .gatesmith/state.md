@@ -4,9 +4,10 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **5**
-Current gate: `s3-store` (phase 5, owner stores) next tick.
-Last passed: `file-store-roundtrip` @ 2026-05-31T12:27:26Z — **Phase 4 complete**; Bash↔Rust file:// interop proven both directions.
-Newly broadly unblocked (parallel-ready, picked phase-asc): s3-store (P5), cache-id+catalog-redb (P6), bench-compile (P7), proptest-roundtrip+cli-trycmd (P8), rustdoc-doctests (P9).
+Current gate: `b2-store` (phase 5, owner stores) next tick (id-asc < gcs-store).
+Last passed: `s3-store` @ 2026-05-31T12:34:41Z — ring-only TLS confirmed (aws-lc-rs absent from Cargo.lock). 🔑 interop keystone proven; contract frozen (locks 4/4 OK each tick).
+TLS pattern established for remote stores: `default-features=false` + aws-smithy-runtime `connector-hyper-0-14-x` + hyper-rustls/rustls 0.21/ring — keeps aws-lc-rs out. Re-run `grep -i aws-lc Cargo.lock` (must be empty) after each remote-store gate.
+Eligible besides Phase 5: cache-id+catalog-redb (P6), bench-compile (P7), proptest-roundtrip+cli-trycmd (P8), rustdoc-doctests (P9) — phase-asc keeps Phase 5 first.
 Open (non-blocking) findings to revisit later:
 - `Store` trait lacks object copy/delete → fetch double-copies; `verify --purge` can't remove corrupt objects yet (verify-cache/cache-id or a store-API extension).
 - FROZEN oracle macOS bug: `snapdir` L2163-2170 `_snapdir_absolute_path` can't checkout nested dirs on macOS (no `realpath -m`); Rust is correct. Bash-side macOS limitation only — not ours to fix (oracle is frozen).
@@ -28,11 +29,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 2 (Core manifest/hashing + FREEZE): 7/7 passed ✅ 🔒 FROZEN
 - Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
 - Phase 4 (Store trait + FileStore): 5/5 passed ✅
-- Phase 5 (Remote stores): 0/4 passed
-- Phase 2 (Core manifest/hashing + FREEZE): 0/5 passed
-- Phase 3 (Interop keystone): 0/2 passed
-- Phase 4 (Store abstraction + FileStore): 0/4 passed
-- Phase 5 (Remote stores): 0/4 passed
+- Phase 5 (Remote stores): 1/4 passed (s3-store ✅; b2-store, gcs-store, remote-interop remain)
 - Phase 6 (Caching + redb catalog): 0/4 passed
 - Phase 7 (Performance): 0/2 passed
 - Phase 8 (Testing/fuzzing): 0/4 passed
@@ -64,3 +61,4 @@ Open (non-blocking) findings to revisit later:
 - 2026-05-31 — `external-store-shim`: `router.rs` (scheme→adapter, `gs`→`gcs` hardcoded, mirrors `snapdir` L1328-1370) + `shim.rs` `ExternalStore` (emit-command contract for third-party `snapdir-*-store` binaries; built-ins stay in-process); 10+5 tests w/ a mock store. → added `cli-store-wire` prereq.
 - 2026-05-31 — `cli-store-wire`: `snapdir push/fetch/checkout/pull/verify` wired to FileStore+core (router-resolved `file://`); checkout restores perms → dest re-manifests to identical id; 2 `store_roundtrip` integration tests.
 - 2026-05-31 — `file-store-roundtrip`: `tests/integration/file_store_roundtrip.sh` (15 assertions) — Rust e2e push/fetch/checkout/pull/verify + cross-tool Rust↔Bash both read each other's `file://` stores byte-identically. **Phase 4 complete.** (Surfaced a frozen-oracle macOS nested-checkout bug — not ours.)
+- 2026-05-31 — `s3-store`: `S3Store` via `aws-sdk-s3` with **ring-only** rustls (aws-lc-rs kept out of Cargo.lock); `s3://bucket/prefix` + core sharded keys; push/fetch discipline; AWS cred chain via `aws-config`; sync↔async bridge via owned tokio rt; 12 tests (live gated behind env).
