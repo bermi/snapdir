@@ -377,7 +377,7 @@ gates:
     depends_on: [file-store, cli-manifest-wire]
     status: passed
     passed_at: 2026-05-31T12:20:52Z
-    git_sha: pending
+    git_sha: 4fa69f2
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked store_roundtrip"
     pass_criteria:
