@@ -3,15 +3,16 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-Active phase: **1**
-Current gate: `ci-matrix-green` (phase 1, owner ci, HUMAN CHECKPOINT) next tick.
-Last passed: `fmt-clean` @ 2026-05-31T01:35:00Z.
-Blocked: `ci-matrix-green` needs operator to confirm the GitHub Actions matrix (incl. musl static) is green on `rust-port` → next tick escalates via AskUserQuestion.
+Active phase: **2**
+Current gate: `manifest-format` (phase 2, owner core) next tick.
+Last passed: `ci-matrix-green` @ 2026-05-31T01:36:48Z (operator-confirmed green).
+Blocked: none. (Phase 2 ends at `freeze-contract`, which freezes the manifest spec + golden fixtures.)
 
 ## Phase summary
 
 - Phase 0 (Bootstrap): 1/1 passed ✅
-- Phase 1 (Scaffolding + CI): 5/6 passed (only ci-matrix-green, a human checkpoint, remains)
+- Phase 1 (Scaffolding + CI): 6/6 passed ✅
+- Phase 2 (Core manifest/hashing + FREEZE): 0/5 passed
 - Phase 2 (Core manifest/hashing + FREEZE): 0/5 passed
 - Phase 3 (Interop keystone): 0/2 passed
 - Phase 4 (Store abstraction + FileStore): 0/4 passed
@@ -30,3 +31,4 @@ Blocked: `ci-matrix-green` needs operator to confirm the GitHub Actions matrix (
 - 2026-05-31 — `clippy-pedantic-clean`: workspace pedantic lints (warn, prio -1) wired + all crates opt in; `cargo clippy --workspace --all-targets --all-features -- -D warnings` exit 0.
 - 2026-05-31 — `cli-skeleton`: clap v4 derive `snapdir` binary exposes all 14 subcommands + global options (stubbed), pinned to the `./snapdir` oracle; help-surface regex passes.
 - 2026-05-31 — `fmt-clean`: `cargo fmt --all --check` clean across the workspace (rustfmt.toml stable-compatible).
+- 2026-05-31 — `ci-matrix-green` (human checkpoint): operator confirmed the full GitHub Actions matrix (Linux/macOS/Windows × MSRV/stable/beta + musl static) green on `rust-port`. **Phase 1 complete.**
