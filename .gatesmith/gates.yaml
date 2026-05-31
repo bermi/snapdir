@@ -475,7 +475,9 @@ gates:
     phase: 5
     owner_agent: cli
     depends_on: [cli-store-wire, s3-store, b2-store, gcs-store]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T13:09:48Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked remote_store_routing"
     pass_criteria:

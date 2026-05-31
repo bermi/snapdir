@@ -19,7 +19,9 @@ use snapdir_core::{
     FollowMode, Hasher, Manifest, ManifestEntry, Md5Hasher, PathMode, PathType, Sha256Hasher,
     Store, WalkOptions,
 };
-use snapdir_stores::{resolve_adapter, Adapter, FileStore};
+use snapdir_stores::{
+    resolve_adapter, Adapter, B2Store, ExternalStore, FileStore, GcsStore, S3Store,
+};
 
 /// Content-addressable directory snapshots.
 #[derive(Debug, Parser)]
@@ -354,21 +356,36 @@ impl Cli {
         Ok(())
     }
 
-    /// Resolves `--store` to a concrete backend. For this gate only the built-in
-    /// `file://` backend is wired; other adapters bail with a clear message.
-    fn resolve_store(&self) -> Result<FileStore> {
+    /// Resolves `--store` to a concrete backend behind the [`Store`] trait,
+    /// routing every supported scheme to its `snapdir-stores` implementation:
+    ///
+    /// - `file://` → [`FileStore`]
+    /// - `s3://` → [`S3Store`]
+    /// - `b2://` → [`B2Store`]
+    /// - `gs://` → [`GcsStore`] (the oracle's hardcoded `gs`→`gcs` special case)
+    /// - any other `<proto>://` → the external-store shim ([`ExternalStore`]),
+    ///   which dispatches to a `snapdir-<proto>-store` binary on `PATH`.
+    ///
+    /// The scheme→adapter *decision* is delegated to the shared
+    /// [`resolve_adapter`] router so the CLI never re-encodes the scheme map;
+    /// this method only turns that decision into a constructed (possibly
+    /// network/credential-backed) store, mapping construction/auth failures to
+    /// `anyhow` errors. The pure decision is unit-tested via
+    /// [`resolve_adapter`]; constructing remote stores here needs creds/network.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `--store` is missing, its protocol is invalid, or
+    /// the concrete store cannot be constructed (e.g. credentials/region cannot
+    /// be resolved for a remote backend).
+    fn resolve_store(&self) -> Result<Box<dyn Store>> {
         let store_url = self
             .globals
             .store
             .as_deref()
             .context("missing --store option")?;
-        match resolve_adapter(store_url).context("resolving --store protocol")? {
-            Adapter::File => Ok(FileStore::new(store_url)),
-            other => anyhow::bail!(
-                "snapdir: store adapter `{}` is not implemented yet",
-                other.name()
-            ),
-        }
+        let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
+        store_for_adapter(&adapter, store_url)
     }
 
     /// The local cache as a `file://`-shaped store, rooted at the resolved cache
@@ -450,6 +467,48 @@ impl Cli {
             Some(other) => {
                 anyhow::bail!("snapdir: unsupported --checksum-bin '{other}'")
             }
+        }
+    }
+}
+
+/// Constructs the concrete [`Store`] for a resolved [`Adapter`] and store URL.
+///
+/// The built-in adapters connect in-process via their `snapdir-stores` impls;
+/// [`Adapter::External`] dispatches to a `snapdir-<name>-store` binary through
+/// the emit-command shim. The `s3`/`b2` endpoint and the `b2` region honor the
+/// oracle's environment overrides (`SNAPDIR_S3_STORE_ENDPOINT_URL`,
+/// `SNAPDIR_B2_REGION` / `AWS_REGION`).
+///
+/// Kept as a free function (decoupled from `--store` parsing) so the
+/// scheme→store routing is exercised independently of CLI argument plumbing;
+/// the pure scheme→adapter decision itself lives in [`resolve_adapter`].
+fn store_for_adapter(adapter: &Adapter, store_url: &str) -> Result<Box<dyn Store>> {
+    match adapter {
+        Adapter::File => Ok(Box::new(FileStore::new(store_url))),
+        Adapter::S3 => {
+            let endpoint = std::env::var("SNAPDIR_S3_STORE_ENDPOINT_URL").ok();
+            let store = S3Store::connect(store_url, endpoint.as_deref())
+                .with_context(|| format!("connecting to S3 store {store_url}"))?;
+            Ok(Box::new(store))
+        }
+        Adapter::B2 => {
+            let endpoint = std::env::var("SNAPDIR_S3_STORE_ENDPOINT_URL").ok();
+            let region = std::env::var("SNAPDIR_B2_REGION")
+                .or_else(|_| std::env::var("AWS_REGION"))
+                .ok();
+            let store = B2Store::connect(store_url, endpoint.as_deref(), region.as_deref())
+                .with_context(|| format!("connecting to B2 store {store_url}"))?;
+            Ok(Box::new(store))
+        }
+        Adapter::Gcs => {
+            let store = GcsStore::connect(store_url)
+                .with_context(|| format!("connecting to GCS store {store_url}"))?;
+            Ok(Box::new(store))
+        }
+        Adapter::External { .. } => {
+            let store = ExternalStore::new(store_url)
+                .with_context(|| format!("resolving external store for {store_url}"))?;
+            Ok(Box::new(store))
         }
     }
 }
@@ -564,4 +623,70 @@ fn exclude_runtime_paths(cache_dir: Option<&Path>) -> (String, String) {
         format!("{base}/snapdir")
     };
     (home_cache, cache_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The scheme→store routing decision must match the shared stores router for
+    // every supported scheme, WITHOUT touching the network or credentials. We
+    // assert the decision (`resolve_adapter`) the CLI delegates to, plus that the
+    // external scheme constructs the emit-command shim pointed at the right
+    // `snapdir-<proto>-store` binary (no spawn, no I/O).
+    #[test]
+    fn remote_store_routing_resolves_every_scheme_to_its_adapter() {
+        // file:// is the built-in local backend.
+        assert_eq!(
+            resolve_adapter("file:///long/term/x").unwrap(),
+            Adapter::File
+        );
+        // s3:// / b2:// are the native AWS-SDK backends.
+        assert_eq!(resolve_adapter("s3://bucket/path").unwrap(), Adapter::S3);
+        assert_eq!(resolve_adapter("b2://bucket/path").unwrap(), Adapter::B2);
+        // gs:// is the oracle's hardcoded special case → the gcs adapter.
+        let gcs = resolve_adapter("gs://bucket/path").unwrap();
+        assert_eq!(gcs, Adapter::Gcs);
+        assert_eq!(gcs.name(), "gcs");
+        assert_eq!(gcs.store_binary(), "snapdir-gcs-store");
+        // A third-party scheme routes to the external shim binary.
+        let xyz = resolve_adapter("xyz://bucket/path").unwrap();
+        assert_eq!(
+            xyz,
+            Adapter::External {
+                name: "xyz".to_owned()
+            }
+        );
+        assert!(!xyz.is_builtin());
+        assert_eq!(xyz.store_binary(), "snapdir-xyz-store");
+    }
+
+    #[test]
+    fn remote_store_routing_file_builds_filestore_without_io() {
+        // The file backend can be constructed with no I/O; confirm the routed
+        // store is usable behind the trait object (a non-existent id is absent,
+        // not an error other than ManifestNotFound semantics surfacing later).
+        let adapter = resolve_adapter("file:///tmp/snapdir-routing-test").unwrap();
+        let store = store_for_adapter(&adapter, "file:///tmp/snapdir-routing-test").unwrap();
+        // get_manifest on a missing id must not panic; it returns an Err.
+        assert!(store.get_manifest("0".repeat(64).as_str()).is_err());
+    }
+
+    #[test]
+    fn remote_store_routing_external_builds_shim_for_third_party_scheme() {
+        // The external scheme constructs the emit-command shim pointed at the
+        // resolved `snapdir-<proto>-store` binary — no subprocess is spawned by
+        // construction, so this needs neither the binary nor any I/O.
+        let adapter = resolve_adapter("xyz://bucket/base").unwrap();
+        let store = ExternalStore::new("xyz://bucket/base").unwrap();
+        assert_eq!(store.binary(), Path::new("snapdir-xyz-store"));
+        // store_for_adapter routes the same scheme through the shim.
+        let routed = store_for_adapter(&adapter, "xyz://bucket/base");
+        assert!(routed.is_ok());
+    }
+
+    #[test]
+    fn remote_store_routing_rejects_invalid_protocol() {
+        assert!(resolve_adapter("NotAScheme://x").is_err());
+    }
 }

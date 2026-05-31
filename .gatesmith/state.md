@@ -4,10 +4,10 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **5**
-Current gate: `cli-remote-store-wire` (phase 5, owner cli) next tick.
-Last passed: `remote-stores-harness` @ 2026-05-31T13:02:44Z. 🔑 interop keystone proven; contract frozen (locks 4/4 OK each tick).
-Added prereq `cli-remote-store-wire` (route s3/b2/gs in CLI `resolve_store`) — harness found the CLI only wires file://, so the live `remote-interop` Rust lanes need this first. Sequence: ✅remote-stores-harness → cli-remote-store-wire → remote-interop (human checkpoint, operator runs emulators).
-`remote-interop` operator env contract (from harness handoff): S3 `SNAPDIR_S3_TEST_STORE`+`SNAPDIR_S3_TEST_ENDPOINT`+AWS creds; B2 `SNAPDIR_B2_TEST_STORE`+`SNAPDIR_B2_TEST_ENDPOINT`+`SNAPDIR_B2_STORE_APPLICATION_KEY`/`_ID`; GCS `SNAPDIR_GCS_TEST_STORE`+`STORAGE_EMULATOR_HOST`. Memory holds a real GCS test project/bucket.
+Current gate: `remote-interop` (phase 5, owner tests, **HUMAN CHECKPOINT**) next tick.
+Last passed: `cli-remote-store-wire` @ 2026-05-31T13:09:48Z — CLI now routes s3/b2/gs/external. 🔑 interop keystone proven; contract frozen (locks 4/4 OK each tick).
+remote-interop is fully unblocked. Next tick: escalate to the operator to run `bash tests/integration/remote_stores.sh` against emulators (MinIO / B2 sandbox / fake-gcs-server) with the env contract below, and confirm Bash↔Rust cross-tool round-trips pass with identical keys/ids.
+`remote-interop` operator env contract: S3 `SNAPDIR_S3_TEST_STORE`+`SNAPDIR_S3_TEST_ENDPOINT`+AWS creds; B2 `SNAPDIR_B2_TEST_STORE`+`SNAPDIR_B2_TEST_ENDPOINT`+`SNAPDIR_B2_STORE_APPLICATION_KEY`/`_ID`; GCS `SNAPDIR_GCS_TEST_STORE`+`STORAGE_EMULATOR_HOST`. Memory holds a real GCS test project/bucket.
 TLS pattern established for remote stores: `default-features=false` + aws-smithy-runtime `connector-hyper-0-14-x` + hyper-rustls/rustls 0.21/ring — keeps aws-lc-rs out. Re-run `grep -i aws-lc Cargo.lock` (must be empty) after each remote-store gate.
 Eligible besides Phase 5: cache-id+catalog-redb (P6), bench-compile (P7), proptest-roundtrip+cli-trycmd (P8), rustdoc-doctests (P9) — phase-asc keeps Phase 5 first.
 Open (non-blocking) findings to revisit later:
@@ -31,7 +31,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 2 (Core manifest/hashing + FREEZE): 7/7 passed ✅ 🔒 FROZEN
 - Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
 - Phase 4 (Store trait + FileStore): 5/5 passed ✅
-- Phase 5 (Remote stores): 4/6 passed (s3/b2/gcs + remote-stores-harness ✅; cli-remote-store-wire + remote-interop remain)
+- Phase 5 (Remote stores): 5/6 passed (only remote-interop — a human checkpoint — remains)
 - Phase 6 (Caching + redb catalog): 0/4 passed
 - Phase 7 (Performance): 0/2 passed
 - Phase 8 (Testing/fuzzing): 0/4 passed
@@ -67,3 +67,4 @@ Open (non-blocking) findings to revisit later:
 - 2026-05-31 — `b2-store`: `B2Store` = thin wrapper over `S3Store` at Backblaze's S3-compatible custom endpoint (`b2://` parse == `s3://` per oracle); no new deps; 12 tests.
 - 2026-05-31 — `gcs-store`: `GcsStore` via `google-cloud-storage =1.12.0`, ring-only (eliminated google-cloud-auth's aws-lc-rs defaults + installed ring CryptoProvider); `gs://` parse matches oracle; ADC auth; 13 tests. aws-lc/openssl/native-tls all absent. → added `remote-stores-harness` prereq.
 - 2026-05-31 — `remote-stores-harness`: `tests/integration/remote_stores.sh` (per-backend Rust roundtrip + Bash↔Rust cross-tool; emulator-free `--self-check` w/ skip-not-fail). Surfaced CLI `resolve_store` only wires `file://` → added `cli-remote-store-wire` prereq.
+- 2026-05-31 — `cli-remote-store-wire`: CLI `resolve_store` now routes `file/s3/b2/gs` to their stores + `ExternalStore` shim for other schemes (via `snapdir_stores::resolve_adapter`); 4 creds-free routing tests. Remote push/fetch now reachable.
