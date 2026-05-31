@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+#
+# snapdir-mock-store: a minimal third-party store used ONLY by the
+# external-store shim tests in crates/snapdir-stores/tests/. It is NOT a
+# shipped binary and is NOT the oracle — it exists to exercise the documented
+# emit-command contract (get-manifest-command / get-fetch-files-command /
+# get-push-command) that ExternalStore dispatches against.
+#
+# Contract mirrored from ./snapdir-file-store: each interface subcommand prints
+# a shell script on stdout; the caller eval's it. The script does the actual
+# transfer. A `mock:///abs/dir` store maps to the local directory `/abs/dir`
+# (absolute path embedded in the URL, like file://).
+#
+set -eEuo pipefail
+
+# --- argument parsing: subcommand + --key value / --key=value -----------------
+command=""
+declare -A opt=()
+while [ $# -gt 0 ]; do
+	case "$1" in
+	get-manifest-command | get-fetch-files-command | get-push-command)
+		command="$1"
+		shift
+		;;
+	-v | --version | version)
+		echo "snapdir-mock-store 0.0.0"
+		exit 0
+		;;
+	--*=*)
+		key="${1%%=*}"
+		key="${key#--}"
+		opt["$key"]="${1#*=}"
+		shift
+		;;
+	--*)
+		key="${1#--}"
+		shift
+		opt["$key"]="${1:-true}"
+		shift || true
+		;;
+	*) shift ;;
+	esac
+done
+
+store="${opt[store]:-}"
+id="${opt[id]:-}"
+
+# store_dir: mock:///abs/path -> /abs/path (absolute path embedded in the URL,
+# like file://; keeps tests hermetic with no shared env between parallel cases).
+store_dir="${store#mock://}"
+store_dir="${store_dir%/}"
+
+manifest_rel=".manifests/${id:0:3}/${id:3:3}/${id:6:3}/${id:9}"
+
+object_rel() {
+	local c="$1"
+	echo ".objects/${c:0:3}/${c:3:3}/${c:6:3}/${c:9}"
+}
+
+case "$command" in
+get-manifest-command)
+	cat <<-EOF
+		set -eEuo pipefail;
+		if ! test -f "${store_dir}/${manifest_rel}"; then
+		  echo "ID '${id}' not found on --store '${store}'." >&2;
+		  exit 1;
+		fi;
+		cat "${store_dir}/${manifest_rel}";
+	EOF
+	;;
+
+get-push-command)
+	staging_dir="${opt[staging-dir]:?Missing --staging-dir}"
+	staging_dir="${staging_dir%/}"
+	echo "set -eEuo pipefail;"
+	if test -f "${store_dir}/${manifest_rel}"; then
+		echo 'echo "Manifest already exists on store.";'
+		exit 0
+	fi
+	# objects BEFORE manifest. The `|| [[ -n ... ]]` tolerates a manifest whose
+	# final line lacks a trailing newline (snapdir-core's Display omits it).
+	while IFS=' ' read -r ptype _perm checksum _size _path || [[ -n ${ptype:-} ]]; do
+		[[ ${ptype:-} == "F" ]] || continue
+		rel="$(object_rel "${checksum}")"
+		echo "mkdir -p \"${store_dir}/$(dirname "${rel}")\";"
+		echo "cp \"${staging_dir}/${rel}\" \"${store_dir}/${rel}\";"
+	done <"${staging_dir}/${manifest_rel}"
+	echo "mkdir -p \"${store_dir}/$(dirname "${manifest_rel}")\";"
+	echo "cp \"${staging_dir}/${manifest_rel}\" \"${store_dir}/${manifest_rel}\";"
+	;;
+
+get-fetch-files-command)
+	cache_dir="${opt[cache-dir]:?Missing --cache-dir}"
+	cache_dir="${cache_dir%/}"
+	echo "set -eEuo pipefail;"
+	# manifest arrives on stdin (tolerate a missing final newline)
+	while IFS=' ' read -r ptype _perm checksum _size _path || [[ -n ${ptype:-} ]]; do
+		[[ ${ptype:-} == "F" ]] || continue
+		rel="$(object_rel "${checksum}")"
+		echo "mkdir -p \"${cache_dir}/$(dirname "${rel}")\";"
+		echo "if ! test -f \"${store_dir}/${rel}\"; then echo \"ERROR: missing object ${checksum}\" >&2; exit 1; fi;"
+		echo "cp \"${store_dir}/${rel}\" \"${cache_dir}/${rel}\";"
+	done
+	;;
+
+*)
+	echo "Unknown command '${command}'" >&2
+	exit 1
+	;;
+esac

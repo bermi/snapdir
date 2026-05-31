@@ -357,7 +357,9 @@ gates:
     phase: 4
     owner_agent: stores
     depends_on: [file-store]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T12:09:32Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked shim"
     pass_criteria:
@@ -365,10 +367,26 @@ gates:
     human_checkpoint: false
     description: "External-store emit-command shim for third-party snapdir-*-store binaries; gs://->gcs special-case router replicated."
 
+  # Prerequisite (PM-sequenced 2026-05-31T12:09:32Z): file-store-roundtrip runs the
+  # Rust CLI push->fetch->checkout, but those subcommands are still stubs (only
+  # manifest/id are wired). This gate wires them to snapdir-stores FileStore + core.
+  # Plan-implied implementation step; not a contract/pass_criteria change. (GATE-ADD journaled.)
+  - id: cli-store-wire
+    phase: 4
+    owner_agent: cli
+    depends_on: [file-store, cli-manifest-wire]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked store_roundtrip"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Wire `snapdir push/fetch/pull/checkout/verify` to snapdir-stores (FileStore via file://) + core: stage objects, push (objects-before-manifest), fetch+verify, checkout reproduces the source tree. CLI integration test `store_roundtrip` over a temp file:// store."
+
   - id: file-store-roundtrip
     phase: 4
     owner_agent: tests
-    depends_on: [file-store, cli-skeleton, interop-diff]
+    depends_on: [file-store, cli-skeleton, cli-store-wire, interop-diff]
     status: pending
     failure_count: 0
     verification_cmd: "bash tests/integration/file_store_roundtrip.sh"
