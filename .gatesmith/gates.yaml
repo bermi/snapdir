@@ -58,7 +58,7 @@ gates:
     depends_on: [scaffold-workspace]
     status: passed
     passed_at: 2026-05-31T01:35:00Z
-    git_sha: pending
+    git_sha: 426fb45
     failure_count: 0
     verification_cmd: "cargo fmt --all --check"
     pass_criteria:
