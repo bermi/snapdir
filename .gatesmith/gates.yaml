@@ -1,0 +1,502 @@
+schema_version: 1
+
+# Gatesmith quality-gate ledger for porting snapdir (Bash) -> snapdir-rs (Rust).
+# Single source of truth. The PM picks the next pending|failed gate whose deps are
+# all passed (priority: phase asc, failure_count desc, id asc), spawns its
+# owner_agent from .gatesmith/templates/<owner_agent>.md, re-runs verification_cmd,
+# enforces the lane fence, applies pass_criteria, and commits on pass.
+#
+# Behavioral source of truth = the Bash oracle in the repo root (./snapdir,
+# ./snapdir-manifest, snapdir-*-store). Those scripts + utils/qa-fixtures/ are the
+# FROZEN ORACLE and must never be edited by any lane.
+#
+# pass_criteria DSL: exit_code | file_exists | files_exist | regex_match |
+#   json_path(+op+value) | human_confirm | and:[...]
+
+gates:
+  # ===================================================================
+  # Phase 0 — Bootstrap
+  # ===================================================================
+  - id: bootstrap-ready
+    phase: 0
+    owner_agent: generic
+    depends_on: []
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f docs/rust-port/PLAN.md && test -f .gatesmith/templates/ci.md && test -f .gatesmith/templates/core.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [docs/rust-port/PLAN.md, .gatesmith/templates/ci.md, .gatesmith/templates/core.md]
+    human_checkpoint: false
+    description: "Bootstrap complete: plan vendored, ledger + lane templates authored."
+
+  # ===================================================================
+  # Phase 1 — Scaffolding + CI foundation  (lanes: ci, cli)
+  # ===================================================================
+  - id: scaffold-workspace
+    phase: 1
+    owner_agent: ci
+    depends_on: [bootstrap-ready]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [Cargo.toml, rust-toolchain.toml, crates/snapdir-core/Cargo.toml, crates/snapdir-cli/Cargo.toml, crates/snapdir-stores/Cargo.toml, crates/snapdir-catalog/Cargo.toml]
+    human_checkpoint: false
+    description: "Cargo workspace (core/cli/stores/catalog) builds clean with a pinned toolchain."
+
+  - id: fmt-clean
+    phase: 1
+    owner_agent: ci
+    depends_on: [scaffold-workspace]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo fmt --all --check"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "rustfmt is clean across the workspace."
+
+  - id: clippy-pedantic-clean
+    phase: 1
+    owner_agent: ci
+    depends_on: [scaffold-workspace]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "clippy::pedantic (workspace lints) passes with -D warnings."
+
+  - id: cli-skeleton
+    phase: 1
+    owner_agent: cli
+    depends_on: [scaffold-workspace]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo run -q -p snapdir-cli -- help 2>&1 | grep -Eo 'manifest|id|stage|push|fetch|pull|checkout|verify|verify-cache|flush-cache|locations|ancestors|revisions|defaults' | sort -u | tr '\\n' ' '"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "ancestors.*checkout.*defaults.*fetch.*flush-cache.*id.*locations.*manifest.*pull.*push.*revisions.*stage.*verify.*verify-cache"
+    human_checkpoint: false
+    description: "clap binary exposes all 14 subcommands (stubbed) + global options."
+
+  - id: ci-config
+    phase: 1
+    owner_agent: ci
+    depends_on: [scaffold-workspace]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .github/workflows/ci.yaml && test -f deny.toml && test -f _typos.toml && (command -v actionlint >/dev/null 2>&1 && actionlint .github/workflows/ci.yaml || echo 'actionlint not installed - file-existence only')"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [.github/workflows/ci.yaml, deny.toml, _typos.toml]
+    human_checkpoint: false
+    description: "ci.yaml (lint/deny/test-matrix incl. musl/coverage/semver) exists and lints clean."
+
+  - id: ci-matrix-green
+    phase: 1
+    owner_agent: ci
+    depends_on: [ci-config, fmt-clean, clippy-pedantic-clean, cli-skeleton]
+    status: pending
+    failure_count: 0
+    verification_cmd: "echo 'Confirm the GitHub Actions ci.yaml run (incl. the x86_64-unknown-linux-musl static leg) is green for branch rust-port.'"
+    pass_criteria:
+      human_confirm: "Is the ci.yaml matrix (Linux/macOS/Windows + musl static) green on GitHub for rust-port?"
+    human_checkpoint: true
+    description: "Full CI matrix incl. musl static build is green on GitHub (operator confirms)."
+
+  # ===================================================================
+  # Phase 2 — Core manifest/hashing engine + FREEZE  (lane: core)
+  # ===================================================================
+  - id: manifest-format
+    phase: 2
+    owner_agent: core
+    depends_on: [scaffold-workspace]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --locked manifest"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Manifest Display reproduces 'TYPE PERM CHECKSUM SIZE PATH', sort -k5, comment/empty handling, ./ vs --absolute."
+
+  - id: dir-merkle
+    phase: 2
+    owner_agent: core
+    depends_on: [manifest-format]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --locked checksum"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Directory checksum = sort+dedup+concat(no separators)+rehash of children; snapshot id = root checksum."
+
+  - id: golden-b3
+    phase: 2
+    owner_agent: core
+    depends_on: [dir-merkle]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --locked golden_b3sum"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "BLAKE3 golden manifests match utils/qa-fixtures hashes byte-for-byte (dba5865c…, af1349b9…, 4a0732cf…)."
+
+  - id: golden-multi
+    phase: 2
+    owner_agent: core
+    depends_on: [golden-b3]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --locked 'golden_md5 golden_sha256 keyed_context exclude no_follow'"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "--checksum-bin md5sum/sha256sum, SNAPDIR_MANIFEST_CONTEXT keyed mode, %system%/%common% excludes, --no-follow all match."
+
+  - id: freeze-contract
+    phase: 2
+    owner_agent: core
+    depends_on: [golden-b3, golden-multi]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Core manifest output matches the golden fixtures exactly. FREEZE the manifest format spec + golden fixtures now?"
+    human_checkpoint: true
+    description: "FREEZE: manifest format + golden fixtures locked; downstream lanes build against a stable oracle."
+
+  # ===================================================================
+  # Phase 3 — 1:1 interoperability gate (HARD)  (lane: tests)
+  # ===================================================================
+  - id: interop-harness
+    phase: 3
+    owner_agent: tests
+    depends_on: [freeze-contract]
+    status: pending
+    failure_count: 0
+    verification_cmd: "bash tests/interop/run.sh --self-check"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: tests/interop/run.sh
+    human_checkpoint: false
+    description: "Differential harness exists: generates the fixture corpus and can diff Bash oracle vs Rust binary."
+
+  - id: interop-diff
+    phase: 3
+    owner_agent: tests
+    depends_on: [interop-harness]
+    status: pending
+    failure_count: 0
+    verification_cmd: "bash tests/interop/run.sh"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Zero manifest/ID diffs between Bash and Rust across the full corpus (b3/md5/sha256 + keyed). Sign off the interop gate?"
+    human_checkpoint: true
+    description: "KEYSTONE HARD GATE: byte-identical manifests + IDs, Bash vs Rust, across the corpus and all checksum modes."
+
+  # ===================================================================
+  # Phase 4 — Store abstraction + FileStore  (lanes: core, stores, tests)
+  # ===================================================================
+  - id: store-trait
+    phase: 4
+    owner_agent: core
+    depends_on: [freeze-contract]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --locked store"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Store trait (get_manifest/fetch_files/push) + sharded-path helpers defined in snapdir-core."
+
+  - id: file-store
+    phase: 4
+    owner_agent: stores
+    depends_on: [store-trait]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked file_store"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "FileStore: .objects/.manifests sharded layout, push (objects-before-manifest, skip-if-present), fetch (verify/retry/atomic-rename)."
+
+  - id: external-store-shim
+    phase: 4
+    owner_agent: stores
+    depends_on: [file-store]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked shim"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "External-store emit-command shim for third-party snapdir-*-store binaries; gs://->gcs special-case router replicated."
+
+  - id: file-store-roundtrip
+    phase: 4
+    owner_agent: tests
+    depends_on: [file-store, cli-skeleton, interop-diff]
+    status: pending
+    failure_count: 0
+    verification_cmd: "bash tests/integration/file_store_roundtrip.sh"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: tests/integration/file_store_roundtrip.sh
+    human_checkpoint: false
+    description: "End-to-end push -> fetch -> checkout reproduces the source tree and verifies via the Rust CLI + file://."
+
+  # ===================================================================
+  # Phase 5 — Remote stores via native SDKs  (lanes: stores, tests)
+  # ===================================================================
+  - id: s3-store
+    phase: 5
+    owner_agent: stores
+    depends_on: [external-store-shim]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked s3_store && cargo build -p snapdir-stores --locked"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "S3Store via aws-sdk-s3 (ring rustls); standard AWS credential chain; preserves keys/ordering/verify."
+
+  - id: b2-store
+    phase: 5
+    owner_agent: stores
+    depends_on: [s3-store]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked b2_store"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "B2Store via aws-sdk-s3 against Backblaze's S3-compatible endpoint (custom endpoint URL)."
+
+  - id: gcs-store
+    phase: 5
+    owner_agent: stores
+    depends_on: [s3-store]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked gcs_store"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "GcsStore via google-cloud-storage (ring); parse gs://bucket/prefix exactly; ordering + verify/retry/atomic-rename."
+
+  - id: remote-interop
+    phase: 5
+    owner_agent: tests
+    depends_on: [s3-store, b2-store, gcs-store, file-store-roundtrip]
+    status: pending
+    failure_count: 0
+    verification_cmd: "echo 'Run tests/integration/remote_stores.sh against emulators (fake-gcs-server / MinIO / B2 sandbox) and confirm Bash<->Rust cross-tool interop.'"
+    pass_criteria:
+      human_confirm: "Did the remote-store emulator round-trips pass AND Bash<->Rust cross-tool fetch succeed with identical keys?"
+    human_checkpoint: true
+    description: "Remote stores round-trip against emulators; Rust push fetchable by Bash and vice-versa."
+
+  # ===================================================================
+  # Phase 6 — Caching + redb catalog  (lanes: core, catalog)
+  # ===================================================================
+  - id: cache-id
+    phase: 6
+    owner_agent: core
+    depends_on: [file-store-roundtrip]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --locked cache"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "XDG content-addressable cache with the cache-id integrity-check mechanism preserved."
+
+  - id: catalog-redb
+    phase: 6
+    owner_agent: catalog
+    depends_on: [freeze-contract]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-catalog --locked"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "redb-backed catalog: key design + range scans for locations/ancestors/revisions."
+
+  - id: catalog-compat
+    phase: 6
+    owner_agent: catalog
+    depends_on: [catalog-redb]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-catalog --locked json_compat"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "JSON-line output matches Bash shapes exactly (locations/ancestors {created_at,id,location}; revisions {created_at,id,previous_id}; ts YYYY-MM-DD HH:MM:SS.SSS)."
+
+  - id: catalog-rebuild
+    phase: 6
+    owner_agent: catalog
+    depends_on: [catalog-compat, file-store-roundtrip]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-catalog --locked rebuild"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "`snapdir catalog rebuild` regenerates the catalog from a store with identical query output."
+
+  # ===================================================================
+  # Phase 7 — Performance  (lane: bench)
+  # ===================================================================
+  - id: bench-compile
+    phase: 7
+    owner_agent: bench
+    depends_on: [interop-diff]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --benches --locked"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "criterion benchmarks for hash/walk/manifest hot paths compile and run."
+
+  - id: perf-gate
+    phase: 7
+    owner_agent: bench
+    depends_on: [bench-compile, file-store-roundtrip]
+    status: pending
+    failure_count: 0
+    verification_cmd: "bash benches/compare.sh"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Does the Rust manifest throughput beat the Bash baseline AND meet the absolute target, with output bytes unchanged?"
+    human_checkpoint: true
+    description: "hyperfine/criterion: Rust beats Bash baseline + meets absolute throughput target; no output drift."
+
+  # ===================================================================
+  # Phase 8 — Testing / fuzzing hardening  (lane: tests)
+  # ===================================================================
+  - id: proptest-roundtrip
+    phase: 8
+    owner_agent: tests
+    depends_on: [interop-diff]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --locked proptest"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "proptest manifest parse/emit round-trips."
+
+  - id: cli-trycmd
+    phase: 8
+    owner_agent: tests
+    depends_on: [cli-skeleton, file-store-roundtrip]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "trycmd/assert_cmd cover the full CLI surface (the ~213 Bash behaviors ported as CLI snapshot tests)."
+
+  - id: fuzz-parser
+    phase: 8
+    owner_agent: tests
+    depends_on: [proptest-roundtrip]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -d tests/fuzz && (command -v cargo-fuzz >/dev/null 2>&1 && cargo fuzz build || echo 'cargo-fuzz not installed - target presence only')"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: tests/fuzz/fuzz_targets/manifest_parser.rs
+    human_checkpoint: false
+    description: "cargo-fuzz target for the manifest parser exists and builds (scheduled cron run in CI)."
+
+  - id: coverage-gate
+    phase: 8
+    owner_agent: tests
+    depends_on: [proptest-roundtrip, cli-trycmd]
+    status: pending
+    failure_count: 0
+    verification_cmd: "echo 'Confirm cargo llvm-cov coverage on GitHub meets the fail-under threshold.'"
+    pass_criteria:
+      human_confirm: "Does cargo-llvm-cov coverage meet the agreed fail-under threshold in CI?"
+    human_checkpoint: true
+    description: "Coverage fail-under threshold met via cargo-llvm-cov -> Codecov."
+
+  # ===================================================================
+  # Phase 9 — Documentation  (lane: docs)
+  # ===================================================================
+  - id: rustdoc-doctests
+    phase: 9
+    owner_agent: docs
+    depends_on: [interop-diff]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --doc --workspace --locked"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "rustdoc with doctests green; manifest spec doc + CHANGELOG present."
+
+  - id: migration-guide
+    phase: 9
+    owner_agent: docs
+    depends_on: [rustdoc-doctests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f docs/rust-port/migration.md && grep -q 'snapdir-manifest' docs/rust-port/migration.md && grep -qi 'GOOGLE_APPLICATION_CREDENTIALS' docs/rust-port/migration.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Is the migration guide (subcommand-mapping + auth-mapping tables, catalog/redb note) accurate and complete?"
+    human_checkpoint: true
+    description: "Migration guide with subcommand aliases + per-backend auth-mapping tables; doc bugs (--linked, ensure-no-errors) fixed."
+
+  # ===================================================================
+  # Phase 10 — Packaging / release  (lane: packaging)
+  # ===================================================================
+  - id: release-config
+    phase: 10
+    owner_agent: packaging
+    depends_on: [ci-matrix-green, migration-guide]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -d packaging && (test -f packaging/dist-workspace.toml || grep -lqi 'cargo-dist\\|matrix' .github/workflows/release.yml)"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "release.yml/cargo-dist build matrix + generated completions (clap_complete) + man page (clap_mangen) + slim Docker image."
+
+  - id: release-dryrun
+    phase: 10
+    owner_agent: packaging
+    depends_on: [release-config, remote-interop, coverage-gate, perf-gate, catalog-rebuild, migration-guide]
+    status: pending
+    failure_count: 0
+    verification_cmd: "echo 'Run a tag dry-run of release.yml; confirm per-target archives build and the static binary smoke-tests.'"
+    pass_criteria:
+      human_confirm: "Did release.yml build artifacts for all targets (incl. musl static) and pass the static-binary smoke test on a dry-run tag?"
+    human_checkpoint: true
+    description: "RELEASE SIGN-OFF: per-target archives (binary + completions + man + CHANGELOG + migration guide) build; static smoke test passes."

@@ -3,3 +3,13 @@
 .vscode/*.log
 tmp
 utils/qa-fixtures/latest-guide-commands.txt
+**/.claude/settings.local.json
+
+# --- Rust port (snapdir-rs) ---
+/target/
+**/*.rs.bk
+# Cargo.lock is intentionally committed (binary workspace).
+
+# --- Gatesmith run artifacts ---
+.gatesmith/evidence/
+.gatesmith/handoff/
