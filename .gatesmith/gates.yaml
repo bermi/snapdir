@@ -201,7 +201,7 @@ gates:
     depends_on: [golden-b3]
     status: passed
     passed_at: 2026-05-31T02:19:35Z
-    git_sha: pending
+    git_sha: dede4ea
     failure_count: 0
     verification_cmd: "grep -q 'b3sum' docs/rust-port/PLAN.md && ! grep -Eq 'Root dir checksum = snapshot ID' docs/rust-port/PLAN.md"
     pass_criteria:
