@@ -391,7 +391,7 @@ gates:
     depends_on: [file-store, cli-skeleton, cli-store-wire, interop-diff]
     status: passed
     passed_at: 2026-05-31T12:27:26Z
-    git_sha: pending
+    git_sha: 78c4598
     failure_count: 0
     verification_cmd: "bash tests/integration/file_store_roundtrip.sh"
     pass_criteria:
