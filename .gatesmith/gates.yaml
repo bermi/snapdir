@@ -436,7 +436,9 @@ gates:
     phase: 5
     owner_agent: stores
     depends_on: [s3-store]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T12:50:10Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked gcs_store"
     pass_criteria:
@@ -444,10 +446,28 @@ gates:
     human_checkpoint: false
     description: "GcsStore via google-cloud-storage (ring); parse gs://bucket/prefix exactly; ordering + verify/retry/atomic-rename."
 
-  - id: remote-interop
+  # Prerequisite (PM-sequenced 2026-05-31T12:50:10Z): remote-interop is a human
+  # checkpoint requiring emulator round-trips + Bash<->Rust cross-tool. Like
+  # interop-harness→interop-diff, the operator needs a harness to run. This gate
+  # builds it (with an emulator-free --self-check). Plan-implied; GATE-ADD journaled.
+  - id: remote-stores-harness
     phase: 5
     owner_agent: tests
     depends_on: [s3-store, b2-store, gcs-store, file-store-roundtrip]
+    status: pending
+    failure_count: 0
+    verification_cmd: "bash tests/integration/remote_stores.sh --self-check"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: tests/integration/remote_stores.sh
+    human_checkpoint: false
+    description: "Differential remote-store harness: round-trip S3/B2/GCS against emulators (MinIO / B2 sandbox / fake-gcs-server) + Bash<->Rust cross-tool fetch; --self-check validates plumbing without live emulators (real round-trips are the remote-interop human checkpoint)."
+
+  - id: remote-interop
+    phase: 5
+    owner_agent: tests
+    depends_on: [s3-store, b2-store, gcs-store, file-store-roundtrip, remote-stores-harness]
     status: pending
     failure_count: 0
     verification_cmd: "echo 'Run tests/integration/remote_stores.sh against emulators (fake-gcs-server / MinIO / B2 sandbox) and confirm Bash<->Rust cross-tool interop.'"

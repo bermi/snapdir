@@ -4,9 +4,10 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **5**
-Current gate: `gcs-store` (phase 5, owner stores) next tick.
-Last passed: `b2-store` @ 2026-05-31T12:45:17Z — thin wrapper over S3Store (custom Backblaze endpoint); ring-only TLS holds. 🔑 interop keystone proven; contract frozen (locks 4/4 OK each tick).
-gcs-store uses `google-cloud-storage` (NOT aws-sdk-s3) — configure with the ring rustls provider; re-check `grep -i aws-lc Cargo.lock` empty after. Parse `gs://bucket/prefix` exactly like `./snapdir-gcs-store`. Google Rust SDK is pre-1.0 — pin versions.
+Current gate: `remote-stores-harness` (phase 5, owner tests) next tick.
+Last passed: `gcs-store` @ 2026-05-31T12:50:10Z — ring-only across S3/B2/GCS (aws-lc/openssl/native-tls all absent from Cargo.lock). 🔑 interop keystone proven; contract frozen (locks 4/4 OK each tick).
+Added prereq `remote-stores-harness` (build `tests/integration/remote_stores.sh` + emulator-free `--self-check`) before the `remote-interop` human checkpoint. Sequence: ✅s3 ✅b2 ✅gcs → remote-stores-harness → remote-interop (operator runs emulators).
+Memory: a GCS integration-test project/bucket/account exists (see auto-memory) for the eventual real remote-interop round-trips.
 TLS pattern established for remote stores: `default-features=false` + aws-smithy-runtime `connector-hyper-0-14-x` + hyper-rustls/rustls 0.21/ring — keeps aws-lc-rs out. Re-run `grep -i aws-lc Cargo.lock` (must be empty) after each remote-store gate.
 Eligible besides Phase 5: cache-id+catalog-redb (P6), bench-compile (P7), proptest-roundtrip+cli-trycmd (P8), rustdoc-doctests (P9) — phase-asc keeps Phase 5 first.
 Open (non-blocking) findings to revisit later:
@@ -30,7 +31,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 2 (Core manifest/hashing + FREEZE): 7/7 passed ✅ 🔒 FROZEN
 - Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
 - Phase 4 (Store trait + FileStore): 5/5 passed ✅
-- Phase 5 (Remote stores): 2/4 passed (s3-store, b2-store ✅; gcs-store, remote-interop remain)
+- Phase 5 (Remote stores): 3/5 passed (s3/b2/gcs ✅; remote-stores-harness + remote-interop remain)
 - Phase 6 (Caching + redb catalog): 0/4 passed
 - Phase 7 (Performance): 0/2 passed
 - Phase 8 (Testing/fuzzing): 0/4 passed
@@ -64,3 +65,4 @@ Open (non-blocking) findings to revisit later:
 - 2026-05-31 — `file-store-roundtrip`: `tests/integration/file_store_roundtrip.sh` (15 assertions) — Rust e2e push/fetch/checkout/pull/verify + cross-tool Rust↔Bash both read each other's `file://` stores byte-identically. **Phase 4 complete.** (Surfaced a frozen-oracle macOS nested-checkout bug — not ours.)
 - 2026-05-31 — `s3-store`: `S3Store` via `aws-sdk-s3` with **ring-only** rustls (aws-lc-rs kept out of Cargo.lock); `s3://bucket/prefix` + core sharded keys; push/fetch discipline; AWS cred chain via `aws-config`; sync↔async bridge via owned tokio rt; 12 tests (live gated behind env).
 - 2026-05-31 — `b2-store`: `B2Store` = thin wrapper over `S3Store` at Backblaze's S3-compatible custom endpoint (`b2://` parse == `s3://` per oracle); no new deps; 12 tests.
+- 2026-05-31 — `gcs-store`: `GcsStore` via `google-cloud-storage =1.12.0`, ring-only (eliminated google-cloud-auth's aws-lc-rs defaults + installed ring CryptoProvider); `gs://` parse matches oracle; ADC auth; 13 tests. aws-lc/openssl/native-tls all absent. → added `remote-stores-harness` prereq.
