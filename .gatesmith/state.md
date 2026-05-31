@@ -4,10 +4,10 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **3**
-Current gate: `core-walk` (phase 3, owner core) next tick.
-Last passed: `interop-harness` @ 2026-05-31T10:34:09Z.
-Keystone path: `interop-diff` (HARD, human checkpoint) is BLOCKED until the Rust `snapdir manifest` is real. Added prerequisite gates `core-walk` (core FS walk → Manifest) and `cli-manifest-wire` (wire `snapdir manifest`/`id` to core); interop-diff now depends on both. Sequence: core-walk → cli-manifest-wire → interop-diff.
-Oracle quirk (harness-confirmed, for core-walk/cli-manifest-wire): `snapdir-manifest --no-follow` only works **path-first** (`snapdir-manifest <PATH> --no-follow`); the flag-first form silently scans `$PWD`. Match real oracle behavior.
+Current gate: `cli-manifest-wire` (phase 3, owner cli) next tick.
+Last passed: `core-walk` @ 2026-05-31T10:58:43Z.
+Keystone path: `interop-diff` (HARD, human checkpoint) BLOCKED until `cli-manifest-wire` wires `snapdir manifest`/`id` to the now-real core walk. Sequence: ✅core-walk → cli-manifest-wire → interop-diff.
+For cli-manifest-wire (from core-walk handoff): the CLI must resolve root to an absolute path before `walk`, build the `ExcludeMatcher` from `expand_excludes(...)`, set `NoFollow` when `forces_no_follow` or `--no-follow`. `snapdir-core::walk(root, &WalkOptions{follow,path_mode,exclude}, &hasher)` + `snapshot_id` are the entry points. Oracle `--no-follow` is path-first only.
 
 > **🔒 FROZEN INTERFACES — re-verify EVERY tick (READ STATE step):**
 > `shasum -a 256 -c .gatesmith/golden-fixtures.sha.lock .gatesmith/manifest-format.sha.lock`
@@ -24,7 +24,7 @@ Oracle quirk (harness-confirmed, for core-walk/cli-manifest-wire): `snapdir-mani
 - Phase 0 (Bootstrap): 1/1 passed ✅
 - Phase 1 (Scaffolding + CI): 6/6 passed ✅
 - Phase 2 (Core manifest/hashing + FREEZE): 7/7 passed ✅ 🔒 FROZEN
-- Phase 3 (Interop keystone, HARD): 1/4 passed (added prereqs core-walk + cli-manifest-wire before interop-diff)
+- Phase 3 (Interop keystone, HARD): 2/4 passed (cli-manifest-wire + interop-diff remain)
 - Phase 2 (Core manifest/hashing + FREEZE): 0/5 passed
 - Phase 3 (Interop keystone): 0/2 passed
 - Phase 4 (Store abstraction + FileStore): 0/4 passed
@@ -52,3 +52,4 @@ Oracle quirk (harness-confirmed, for core-walk/cli-manifest-wire): `snapdir-mani
 - 2026-05-31 — `snapshot-id-doc-fix`: corrected PLAN.md frozen-contract (snapshot ID = b3sum of `#`-stripped manifest text, not the root dir checksum). Snapshot-ID discrepancy fully resolved (core + docs) ahead of the freeze.
 - 2026-05-31 — `freeze-contract` (human checkpoint): operator approved the FREEZE. Manifest format + dir-merkle + snapshot-id + checksum modes + excludes + golden fixtures LOCKED via `.gatesmith/*.sha.lock`. **🔒 Phase 2 complete; the contract is now immutable without human approval.**
 - 2026-05-31 — `interop-harness`: `tests/interop/run.sh` differential harness built (deterministic corpus, byte-identical Bash↔Rust diff across all checksum/keyed/no-follow modes); `--self-check` green. Flagged that interop-diff needs the core walk + CLI wiring first → added `core-walk` + `cli-manifest-wire` prereq gates.
+- 2026-05-31 — `core-walk`: in-process FS walk (`src/walk.rs`) → frozen-format Manifest; 10 tests diff byte-for-byte vs the live `./snapdir-manifest` (b3/md5/sha256, symlink follow/no-follow, excludes). Matched the oracle's lstat-perms/target-checksum symlink rule. Frozen files untouched.
