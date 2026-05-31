@@ -456,7 +456,7 @@ gates:
     depends_on: [s3-store, b2-store, gcs-store, file-store-roundtrip]
     status: passed
     passed_at: 2026-05-31T13:02:44Z
-    git_sha: pending
+    git_sha: 7e70953
     failure_count: 0
     verification_cmd: "bash tests/integration/remote_stores.sh --self-check"
     pass_criteria:
