@@ -20,6 +20,7 @@
 pub mod excludes;
 pub mod manifest;
 pub mod merkle;
+pub mod store;
 pub mod walk;
 
 pub use excludes::{
@@ -31,4 +32,5 @@ pub use merkle::{
     directory_checksum, snapshot_id, Blake3Hasher, Blake3KeyedHasher, Hasher, Md5Hasher,
     Sha256Hasher,
 };
+pub use store::{manifest_path, object_path, Store, StoreError, MANIFESTS_DIR, OBJECTS_DIR};
 pub use walk::{walk, PathMode, WalkError, WalkOptions};

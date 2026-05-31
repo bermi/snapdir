@@ -4,9 +4,10 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **4**
-Current gate: `store-trait` (phase 4, owner core) next tick.
-Last passed: `interop-diff` @ 2026-05-31T11:26:21Z — 🔑 **KEYSTONE PASSED** (operator-signed-off; 15/15 corpus cases byte-identical Bash↔Rust). Phase 3 complete; byte-for-byte interop PROVEN.
-Newly unblocked by interop-diff: store-trait (P4), catalog-redb (P6), bench-compile (P7), proptest-roundtrip (P8), rustdoc-doctests (P9). Priority picks lowest phase first → store-trait next.
+Current gate: `file-store` (phase 4, owner stores) next tick.
+Last passed: `store-trait` @ 2026-05-31T11:58:52Z. 🔑 interop keystone already proven (Phase 3).
+`Store` trait + sharded path helpers (`object_path`/`manifest_path`, `.objects`/`.manifests`, `[0:3][3:6][6:9][9:]`) now in `snapdir-core::store` (sync trait; async SDKs bridge via block_on). Sharded scheme is frozen-by-contract (#2) — guarded by tests + roundtrip/interop gates; object_path/manifest_path changes need human approval.
+Eligible besides file-store: catalog-redb (P6), bench-compile (P7), proptest-roundtrip (P8), rustdoc-doctests (P9) — phase-asc picks file-store.
 
 > **🔒 FROZEN INTERFACES — re-verify EVERY tick (READ STATE step):**
 > `shasum -a 256 -c .gatesmith/golden-fixtures.sha.lock .gatesmith/manifest-format.sha.lock`
@@ -24,7 +25,7 @@ Newly unblocked by interop-diff: store-trait (P4), catalog-redb (P6), bench-comp
 - Phase 1 (Scaffolding + CI): 6/6 passed ✅
 - Phase 2 (Core manifest/hashing + FREEZE): 7/7 passed ✅ 🔒 FROZEN
 - Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
-- Phase 4 (Store trait + FileStore): 0/4 passed
+- Phase 4 (Store trait + FileStore): 1/4 passed
 - Phase 2 (Core manifest/hashing + FREEZE): 0/5 passed
 - Phase 3 (Interop keystone): 0/2 passed
 - Phase 4 (Store abstraction + FileStore): 0/4 passed
@@ -55,3 +56,4 @@ Newly unblocked by interop-diff: store-trait (P4), catalog-redb (P6), bench-comp
 - 2026-05-31 — `core-walk`: in-process FS walk (`src/walk.rs`) → frozen-format Manifest; 10 tests diff byte-for-byte vs the live `./snapdir-manifest` (b3/md5/sha256, symlink follow/no-follow, excludes). Matched the oracle's lstat-perms/target-checksum symlink rule. Frozen files untouched.
 - 2026-05-31 — `cli-manifest-wire`: `snapdir manifest`/`id` wired to `snapdir-core` (thin layer; flags→WalkOptions/Hasher; keyed via `SNAPDIR_MANIFEST_CONTEXT`); 7 integration tests byte-identical vs the live oracle. `snapdir id` is checksum-mode-independent (always b3sum), matching the oracle.
 - 2026-05-31 — `interop-diff` 🔑 **KEYSTONE** (human checkpoint): full `tests/interop/run.sh` → 15/15 corpus cases byte-identical Bash↔Rust (manifests + snapshot IDs, all checksum/keyed/no-follow modes); operator signed off. **Byte-for-byte interoperability proven; Phase 3 complete.**
+- 2026-05-31 — `store-trait`: `snapdir-core::store` — `Store` trait (`get_manifest`/`fetch_files`/`push`, sync/object-safe) + sharded path helpers confirmed vs oracle (`snapdir` L1387/1399); 8 tests. Frozen files untouched.
