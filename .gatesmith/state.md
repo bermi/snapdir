@@ -4,8 +4,9 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **5**
-Current gate: `b2-store` (phase 5, owner stores) next tick (id-asc < gcs-store).
-Last passed: `s3-store` @ 2026-05-31T12:34:41Z — ring-only TLS confirmed (aws-lc-rs absent from Cargo.lock). 🔑 interop keystone proven; contract frozen (locks 4/4 OK each tick).
+Current gate: `gcs-store` (phase 5, owner stores) next tick.
+Last passed: `b2-store` @ 2026-05-31T12:45:17Z — thin wrapper over S3Store (custom Backblaze endpoint); ring-only TLS holds. 🔑 interop keystone proven; contract frozen (locks 4/4 OK each tick).
+gcs-store uses `google-cloud-storage` (NOT aws-sdk-s3) — configure with the ring rustls provider; re-check `grep -i aws-lc Cargo.lock` empty after. Parse `gs://bucket/prefix` exactly like `./snapdir-gcs-store`. Google Rust SDK is pre-1.0 — pin versions.
 TLS pattern established for remote stores: `default-features=false` + aws-smithy-runtime `connector-hyper-0-14-x` + hyper-rustls/rustls 0.21/ring — keeps aws-lc-rs out. Re-run `grep -i aws-lc Cargo.lock` (must be empty) after each remote-store gate.
 Eligible besides Phase 5: cache-id+catalog-redb (P6), bench-compile (P7), proptest-roundtrip+cli-trycmd (P8), rustdoc-doctests (P9) — phase-asc keeps Phase 5 first.
 Open (non-blocking) findings to revisit later:
@@ -29,7 +30,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 2 (Core manifest/hashing + FREEZE): 7/7 passed ✅ 🔒 FROZEN
 - Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
 - Phase 4 (Store trait + FileStore): 5/5 passed ✅
-- Phase 5 (Remote stores): 1/4 passed (s3-store ✅; b2-store, gcs-store, remote-interop remain)
+- Phase 5 (Remote stores): 2/4 passed (s3-store, b2-store ✅; gcs-store, remote-interop remain)
 - Phase 6 (Caching + redb catalog): 0/4 passed
 - Phase 7 (Performance): 0/2 passed
 - Phase 8 (Testing/fuzzing): 0/4 passed
@@ -62,3 +63,4 @@ Open (non-blocking) findings to revisit later:
 - 2026-05-31 — `cli-store-wire`: `snapdir push/fetch/checkout/pull/verify` wired to FileStore+core (router-resolved `file://`); checkout restores perms → dest re-manifests to identical id; 2 `store_roundtrip` integration tests.
 - 2026-05-31 — `file-store-roundtrip`: `tests/integration/file_store_roundtrip.sh` (15 assertions) — Rust e2e push/fetch/checkout/pull/verify + cross-tool Rust↔Bash both read each other's `file://` stores byte-identically. **Phase 4 complete.** (Surfaced a frozen-oracle macOS nested-checkout bug — not ours.)
 - 2026-05-31 — `s3-store`: `S3Store` via `aws-sdk-s3` with **ring-only** rustls (aws-lc-rs kept out of Cargo.lock); `s3://bucket/prefix` + core sharded keys; push/fetch discipline; AWS cred chain via `aws-config`; sync↔async bridge via owned tokio rt; 12 tests (live gated behind env).
+- 2026-05-31 — `b2-store`: `B2Store` = thin wrapper over `S3Store` at Backblaze's S3-compatible custom endpoint (`b2://` parse == `s3://` per oracle); no new deps; 12 tests.

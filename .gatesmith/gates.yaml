@@ -422,7 +422,9 @@ gates:
     phase: 5
     owner_agent: stores
     depends_on: [s3-store]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T12:45:17Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked b2_store"
     pass_criteria:
