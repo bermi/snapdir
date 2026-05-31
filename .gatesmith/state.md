@@ -4,9 +4,9 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **2**
-Current gate: `golden-multi` (phase 2, owner core) next tick — BUT see the open escalation below.
+Current gate: `snapshot-id-core-fix` (phase 2, owner core) next tick — remediation, human-approved.
 Last passed: `golden-b3` @ 2026-05-31T01:55:16Z.
-Blocked: **OPEN HUMAN ESCALATION (snapshot-ID contract discrepancy)** — awaiting decision before `freeze-contract`.
+Resolved escalation: human chose **"Fix before freezing"** (2026-05-31T01:55:16Z). Added remediation gates `snapshot-id-core-fix` (core) + `snapshot-id-doc-fix` (docs); `golden-multi` + `freeze-contract` now depend on them, so the snapshot-ID fix lands before the freeze. Next two core/docs ticks execute the fix, then golden-multi → freeze-contract.
 
 > **⚠ CONTRACT DISCREPANCY (escalated to human @ 2026-05-31T01:55:16Z).** The oracle (`snapdir` L259/762/436/776) derives the snapshot ID as `manifest | grep -v '^#' | b3sum --no-names` — BLAKE3 of the **full manifest text** (incl. trailing newline), NOT the root directory checksum. PLAN.md's frozen-contract line "Root dir checksum = snapshot ID", the `dir-merkle` gate description, and `merkle.rs` doc comments + the `snapshot_id_equals_root_directory_checksum` test all encode the doc bug. The `directory_checksum` function is correct (it computes the `D ./` line's CHECKSUM field); only the "= snapshot id" labeling is wrong. golden-b3's tests use the correct derivation (ids c678a299…/8af03a1b…) + a guard test. **Must be corrected before freeze-contract** so the frozen contract and keystone interop gate key on the real snapshot ID.
 
@@ -14,7 +14,7 @@ Blocked: **OPEN HUMAN ESCALATION (snapshot-ID contract discrepancy)** — awaiti
 
 - Phase 0 (Bootstrap): 1/1 passed ✅
 - Phase 1 (Scaffolding + CI): 6/6 passed ✅
-- Phase 2 (Core manifest/hashing + FREEZE): 3/5 passed (golden-multi + freeze-contract remain; freeze gated on the escalation)
+- Phase 2 (Core manifest/hashing + FREEZE): 3/7 passed (remediation gates snapshot-id-core-fix + snapshot-id-doc-fix, then golden-multi + freeze-contract remain)
 - Phase 2 (Core manifest/hashing + FREEZE): 0/5 passed
 - Phase 3 (Interop keystone): 0/2 passed
 - Phase 4 (Store abstraction + FileStore): 0/4 passed

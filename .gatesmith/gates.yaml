@@ -155,7 +155,10 @@ gates:
     pass_criteria:
       exit_code: 0
     human_checkpoint: false
-    description: "Directory checksum = sort+dedup+concat(no separators)+rehash of children; snapshot id = root checksum."
+    # DESC-CORRECTION 2026-05-31 (human-approved): the original "snapshot id = root
+    # checksum" was a doc bug. Per oracle (snapdir L259/762), snapshot id = b3sum of
+    # the #-stripped manifest text; the directory checksum is the D-line CHECKSUM field.
+    description: "Directory checksum = sort+dedup+concat(no separators)+rehash of children's checksums; this is the D-line CHECKSUM field (NOT the snapshot id — see snapshot-id-core-fix)."
 
   - id: golden-b3
     phase: 2
@@ -171,10 +174,41 @@ gates:
     human_checkpoint: false
     description: "BLAKE3 golden manifests match utils/qa-fixtures hashes byte-for-byte (dba5865c…, af1349b9…, 4a0732cf…)."
 
-  - id: golden-multi
+  # -------------------------------------------------------------------
+  # Remediation gates (human-approved 2026-05-31T01:55:16Z): correct the
+  # snapshot-ID contract discrepancy surfaced by golden-b3 BEFORE freeze.
+  # Oracle truth (snapdir L259/762/436/776): snapshot id = `manifest |
+  # grep -v '^#' | b3sum --no-names` (b3sum of full #-stripped manifest text,
+  # incl. trailing newline) — NOT the root directory checksum.
+  # -------------------------------------------------------------------
+  - id: snapshot-id-core-fix
     phase: 2
     owner_agent: core
     depends_on: [golden-b3]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --locked snapshot_id"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Add snapshot_id(manifest)=b3sum(#-stripped manifest text incl trailing newline); relabel merkle.rs docs + replace the misleading snapshot_id_equals_root_directory_checksum test. Reproduces golden ids c678a299…/8af03a1b…."
+
+  - id: snapshot-id-doc-fix
+    phase: 2
+    owner_agent: docs
+    depends_on: [golden-b3]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -q 'b3sum' docs/rust-port/PLAN.md && ! grep -Eq 'Root dir checksum = snapshot ID' docs/rust-port/PLAN.md"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Correct PLAN.md frozen-contract: snapshot ID = b3sum of #-stripped manifest text (not the root dir checksum); keep the dir-checksum rule for the D-line CHECKSUM field."
+
+  - id: golden-multi
+    phase: 2
+    owner_agent: core
+    depends_on: [golden-b3, snapshot-id-core-fix]
     status: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --locked 'golden_md5 golden_sha256 keyed_context exclude no_follow'"
@@ -186,7 +220,7 @@ gates:
   - id: freeze-contract
     phase: 2
     owner_agent: core
-    depends_on: [golden-b3, golden-multi]
+    depends_on: [golden-b3, golden-multi, snapshot-id-core-fix, snapshot-id-doc-fix]
     status: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --locked"
