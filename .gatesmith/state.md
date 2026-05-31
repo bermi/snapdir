@@ -4,15 +4,17 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **2**
-Current gate: `dir-merkle` (phase 2, owner core) next tick.
-Last passed: `manifest-format` @ 2026-05-31T01:46:33Z.
+Current gate: `golden-b3` (phase 2, owner core) next tick.
+Last passed: `dir-merkle` @ 2026-05-31T01:51:01Z.
 Blocked: none. (Phase 2 ends at `freeze-contract`, which freezes the manifest spec + golden fixtures.)
+
+> Note for golden-b3: oracle-confirmed that fixture `dba5865c…` is the guide **root of two empty files** (sort -u collapses both `af1349b9…` to one → `blake3(af1349b9…)=dba5865c…`), NOT an empty directory. An empty dir's id is `af1349b9…` (blake3 of empty input). Pin tests to the real oracle derivation.
 
 ## Phase summary
 
 - Phase 0 (Bootstrap): 1/1 passed ✅
 - Phase 1 (Scaffolding + CI): 6/6 passed ✅
-- Phase 2 (Core manifest/hashing + FREEZE): 1/5 passed
+- Phase 2 (Core manifest/hashing + FREEZE): 2/5 passed
 - Phase 2 (Core manifest/hashing + FREEZE): 0/5 passed
 - Phase 3 (Interop keystone): 0/2 passed
 - Phase 4 (Store abstraction + FileStore): 0/4 passed
@@ -33,3 +35,4 @@ Blocked: none. (Phase 2 ends at `freeze-contract`, which freezes the manifest sp
 - 2026-05-31 — `fmt-clean`: `cargo fmt --all --check` clean across the workspace (rustfmt.toml stable-compatible).
 - 2026-05-31 — `ci-matrix-green` (human checkpoint): operator confirmed the full GitHub Actions matrix (Linux/macOS/Windows × MSRV/stable/beta + musl static) green on `rust-port`. **Phase 1 complete.**
 - 2026-05-31 — `manifest-format`: `snapdir-core` manifest line model (`Manifest`/`ManifestEntry`) — Display `TYPE PERM CHECKSUM SIZE PATH`, sort -k5, `#`-comment/empty-line stripping, `./` vs `--absolute`; 15 unit tests, pinned to `./snapdir-manifest`.
+- 2026-05-31 — `dir-merkle`: `directory_checksum` = sort -u + concat(no separator) + rehash of child checksums via in-process `blake3` crate (no b3sum shell-out); `Hasher` trait seam for `--checksum-bin`; root checksum = snapshot id; 7 checksum tests.

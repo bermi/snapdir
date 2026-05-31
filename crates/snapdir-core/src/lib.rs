@@ -6,8 +6,13 @@
 //! arrive as parameters and errors surface as typed [`thiserror`] enums.
 //!
 //! The [`manifest`] module owns the frozen manifest line format
-//! (`PATH_TYPE PERMISSIONS CHECKSUM SIZE PATH`) and its (de)serialization.
+//! (`PATH_TYPE PERMISSIONS CHECKSUM SIZE PATH`) and its (de)serialization. The
+//! [`merkle`] module owns the directory checksum rule (sort + dedup + concat +
+//! re-hash of the direct children's checksums); the root directory checksum is
+//! the snapshot id.
 
 pub mod manifest;
+pub mod merkle;
 
 pub use manifest::{Manifest, ManifestEntry, ParseError, PathType};
+pub use merkle::{directory_checksum, Blake3Hasher, Hasher};

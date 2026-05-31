@@ -147,7 +147,9 @@ gates:
     phase: 2
     owner_agent: core
     depends_on: [manifest-format]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T01:51:01Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --locked checksum"
     pass_criteria:

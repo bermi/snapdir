@@ -10,6 +10,7 @@ homepage.workspace = true
 description = "snapdir core: manifest format, BLAKE3 merkle hashing, store trait, walk, cache."
 
 [dependencies]
+blake3 = "1.8.5"
 thiserror.workspace = true
 
 [lints]
