@@ -70,7 +70,7 @@ gates:
     depends_on: [scaffold-workspace]
     status: passed
     passed_at: 2026-05-31T01:27:47Z
-    git_sha: pending
+    git_sha: 03ac5ff
     failure_count: 0
     verification_cmd: "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
     pass_criteria:
