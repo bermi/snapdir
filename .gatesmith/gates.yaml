@@ -223,7 +223,7 @@ gates:
     verification_cmd: "cargo test -p snapdir-core --locked -- golden_md5 golden_sha256 keyed_context exclude no_follow"
     status: passed
     passed_at: 2026-05-31T02:10:12Z
-    git_sha: pending
+    git_sha: 3481e94
     pass_criteria:
       exit_code: 0
     human_checkpoint: false
