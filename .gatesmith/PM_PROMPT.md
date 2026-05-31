@@ -151,15 +151,18 @@ Then exit. The next ralph tick repeats.
 
 ### Documented lane-fence exceptions
 
-- **scaffold-workspace (ci) — trivial crate stubs.** For the `scaffold-workspace`
-  gate only, the `ci` lane's writable area is extended to include trivial crate
-  stubs under `crates/snapdir-{core,catalog,stores,cli}/` (each crate's `Cargo.toml`
-  plus a minimal `src/lib.rs` or `src/main.rs` that compiles). This is required
-  because the gate's own `pass_criteria` lists those crate `Cargo.toml` files in
-  `files_exist`, and `ci.md` explicitly authorizes ci to "create empty stub crates
-  so `cargo build` succeeds." The fence still rejects any change to crate *logic*
-  beyond trivial stubs, and the respective lanes own all later edits to their crate.
-  Journaled with tag `LANE-FENCE-EXC` on the tick that relies on it.
+- **ci — trivial crate stub scaffolding & lint upkeep.** For the phase-1 CI
+  bootstrap gates (`scaffold-workspace`, `fmt-clean`, `clippy-pedantic-clean`,
+  while the crates are still ci-authored stubs), the `ci` lane's writable area is
+  extended to include trivial crate stubs under `crates/snapdir-{core,catalog,stores,cli}/`
+  (each crate's `Cargo.toml` plus a minimal `src/lib.rs`/`src/main.rs` that compiles,
+  and logic-free upkeep such as doc-comment/formatting fixes so fmt/clippy pass).
+  This is required because `scaffold-workspace`'s `pass_criteria` lists those crate
+  `Cargo.toml` files in `files_exist`, and `ci.md` explicitly authorizes ci to
+  "create empty stub crates so `cargo build` succeeds." The fence still rejects ANY
+  change to crate *logic*; once a crate's owning lane lands real code in it, ci no
+  longer touches that crate's `src/` and must spawn the owner instead. Journaled
+  with tag `LANE-FENCE-EXC` on each tick that relies on it.
 
 ---
 

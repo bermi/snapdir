@@ -68,7 +68,9 @@ gates:
     phase: 1
     owner_agent: ci
     depends_on: [scaffold-workspace]
-    status: pending
+    status: passed
+    passed_at: 2026-05-31T01:27:47Z
+    git_sha: pending
     failure_count: 0
     verification_cmd: "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
     pass_criteria:
