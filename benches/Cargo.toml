@@ -21,8 +21,13 @@ snapdir-core.workspace = true
 # report deps). It carries no TLS, so the ring / no-aws-lc stance is unaffected.
 criterion = { version = "0.7", default-features = false }
 
-# Minimal scaffold target. The `bench` lane (gate bench-compile) expands this
-# into the real hash/walk/manifest hot-path benchmarks.
+# Scratch trees for the walk hot-path benchmarks. Carries no TLS, so the ring /
+# no-aws-lc stance is unaffected. Corpora are generated deterministically (no
+# RNG) and cleaned up via tempfile's `Drop`.
+tempfile = "3"
+
+# Real hash / walk / manifest hot-path benchmarks for the three perf-critical
+# paths (gate bench-compile).
 [[bench]]
 name = "hot_paths"
 harness = false
