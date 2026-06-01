@@ -180,6 +180,34 @@ build_corpus() {
 	chmod 755 "${d}/sub" "${d}/sub/deep" "${d}"
 }
 
+# build_nospace_corpus <dir> — nested dirs, dup objects, unicode, large + empty
+# files, explicit perms — everything build_corpus has EXCEPT space-bearing names.
+# Used for the BASH-PUSH direction (lane C): the FROZEN oracle's object-caching
+# step (`snapdir` L1276 `IFS=' ' read -r -a line_parts <<<"${manifest_line}"`
+# then `rel_path="${line_parts[4]}"`) word-splits the manifest line on spaces, so
+# a path like `./has space.txt` is truncated to `./has` and the Bash `cp` fails
+# with "No such file or directory". This breaks the Bash side regardless of OS
+# (reproduces identically against a local `file://` store) and is NOT a
+# Rust/interop divergence — Rust pushes/pulls the space-bearing corpus fine
+# (proven by lane A). Documented frozen-oracle limitation; oracle is frozen, not
+# ours to fix. Rust still does the checkout in lane C, so nesting is safe here.
+build_nospace_corpus() {
+	local d="$1"
+	mkdir -p "${d}/sub/deep"
+	printf 'hello' >"${d}/a.txt"
+	printf 'world!!' >"${d}/sub/b.txt"
+	printf 'dup' >"${d}/dup1.txt"
+	printf 'dup' >"${d}/sub/deep/dup2.txt"   # duplicate content -> same object
+	: >"${d}/empty"                           # zero-byte file
+	printf 'unicode-\xc3\xa9\xc3\xb1' >"${d}/uni_éñ.txt" 2>/dev/null || printf 'unicode' >"${d}/uni.txt"
+	yes 'snapdir-large-line-0123456789' 2>/dev/null | head -c 65536 >"${d}/large.bin" || head -c 65536 /dev/zero >"${d}/large.bin"
+	chmod 644 "${d}/a.txt"
+	chmod 600 "${d}/sub/b.txt"
+	chmod 640 "${d}/dup1.txt"
+	chmod 640 "${d}/sub/deep/dup2.txt"
+	chmod 755 "${d}/sub" "${d}/sub/deep" "${d}"
+}
+
 # build_flat_corpus <dir> — files only, no subdirs. Used where the BASH tool
 # performs the checkout on macOS (frozen oracle cannot rebuild nested dirs on
 # macOS — documented in file_store_roundtrip.sh; NOT a Rust/interop bug).
@@ -340,7 +368,11 @@ run_backend() {
 		local src="${base}/c/src" dest="${base}/c/dest"
 		local store="${base_url%/}/${tag}/c"
 		mkdir -p "${src%/*}"
-		build_corpus "${src}"   # Rust does the checkout -> nested-safe on both OSes
+		# Bash performs the PUSH here; the frozen oracle's caching step
+		# word-splits manifest lines on spaces, so a space-bearing path breaks the
+		# Bash cp (documented at build_nospace_corpus). Rust does the checkout, so
+		# nesting is safe; we just omit space-bearing names from the Bash-push tree.
+		build_nospace_corpus "${src}"
 		RUST_CACHE="${cache}/c"; mkdir -p "${RUST_CACHE}"
 
 		local id
