@@ -1,6 +1,0 @@
-```
-$ snapdir flush-cache
-? 1
-snapdir: `flush-cache` is not implemented yet
-
-```

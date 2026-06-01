@@ -4,10 +4,12 @@
 //! plus `version`, and the global options shared across commands. Pinned to the
 //! scripts, not the docs (e.g. `--linked`, never `--link`).
 //!
-//! `manifest` and `id` are wired to `snapdir-core`'s in-process walk and emit
-//! oracle-identical stdout (matching `./snapdir-manifest` / `./snapdir id`).
-//! The remaining subcommands are still stubs; their behavior arrives in later
-//! phases.
+//! `manifest`/`id` are wired to `snapdir-core`'s in-process walk and emit
+//! oracle-identical stdout; `push`/`fetch`/`pull`/`checkout`/`verify` are wired
+//! to `snapdir-stores`; and `stage`/`verify-cache`/`flush-cache` are wired to
+//! `snapdir-core::cache` (the cache is itself a `file://`-shaped store). The
+//! remaining catalog subcommands (`locations`/`ancestors`/`revisions`/
+//! `defaults`) are still stubs; their behavior arrives in later phases.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -15,7 +17,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use snapdir_core::{
-    expand_excludes, snapshot_id, walk, Blake3Hasher, Blake3KeyedHasher, ExcludeMatcher,
+    cache, expand_excludes, snapshot_id, walk, Blake3Hasher, Blake3KeyedHasher, ExcludeMatcher,
     FollowMode, Hasher, Manifest, ManifestEntry, Md5Hasher, PathMode, PathType, Sha256Hasher,
     Store, WalkOptions,
 };
@@ -197,15 +199,16 @@ pub enum Command {
 impl Cli {
     /// Dispatch the parsed command.
     ///
-    /// `manifest` and `id` are wired to `snapdir-core`. The remaining
-    /// subcommands are stubs that report "not implemented" via [`Err`]; real
+    /// `manifest`/`id`, the store commands, and the cache commands
+    /// (`stage`/`verify-cache`/`flush-cache`) are wired to the libraries. The
+    /// remaining catalog subcommands report "not implemented" via [`Err`]; real
     /// behavior arrives in later gates.
     ///
     /// # Errors
     ///
     /// Returns any error raised while resolving the path, building the exclude
-    /// matcher, or walking the tree, plus a "not implemented" error for the
-    /// stubbed subcommands.
+    /// matcher, walking the tree, or talking to the store/cache, plus a "not
+    /// implemented" error for the stubbed catalog subcommands.
     pub fn run(&self) -> Result<()> {
         match &self.command {
             Command::Manifest {
@@ -242,11 +245,11 @@ impl Cli {
             Command::Checkout { dir } => self.run_checkout(dir.as_deref()),
             Command::Pull { path } => self.run_pull(path.as_deref()),
             Command::Verify => self.run_verify(),
+            Command::Stage { dir } => self.run_stage(dir.as_deref()),
+            Command::VerifyCache => self.run_verify_cache(),
+            Command::FlushCache => self.run_flush_cache(),
             other => {
                 let name = match other {
-                    Command::Stage { .. } => "stage",
-                    Command::VerifyCache => "verify-cache",
-                    Command::FlushCache => "flush-cache",
                     Command::Locations => "locations",
                     Command::Ancestors => "ancestors",
                     Command::Revisions => "revisions",
@@ -261,7 +264,10 @@ impl Cli {
                     | Command::Fetch
                     | Command::Checkout { .. }
                     | Command::Pull { .. }
-                    | Command::Verify => unreachable!(),
+                    | Command::Verify
+                    | Command::Stage { .. }
+                    | Command::VerifyCache
+                    | Command::FlushCache => unreachable!(),
                 };
                 anyhow::bail!("snapdir: `{name}` is not implemented yet")
             }
@@ -353,6 +359,72 @@ impl Cli {
         store
             .fetch_files(&manifest, scratch.path())
             .with_context(|| format!("verifying objects for snapshot {id}"))?;
+        Ok(())
+    }
+
+    /// `snapdir stage [<path>]`: cache the source tree's objects + manifest into
+    /// the LOCAL cache without a remote store, then print the snapshot id (like
+    /// the oracle's `stage`).
+    ///
+    /// The cache directory is itself a content-addressable store with the same
+    /// `.objects`/`.manifests` sharded layout, so staging is just a `push` of the
+    /// walked manifest to a [`FileStore`] rooted at the cache dir — reusing the
+    /// proven objects-before-manifest, skip-if-present discipline with no new
+    /// core/stores code. The resulting on-disk keys are exactly what
+    /// `verify-cache` later checks (`stage` then `verify-cache` round-trips).
+    fn run_stage(&self, path: Option<&Path>) -> Result<()> {
+        // Stage uses the same default checksum surface as `push`/`id`: b3sum
+        // (or keyed-b3sum), relative paths, follow symlinks.
+        let manifest =
+            self.build_manifest(path, false, false, None, self.globals.exclude.as_deref())?;
+        let root = resolve_root(path).context("resolving stage path")?;
+        let id = snapshot_id(&manifest, &Blake3Hasher::new());
+        let cache = self.cache_store();
+        cache
+            .push(&manifest, &root)
+            .with_context(|| format!("staging snapshot {id} into the local cache"))?;
+        println!("{id}");
+        Ok(())
+    }
+
+    /// `snapdir verify-cache [--purge]`: verify every object in the local cache
+    /// via [`cache::verify_cache`].
+    ///
+    /// Reports each corrupt object on stderr (mirroring the oracle's
+    /// `echo "Checksum mismatch for …" >&2`). When `--purge` is set the corrupt
+    /// objects are removed. Matches the oracle's exit semantics
+    /// (`snapdir_verify_cache`): exit non-zero whenever any object failed,
+    /// whether or not it was purged.
+    fn run_verify_cache(&self) -> Result<()> {
+        let cache_dir = self.cache_dir();
+        let report = cache::verify_cache(&cache_dir, self.globals.purge, &Blake3Hasher::new())
+            .with_context(|| format!("verifying cache at {}", cache_dir.display()))?;
+
+        for checksum in &report.corrupt {
+            eprintln!("Checksum mismatch for {checksum}");
+        }
+        if self.globals.purge && self.globals.verbose {
+            for checksum in &report.purged {
+                eprintln!("purged {checksum}");
+            }
+        }
+
+        if report.is_clean() {
+            return Ok(());
+        }
+        // Oracle: `failed=true` → `return 1`, even after purging.
+        anyhow::bail!(
+            "snapdir: {} corrupt object(s) in the cache",
+            report.corrupt.len()
+        )
+    }
+
+    /// `snapdir flush-cache`: empty the local cache via [`cache::flush_cache`]
+    /// (objects + manifests). Idempotent on an already-empty / missing cache.
+    fn run_flush_cache(&self) -> Result<()> {
+        let cache_dir = self.cache_dir();
+        cache::flush_cache(&cache_dir)
+            .with_context(|| format!("flushing cache at {}", cache_dir.display()))?;
         Ok(())
     }
 
