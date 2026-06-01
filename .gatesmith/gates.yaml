@@ -707,11 +707,17 @@ gates:
   # ===================================================================
   # Phase 8 — Testing / fuzzing hardening  (lane: tests)
   # ===================================================================
+  # GATE-OWNER-FIX 2026-06-01T13:47:19Z (PM, mechanical): owner_agent tests -> core.
+  # `cargo test -p snapdir-core --locked proptest` only runs the snapdir-core crate's
+  # tests, so the proptest round-trips live in crates/snapdir-core/ (core lane); the
+  # top-level tests/ lane is shell harnesses, not a cargo package. pass_criteria unchanged.
   - id: proptest-roundtrip
     phase: 8
-    owner_agent: tests
+    owner_agent: core
     depends_on: [interop-diff]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T13:52:08Z
+    git_sha: 3690282
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --locked proptest"
     pass_criteria:
