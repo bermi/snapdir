@@ -50,6 +50,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use google_cloud_gax::error::rpc::Code;
+use google_cloud_gax::error::Error as GcsError;
 use google_cloud_storage::client::{Storage, StorageControl};
 use snapdir_core::manifest::{Manifest, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
@@ -212,7 +214,7 @@ impl GcsStore {
     }
 
     /// Metadata HEAD on an object key; `Ok(true)` if it exists, `Ok(false)` if
-    /// absent (HTTP 404).
+    /// absent (see [`is_not_found`] for what counts as absent).
     async fn key_exists(&self, key: &str) -> Result<bool, StoreError> {
         match self
             .control
@@ -224,7 +226,7 @@ impl GcsStore {
         {
             Ok(_) => Ok(true),
             Err(err) => {
-                if err.http_status_code() == Some(404) {
+                if is_not_found(&err) {
                     Ok(false)
                 } else {
                     Err(backend("GCS get_object metadata failed", err))
@@ -234,7 +236,7 @@ impl GcsStore {
     }
 
     /// GET an object key's full body, draining the read stream, or `None` if it
-    /// is absent (HTTP 404).
+    /// is absent (see [`is_not_found`] for what counts as absent).
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
         let mut resp = match self
             .storage
@@ -244,7 +246,7 @@ impl GcsStore {
         {
             Ok(resp) => resp,
             Err(err) => {
-                if err.http_status_code() == Some(404) {
+                if is_not_found(&err) {
                     return Ok(None);
                 }
                 return Err(backend("GCS read_object failed", err));
@@ -454,6 +456,30 @@ where
     }
 }
 
+/// Classifies a `google-cloud-storage` SDK error as "object is absent".
+///
+/// The SDK reports a missing object two different ways, and the absent-object
+/// paths (`key_exists` -> `Ok(false)`, `get_bytes` -> `Ok(None)`) must treat
+/// BOTH as not-found:
+///
+/// 1. A plain **HTTP 404** (`http_status_code() == Some(404)`), e.g. from a
+///    proxy/load balancer ahead of the service.
+/// 2. A **service-level gRPC-style error** whose `status().code` is
+///    [`Code::NotFound`] but whose `http_status_code()` is `None`. This is what
+///    the v1.x SDK actually returns for `get_object`/`read_object` on a missing
+///    object, and the form the original `== Some(404)`-only check misclassified
+///    as a fatal backend error (it aborted `push` before the first upload).
+///
+/// This mirrors the SDK's own internal classification
+/// (`e.status().is_some_and(|s| s.code == Code::NotFound)`), the GCS analogue of
+/// the aws-sdk's `is_not_found()` used by [`S3Store`](crate::S3Store).
+fn is_not_found(err: &GcsError) -> bool {
+    err.http_status_code() == Some(404)
+        || err
+            .status()
+            .is_some_and(|status| status.code == Code::NotFound)
+}
+
 /// Writes `bytes` to `target` via a temp sibling + atomic rename (same fs).
 fn write_atomic(target: &Path, bytes: &[u8]) -> Result<(), StoreError> {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -592,6 +618,50 @@ mod tests {
         assert_eq!(strip_leading_dot_slash("./a/b/c"), "a/b/c");
         assert_eq!(strip_leading_dot_slash("./a/"), "a");
         assert_eq!(strip_leading_dot_slash("./"), "");
+    }
+
+    #[test]
+    fn gcs_store_is_not_found_classifies_service_level_not_found_as_absent() {
+        // Regression guard for the push-abort bug: the v1.x SDK reports a
+        // missing object as a *service-level* gRPC error with code NOT_FOUND and
+        // NO HTTP status code (`http_status_code() == None`). The original
+        // `== Some(404)`-only check misclassified this as a fatal backend error,
+        // so `key_exists` errored and `push` aborted before uploading anything.
+        use google_cloud_gax::error::rpc::Status;
+
+        let status = Status::default()
+            .set_code(Code::NotFound)
+            .set_message("No such object: bucket/.manifests/...");
+        let err = GcsError::service(status);
+        // This is the load-bearing assertion: the real-world shape carries no
+        // HTTP code, so a 404-only check would (and did) miss it.
+        assert_eq!(err.http_status_code(), None);
+        assert!(
+            is_not_found(&err),
+            "service-level NOT_FOUND must be classified as object-absent"
+        );
+    }
+
+    #[test]
+    fn gcs_store_is_not_found_classifies_http_404_as_absent() {
+        // The other absent shape: a plain HTTP 404 (e.g. from a proxy/LB ahead
+        // of the service). Must also count as not-found.
+        let err = GcsError::http(404, http::HeaderMap::new(), bytes::Bytes::new());
+        assert!(is_not_found(&err), "HTTP 404 must be classified as absent");
+    }
+
+    #[test]
+    fn gcs_store_is_not_found_does_not_swallow_other_errors() {
+        // Guard the inverse: a non-not-found service error (e.g. PERMISSION
+        // DENIED) and a non-404 HTTP error must NOT be treated as absent, so
+        // real failures still surface instead of being silently skipped.
+        use google_cloud_gax::error::rpc::Status;
+
+        let denied = GcsError::service(Status::default().set_code(Code::PermissionDenied));
+        assert!(!is_not_found(&denied), "PERMISSION_DENIED is not absence");
+
+        let server_err = GcsError::http(503, http::HeaderMap::new(), bytes::Bytes::new());
+        assert!(!is_not_found(&server_err), "HTTP 503 is not absence");
     }
 
     #[test]

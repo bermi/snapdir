@@ -65,6 +65,13 @@ tokio = { version = "1", default-features = false, features = ["rt-multi-thread"
 # provider as that default. After building, `grep -i aws-lc Cargo.lock` MUST be
 # empty (and no openssl-sys, which deny.toml also bans).
 google-cloud-storage = { version = "=1.12.0", default-features = false }
+# `google-cloud-gax` is already in the graph transitively (via
+# `google-cloud-storage`); we name it directly, pinned to the exact transitive
+# version, only to reach its error model — `Error::status()` -> `rpc::Code` — so
+# `key_exists`/`get_bytes` can classify the SDK's service-level `NOT_FOUND`
+# (which carries no HTTP 404) as "object absent". `default-features = false`
+# keeps it from adding anything to the graph (no aws-lc).
+google-cloud-gax = { version = "=1.10.0", default-features = false }
 # Force the `ring`-backed rustls crypto provider into the graph and expose its
 # `CryptoProvider` so we can install it as the process default at runtime.
 rustls-ring = { package = "rustls", version = "0.23", default-features = false, features = [
@@ -74,6 +81,13 @@ rustls-ring = { package = "rustls", version = "0.23", default-features = false, 
     "logging",
 ] }
 bytes = "1"
+
+[dev-dependencies]
+# Test-only: lets the `is_not_found` regression guard construct a synthetic
+# HTTP-404 SDK error (`google_cloud_gax::error::Error::http`). `http` 1.x is
+# already in the lock graph via `google-cloud-gax`; this never reaches the
+# shipped binary.
+http = "1"
 
 [lints]
 workspace = true
