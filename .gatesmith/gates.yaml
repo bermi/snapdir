@@ -692,7 +692,9 @@ gates:
     phase: 7
     owner_agent: bench
     depends_on: [bench-compile, file-store-roundtrip, perf-harness]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T02:58:21Z
+    git_sha: ac688e5
     failure_count: 0
     verification_cmd: "bash benches/compare.sh"
     pass_criteria:

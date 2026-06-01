@@ -3,10 +3,9 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-Active phase: **7** (Phases 5 & 6 green except the operator-deferred B2 gate).
-Next gate: `perf-gate` (phase 7, owner bench, **HUMAN CHECKPOINT**, deps bench-compile ✓ + file-store-roundtrip ✓ + perf-harness ✓) — head of the priority queue; then `proptest-roundtrip`/`cli-trycmd` (P8), `rustdoc-doctests` (P9).
-NEXT-TICK PLAN for `perf-gate`: the harness now EXISTS (`benches/compare.sh`, perf-harness git ac688e5). Run the FULL `bash benches/compare.sh` to capture real numbers + the byte-identical-output PASS, capture evidence, THEN escalate to the operator via AskUserQuestion with the actual speedups for the human_confirm ("Rust beats Bash baseline + meets absolute target, output bytes unchanged?"). Preview from perf-harness: **many_small ~33×, few_large ~2.7×, output byte-identical** on both corpora. (hyperfine absent → compare.sh uses its portable median-of-N fallback.)
-Last passed: `perf-harness` @ 2026-06-01T02:56:47Z — `benches/compare.sh` (correctness-first byte-identical Bash-vs-Rust `manifest`, then portable timing; jq JSON report; `--self-check`). Contract frozen (locks 4/4 OK each tick).
+Active phase: **8** (Phases 5–7 green except the operator-deferred B2 gate).
+Next gate: `cli-trycmd` (phase 8, owner tests, deps cli-skeleton ✓ + file-store-roundtrip ✓) — head of the priority queue; then `proptest-roundtrip` (P8), `rustdoc-doctests` (P9). `fuzz-parser` (P8) waits on proptest-roundtrip; `coverage-gate` (P8, human checkpoint, CI/Codecov) waits on proptest-roundtrip + cli-trycmd.
+Last passed: `perf-gate` @ 2026-06-01T02:58:21Z — **operator-signed-off HUMAN CHECKPOINT**: `bash benches/compare.sh` exit0, output BYTE-IDENTICAL Bash vs Rust on both corpora, Rust **33.6× (many-small) / 2.69× (few-large)** faster (portable fallback; hyperfine absent). **Phase 7 complete.** Contract frozen (locks 4/4 OK each tick).
 CROSS-LANE follow-up (cli): (a) wire `verify-cache`/`flush-cache` to `snapdir_core::cache` + call `check_snapshot_integrity` in `checkout`/`verify` (resolve `${XDG_CACHE_HOME:-$HOME/.cache}/snapdir`); (b) wire the `catalog` subcommands to `snapdir_catalog::Catalog`.
 
 **Remote-interop is now PM-auto-verified, not a human rubber-stamp.** `remote-interop` runs `bash tests/integration/remote_stores_live.sh` every tick: MinIO S3 Bash↔Rust cross-tool (byte-identical) + a zero-external-dependency lane (Rust round-trip with `aws`/`b2`/`gcloud` removed from PATH). `remote-interop-gcs` proves the same against the **real** `gs://snapdir-integration-testing` bucket (ADC). Both green. `gcs-store-notfound-fix` repaired a real GcsStore bug — `key_exists`/`get_bytes` only treated HTTP 404 as absent, but `google-cloud-storage` v1.12 reports a missing object as service-level `Code::NotFound` (`http_status_code()==None`), so skip-if-present aborted **every** real GCS push; fixed via an `is_not_found()` helper.
@@ -41,7 +40,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 4 (Store trait + FileStore): 5/5 passed ✅
 - Phase 5 (Remote stores): 8/9 passed (S3+GCS interop PM-verified; only `remote-interop-b2` — operator-deferred to post-release-candidate — remains)
 - Phase 6 (Caching + redb catalog): 4/4 passed ✅ (`cache-id` `catalog-redb` `catalog-compat` 🔒 `catalog-rebuild`)
-- Phase 7 (Performance): 3/4 passed (`bench-scaffold` ✅ `bench-compile` ✅ `perf-harness` ✅; only `perf-gate` remains — operator sign-off, harness ready)
+- Phase 7 (Performance): 4/4 passed ✅ (`bench-scaffold` `bench-compile` `perf-harness` `perf-gate` — Rust 33.6×/2.69× faster, output byte-identical, operator-signed-off)
 - Phase 8 (Testing/fuzzing): 0/4 passed
 - Phase 9 (Documentation): 0/2 passed
 - Phase 10 (Packaging/release): 0/2 passed
@@ -86,6 +85,7 @@ Open (non-blocking) findings to revisit later:
 - 2026-06-01 — `bench-scaffold` (ci): registered the top-level `benches` workspace member (`snapdir-benches`, criterion 0.7 no-aws-lc) + minimal real `hot_paths` `[[bench]]`, fixing `bench-compile`'s vacuous-pass risk (`cargo build --benches` was building zero targets). (git 26b89d5)
 - 2026-06-01 — `bench-compile` (bench): 3 criterion hot-path groups — `hash/blake3/{64B,4K,64K,1M}` (Throughput::Bytes), `walk/{many_small,few_large}` via `walk()`+`Blake3Hasher`, `manifest/{emit,parse}/{1k,10k}`; `tempfile` corpora, deterministic, self-cleaning; smoke-run e.g. blake3/1M ~1.43 GiB/s. Benches only measure (output bytes unchanged). (git 06ff564)
 - 2026-06-01 — `perf-harness` (bench): `benches/compare.sh` — Rust-vs-Bash `manifest` comparison that asserts **byte-identical output first** (hard-fail on drift) then times both (hyperfine if present, else a portable median-of-N `EPOCHREALTIME` fallback — hyperfine is absent here) over many-small + few-large corpora; jq JSON report for `perf-gate`; `--self-check`. Full run: **~33× (many-small), ~2.7× (few-large), output byte-identical**; perf win is pure in-process walk+BLAKE3 (no core change needed). (git ac688e5)
+- 2026-06-01 — `perf-gate` (bench, **human checkpoint**): operator signed off after the PM ran `bash benches/compare.sh` — byte-identical output both corpora, **33.6× many-small / 2.69× few-large**. **Phase 7 complete.** (git ac688e5)
 
 ## Remote-store test credentials (operator)
 
