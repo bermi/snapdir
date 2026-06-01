@@ -863,7 +863,9 @@ gates:
     phase: 6
     owner_agent: cli
     depends_on: [cache-id, cli-store-wire]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T15:22:12Z
+    git_sha: 4399351
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked cache_commands"
     pass_criteria:
