@@ -783,7 +783,9 @@ gates:
     phase: 8
     owner_agent: ci
     depends_on: [coverage-gate]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T14:13:17Z
+    git_sha: c68ce6f
     failure_count: 0
     verification_cmd: "grep -E -- '--fail-under-lines[= ]+75' .github/workflows/ci.yaml"
     pass_criteria:
