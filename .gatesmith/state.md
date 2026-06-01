@@ -3,9 +3,9 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-Active phase: **6** (Phase 5 green except the operator-deferred B2 gate).
-Next gate: `catalog-rebuild` (phase 6, owner catalog, deps catalog-compat ✓ + file-store-roundtrip ✓) — head of the priority queue; then `bench-compile` (P7), `proptest-roundtrip`/`cli-trycmd` (P8), `rustdoc-doctests` (P9).
-Last passed: `catalog-compat` @ 2026-06-01T02:20:38Z — JSON-line output matches the oracle's sqlite `json_object` **byte-for-byte** (compact, exact key order; `revisions` has no `location`; `previous_id` renders bare `null`), verified incl. a live-`sqlite3` golden test against the frozen `./snapdir-sqlite3-catalog`. **Catalog JSON shapes now CLI-compat FROZEN** (changes need `## Proposal` → human approval). Contract frozen (locks 4/4 OK each tick).
+Active phase: **7** (Phases 5 & 6 green except the operator-deferred B2 gate).
+Next gate: `bench-compile` (phase 7, owner bench, deps interop-diff ✓) — head of the priority queue; then `proptest-roundtrip`/`cli-trycmd` (P8), `rustdoc-doctests` (P9), `perf-gate` (P7, needs bench-compile + file-store-roundtrip).
+Last passed: `catalog-rebuild` @ 2026-06-01T02:27:13Z — `Catalog::rebuild` (store-agnostic, clock-free): sort store entries by `created_at`, clear the location across all redb tables, replay through `save`'s insert path to reconstruct `previous_id` + dedup; idempotent; byte-identical round-trip query output. **Phase 6 complete.** Contract frozen (locks 4/4 OK each tick).
 CROSS-LANE follow-up (cli): (a) wire `verify-cache`/`flush-cache` to `snapdir_core::cache` + call `check_snapshot_integrity` in `checkout`/`verify` (resolve `${XDG_CACHE_HOME:-$HOME/.cache}/snapdir`); (b) wire the `catalog` subcommands to `snapdir_catalog::Catalog`.
 
 **Remote-interop is now PM-auto-verified, not a human rubber-stamp.** `remote-interop` runs `bash tests/integration/remote_stores_live.sh` every tick: MinIO S3 Bash↔Rust cross-tool (byte-identical) + a zero-external-dependency lane (Rust round-trip with `aws`/`b2`/`gcloud` removed from PATH). `remote-interop-gcs` proves the same against the **real** `gs://snapdir-integration-testing` bucket (ADC). Both green. `gcs-store-notfound-fix` repaired a real GcsStore bug — `key_exists`/`get_bytes` only treated HTTP 404 as absent, but `google-cloud-storage` v1.12 reports a missing object as service-level `Code::NotFound` (`http_status_code()==None`), so skip-if-present aborted **every** real GCS push; fixed via an `is_not_found()` helper.
@@ -39,7 +39,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
 - Phase 4 (Store trait + FileStore): 5/5 passed ✅
 - Phase 5 (Remote stores): 8/9 passed (S3+GCS interop PM-verified; only `remote-interop-b2` — operator-deferred to post-release-candidate — remains)
-- Phase 6 (Caching + redb catalog): 3/4 passed (`cache-id` ✅ `catalog-redb` ✅ `catalog-compat` ✅ 🔒 JSON shapes frozen; only `catalog-rebuild` remains)
+- Phase 6 (Caching + redb catalog): 4/4 passed ✅ (`cache-id` `catalog-redb` `catalog-compat` 🔒 `catalog-rebuild`)
 - Phase 7 (Performance): 0/2 passed
 - Phase 8 (Testing/fuzzing): 0/4 passed
 - Phase 9 (Documentation): 0/2 passed
@@ -81,6 +81,7 @@ Open (non-blocking) findings to revisit later:
 - 2026-06-01 — `cache-id` (core): new library-pure `snapdir-core::cache` — `check_snapshot_integrity` (mirrors `_snapdir_check_integrity`: manifest-present + every file object verified vs its content-address), `verify_cache(purge)` (mirrors `verify-cache`: scan `.objects/*/*/*/*`, recompute blake3, compare to path-encoded expected checksum, purge corrupt), `flush_cache`; reuses the frozen sharded helpers + in-process blake3, no `$HOME`/env/IO; 10 tests, tamper case cross-checked vs live `./snapdir verify-cache --purge`. Frozen files untouched. (git 3763bd3)
 - 2026-06-01 — `catalog-redb` (catalog): redb-backed catalog (`redb =4.1.0`, pure-Rust, no sqlite/aws-lc) replacing the stub — fixed range scans (no SQL planner): `loc_head` → `locations` + save's previous_id (O(1)), `by_location` reverse-range → `revisions` DESC, `by_id` reverse-range → `ancestors` DESC; `created_at YYYY-MM-DD HH:MM:SS.SSS` (lexical=chronological) + monotonic seq; injectable `Clock`; `save` no-ops when head==id; field sets match the oracle SQL `json_object`. 8 tests. (git b63125f)
 - 2026-06-01 — `catalog-compat` (catalog): JSON-line serialization (serde/serde_json) matches the oracle's sqlite `json_object` **byte-for-byte** — compact, exact key order, `revisions` without `location`, `previous_id` bare `null`; proven by a live-`sqlite3` golden test that drives the frozen `./snapdir-sqlite3-catalog` and neutralizes `NOW()` by parsing the oracle's own `created_at`. 6 `json_compat` tests. **Catalog JSON shapes CLI-compat FROZEN.** (git f7025b1)
+- 2026-06-01 — `catalog-rebuild` (catalog): `Catalog::rebuild(location, RebuildEntry{id,created_at})` — store-agnostic (no `snapdir-stores` dep), clock-free: sorts the store's recovered entries by `created_at`, clears the location across all 4 redb tables, replays through `save`'s insert path to reconstruct `previous_id` + head==id dedup; touches only that location; idempotent. Recoverability boundary documented (store yields id-set + `created_at`; `previous_id` re-derived by chronological order). 6 rebuild tests incl. byte-identical round-trip. **Phase 6 complete.** (git d72913c)
 
 ## Remote-store test credentials (operator)
 

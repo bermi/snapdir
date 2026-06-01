@@ -618,7 +618,9 @@ gates:
     phase: 6
     owner_agent: catalog
     depends_on: [catalog-compat, file-store-roundtrip]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T02:27:13Z
+    git_sha: d72913c
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-catalog --locked rebuild"
     pass_criteria:
