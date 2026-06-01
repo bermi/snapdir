@@ -6,16 +6,20 @@
 //!
 //! `manifest`/`id` are wired to `snapdir-core`'s in-process walk and emit
 //! oracle-identical stdout; `push`/`fetch`/`pull`/`checkout`/`verify` are wired
-//! to `snapdir-stores`; and `stage`/`verify-cache`/`flush-cache` are wired to
-//! `snapdir-core::cache` (the cache is itself a `file://`-shaped store). The
-//! remaining catalog subcommands (`locations`/`ancestors`/`revisions`/
-//! `defaults`) are still stubs; their behavior arrives in later phases.
+//! to `snapdir-stores`; `stage`/`verify-cache`/`flush-cache` are wired to
+//! `snapdir-core::cache` (the cache is itself a `file://`-shaped store); and the
+//! catalog queries (`locations`/`ancestors`/`revisions`) are wired to
+//! `snapdir-catalog`, emitting the frozen CLI-compat JSON lines. Only `defaults`
+//! remains a stub; its behavior arrives in a later phase.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use snapdir_catalog::{
+    ancestors_json_line, locations_json_line, revisions_json_line, Catalog, SystemClock,
+};
 use snapdir_core::{
     cache, expand_excludes, snapshot_id, walk, Blake3Hasher, Blake3KeyedHasher, ExcludeMatcher,
     FollowMode, Hasher, Manifest, ManifestEntry, Md5Hasher, PathMode, PathType, Sha256Hasher,
@@ -199,16 +203,18 @@ pub enum Command {
 impl Cli {
     /// Dispatch the parsed command.
     ///
-    /// `manifest`/`id`, the store commands, and the cache commands
-    /// (`stage`/`verify-cache`/`flush-cache`) are wired to the libraries. The
-    /// remaining catalog subcommands report "not implemented" via [`Err`]; real
-    /// behavior arrives in later gates.
+    /// `manifest`/`id`, the store commands, the cache commands
+    /// (`stage`/`verify-cache`/`flush-cache`), and the catalog queries
+    /// (`locations`/`ancestors`/`revisions`) are wired to the libraries. Only
+    /// `defaults` reports "not implemented" via [`Err`]; its behavior arrives in
+    /// a later gate.
     ///
     /// # Errors
     ///
     /// Returns any error raised while resolving the path, building the exclude
-    /// matcher, walking the tree, or talking to the store/cache, plus a "not
-    /// implemented" error for the stubbed catalog subcommands.
+    /// matcher, walking the tree, talking to the store/cache, or opening the
+    /// catalog, plus a "not implemented" error for the stubbed `defaults`
+    /// subcommand.
     pub fn run(&self) -> Result<()> {
         match &self.command {
             Command::Manifest {
@@ -248,28 +254,15 @@ impl Cli {
             Command::Stage { dir } => self.run_stage(dir.as_deref()),
             Command::VerifyCache => self.run_verify_cache(),
             Command::FlushCache => self.run_flush_cache(),
-            other => {
-                let name = match other {
-                    Command::Locations => "locations",
-                    Command::Ancestors => "ancestors",
-                    Command::Revisions => "revisions",
-                    Command::Defaults => "defaults",
-                    Command::Version => {
-                        println!("snapdir {}", env!("CARGO_PKG_VERSION"));
-                        return Ok(());
-                    }
-                    Command::Manifest { .. }
-                    | Command::Id { .. }
-                    | Command::Push { .. }
-                    | Command::Fetch
-                    | Command::Checkout { .. }
-                    | Command::Pull { .. }
-                    | Command::Verify
-                    | Command::Stage { .. }
-                    | Command::VerifyCache
-                    | Command::FlushCache => unreachable!(),
-                };
-                anyhow::bail!("snapdir: `{name}` is not implemented yet")
+            Command::Locations => self.run_locations(),
+            Command::Ancestors => self.run_ancestors(),
+            Command::Revisions => self.run_revisions(),
+            Command::Version => {
+                println!("snapdir {}", env!("CARGO_PKG_VERSION"));
+                Ok(())
+            }
+            Command::Defaults => {
+                anyhow::bail!("snapdir: `defaults` is not implemented yet")
             }
         }
     }
@@ -289,6 +282,17 @@ impl Cli {
             .push(&manifest, &root)
             .with_context(|| format!("pushing snapshot {id} to store"))?;
         println!("{id}");
+        // Mirror the oracle's `_snapdir_log_event "push" "$id" "$store"` (L359):
+        // record the snapshot in the catalog at the store URI so `locations`/
+        // `revisions`/`ancestors` see it. Best-effort and only when the catalog
+        // is enabled (`--catalog` / `SNAPDIR_CATALOG`), exactly like the oracle's
+        // `_snapdir_log_event` no-op when no catalog adapter is configured.
+        let store_url = self
+            .globals
+            .store
+            .as_deref()
+            .context("missing --store option")?;
+        self.log_event("push", &id, store_url)?;
         Ok(())
     }
 
@@ -426,6 +430,113 @@ impl Cli {
         cache::flush_cache(&cache_dir)
             .with_context(|| format!("flushing cache at {}", cache_dir.display()))?;
         Ok(())
+    }
+
+    /// `snapdir locations`: list every location tracked by the catalog (the
+    /// latest record per location), one frozen JSON line per record, in the
+    /// catalog's order. Mirrors the oracle's `snapdir locations`
+    /// (`snapdir-sqlite3-catalog locations`).
+    fn run_locations(&self) -> Result<()> {
+        let catalog = self.open_catalog()?;
+        for record in catalog.locations().context("querying catalog locations")? {
+            println!("{}", locations_json_line(&record));
+        }
+        Ok(())
+    }
+
+    /// `snapdir ancestors --id <ID> [--location <LOC>]`: walk the `previous_id`
+    /// chain for `<ID>` (optionally filtered to a location), `created_at DESC`,
+    /// one frozen JSON line per ancestor (each line's `id` is the row's
+    /// `previous_id`). Mirrors `snapdir ancestors --id=…`.
+    fn run_ancestors(&self) -> Result<()> {
+        let catalog = self.open_catalog()?;
+        let id = self.require_id()?;
+        let location = self.globals.location.as_deref();
+        for record in catalog
+            .ancestors(id, location)
+            .with_context(|| format!("querying catalog ancestors of {id}"))?
+        {
+            println!("{}", ancestors_json_line(&record));
+        }
+        Ok(())
+    }
+
+    /// `snapdir revisions --location <LOC>`: list every snapshot id recorded at
+    /// `<LOC>` (`created_at DESC`), one frozen JSON line per revision. Mirrors
+    /// the oracle's `snapdir revisions --location=…`, whose location defaults to
+    /// `--store` / the directory when `--location` is unset.
+    fn run_revisions(&self) -> Result<()> {
+        let catalog = self.open_catalog()?;
+        // Oracle (L991-997): location = --location, else --store, else the dir;
+        // empty → error.
+        let location = self
+            .globals
+            .location
+            .as_deref()
+            .or(self.globals.store.as_deref())
+            .context("missing --location option")?;
+        for record in catalog
+            .revisions(location)
+            .with_context(|| format!("querying catalog revisions at {location}"))?
+        {
+            println!("{}", revisions_json_line(&record));
+        }
+        Ok(())
+    }
+
+    /// Logs a catalog event (`event`/`id`/`location`) when the catalog is
+    /// enabled, mirroring the oracle's `_snapdir_log_event` (`snapdir` L1620): a
+    /// no-op unless `--catalog` / `SNAPDIR_CATALOG` selects a catalog. Uses the
+    /// shipped [`SystemClock`] (`created_at` = `YYYY-MM-DD HH:MM:SS.SSS`), so the
+    /// JSON timestamps are byte-shaped like the oracle's.
+    fn log_event(&self, event: &str, id: &str, location: &str) -> Result<()> {
+        // The oracle's `_snapdir_log_event` is a no-op when no catalog adapter
+        // is configured; only persist when the catalog is enabled.
+        let Some(db) = self.catalog_db_path() else {
+            return Ok(());
+        };
+        let catalog =
+            Catalog::open(&db).with_context(|| format!("opening catalog at {}", db.display()))?;
+        catalog
+            .log(event, id, location, &SystemClock)
+            .with_context(|| format!("recording catalog event {event} for {id}"))?;
+        Ok(())
+    }
+
+    /// Opens the catalog for a read query, erroring when no catalog is enabled —
+    /// mirroring the oracle's `_snapdir_ensure_catalog` ("Missing
+    /// `SNAPDIR_CATALOG` or `--catalog`").
+    fn open_catalog(&self) -> Result<Catalog> {
+        let db = self
+            .catalog_db_path()
+            .context("error: Missing SNAPDIR_CATALOG or --catalog")?;
+        if let Some(parent) = db.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating catalog directory {}", parent.display()))?;
+        }
+        Catalog::open(&db).with_context(|| format!("opening catalog at {}", db.display()))
+    }
+
+    /// Resolves the catalog database path, or `None` when the catalog is not
+    /// enabled (the oracle requires `--catalog` / `SNAPDIR_CATALOG` to be set;
+    /// when unset its `_snapdir_log_event` is a no-op and the query commands
+    /// error). The single redb backend replaces the oracle's pluggable adapters,
+    /// so the value is interpreted as the db path: an absolute/relative path is
+    /// used verbatim; a bare adapter name (e.g. the oracle's `"redb"` /
+    /// `"sqlite3"`) selects `<cache-dir>/<name>-catalog.redb`.
+    fn catalog_db_path(&self) -> Option<PathBuf> {
+        let catalog = self.globals.catalog.as_deref()?;
+        if catalog.is_empty() {
+            return None;
+        }
+        // A path-like value (contains a path separator) is used as the db file
+        // directly; otherwise treat it as a bare adapter name and place the db
+        // under the cache dir.
+        if catalog.contains(std::path::MAIN_SEPARATOR) {
+            Some(PathBuf::from(catalog))
+        } else {
+            Some(self.cache_dir().join(format!("{catalog}-catalog.redb")))
+        }
     }
 
     /// Resolves `--store` to a concrete backend behind the [`Store`] trait,
