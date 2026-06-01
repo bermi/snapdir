@@ -4,8 +4,9 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **7** (Phases 5 & 6 green except the operator-deferred B2 gate).
-Next gate: `bench-compile` (phase 7, owner bench, deps interop-diff ✓) — head of the priority queue; then `proptest-roundtrip`/`cli-trycmd` (P8), `rustdoc-doctests` (P9), `perf-gate` (P7, needs bench-compile + file-store-roundtrip).
-Last passed: `catalog-rebuild` @ 2026-06-01T02:27:13Z — `Catalog::rebuild` (store-agnostic, clock-free): sort store entries by `created_at`, clear the location across all redb tables, replay through `save`'s insert path to reconstruct `previous_id` + dedup; idempotent; byte-identical round-trip query output. **Phase 6 complete.** Contract frozen (locks 4/4 OK each tick).
+Next gate: `bench-compile` (phase 7, owner bench, deps interop-diff ✓ + bench-scaffold ✓) — head of the priority queue; then `proptest-roundtrip`/`cli-trycmd` (P8), `rustdoc-doctests` (P9), `perf-gate` (P7, needs bench-compile + file-store-roundtrip).
+Last passed: `bench-scaffold` @ 2026-06-01T02:35:51Z — registered a top-level `benches` workspace member (`snapdir-benches`, criterion 0.7 no-aws-lc) with a minimal real `hot_paths` `[[bench]]`, so `cargo build --benches` builds a real target (was a vacuous pass). Contract frozen (locks 4/4 OK each tick).
+GATE-ADDED `bench-scaffold` (ci) this tick: `bench-compile`'s `cargo build --benches` was passing with ZERO bench targets (hollow). ci owns the root `Cargo.toml` member registration; the bench lane (`bench-compile`) now fills the real hash/walk/manifest criterion benches into `benches/benches/hot_paths.rs`.
 CROSS-LANE follow-up (cli): (a) wire `verify-cache`/`flush-cache` to `snapdir_core::cache` + call `check_snapshot_integrity` in `checkout`/`verify` (resolve `${XDG_CACHE_HOME:-$HOME/.cache}/snapdir`); (b) wire the `catalog` subcommands to `snapdir_catalog::Catalog`.
 
 **Remote-interop is now PM-auto-verified, not a human rubber-stamp.** `remote-interop` runs `bash tests/integration/remote_stores_live.sh` every tick: MinIO S3 Bash↔Rust cross-tool (byte-identical) + a zero-external-dependency lane (Rust round-trip with `aws`/`b2`/`gcloud` removed from PATH). `remote-interop-gcs` proves the same against the **real** `gs://snapdir-integration-testing` bucket (ADC). Both green. `gcs-store-notfound-fix` repaired a real GcsStore bug — `key_exists`/`get_bytes` only treated HTTP 404 as absent, but `google-cloud-storage` v1.12 reports a missing object as service-level `Code::NotFound` (`http_status_code()==None`), so skip-if-present aborted **every** real GCS push; fixed via an `is_not_found()` helper.
@@ -40,7 +41,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 4 (Store trait + FileStore): 5/5 passed ✅
 - Phase 5 (Remote stores): 8/9 passed (S3+GCS interop PM-verified; only `remote-interop-b2` — operator-deferred to post-release-candidate — remains)
 - Phase 6 (Caching + redb catalog): 4/4 passed ✅ (`cache-id` `catalog-redb` `catalog-compat` 🔒 `catalog-rebuild`)
-- Phase 7 (Performance): 0/2 passed
+- Phase 7 (Performance): 1/3 passed (`bench-scaffold` ✅ ci-added; `bench-compile`/`perf-gate` remain)
 - Phase 8 (Testing/fuzzing): 0/4 passed
 - Phase 9 (Documentation): 0/2 passed
 - Phase 10 (Packaging/release): 0/2 passed

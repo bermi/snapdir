@@ -631,10 +631,32 @@ gates:
   # ===================================================================
   # Phase 7 — Performance  (lane: bench)
   # ===================================================================
+  # GATE-ADD 2026-06-01T02:30:49Z: prereq so bench-compile is not a hollow pass.
+  # `cargo build --benches` exits 0 vacuously while there is no `benches` workspace
+  # member. ci registers a top-level `benches` member crate (root Cargo.toml is ci's
+  # lane) + criterion dev-dep + a minimal REAL bench target; the bench lane then fills
+  # the hot-path benches in bench-compile. (LANE-FENCE-EXC journaled: ci crate-stub
+  # scaffolding extended to the benches member crate.)
+  - id: bench-scaffold
+    phase: 7
+    owner_agent: ci
+    depends_on: [interop-diff]
+    status: passed
+    passed_at: 2026-06-01T02:35:51Z
+    git_sha: 26b89d5
+    failure_count: 0
+    verification_cmd: "cargo build --benches --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: benches/Cargo.toml
+    human_checkpoint: false
+    description: "Register a top-level `benches` workspace member (criterion dev-dep, ring stance) with a minimal compiling [[bench]] target so `cargo build --benches` builds a real target (not vacuous). Real hot-path benches land in bench-compile."
+
   - id: bench-compile
     phase: 7
     owner_agent: bench
-    depends_on: [interop-diff]
+    depends_on: [interop-diff, bench-scaffold]
     status: pending
     failure_count: 0
     verification_cmd: "cargo build --benches --locked"
