@@ -879,7 +879,9 @@ gates:
     phase: 6
     owner_agent: cli
     depends_on: [catalog-compat, cli-store-wire]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T15:30:26Z
+    git_sha: 2032e2c
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked catalog_commands"
     pass_criteria:
