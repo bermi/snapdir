@@ -4,9 +4,9 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **8** (Phases 5–7 green except the operator-deferred B2 gate).
-Next gate: `coverage-gate` (phase 8, owner tests, **HUMAN CHECKPOINT**, deps proptest-roundtrip ✓ + cli-trycmd ✓) — head of the priority queue (id-asc before `fuzz-parser`); then `fuzz-parser` (P8), `rustdoc-doctests` (P9).
-NEXT-TICK PLAN for `coverage-gate`: its `verification_cmd` is a bare `echo` + `human_confirm` about CI/Codecov coverage — a hollow rubber-stamp as written. Don't just ask: first check if `cargo-llvm-cov` is installed (`cargo llvm-cov --version`); if so, RUN it locally (`cargo llvm-cov --workspace --locked --summary-only`) to produce a REAL coverage % and capture evidence, THEN escalate to the operator with the actual number + whatever the agreed fail-under threshold is (check `.github/workflows/ci.yaml` for the `--fail-under`). If `cargo-llvm-cov` is NOT installed, say so and escalate honestly (the human confirms the CI/Codecov number). This is a genuine external-system (Codecov) checkpoint, but give real local numbers rather than a blind ask.
-Last passed: `proptest-roundtrip` @ 2026-06-01T13:52:08Z — `crates/snapdir-core/tests/proptest_roundtrip.rs` (owner-fixed `tests → core`): 3 proptests ×1024 cases proving manifest `parse_line(Display)==entry`, fields verbatim (paths keep spaces), and `Manifest from_entries→Display→parse` modulo `sort -k5`. Strategy constraints all derived from real `parse_line`/`Display`. Frozen files untouched; no parse/emit asymmetry. Contract frozen (locks 4/4 OK each tick).
+Next gate: `ci-coverage-floor` (phase 8, owner ci, deps coverage-gate ✓) — head of the priority queue (id-asc before `fuzz-parser`); then `fuzz-parser` (P8), `rustdoc-doctests` (P9). `ci-coverage-floor` = spawn ci to change `.github/workflows/ci.yaml` coverage job `--fail-under-lines 0 → 75` (so GitHub CI enforces the same floor the coverage-gate now checks; verify via `grep`).
+`cargo-llvm-cov` 0.8.7 + `llvm-tools-preview` are now installed locally (PM, for coverage-gate). `cargo llvm-cov report --fail-under-lines N` reuses existing profile data (fast, no test re-run).
+Last passed: `coverage-gate` @ 2026-06-01T14:10:14Z — **GATE-BUMP from hollow to real** (operator-approved "set a real floor" + 75%): was `echo`+`human_confirm` with CI `--fail-under-lines 0`; now `cargo llvm-cov --workspace --all-features --locked --fail-under-lines 75 --summary-only` (exit_code). Measured **79.43% lines** (≥75% → pass; floor 90 → exit1 proves it's real). Remote-store live paths uncovered hermetically (env-gated, as in CI). Contract frozen (locks 4/4 OK each tick).
 GATE-OWNER-FIX pattern (this phase): gates verified by `cargo test -p <crate>` but nominally owned by `tests` are corrected to the crate's lane — `cli-trycmd → cli`, `proptest-roundtrip → core`. `fuzz-parser` (`tests/fuzz/...`, `cargo fuzz`) genuinely IS the `tests` lane (top-level `tests/`).
 CROSS-LANE follow-up (cli): (a) wire `verify-cache`/`flush-cache` to `snapdir_core::cache` + call `check_snapshot_integrity` in `checkout`/`verify` (resolve `${XDG_CACHE_HOME:-$HOME/.cache}/snapdir`); (b) wire the `catalog` subcommands to `snapdir_catalog::Catalog`.
 
@@ -43,7 +43,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 5 (Remote stores): 8/9 passed (S3+GCS interop PM-verified; only `remote-interop-b2` — operator-deferred to post-release-candidate — remains)
 - Phase 6 (Caching + redb catalog): 4/4 passed ✅ (`cache-id` `catalog-redb` `catalog-compat` 🔒 `catalog-rebuild`)
 - Phase 7 (Performance): 4/4 passed ✅ (`bench-scaffold` `bench-compile` `perf-harness` `perf-gate` — Rust 33.6×/2.69× faster, output byte-identical, operator-signed-off)
-- Phase 8 (Testing/fuzzing): 2/4 passed (`cli-trycmd` ✅ `proptest-roundtrip` ✅; `coverage-gate`/`fuzz-parser` remain)
+- Phase 8 (Testing/fuzzing): 3/5 passed (`cli-trycmd` ✅ `proptest-roundtrip` ✅ `coverage-gate` ✅ 75% floor; `ci-coverage-floor`/`fuzz-parser` remain)
 - Phase 9 (Documentation): 0/2 passed
 - Phase 10 (Packaging/release): 0/2 passed
 
@@ -90,6 +90,7 @@ Open (non-blocking) findings to revisit later:
 - 2026-06-01 — `perf-gate` (bench, **human checkpoint**): operator signed off after the PM ran `bash benches/compare.sh` — byte-identical output both corpora, **33.6× many-small / 2.69× few-large**. **Phase 7 complete.** (git ac688e5)
 - 2026-06-01 — `cli-trycmd` (cli; owner-fixed from `tests`): 29 `trycmd` surface snapshots (help/version, all 14 subcommand `--help`, parse + missing-arg errors, the 7 stubs' real "not implemented yet") + 6 `assert_cmd`/`assert_fs` e2e (`id`/`manifest` byte-equal the oracle, `push→fetch→checkout→verify` file:// round-trip). Honest wired-vs-stub coverage map; no oracle divergence. (git 9218c33)
 - 2026-06-01 — `proptest-roundtrip` (core; owner-fixed from `tests`): `tests/proptest_roundtrip.rs` — 3 proptests ×1024 cases proving manifest `parse_line(Display)==entry`, fields verbatim (paths keep spaces), `Manifest from_entries→Display→parse` modulo `sort -k5`; strategy constraints derived from real `parse_line`/`Display`. Frozen files untouched; no parse/emit asymmetry. (git 3690282)
+- 2026-06-01 — `coverage-gate` (**GATE-BUMP**, operator-approved): hollow `echo`+`human_confirm` (CI `--fail-under-lines 0`) → real `cargo llvm-cov --fail-under-lines 75` machine check. PM installed cargo-llvm-cov 0.8.7, measured **79.43% workspace line coverage** (core/catalog/cli high; s3/gcs/b2 low — live-gated). Floor 75 set (operator value); proven real (90→exit1, 75→exit0). CI parity → `ci-coverage-floor`. (git f7db332)
 
 ## Remote-store test credentials (operator)
 

@@ -757,17 +757,41 @@ gates:
     human_checkpoint: false
     description: "cargo-fuzz target for the manifest parser exists and builds (scheduled cron run in CI)."
 
+  # GATE-BUMP 2026-06-01T14:10:14Z (operator-approved: AskUserQuestion "Set a real floor" + "75%
+  # lines"). Was a HOLLOW human-checkpoint: verification_cmd was a bare `echo` + human_confirm and
+  # ci.yaml's coverage job used `--fail-under-lines 0` (no floor at all). Replaced with a real
+  # machine check: cargo-llvm-cov with the operator-approved 75% line floor. Measured workspace
+  # line coverage at bump time = 79.43%. CI parity is tracked by ci-coverage-floor.
   - id: coverage-gate
     phase: 8
     owner_agent: tests
     depends_on: [proptest-roundtrip, cli-trycmd]
+    bump_reason: "hollow echo+human_confirm with ci --fail-under-lines 0 enforced nothing; replaced with cargo-llvm-cov --fail-under-lines 75 (real exit_code floor, operator-approved value)"
+    status: passed
+    passed_at: 2026-06-01T14:10:14Z
+    git_sha: f7db332
+    failure_count: 0
+    verification_cmd: "cargo llvm-cov --workspace --all-features --locked --fail-under-lines 75 --summary-only"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Workspace line coverage >= 75% (operator-approved floor) via cargo-llvm-cov. Measured 79.43% at the bump; remote-store live paths are env-gated (uncovered hermetically, as in CI)."
+
+  # GATE-ADD 2026-06-01T14:10:14Z: make GitHub CI enforce the same 75% floor the coverage-gate
+  # now checks locally. ci.yaml's coverage job currently passes `--fail-under-lines 0`.
+  - id: ci-coverage-floor
+    phase: 8
+    owner_agent: ci
+    depends_on: [coverage-gate]
     status: pending
     failure_count: 0
-    verification_cmd: "echo 'Confirm cargo llvm-cov coverage on GitHub meets the fail-under threshold.'"
+    verification_cmd: "grep -E -- '--fail-under-lines[= ]+75' .github/workflows/ci.yaml"
     pass_criteria:
-      human_confirm: "Does cargo-llvm-cov coverage meet the agreed fail-under threshold in CI?"
-    human_checkpoint: true
-    description: "Coverage fail-under threshold met via cargo-llvm-cov -> Codecov."
+      and:
+        - exit_code: 0
+        - regex_match: "--fail-under-lines[= ]+75"
+    human_checkpoint: false
+    description: "ci.yaml coverage job enforces the operator-approved 75% line floor (--fail-under-lines 0 -> 75), matching the coverage-gate."
 
   # ===================================================================
   # Phase 9 — Documentation  (lane: docs)
