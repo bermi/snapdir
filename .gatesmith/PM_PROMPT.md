@@ -36,8 +36,11 @@ Frozen **after Phase 2** (the `freeze-contract` gate flips this on). Until then 
 after, any change needs a `human_checkpoint` escalation.
 
 1. **Manifest format** — `PATH_TYPE PERMISSIONS CHECKSUM SIZE PATH`, space-separated, `sort -k5`,
-   `#`-comments excluded; dir checksum = sort+dedup+concat(no separators)+rehash of children;
-   snapshot ID = root dir checksum.
+   `#`-comments excluded; dir checksum = sort+dedup+concat(no separators)+rehash of children
+   (this is the `D ./` line's CHECKSUM field); snapshot ID = BLAKE3 of the `#`-stripped full
+   manifest text incl. trailing newline (`manifest | grep -v '^#' | b3sum --no-names`) — **NOT**
+   the root dir checksum (DESC-CORRECTION, human-approved 2026-05-31; see snapshot-id-core-fix /
+   snapshot-id-doc-fix). The dir-checksum rule above is correct as-is.
 2. **Content-addressable layout** — `.objects/<h[0:3]>/<h[3:6]>/<h[6:9]>/<h[9:]>` and `.manifests/<id…>`
    identically sharded (caches/buckets must interop with Bash).
 3. **Golden fixtures** — `utils/qa-fixtures/expected-guide-commands.txt` hashes.

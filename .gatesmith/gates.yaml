@@ -804,7 +804,9 @@ gates:
     phase: 9
     owner_agent: docs
     depends_on: [interop-diff]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T14:25:07Z
+    git_sha: 45cd32f
     failure_count: 0
     verification_cmd: "cargo test --doc --workspace --locked"
     pass_criteria:
