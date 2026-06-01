@@ -3,9 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-Active phase: **9** (Phases 5–8 green except the operator-deferred B2 gate).
-Next gate: `migration-guide` (phase 9, owner docs, **HUMAN CHECKPOINT**, deps rustdoc-doctests ✓ + migration-guide-draft ✓) — head of the priority queue; then Phase 10 `release-config` (deps ci-matrix-green ✓ + migration-guide).
-NEXT-TICK PLAN for `migration-guide`: the guide NOW EXISTS (`docs/rust-port/migration.md`, migration-guide-draft git 12da788) and the machine checks pass. Next tick: re-run the file/grep verification (exit 0), then escalate to the operator via AskUserQuestion presenting the finished guide for the `human_confirm` ("subcommand-mapping + auth-mapping tables, catalog/redb note accurate and complete?"). On YES → mark passed; **Phase 9 complete**, unblocking Phase 10 `release-config`.
+Active phase: **6 (reopened for CLI feature-completeness)**. Phases 5,7,8 green except the operator-deferred B2 gate; Phase 9 docs all green except the post-wiring `migration-guide-refresh`.
+Next gate: `cli-cache-commands` (phase 6, owner cli, deps cache-id ✓ + cli-store-wire ✓) — head of the priority queue; then `cli-catalog-commands` (P6), `cli-defaults` (P6), `migration-guide-refresh` (P9), then Phase 10 `release-config`/`release-dryrun`.
+⚠ **FEATURE-COMPLETENESS GAP (operator-flagged at migration-guide sign-off).** 7 of 14 subcommands were never CLI-wired despite their library logic existing: `stage`/`verify-cache`/`flush-cache` (→ `snapdir_core::cache`), `locations`/`ancestors`/`revisions` (→ `snapdir_catalog`), `defaults`. The original ledger gated manifest/id + push/fetch/pull/checkout/verify + remote routing but MISSED these. GATE-ADDED `cli-cache-commands` + `cli-catalog-commands` + `cli-defaults` (cli, P6) to wire them, `migration-guide-refresh` (docs, P9) to update the guide's wired-vs-stub table afterward, and made `release-dryrun` depend on all four — **release cannot sign off until the CLI is feature-complete**. Each cli gate's pass_criteria guards against a vacuous 0-test filter via regex `running [1-9]`.
+Last passed: `migration-guide` @ 2026-06-01T14:32:56Z — **operator-signed-off HUMAN CHECKPOINT** ("the guide is ok"). The guide honestly documents the current state; the operator's feature-completeness concern is tracked by the new CLI gates above. Contract frozen (locks 4/4 OK each tick).
 `cargo-llvm-cov` 0.8.7 + `llvm-tools-preview` installed locally (PM). No nightly on host (cargo-fuzz can't build locally; CI cron does).
 Last passed: `rustdoc-doctests` @ 2026-06-01T14:25:07Z — `docs/rust-port/manifest-spec.md` (faithful frozen-format spec; snapshot-id correctly = b3sum of `#`-stripped manifest text, not root checksum) + `CHANGELOG.md` (Keep a Changelog, 0.5.0); doctests green (core 2 + stores 1). PM also fixed a stale `PM_PROMPT.md` "snapshot ID = root dir checksum" line (DESC-CORRECTION). Contract frozen (locks 4/4 OK each tick).
 GATE-OWNER-FIX pattern (this phase): gates verified by `cargo test -p <crate>` but nominally owned by `tests` are corrected to the crate's lane — `cli-trycmd → cli`, `proptest-roundtrip → core`. `fuzz-parser` (`tests/fuzz/...`, `cargo fuzz`) genuinely IS the `tests` lane (top-level `tests/`).
@@ -42,10 +43,10 @@ Open (non-blocking) findings to revisit later:
 - Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
 - Phase 4 (Store trait + FileStore): 5/5 passed ✅
 - Phase 5 (Remote stores): 8/9 passed (S3+GCS interop PM-verified; only `remote-interop-b2` — operator-deferred to post-release-candidate — remains)
-- Phase 6 (Caching + redb catalog): 4/4 passed ✅ (`cache-id` `catalog-redb` `catalog-compat` 🔒 `catalog-rebuild`)
+- Phase 6 (Caching + redb catalog + CLI wiring): 4/7 passed (`cache-id` `catalog-redb` `catalog-compat` 🔒 `catalog-rebuild` ✅; **CLI-completeness GATE-ADDs pending**: `cli-cache-commands` `cli-catalog-commands` `cli-defaults`)
 - Phase 7 (Performance): 4/4 passed ✅ (`bench-scaffold` `bench-compile` `perf-harness` `perf-gate` — Rust 33.6×/2.69× faster, output byte-identical, operator-signed-off)
 - Phase 8 (Testing/fuzzing): 5/5 passed ✅ (`cli-trycmd` `proptest-roundtrip` `coverage-gate` 75%-floor `ci-coverage-floor` `fuzz-parser`)
-- Phase 9 (Documentation): 2/3 passed (`rustdoc-doctests` ✅ `migration-guide-draft` ✅; `migration-guide` remains — operator sign-off, guide ready)
+- Phase 9 (Documentation): 3/4 passed (`rustdoc-doctests` ✅ `migration-guide-draft` ✅ `migration-guide` ✅; `migration-guide-refresh` pending — updates the guide after the CLI stubs are wired)
 - Phase 10 (Packaging/release): 0/2 passed
 
 ## Recent milestones
@@ -96,6 +97,7 @@ Open (non-blocking) findings to revisit later:
 - 2026-06-01 — `fuzz-parser` (tests): `tests/fuzz/` cargo-fuzz target `manifest_parser.rs` (libfuzzer feeds arbitrary bytes to `ManifestEntry::parse_line` + `Manifest::parse`; no-panic + parse→Display→parse stability), isolated via a nested `[workspace]` so the root workspace is unaffected (`snapdir-fuzz` not a root member). cargo-fuzz/nightly absent → presence-only (CI cron runs it). **Phase 8 complete.** (git 08b8d7c)
 - 2026-06-01 — `rustdoc-doctests` (docs): `docs/rust-port/manifest-spec.md` (faithful frozen-format spec; snapshot ID = b3sum of `#`-stripped manifest text, NOT root dir checksum) + `CHANGELOG.md` (Keep a Changelog, 0.5.0). Doctests green (core 2 + stores 1). PM enforced the artifact presence beyond the doctest-only verification, and fixed a stale `PM_PROMPT.md` snapshot-id line. (git 45cd32f)
 - 2026-06-01 — `migration-guide-draft` (docs; PM-added prereq): `docs/rust-port/migration.md` — tool→subcommand mapping, honest 14-subcommand wired-vs-stub table, per-backend auth tables (GCS ADC/`GOOGLE_APPLICATION_CREDENTIALS`, AWS chain, B2 S3-compat), SQLite→redb catalog note, byte-for-byte interop, doc-bug fixes (`--linked`/`ensure-no-errors`). Pinned to oracle scripts. Sets up the `migration-guide` human sign-off. (git 12da788)
+- 2026-06-01 — `migration-guide` (docs, **human checkpoint**): operator signed off the guide. The honest wired-vs-stub table surfaced a **feature-completeness gap** → PM GATE-ADDed `cli-cache-commands`/`cli-catalog-commands`/`cli-defaults` (wire the 7 stub subcommands to existing core/catalog logic) + `migration-guide-refresh`, gating `release-dryrun` on all four. (git 12da788)
 
 ## Remote-store test credentials (operator)
 

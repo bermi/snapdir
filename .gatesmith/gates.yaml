@@ -838,7 +838,9 @@ gates:
     phase: 9
     owner_agent: docs
     depends_on: [rustdoc-doctests, migration-guide-draft]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T14:32:56Z
+    git_sha: 12da788
     failure_count: 0
     verification_cmd: "test -f docs/rust-port/migration.md && grep -q 'snapdir-manifest' docs/rust-port/migration.md && grep -qi 'GOOGLE_APPLICATION_CREDENTIALS' docs/rust-port/migration.md"
     pass_criteria:
@@ -847,6 +849,71 @@ gates:
         - human_confirm: "Is the migration guide (subcommand-mapping + auth-mapping tables, catalog/redb note) accurate and complete?"
     human_checkpoint: true
     description: "Migration guide with subcommand aliases + per-backend auth-mapping tables; doc bugs (--linked, ensure-no-errors) fixed."
+
+  # ===================================================================
+  # Phase 6 (late-added) — CLI feature-completeness  (lane: cli)
+  # GATE-ADD 2026-06-01T14:32:56Z: the original ledger gated manifest/id + push/fetch/
+  # pull/checkout/verify + remote routing, but MISSED wiring 7 subcommands whose library
+  # logic already exists (snapdir_core::cache, snapdir_catalog). The operator flagged this
+  # at the migration-guide sign-off ("make sure it's feature complete"). These wire them;
+  # release-dryrun depends on them so the release cannot sign off until feature-complete.
+  # Each guards against a vacuous 0-test filter via regex "running [1-9]".
+  # ===================================================================
+  - id: cli-cache-commands
+    phase: 6
+    owner_agent: cli
+    depends_on: [cache-id, cli-store-wire]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked cache_commands"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "running [1-9][0-9]* tests?"
+    human_checkpoint: false
+    description: "Wire `snapdir stage`, `snapdir verify-cache [--purge]`, `snapdir flush-cache` to snapdir_core::cache (check_snapshot_integrity/verify_cache/flush_cache) + the XDG cache dir; mirror the oracle. Integration tests named *cache_commands* (no longer 'not implemented yet')."
+
+  - id: cli-catalog-commands
+    phase: 6
+    owner_agent: cli
+    depends_on: [catalog-compat, cli-store-wire]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked catalog_commands"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "running [1-9][0-9]* tests?"
+    human_checkpoint: false
+    description: "Wire `snapdir locations`, `snapdir ancestors --id [--location]`, `snapdir revisions --location` (+ catalog rebuild) to snapdir_catalog, emitting the frozen JSON lines (byte-compatible per catalog-compat). Integration tests named *catalog_commands*."
+
+  - id: cli-defaults
+    phase: 6
+    owner_agent: cli
+    depends_on: [cli-skeleton]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked defaults_command"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "running [1-9][0-9]* tests?"
+    human_checkpoint: false
+    description: "Wire `snapdir defaults` to print/resolve the effective defaults (cache dir, catalog, store) per the oracle. Integration test named *defaults_command*."
+
+  - id: migration-guide-refresh
+    phase: 9
+    owner_agent: docs
+    depends_on: [cli-cache-commands, cli-catalog-commands, cli-defaults]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f docs/rust-port/migration.md && grep -q 'snapdir-manifest' docs/rust-port/migration.md && grep -qi 'GOOGLE_APPLICATION_CREDENTIALS' docs/rust-port/migration.md && ! grep -qiE 'stage[^A-Za-z].*stub|verify-cache.*stub|flush-cache.*stub|locations.*stub|ancestors.*stub|revisions.*stub|defaults.*stub' docs/rust-port/migration.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: docs/rust-port/migration.md
+    human_checkpoint: false
+    description: "Refresh docs/rust-port/migration.md wired-vs-stub table after the 7 subcommands are wired: mark stage/verify-cache/flush-cache/locations/ancestors/revisions/defaults as WIRED (no longer 'stub'), keeping the guide accurate for the release."
 
   # ===================================================================
   # Phase 10 — Packaging / release  (lane: packaging)
@@ -869,7 +936,11 @@ gates:
     # GATE-ADD 2026-06-01T01:52:18Z: + remote-interop-gcs (a release candidate must have GCS
     # Bash<->Rust interop proven). B2 (remote-interop-b2) intentionally depends on THIS gate, so
     # it runs only after the release candidate, per the operator.
-    depends_on: [release-config, remote-interop, remote-interop-gcs, coverage-gate, perf-gate, catalog-rebuild, migration-guide]
+    # GATE-ADD 2026-06-01T14:32:56Z: + CLI feature-completeness (cli-cache-commands,
+    # cli-catalog-commands, cli-defaults) + migration-guide-refresh — the release cannot sign
+    # off until all 14 subcommands are wired and the migration guide reflects it (operator:
+    # "make sure it's feature complete").
+    depends_on: [release-config, remote-interop, remote-interop-gcs, coverage-gate, perf-gate, catalog-rebuild, migration-guide, cli-cache-commands, cli-catalog-commands, cli-defaults, migration-guide-refresh]
     status: pending
     failure_count: 0
     verification_cmd: "echo 'Run a tag dry-run of release.yml; confirm per-target archives build and the static binary smoke-tests.'"
