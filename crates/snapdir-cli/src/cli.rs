@@ -9,8 +9,9 @@
 //! to `snapdir-stores`; `stage`/`verify-cache`/`flush-cache` are wired to
 //! `snapdir-core::cache` (the cache is itself a `file://`-shaped store); and the
 //! catalog queries (`locations`/`ancestors`/`revisions`) are wired to
-//! `snapdir-catalog`, emitting the frozen CLI-compat JSON lines. Only `defaults`
-//! remains a stub; its behavior arrives in a later phase.
+//! `snapdir-catalog`, emitting the frozen CLI-compat JSON lines; and `defaults`
+//! prints the effective default settings + environment, mirroring the oracle's
+//! `snapdir_defaults`. All 14 subcommands are now wired — none remain stubs.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -204,17 +205,15 @@ impl Cli {
     /// Dispatch the parsed command.
     ///
     /// `manifest`/`id`, the store commands, the cache commands
-    /// (`stage`/`verify-cache`/`flush-cache`), and the catalog queries
-    /// (`locations`/`ancestors`/`revisions`) are wired to the libraries. Only
-    /// `defaults` reports "not implemented" via [`Err`]; its behavior arrives in
-    /// a later gate.
+    /// (`stage`/`verify-cache`/`flush-cache`), the catalog queries
+    /// (`locations`/`ancestors`/`revisions`), and `defaults` are all wired to the
+    /// libraries / environment. Every subcommand is implemented.
     ///
     /// # Errors
     ///
     /// Returns any error raised while resolving the path, building the exclude
-    /// matcher, walking the tree, talking to the store/cache, or opening the
-    /// catalog, plus a "not implemented" error for the stubbed `defaults`
-    /// subcommand.
+    /// matcher, walking the tree, talking to the store/cache, opening the
+    /// catalog, or resolving the running binary path for `defaults`.
     pub fn run(&self) -> Result<()> {
         match &self.command {
             Command::Manifest {
@@ -261,12 +260,82 @@ impl Cli {
                 println!("snapdir {}", env!("CARGO_PKG_VERSION"));
                 Ok(())
             }
-            Command::Defaults => {
-                anyhow::bail!("snapdir: `defaults` is not implemented yet")
-            }
+            Command::Defaults => run_defaults(),
         }
     }
+}
 
+/// `snapdir defaults`: print the effective default settings + environment, in
+/// sorted-unique order. Faithfully mirrors the frozen oracle
+/// `snapdir_defaults()` (`./snapdir` L1083), whose pipeline is:
+///
+/// ```sh
+/// {
+///   snapdir-manifest defaults | grep -v "^-"
+///   env | grep "SNAPDIR" | grep -v VERSION \
+///     | sed -E 's|^_?SNAPDIR_|--|; s|_|-|g;' | tr '[:upper:]' '[:lower:]' | sort
+///   echo "SNAPDIR_BIN_PATH=${SNAPDIR_BIN_PATH:-$_SNAPDIR_BIN_PATH}"
+/// } | sort -u
+/// ```
+///
+/// Three groups, then `sort -u`:
+///
+/// 1. the manifest tool's non-option default lines (`grep -v "^-"` drops the
+///    `--option=…` lines, leaving the `SNAPDIR_MANIFEST_*=…` key lines). The
+///    Rust port has no separate `snapdir-manifest` binary — the walk is
+///    in-process — so the effective equivalents are emitted: the manifest
+///    bin path is this running binary, and `SNAPDIR_MANIFEST_CONTEXT` /
+///    `SNAPDIR_MANIFEST_EXCLUDE` come from the environment (default empty),
+///    matching what the Rust manifest walk actually honors.
+/// 2. every `SNAPDIR*` environment variable except `*VERSION*`, reformatted
+///    by the `sed`/`tr` rules into `--option-name=value` (strip a leading
+///    `_SNAPDIR_`/`SNAPDIR_` → `--`, `_`→`-`, lowercase the whole line).
+/// 3. a `SNAPDIR_BIN_PATH=…` line for the running binary
+///    ([`std::env::current_exe`]).
+///
+/// The combined lines are sorted and deduplicated (`sort -u`), so the output
+/// order is independent of the environment's iteration order. Kept as a free
+/// function: it resolves everything from the process environment + the running
+/// binary path, so it needs no CLI state (`&self`).
+fn run_defaults() -> Result<()> {
+    let bin_path = std::env::current_exe()
+        .context("resolving the running binary path")?
+        .display()
+        .to_string();
+
+    let mut lines: Vec<String> = Vec::new();
+
+    // Group 1: the manifest tool's non-option defaults (`grep -v "^-"`). The
+    // walk is in-process, so the manifest "binary" is this binary; CONTEXT /
+    // EXCLUDE default to the (possibly empty) environment values.
+    let manifest_context = std::env::var("SNAPDIR_MANIFEST_CONTEXT").unwrap_or_default();
+    let manifest_exclude = std::env::var("SNAPDIR_MANIFEST_EXCLUDE").unwrap_or_default();
+    lines.push(format!("SNAPDIR_MANIFEST_BIN_PATH={bin_path}"));
+    lines.push(format!("SNAPDIR_MANIFEST_CONTEXT={manifest_context}"));
+    lines.push(format!("SNAPDIR_MANIFEST_EXCLUDE={manifest_exclude}"));
+
+    // Group 2: every SNAPDIR* env var (excluding *VERSION*), reformatted by
+    // the oracle's `sed`/`tr` rules.
+    for (key, value) in std::env::vars() {
+        if !key.contains("SNAPDIR") || key.contains("VERSION") {
+            continue;
+        }
+        lines.push(reformat_env_default(&key, &value));
+    }
+
+    // Group 3: the running binary path.
+    lines.push(format!("SNAPDIR_BIN_PATH={bin_path}"));
+
+    // Final `sort -u`: lexicographic sort, then dedup adjacent equals.
+    lines.sort();
+    lines.dedup();
+    for line in lines {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+impl Cli {
     /// `snapdir push [--store file://DIR] <path>`: walk `<path>` into a manifest
     /// and push its objects (objects-before-manifest, skip-if-present) to the
     /// resolved store. Prints the resulting snapshot id, matching the oracle.
@@ -694,6 +763,32 @@ fn store_for_adapter(adapter: &Adapter, store_url: &str) -> Result<Box<dyn Store
             Ok(Box::new(store))
         }
     }
+}
+
+/// Reformats a `SNAPDIR*` environment variable into the oracle's `defaults`
+/// option line, faithfully reproducing the `sed -E 's|^_?SNAPDIR_|--|; s|_|-|g;'
+/// | tr '[:upper:]' '[:lower:]'` pipeline applied to the `KEY=VALUE` text:
+///
+/// 1. strip a single leading `_SNAPDIR_` or `SNAPDIR_` prefix, replacing it with
+///    `--` (only the first match, anchored at the start — `sed` with `^`);
+/// 2. replace every remaining `_` with `-` (`s|_|-|g`, across the whole line —
+///    so underscores in the value are rewritten too);
+/// 3. lowercase the whole line (`tr '[:upper:]' '[:lower:]'`, value included).
+///
+/// So `SNAPDIR_CACHE_DIR=/x` → `--cache-dir=/x`, and
+/// `_SNAPDIR_BIN_DIR=/X` → `--bin-dir=/x`.
+fn reformat_env_default(key: &str, value: &str) -> String {
+    let line = format!("{key}={value}");
+    // `s|^_?SNAPDIR_|--|`: optional leading `_`, then `SNAPDIR_`, anchored.
+    let stripped = line
+        .strip_prefix("_SNAPDIR_")
+        .or_else(|| line.strip_prefix("SNAPDIR_"));
+    let body = match stripped {
+        Some(rest) => format!("--{rest}"),
+        None => line,
+    };
+    // `s|_|-|g` then `tr '[:upper:]' '[:lower:]'` over the whole line.
+    body.replace('_', "-").to_lowercase()
 }
 
 /// Walks `root` with the given hasher, mapping the typed [`WalkError`] into an
