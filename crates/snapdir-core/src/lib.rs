@@ -17,12 +17,17 @@
 //! `%system%`/`%common%` expansion, the `grep -E -v` matcher, and the
 //! follow/no-follow option semantics.
 
+pub mod cache;
 pub mod excludes;
 pub mod manifest;
 pub mod merkle;
 pub mod store;
 pub mod walk;
 
+pub use cache::{
+    check_manifest_integrity, check_snapshot_integrity, flush_cache, load_cached_manifest,
+    verify_cache, CacheError, CacheReport,
+};
 pub use excludes::{
     expand_excludes, ExcludeError, ExcludeMatcher, ExpandedExclude, FollowMode,
     COMMON_EXCLUDE_DIRS, SYSTEM_EXCLUDE_DIRS,
