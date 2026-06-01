@@ -604,7 +604,9 @@ gates:
     phase: 6
     owner_agent: catalog
     depends_on: [catalog-redb]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T02:20:38Z
+    git_sha: f7025b1
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-catalog --locked json_compat"
     pass_criteria:
