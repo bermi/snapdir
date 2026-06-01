@@ -657,7 +657,9 @@ gates:
     phase: 7
     owner_agent: bench
     depends_on: [interop-diff, bench-scaffold]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T02:43:59Z
+    git_sha: 06ff564
     failure_count: 0
     verification_cmd: "cargo build --benches --locked"
     pass_criteria:
