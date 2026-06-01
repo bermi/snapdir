@@ -930,13 +930,34 @@ gates:
     phase: 10
     owner_agent: packaging
     depends_on: [ci-matrix-green, migration-guide]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T15:48:49Z
+    git_sha: cec279a
     failure_count: 0
     verification_cmd: "test -d packaging && (test -f packaging/dist-workspace.toml || grep -lqi 'cargo-dist\\|matrix' .github/workflows/release.yml)"
     pass_criteria:
       exit_code: 0
     human_checkpoint: false
     description: "release.yml/cargo-dist build matrix + generated completions (clap_complete) + man page (clap_mangen) + slim Docker image."
+
+  # GATE-ADD 2026-06-01T15:48:49Z: release-config's release.yml gen-assets job calls
+  # `snapdir completions <shell>` / `snapdir man` to bundle completions + man into every
+  # archive, but snapdir-cli has no clap_complete/clap_mangen hook. Without this the release
+  # ships without completions/man (a regression). Hidden subcommands so the 14-surface help
+  # is unchanged. release-dryrun depends on it.
+  - id: cli-completions-man
+    phase: 10
+    owner_agent: cli
+    depends_on: [cli-defaults]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked completions_man"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "running [1-9][0-9]* tests?"
+    human_checkpoint: false
+    description: "Add hidden `snapdir completions <bash|zsh|fish|powershell>` (clap_complete) + `snapdir man` (clap_mangen) generation subcommands so the release pipeline can bundle shell completions + a man page. Hidden (`hide=true`) — the visible 14-subcommand surface is unchanged. Integration test *completions_man* asserts each shell's completion + the man page generate non-empty."
 
   - id: release-dryrun
     phase: 10
@@ -948,7 +969,7 @@ gates:
     # cli-catalog-commands, cli-defaults) + migration-guide-refresh — the release cannot sign
     # off until all 14 subcommands are wired and the migration guide reflects it (operator:
     # "make sure it's feature complete").
-    depends_on: [release-config, remote-interop, remote-interop-gcs, coverage-gate, perf-gate, catalog-rebuild, migration-guide, cli-cache-commands, cli-catalog-commands, cli-defaults, migration-guide-refresh]
+    depends_on: [release-config, remote-interop, remote-interop-gcs, coverage-gate, perf-gate, catalog-rebuild, migration-guide, cli-cache-commands, cli-catalog-commands, cli-defaults, migration-guide-refresh, cli-completions-man]
     status: pending
     failure_count: 0
     verification_cmd: "echo 'Run a tag dry-run of release.yml; confirm per-target archives build and the static binary smoke-tests.'"

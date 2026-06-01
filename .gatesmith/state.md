@@ -3,9 +3,9 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-Active phase: **10** (Phases 0–9 green except the operator-deferred B2 gate; **CLI feature-complete**, guide refreshed).
-Next gate: `release-config` (phase 10, owner packaging, deps ci-matrix-green ✓ + migration-guide ✓) — head of the priority queue; then `release-dryrun` (P10, **human checkpoint**, gated on the full release-readiness chain incl. remote-interop, perf-gate, coverage, catalog-rebuild, migration-guide-refresh, and the 3 CLI-completeness gates). `release-config` = `packaging/` lane: release.yml/cargo-dist build matrix + completions (clap_complete) + man page (clap_mangen) + slim Docker; verification `test -d packaging && (packaging/dist-workspace.toml || grep cargo-dist/matrix .github/workflows/release.yml)`.
-After release-dryrun, the operator-deferred `remote-interop-b2` (phase 5, post-RC) becomes the final remaining gate.
+Active phase: **10** — **52/55 gates passed**. Only 3 remain: `cli-completions-man` (next), `release-dryrun` (human checkpoint), `remote-interop-b2` (operator-deferred, post-RC).
+Next gate: `cli-completions-man` (phase 10, owner cli, deps cli-defaults ✓) — head of the priority queue; then `release-dryrun` (P10, **human checkpoint**, gated on the full release-readiness chain). `cli-completions-man` adds hidden `snapdir completions <shell>` (clap_complete) + `snapdir man` (clap_mangen) subcommands so `release-config`'s `gen-assets` job can bundle completions + man into every archive; without it the release ships without them (a regression). Hidden subcommands → the visible 14-surface help is unchanged; test *completions_man*.
+GATE-ADDED `cli-completions-man` this tick (release-config surfaced that snapdir-cli has no clap_complete/clap_mangen hook though release.yml calls `snapdir completions <shell>`/`man`).
 Open follow-up (non-blocking): `cli-catalog-commands` wired catalog logging only on **push** (oracle `_snapdir_log_event push` @ L359); the oracle ALSO logs on `manifest`@L212 + `stage`@L826. Queries are meaningful via push-logging; manifest/stage catalog-logging can be a later cli gate if full parity is wanted.
 ⚠ **FEATURE-COMPLETENESS GAP (operator-flagged at migration-guide sign-off).** 7 of 14 subcommands were never CLI-wired despite their library logic existing: `stage`/`verify-cache`/`flush-cache` (→ `snapdir_core::cache`), `locations`/`ancestors`/`revisions` (→ `snapdir_catalog`), `defaults`. The original ledger gated manifest/id + push/fetch/pull/checkout/verify + remote routing but MISSED these. GATE-ADDED `cli-cache-commands` + `cli-catalog-commands` + `cli-defaults` (cli, P6) to wire them, `migration-guide-refresh` (docs, P9) to update the guide's wired-vs-stub table afterward, and made `release-dryrun` depend on all four — **release cannot sign off until the CLI is feature-complete**. Each cli gate's pass_criteria guards against a vacuous 0-test filter via regex `running [1-9]`.
 Last passed: `migration-guide` @ 2026-06-01T14:32:56Z — **operator-signed-off HUMAN CHECKPOINT** ("the guide is ok"). The guide honestly documents the current state; the operator's feature-completeness concern is tracked by the new CLI gates above. Contract frozen (locks 4/4 OK each tick).
@@ -49,7 +49,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 7 (Performance): 4/4 passed ✅ (`bench-scaffold` `bench-compile` `perf-harness` `perf-gate` — Rust 33.6×/2.69× faster, output byte-identical, operator-signed-off)
 - Phase 8 (Testing/fuzzing): 5/5 passed ✅ (`cli-trycmd` `proptest-roundtrip` `coverage-gate` 75%-floor `ci-coverage-floor` `fuzz-parser`)
 - Phase 9 (Documentation): 4/4 passed ✅ (`rustdoc-doctests` `migration-guide-draft` `migration-guide` `migration-guide-refresh`)
-- Phase 10 (Packaging/release): 0/2 passed
+- Phase 10 (Packaging/release): 1/3 passed (`release-config` ✅; `cli-completions-man` + `release-dryrun` remain)
 
 ## Recent milestones
 
@@ -104,6 +104,7 @@ Open (non-blocking) findings to revisit later:
 - 2026-06-01 — `cli-catalog-commands` (cli): wired `locations`/`ancestors`/`revisions` → `snapdir_catalog` + the frozen JSON serializers; `catalog_db_path` resolves `--catalog`/`SNAPDIR_CATALOG`; wired `push` → `Catalog::log("push", id, store, SystemClock)` (oracle `_snapdir_log_event push` @ L359) so queries return real data. 4 `catalog_commands` tests incl. a live `sqlite3` oracle cross-check. **6/7 stub subcommands now wired** (only `defaults` left). (git 2032e2c)
 - 2026-06-01 — `cli-defaults` (cli): wired `defaults` (last stub) reproducing oracle `snapdir_defaults` (L1083) — 3 groups under `sort -u`: manifest non-option defaults, `SNAPDIR*` env vars reformatted `--opt=value` (excl. `*VERSION*`), `SNAPDIR_BIN_PATH=`. 6 deterministic `defaults_command` tests + a `./snapdir` cross-check. **ALL 14 SUBCOMMANDS WIRED — CLI FEATURE-COMPLETE; Phase 6 complete.** (git f0db30b)
 - 2026-06-01 — `migration-guide-refresh` (docs): flipped all 7 previously-stub rows in `migration.md` to WIRED (accurate, cross-checked vs `cli.rs`; kept the honest catalog push-only-logging caveat). Guide now matches the feature-complete CLI. **Phase 9 complete.** (git 7a66567)
+- 2026-06-01 — `release-config` (packaging): `packaging/dist-workspace.toml` (cargo-dist, 7 targets incl. musl static) + Rust `release.yml` (gen-assets/build[+cross]/release/docker scratch-musl→GHCR/crates-io) + `packaging/Dockerfile` FROM scratch — replacing the Bash-era Docker+release-drafter. actionlint clean. Surfaced that the cli has no completions/man hook → GATE-ADDed `cli-completions-man`. (git cec279a)
 
 ## Remote-store test credentials (operator)
 
