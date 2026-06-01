@@ -19,6 +19,10 @@ snapdir-catalog.workspace = true
 snapdir-stores.workspace = true
 anyhow.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
+# Release packaging (gen-assets job) shells out to the hidden `completions`/`man`
+# subcommands; these crates generate those artifacts to stdout. No TLS / aws-lc.
+clap_complete = "4"
+clap_mangen = "0.3"
 
 [dev-dependencies]
 # CLI integration testing only (no TLS / aws-lc): trycmd snapshots the static

@@ -17,7 +17,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use snapdir_catalog::{
     ancestors_json_line, locations_json_line, revisions_json_line, Catalog, SystemClock,
 };
@@ -199,6 +199,24 @@ pub enum Command {
 
     /// Print the version.
     Version,
+
+    /// Generate a shell-completion script to stdout.
+    ///
+    /// Hidden from the documented 14-subcommand surface: this is a build-time
+    /// hook the release pipeline (`release.yml` gen-assets job) calls as
+    /// `snapdir completions <shell>` to bundle completions into each archive.
+    #[command(hide = true)]
+    Completions {
+        /// Target shell (`bash`, `fish`, `zsh`, `powershell`, `elvish`).
+        shell: clap_complete::Shell,
+    },
+
+    /// Render the man page (roff) to stdout.
+    ///
+    /// Hidden from the documented surface: a build-time hook the release
+    /// pipeline calls as `snapdir man` to bundle the man page into each archive.
+    #[command(hide = true)]
+    Man,
 }
 
 impl Cli {
@@ -261,6 +279,21 @@ impl Cli {
                 Ok(())
             }
             Command::Defaults => run_defaults(),
+            Command::Completions { shell } => {
+                // Build-time hook: emit the requested shell's completion script
+                // to stdout for the release pipeline to bundle. The bin name is
+                // `snapdir` (the visible surface, hidden subcommands included).
+                let mut cmd = Cli::command();
+                clap_complete::generate(*shell, &mut cmd, "snapdir", &mut std::io::stdout());
+                Ok(())
+            }
+            Command::Man => {
+                // Build-time hook: render the man page (roff) to stdout.
+                clap_mangen::Man::new(Cli::command())
+                    .render(&mut std::io::stdout())
+                    .context("rendering the man page")?;
+                Ok(())
+            }
         }
     }
 }
