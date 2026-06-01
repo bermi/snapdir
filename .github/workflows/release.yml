@@ -9,11 +9,28 @@ name: Release
 # Packaging config of record: packaging/dist-workspace.toml (cargo-dist). This
 # workflow is the hand-rolled matrix that implements the same plan with full
 # control over the cross/musl/completions/man/docker/crates.io steps.
+#
+# DRY RUN (no publishing): build + smoke every target (incl. musl static),
+# producing the archives/checksums WITHOUT touching the GitHub release, GHCR, or
+# crates.io. The publish jobs (release/docker/crates-io) are hard-gated on a real
+# `v*` TAG PUSH (`github.event_name == 'push'`), so a manual run can never publish
+# regardless of the `dry_run` input value.
+#   - GitHub UI: Actions -> Release -> Run workflow -> branch `rust-port`,
+#     leave `dry_run: true`.
+#   - CLI:       gh workflow run release.yml --ref rust-port -f dry_run=true
+# A real publish still happens ONLY by pushing a semver tag (e.g. `git tag v0.5.0
+# && git push origin v0.5.0`).
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + smoke all targets WITHOUT publishing (no GitHub release, no GHCR, no crates.io)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write   # create the GitHub release + upload assets
@@ -154,7 +171,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # On a workflow_dispatch dry-run GITHUB_REF_NAME is a branch (not a
+          # `v*` tag), so stamp a safe placeholder version instead.
           version="${GITHUB_REF_NAME#v}"
+          if [ "${{ github.event_name }}" != "push" ]; then
+            version="0.0.0-dryrun"
+          fi
           name="${BIN_NAME}-${version}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
 
@@ -208,6 +230,8 @@ jobs:
   release:
     name: Publish GitHub release
     needs: build
+    # Publish ONLY on a real `v*` tag push; a workflow_dispatch dry-run stops here.
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -247,6 +271,8 @@ jobs:
   docker:
     name: Build & push Docker image
     needs: build
+    # Publish ONLY on a real `v*` tag push; a workflow_dispatch dry-run stops here.
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -308,6 +334,8 @@ jobs:
   crates-io:
     name: Publish crates.io
     needs: release
+    # Publish ONLY on a real `v*` tag push; a workflow_dispatch dry-run stops here.
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
