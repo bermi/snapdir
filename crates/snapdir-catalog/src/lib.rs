@@ -284,6 +284,29 @@ pub fn revisions_json_line(record: &Record) -> String {
     serde_json::to_string(&line).expect("serialize revisions line")
 }
 
+/// One recovered store entry for [`Catalog::rebuild`]: the snapshot `id` present
+/// in a store and its `created_at` (already formatted `YYYY-MM-DD HH:MM:SS.SSS`,
+/// derived from the store object's metadata — file mtime / S3·GCS `LastModified`).
+///
+/// ## Recoverability boundary
+///
+/// A bare store (`file://`, `s3://`, `gs://`) holds only `.manifests/<id>`
+/// objects, so the only facts recoverable per location are the **set of snapshot
+/// ids** present and a per-manifest **`created_at`** from object metadata. The
+/// store does **not** record `previous_id`. It is, however, *re-derivable*: the
+/// per-location history is a linear chain, so ordering the ids by `created_at`
+/// reproduces exactly the chain [`Catalog::save`] would have built when fed the
+/// same ids in chronological order. [`Catalog::rebuild`] therefore reconstructs
+/// `previous_id` (and the head==id dedup) from `created_at` order alone — no
+/// `previous_id` field is needed or accepted here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebuildEntry {
+    /// The snapshot id recovered from the store's `.manifests/<id>` object.
+    pub id: String,
+    /// `YYYY-MM-DD HH:MM:SS.SSS`, from the store object's metadata.
+    pub created_at: String,
+}
+
 /// A redb-backed snapdir catalog (single writer, multiple readers).
 #[derive(Debug)]
 pub struct Catalog {
@@ -516,6 +539,103 @@ impl Catalog {
             });
         }
         Ok(out)
+    }
+
+    /// Rebuilds the catalog for a single `location` from what a **store**
+    /// actually preserves, reproducing identical query output for that location.
+    ///
+    /// This is a convenience, **not** a migration: the catalog is private,
+    /// rebuildable state with no on-disk interop. A store yields only the set of
+    /// `(id, created_at)` pairs per location (see [`RebuildEntry`]); this method
+    /// reconstructs the rest:
+    ///
+    /// 1. Remove **all** existing records for `location` (across every redb
+    ///    table) — stale ids not in the store view are dropped. Other locations
+    ///    are untouched.
+    /// 2. Insert the entries **sorted by `created_at`** (with a stable `id`
+    ///    tiebreak for equal timestamps), reconstructing `previous_id` from the
+    ///    running per-location head and applying the same **head==id dedup** as
+    ///    [`Catalog::save`]. `created_at` comes verbatim from the store, so this
+    ///    path is **clock-free** — it never stamps NOW.
+    ///
+    /// Because `save`'s insert logic is replayed in chronological order, the
+    /// resulting `previous_id` chain and `created_at DESC` ordering are identical
+    /// to a catalog built by `save`-ing the same history live. It is **store-
+    /// agnostic** (no dependency on `snapdir-stores`): the caller enumerates the
+    /// store's `.manifests` and passes the recovered entries in. Rebuilding the
+    /// same store view twice is idempotent.
+    pub fn rebuild(
+        &self,
+        location: &str,
+        entries: impl IntoIterator<Item = RebuildEntry>,
+    ) -> Result<(), CatalogError> {
+        // Sort by created_at, then a stable id tiebreak for equal timestamps —
+        // this is the chronological replay order `save` would have seen.
+        let mut entries: Vec<RebuildEntry> = entries.into_iter().collect();
+        entries.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+
+        // 1) Drop every existing record for this location (all tables) so a
+        // rebuild replaces a stale history and never leaks ids absent from the
+        // store view. Other locations are left intact.
+        self.clear_location(location)?;
+
+        // 2) Replay the sorted entries through the same insert logic `save`
+        // uses: previous_id = running head, with the head==id no-op dedup.
+        // Clock-free: created_at is taken from the store entry, not stamped.
+        let mut head: Option<String> = None;
+        for entry in entries {
+            // Oracle no-op: the location's current head is already this id.
+            if head.as_deref() == Some(entry.id.as_str()) {
+                continue;
+            }
+            self.insert_history(location, &entry.id, head.as_deref(), &entry.created_at)?;
+            head = Some(entry.id);
+        }
+        Ok(())
+    }
+
+    /// Removes every record for `location` from all redb tables (`records`,
+    /// `loc_head`, `by_location`, `by_id`), leaving other locations untouched. The
+    /// monotonic `seq` counter is not rewound (seq only disambiguates equal
+    /// timestamps and pins insertion order; gaps are harmless).
+    fn clear_location(&self, location: &str) -> Result<(), CatalogError> {
+        // Collect the location's rows first (read), then delete (write) so we
+        // don't mutate a table while iterating it.
+        let mut victims: Vec<(String, u64, String)> = Vec::new(); // (created_at, seq, id)
+        {
+            let txn = self.db.begin_read()?;
+            let by_location = txn.open_table(BY_LOCATION)?;
+            let lo = (location, "", 0u64);
+            let hi = (location, "\u{10FFFF}", u64::MAX);
+            for entry in by_location.range(lo..=hi)? {
+                let (k, v) = entry?;
+                let (_loc, created_at, seq) = k.value();
+                let (id, _prev) = v.value();
+                victims.push((created_at.to_owned(), seq, id.to_owned()));
+            }
+        }
+        if victims.is_empty() {
+            return Ok(());
+        }
+        let txn = self.db.begin_write()?;
+        {
+            let mut records = txn.open_table(RECORDS)?;
+            let mut loc_head = txn.open_table(LOC_HEAD)?;
+            let mut by_location = txn.open_table(BY_LOCATION)?;
+            let mut by_id = txn.open_table(BY_ID)?;
+            for (created_at, seq, id) in &victims {
+                records.remove((created_at.as_str(), *seq))?;
+                by_location.remove((location, created_at.as_str(), *seq))?;
+                by_id.remove((id.as_str(), created_at.as_str(), *seq))?;
+            }
+            loc_head.remove(location)?;
+        }
+        txn.commit()?;
+        Ok(())
     }
 }
 
@@ -966,6 +1086,241 @@ mod tests {
         // The oracle projects previous_id (A) into the `id` field.
         let a0 = rec(&created_at_of(anc_lines[0]), A, location, None);
         assert_eq!(ancestors_json_line(&a0), anc_lines[0]);
+    }
+
+    // ----- rebuild: regenerate a location's history from a store view --------
+    //
+    // A store yields only (id, created_at) per location; rebuild must reproduce
+    // identical locations/ancestors/revisions output by replaying in created_at
+    // order through the same insert logic save uses.
+
+    fn entry(id: &str, created_at: &str) -> RebuildEntry {
+        RebuildEntry {
+            id: id.to_owned(),
+            created_at: created_at.to_owned(),
+        }
+    }
+
+    /// Serializes a catalog's three queries for a location into a single byte
+    /// blob, so two catalogs can be compared byte-for-byte through the FROZEN
+    /// serializers (the public contract).
+    fn query_bytes(cat: &Catalog, location: &str) -> String {
+        let mut out = String::new();
+        let mut locs = cat.locations().unwrap();
+        locs.sort_by(|a, b| a.location.cmp(&b.location));
+        for r in &locs {
+            out.push_str(&locations_json_line(r));
+            out.push('\n');
+        }
+        // ancestors of the location's current head (if any).
+        if let Some(head) = locs.iter().find(|r| r.location == location) {
+            for r in cat.ancestors(&head.id, Some(location)).unwrap() {
+                out.push_str(&ancestors_json_line(&r));
+                out.push('\n');
+            }
+        }
+        for r in cat.revisions(location).unwrap() {
+            out.push_str(&revisions_json_line(&r));
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Core assertion: a catalog built by `save` and a catalog `rebuild`-ed from
+    /// the store view it would have persisted produce byte-identical query
+    /// output — even though the store view is order-independent (shuffled here)
+    /// and carries no `previous_id`.
+    #[test]
+    fn rebuild_round_trip_identical_query_output() {
+        let location = "s3://bucket/some/path";
+
+        // Build catalog A live via save: linear history A -> B -> C, with a
+        // consecutive duplicate (B saved twice) that save dedups.
+        let dir_a = TempDir::new();
+        let cat_a = Catalog::open(dir_a.db_path()).unwrap();
+        let clock = seq_clock(&[
+            "2026-06-01 00:00:00.001", // A (root)
+            "2026-06-01 00:00:00.002", // B
+            "2026-06-01 00:00:00.003", // B again -> no-op (head==id)
+            "2026-06-01 00:00:00.004", // C
+        ]);
+        cat_a.save(location, A, &clock).unwrap();
+        cat_a.save(location, B, &clock).unwrap();
+        cat_a.save(location, B, &clock).unwrap(); // dedup no-op
+        cat_a.save(location, C, &clock).unwrap();
+
+        // Derive the STORE VIEW = the (id, created_at) set A actually persisted
+        // for this location (its revisions), simulating store enumeration. Note
+        // the deduped second-B was never written, so the store has 3 manifests.
+        let revs_a = cat_a.revisions(location).unwrap();
+        assert_eq!(revs_a.len(), 3);
+        let mut store_view: Vec<RebuildEntry> =
+            revs_a.iter().map(|r| entry(&r.id, &r.created_at)).collect();
+        // Stores are order-independent: shuffle to prove rebuild sorts by
+        // created_at (deterministic reorder, no rng dep).
+        store_view.reverse();
+        store_view.swap(0, 1);
+
+        // Rebuild a FRESH catalog B from the shuffled store view.
+        let dir_b = TempDir::new();
+        let cat_b = Catalog::open(dir_b.db_path()).unwrap();
+        cat_b.rebuild(location, store_view).unwrap();
+
+        // Byte-for-byte identical query output through the frozen serializers.
+        assert_eq!(query_bytes(&cat_a, location), query_bytes(&cat_b, location));
+
+        // Spot-check the reconstructed chain: C(prev B), B(prev A), A(prev null).
+        let revs_b = cat_b.revisions(location).unwrap();
+        assert_eq!(revs_b.len(), 3);
+        assert_eq!(revs_b[0].id, C);
+        assert_eq!(revs_b[0].previous_id.as_deref(), Some(B));
+        assert_eq!(revs_b[1].id, B);
+        assert_eq!(revs_b[1].previous_id.as_deref(), Some(A));
+        assert_eq!(revs_b[2].id, A);
+        assert_eq!(revs_b[2].previous_id, None); // root -> null
+    }
+
+    #[test]
+    fn rebuild_previous_id_reconstruction_matches_save_ordering() {
+        let location = "/local/foo";
+        // save-built reference.
+        let dir_a = TempDir::new();
+        let cat_a = Catalog::open(dir_a.db_path()).unwrap();
+        let clock = seq_clock(&[
+            "2026-06-01 00:00:00.010",
+            "2026-06-01 00:00:00.020",
+            "2026-06-01 00:00:00.030",
+        ]);
+        cat_a.save(location, A, &clock).unwrap();
+        cat_a.save(location, B, &clock).unwrap();
+        cat_a.save(location, C, &clock).unwrap();
+
+        // rebuild from an unsorted store view.
+        let dir_b = TempDir::new();
+        let cat_b = Catalog::open(dir_b.db_path()).unwrap();
+        cat_b
+            .rebuild(
+                location,
+                vec![
+                    entry(C, "2026-06-01 00:00:00.030"),
+                    entry(A, "2026-06-01 00:00:00.010"),
+                    entry(B, "2026-06-01 00:00:00.020"),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(
+            cat_a.revisions(location).unwrap(),
+            cat_b.revisions(location).unwrap()
+        );
+        assert_eq!(
+            cat_a.ancestors(C, None).unwrap(),
+            cat_b.ancestors(C, None).unwrap()
+        );
+    }
+
+    #[test]
+    fn rebuild_clears_stale_records_for_location() {
+        let location = "s3://bar";
+        let dir = TempDir::new();
+        let cat = Catalog::open(dir.db_path()).unwrap();
+        let clock = seq_clock(&["2026-06-01 00:00:00.001", "2026-06-01 00:00:00.002"]);
+        // Pre-existing DIFFERENT history: A -> B.
+        cat.save(location, A, &clock).unwrap();
+        cat.save(location, B, &clock).unwrap();
+        assert_eq!(cat.revisions(location).unwrap().len(), 2);
+
+        // Rebuild from a store view that no longer contains B (only A then C).
+        cat.rebuild(
+            location,
+            vec![
+                entry(A, "2026-06-01 00:00:00.001"),
+                entry(C, "2026-06-01 00:00:00.005"),
+            ],
+        )
+        .unwrap();
+
+        let revs = cat.revisions(location).unwrap();
+        assert_eq!(revs.len(), 2);
+        assert_eq!(revs[0].id, C);
+        assert_eq!(revs[0].previous_id.as_deref(), Some(A));
+        assert_eq!(revs[1].id, A);
+        assert_eq!(revs[1].previous_id, None);
+        // The stale id B is gone everywhere: it no longer appears as an id in
+        // revisions, and ancestors keyed on B is empty.
+        assert!(revs.iter().all(|r| r.id != B));
+        assert!(cat.ancestors(B, None).unwrap().is_empty());
+        // loc_head now points at C.
+        let loc = cat
+            .locations()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.location == location)
+            .unwrap();
+        assert_eq!(loc.id, C);
+    }
+
+    #[test]
+    fn rebuild_leaves_other_locations_untouched() {
+        let dir = TempDir::new();
+        let cat = Catalog::open(dir.db_path()).unwrap();
+        let clock = seq_clock(&[
+            "2026-06-01 00:00:00.001",
+            "2026-06-01 00:00:00.002",
+            "2026-06-01 00:00:00.003",
+        ]);
+        cat.save("s3://other", A, &clock).unwrap();
+        cat.save("s3://other", B, &clock).unwrap();
+        let other_before = cat.revisions("s3://other").unwrap();
+
+        // Rebuild a DIFFERENT location.
+        cat.rebuild("s3://target", vec![entry(C, "2026-06-01 00:00:00.050")])
+            .unwrap();
+
+        // s3://other is byte-for-byte unchanged.
+        assert_eq!(other_before, cat.revisions("s3://other").unwrap());
+        // Both locations now appear in locations().
+        let mut locs = cat.locations().unwrap();
+        locs.sort_by(|a, b| a.location.cmp(&b.location));
+        assert_eq!(locs.len(), 2);
+    }
+
+    #[test]
+    fn rebuild_is_idempotent() {
+        let location = "s3://idem";
+        let view = vec![
+            entry(A, "2026-06-01 00:00:00.001"),
+            entry(B, "2026-06-01 00:00:00.002"),
+            entry(C, "2026-06-01 00:00:00.003"),
+        ];
+
+        let dir = TempDir::new();
+        let cat = Catalog::open(dir.db_path()).unwrap();
+        cat.rebuild(location, view.clone()).unwrap();
+        let once = query_bytes(&cat, location);
+        // Rebuilding the same store view again yields the same catalog.
+        cat.rebuild(location, view).unwrap();
+        let twice = query_bytes(&cat, location);
+        assert_eq!(once, twice);
+        assert_eq!(cat.revisions(location).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn rebuild_empty_view_clears_location() {
+        let location = "s3://empty";
+        let dir = TempDir::new();
+        let cat = Catalog::open(dir.db_path()).unwrap();
+        let clock = seq_clock(&["2026-06-01 00:00:00.001"]);
+        cat.save(location, A, &clock).unwrap();
+        assert_eq!(cat.revisions(location).unwrap().len(), 1);
+        // An empty store view (no manifests) clears the location entirely.
+        cat.rebuild(location, Vec::<RebuildEntry>::new()).unwrap();
+        assert!(cat.revisions(location).unwrap().is_empty());
+        assert!(cat
+            .locations()
+            .unwrap()
+            .into_iter()
+            .all(|r| r.location != location));
     }
 
     #[test]
