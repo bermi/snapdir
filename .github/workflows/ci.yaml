@@ -230,7 +230,7 @@ jobs:
       - name: Generate coverage (lcov + fail-under)
         run: |
           cargo llvm-cov --workspace --all-features --locked \
-            --fail-under-lines 0 \
+            --fail-under-lines 75 \
             --lcov --output-path lcov.info
 
       - name: Upload to Codecov
