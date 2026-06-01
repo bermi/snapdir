@@ -489,13 +489,85 @@ gates:
     phase: 5
     owner_agent: tests
     depends_on: [s3-store, b2-store, gcs-store, file-store-roundtrip, remote-stores-harness, cli-remote-store-wire]
+    # GATE-BUMP 2026-06-01T01:52:18Z (operator-approved: AskUserQuestion "Yes — PM auto-verifies").
+    # The original gate was a HOLLOW human-checkpoint: verification_cmd was a bare `echo` and
+    # pass_criteria a lone human_confirm — it verified NOTHING and nearly produced a false pass
+    # this session. Replaced with a real PM-run differential harness (MinIO S3 Bash<->Rust
+    # cross-tool + a zero-external-dependency lane that runs the Rust round-trip with aws/b2/gcloud
+    # removed from PATH). Hermetic (docker-only), runs every tick. GCS/B2 split into their own
+    # gates: gcs-store-notfound-fix / remote-interop-gcs / remote-interop-b2.
+    bump_reason: "hollow human_confirm over an echo verified nothing (near false-pass); replaced with PM-run live harness asserting exit_code 0 + S3 cross-tool ran + zero-external-dependency lane passed"
+    status: passed
+    passed_at: 2026-06-01T01:52:18Z
+    git_sha: fd17c22
+    failure_count: 0
+    verification_cmd: "bash tests/integration/remote_stores_live.sh"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "remote-interop LIVE: backends ran \\[[^]]*s3[^]]*\\] \\+ zero-external-dependency lane passed"
+    human_checkpoint: false
+    description: "PM-auto-verified: S3 (MinIO) Bash<->Rust cross-tool byte-identical + zero-external-dependency (Rust round-trip with aws/b2/gcloud absent from PATH). Hermetic, docker-only, runs every tick."
+
+  - id: gcs-store-notfound-fix
+    phase: 5
+    owner_agent: stores
+    depends_on: [gcs-store]
+    # GATE-ADD 2026-06-01T01:52:18Z: the new live harness caught a real GcsStore bug — key_exists/
+    # get_bytes only treated HTTP 404 as absent, but google-cloud-storage v1.12 reports a missing
+    # object as service-level Code::NotFound (http_status_code()==None), so skip-if-present aborted
+    # EVERY real GCS push before upload. The env-gated unit test never ran without creds. Fixed via
+    # an is_not_found() helper (HTTP 404 OR service NotFound), mirroring S3's is_not_found().
+    status: passed
+    passed_at: 2026-06-01T01:52:18Z
+    git_sha: f08cb84
+    failure_count: 0
+    verification_cmd: "SNAPDIR_GCS_TEST_STORE=gs://snapdir-integration-testing/rust-port-fixcheck-$$ cargo test -p snapdir-stores --locked gcs_store_live_round_trip_when_configured -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "gcs_store_live_round_trip_when_configured \\.\\.\\. ok"
+    human_checkpoint: false
+    description: "GcsStore classifies google-cloud-storage service-level Code::NotFound (http_status_code()==None) as absent in key_exists/get_bytes, not just HTTP 404; live round-trip against real GCS (push/get_manifest/fetch) passes and MUST run (not skip)."
+
+  - id: remote-interop-gcs
+    phase: 5
+    owner_agent: tests
+    depends_on: [remote-interop, gcs-store-notfound-fix]
+    # GATE-ADD 2026-06-01T01:52:18Z (operator: "do s3 and gcs now"). GCS Bash<->Rust cross-tool
+    # against the REAL bucket gs://snapdir-integration-testing (ADC; no local emulator can drive
+    # the Rust google-cloud-storage SDK — fake-gcs-server has no SDK emulator path).
+    status: passed
+    passed_at: 2026-06-01T01:52:18Z
+    git_sha: fd17c22
+    failure_count: 0
+    verification_cmd: "SNAPDIR_GCS_TEST_STORE=gs://snapdir-integration-testing/rust-port-interop bash tests/integration/remote_stores_live.sh"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "gcs \\(real\\): all Bash<->Rust differential lanes passed"
+    human_checkpoint: false
+    description: "GCS Bash<->Rust cross-tool live interop (real bucket, ADC): Rust round-trip; Rust-push->Bash(gcloud)-fetch; Bash-push->Rust-fetch — byte-identical manifests + identical snapshot ids. Requires gcs-store-notfound-fix."
+
+  - id: remote-interop-b2
+    phase: 5
+    owner_agent: tests
+    depends_on: [remote-interop-gcs, release-dryrun]
+    # GATE-ADD 2026-06-01T01:52:18Z (operator: "skip b2 for the very last ... once we've done gcs
+    # and aws and have a release candidate"). Deferred to AFTER release-dryrun. No local emulator
+    # serves both B2-native (Bash) + S3 (Rust) APIs, so this needs the real B2 sandbox.
+    # OPERATOR PREREQ before it can pass: fix SNAPDIR_B2_TEST_ENDPOINT to the key's real region
+    # (key reports us-west-001; creds file says us-west-004) + a key with object HEAD/GET/PUT.
+    # b2 CLI is installed (oracle side). The harness loud-skips B2 until reachable (never a silent pass).
     status: pending
     failure_count: 0
-    verification_cmd: "echo 'Run tests/integration/remote_stores.sh against emulators (fake-gcs-server / MinIO / B2 sandbox) and confirm Bash<->Rust cross-tool interop.'"
+    verification_cmd: "source ~/.config/snapdir/test-creds.sh >/dev/null 2>&1; bash tests/integration/remote_stores_live.sh"
     pass_criteria:
-      human_confirm: "Did the remote-store emulator round-trips pass AND Bash<->Rust cross-tool fetch succeed with identical keys?"
+      and:
+        - exit_code: 0
+        - regex_match: "b2 \\(real sandbox\\): all Bash<->Rust differential lanes passed"
     human_checkpoint: true
-    description: "Remote stores round-trip against emulators; Rust push fetchable by Bash and vice-versa."
+    description: "DEFERRED (final phase-5 gate, post-release-candidate): B2 Bash<->Rust cross-tool against the real B2 sandbox; identical sharded keys/ids both directions."
 
   # ===================================================================
   # Phase 6 — Caching + redb catalog  (lanes: core, catalog)
@@ -677,7 +749,10 @@ gates:
   - id: release-dryrun
     phase: 10
     owner_agent: packaging
-    depends_on: [release-config, remote-interop, coverage-gate, perf-gate, catalog-rebuild, migration-guide]
+    # GATE-ADD 2026-06-01T01:52:18Z: + remote-interop-gcs (a release candidate must have GCS
+    # Bash<->Rust interop proven). B2 (remote-interop-b2) intentionally depends on THIS gate, so
+    # it runs only after the release candidate, per the operator.
+    depends_on: [release-config, remote-interop, remote-interop-gcs, coverage-gate, perf-gate, catalog-rebuild, migration-guide]
     status: pending
     failure_count: 0
     verification_cmd: "echo 'Run a tag dry-run of release.yml; confirm per-target archives build and the static binary smoke-tests.'"

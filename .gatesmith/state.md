@@ -3,16 +3,22 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-Active phase: **5**
-Current gate: `remote-interop` (phase 5, owner tests, **HUMAN CHECKPOINT**) next tick.
-Last passed: `cli-remote-store-wire` @ 2026-05-31T13:09:48Z — CLI now routes s3/b2/gs/external. 🔑 interop keystone proven; contract frozen (locks 4/4 OK each tick).
-remote-interop is fully unblocked. Next tick: escalate to the operator to run `bash tests/integration/remote_stores.sh` against emulators (MinIO / B2 sandbox / fake-gcs-server) with the env contract below, and confirm Bash↔Rust cross-tool round-trips pass with identical keys/ids.
-`remote-interop` operator env contract: S3 `SNAPDIR_S3_TEST_STORE`+`SNAPDIR_S3_TEST_ENDPOINT`+AWS creds; B2 `SNAPDIR_B2_TEST_STORE`+`SNAPDIR_B2_TEST_ENDPOINT`+`SNAPDIR_B2_STORE_APPLICATION_KEY`/`_ID`; GCS `SNAPDIR_GCS_TEST_STORE`+`STORAGE_EMULATOR_HOST`. Memory holds a real GCS test project/bucket.
-TLS pattern established for remote stores: `default-features=false` + aws-smithy-runtime `connector-hyper-0-14-x` + hyper-rustls/rustls 0.21/ring — keeps aws-lc-rs out. Re-run `grep -i aws-lc Cargo.lock` (must be empty) after each remote-store gate.
-Eligible besides Phase 5: cache-id+catalog-redb (P6), bench-compile (P7), proptest-roundtrip+cli-trycmd (P8), rustdoc-doctests (P9) — phase-asc keeps Phase 5 first.
+Active phase: **6** (Phase 5 green except the operator-deferred B2 gate).
+Next gate: `cache-id` (phase 6, owner core) — head of the priority queue; `catalog-redb` (phase 6, owner catalog) next.
+Last passed: `remote-interop` + `remote-interop-gcs` + `gcs-store-notfound-fix` @ 2026-06-01T01:52:18Z — real Bash↔Rust remote-store interop **PM-verified** (S3 via MinIO + GCS via real bucket), and a real GcsStore bug fixed. Contract frozen (locks 4/4 OK each tick).
+
+**Remote-interop is now PM-auto-verified, not a human rubber-stamp.** `remote-interop` runs `bash tests/integration/remote_stores_live.sh` every tick: MinIO S3 Bash↔Rust cross-tool (byte-identical) + a zero-external-dependency lane (Rust round-trip with `aws`/`b2`/`gcloud` removed from PATH). `remote-interop-gcs` proves the same against the **real** `gs://snapdir-integration-testing` bucket (ADC). Both green. `gcs-store-notfound-fix` repaired a real GcsStore bug — `key_exists`/`get_bytes` only treated HTTP 404 as absent, but `google-cloud-storage` v1.12 reports a missing object as service-level `Code::NotFound` (`http_status_code()==None`), so skip-if-present aborted **every** real GCS push; fixed via an `is_not_found()` helper.
+
+**B2 deferred to last (`remote-interop-b2`, pending, depends on `release-dryrun`)** per the operator: verify B2 once we have a usable release candidate. OPERATOR PREREQ before it can pass: fix `SNAPDIR_B2_TEST_ENDPOINT` to the key's real region (key reports `us-west-001`; creds file says `us-west-004`) + a key with object HEAD/GET/PUT. `b2` CLI is installed (oracle side). No local emulator serves both B2-native + S3 APIs, so it needs the real sandbox.
+
+**Lesson (gate-design principle):** a `human_confirm` must be paired with a real machine check wherever feasible — `remote-interop` was the only *hollow* gate (echo + lone human_confirm) and nearly produced a false pass. Remaining human gates legitimately need external systems: `ci-matrix-green` (GitHub Actions), `coverage-gate` (Codecov), `release-dryrun` (tag/CI); `perf-gate`/`migration-guide` already pair human_confirm with a real `exit_code` check.
+
+Live-verification env (for the PM/loop): GCS needs only ambient ADC (`gcloud auth application-default login` as `bermi@bermilabs.com`, project `snapdir-development`) + the bucket path (hardcoded in the gate). S3 is hermetic (docker MinIO, no creds). B2 needs `source ~/.config/snapdir/test-creds.sh` + the endpoint fix above.
+TLS pattern established for remote stores: `default-features=false` + ring rustls — keeps aws-lc-rs out. Re-run `grep -i aws-lc Cargo.lock` (must be empty) after each remote-store gate.
 Open (non-blocking) findings to revisit later:
 - `Store` trait lacks object copy/delete → fetch double-copies; `verify --purge` can't remove corrupt objects yet (verify-cache/cache-id or a store-API extension).
 - FROZEN oracle macOS bug: `snapdir` L2163-2170 `_snapdir_absolute_path` can't checkout nested dirs on macOS (no `realpath -m`); Rust is correct. Bash-side macOS limitation only — not ours to fix (oracle is frozen).
+- FROZEN oracle space-path bug: `snapdir` L1276 `IFS=' ' read -r -a line_parts` then `line_parts[4]` truncates space-bearing paths on Bash **push** (reproduces vs `file://`; Rust pushes spaces fine). Interop harness lane-C uses a no-space corpus for the Bash-push direction. Oracle is frozen — not ours to fix.
 
 > **🔒 FROZEN INTERFACES — re-verify EVERY tick (READ STATE step):**
 > `shasum -a 256 -c .gatesmith/golden-fixtures.sha.lock .gatesmith/manifest-format.sha.lock`
@@ -31,7 +37,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 2 (Core manifest/hashing + FREEZE): 7/7 passed ✅ 🔒 FROZEN
 - Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
 - Phase 4 (Store trait + FileStore): 5/5 passed ✅
-- Phase 5 (Remote stores): 5/6 passed (only remote-interop — a human checkpoint — remains)
+- Phase 5 (Remote stores): 8/9 passed (S3+GCS interop PM-verified; only `remote-interop-b2` — operator-deferred to post-release-candidate — remains)
 - Phase 6 (Caching + redb catalog): 0/4 passed
 - Phase 7 (Performance): 0/2 passed
 - Phase 8 (Testing/fuzzing): 0/4 passed
@@ -68,3 +74,17 @@ Open (non-blocking) findings to revisit later:
 - 2026-05-31 — `gcs-store`: `GcsStore` via `google-cloud-storage =1.12.0`, ring-only (eliminated google-cloud-auth's aws-lc-rs defaults + installed ring CryptoProvider); `gs://` parse matches oracle; ADC auth; 13 tests. aws-lc/openssl/native-tls all absent. → added `remote-stores-harness` prereq.
 - 2026-05-31 — `remote-stores-harness`: `tests/integration/remote_stores.sh` (per-backend Rust roundtrip + Bash↔Rust cross-tool; emulator-free `--self-check` w/ skip-not-fail). Surfaced CLI `resolve_store` only wires `file://` → added `cli-remote-store-wire` prereq.
 - 2026-05-31 — `cli-remote-store-wire`: CLI `resolve_store` now routes `file/s3/b2/gs` to their stores + `ExternalStore` shim for other schemes (via `snapdir_stores::resolve_adapter`); 4 creds-free routing tests. Remote push/fetch now reachable.
+- 2026-06-01 — `remote-interop` **GATE-BUMP** (operator-approved): the hollow `echo`+`human_confirm` rubber-stamp was replaced with a real PM-run differential harness `tests/integration/remote_stores_live.sh` — MinIO S3 Bash↔Rust cross-tool (byte-identical) + a **zero-external-dependency** lane (Rust round-trip with `aws`/`b2`/`gcloud` removed from PATH). Hermetic, runs every tick. Caught (and prevented) a near-false-pass; now PM-auto-verified. (git fd17c22)
+- 2026-06-01 — `gcs-store-notfound-fix` (stores): repaired a real GcsStore bug surfaced by the live harness — `key_exists`/`get_bytes` only treated HTTP 404 as absent; `google-cloud-storage` v1.12 reports a missing object as service-level `Code::NotFound` (`http_status_code()==None`), so skip-if-present aborted **every** real GCS push before upload. Fixed via `is_not_found()` (HTTP 404 OR service NotFound), mirroring S3; 3 regression tests; live GCS round-trip now passes. (git f08cb84)
+- 2026-06-01 — `remote-interop-gcs` (tests): GCS Bash↔Rust cross-tool against the **real** bucket `gs://snapdir-integration-testing` (ADC) — Rust round-trip + Rust-push→Bash(`gcloud`)-fetch + Bash-push→Rust-fetch all byte-identical, same snapshot id `e52681b9…` every direction. **Phase 5 remote interop proven for S3+GCS.** B2 deferred to `remote-interop-b2` (post-release-candidate). (git fd17c22)
+
+## Remote-store test credentials (operator)
+
+Before the `remote-interop` gate (and any live remote-store run), source the creds:
+
+    source ~/.config/snapdir/test-creds.sh
+
+Then run: `bash tests/integration/remote_stores.sh` (S3/B2/GCS round-trips +
+Bash<->Rust cross-tool). Creds live in `~/.config/snapdir/test-creds.sh` (chmod 600,
+outside the repo). They are TEST-bucket keys; rotate after use. To scrub the keys from
+Claude transcripts/logs after a session ends: `bash ~/.config/snapdir/scrub-test-creds-from-logs.sh`.
