@@ -1,0 +1,6 @@
+```
+$ snapdir verify-cache
+? 1
+snapdir: `verify-cache` is not implemented yet
+
+```

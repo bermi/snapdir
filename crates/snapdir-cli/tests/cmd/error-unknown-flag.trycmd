@@ -1,0 +1,10 @@
+```
+$ snapdir --nonsense
+? 2
+error: unexpected argument '--nonsense' found
+
+Usage: snapdir [OPTIONS] <COMMAND>
+
+For more information, try '--help'.
+
+```

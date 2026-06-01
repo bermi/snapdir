@@ -1,0 +1,28 @@
+```
+$ snapdir id --help
+Print the manifest ID of a directory or a manifest piped via stdin
+
+Usage: snapdir id [OPTIONS] [PATH]
+
+Arguments:
+  [PATH]  Directory to describe (omit to read a manifest from stdin)
+
+Options:
+      --cache-dir <DIR>       Directory where the object cache is stored [env: SNAPDIR_CACHE_DIR=]
+      --catalog <NAME>        Catalog adapter to use [env: SNAPDIR_CATALOG=]
+      --store <URI>           Store URI: `protocol://location/path`
+      --id <ID>               Snapshot ID to operate on
+      --exclude <PATTERN>     Exclude paths matching PATTERN
+      --paths <PATTERN>       Only include paths matching PATTERN
+      --linked                Use symlinks instead of copies
+      --force                 Force an action to run
+      --purge                 Purge objects with invalid checksums
+      --keep                  Keep the staging directory
+      --dryrun                Run without making any changes
+      --verbose               Enable verbose output
+      --debug                 Enable debug output
+      --location <DIR|STORE>  Context (directory or store) for catalog queries
+  -h, --help                  Print help
+  -V, --version               Print version
+
+```

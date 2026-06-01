@@ -1,0 +1,224 @@
+//! Stateful end-to-end CLI tests using `assert_cmd` + `assert_fs`.
+//!
+//! Unlike the static `trycmd` surface snapshots, these drive the *wired*
+//! commands against real temp trees and a temp `file://` store, asserting real
+//! behavior:
+//!
+//! - `manifest` / `id` over a known tiny tree: the id is 64 lowercase hex, and
+//!   (when the frozen oracle is present) the manifest bytes match
+//!   `./snapdir-manifest` and the id matches `./snapdir id` exactly.
+//! - a `push -> fetch -> checkout` and `push -> pull` round-trip over a temp
+//!   `file://` store: the printed id equals the source id, the checked-out tree
+//!   re-manifests to the same id (contents + permissions reproduced), and
+//!   `verify` accepts the intact snapshot.
+//!
+//! The store/cache live under `assert_fs` temp dirs that are removed on drop, so
+//! these tests are hermetic and need no network or credentials.
+
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use assert_cmd::prelude::*;
+use assert_fs::prelude::*;
+use assert_fs::TempDir;
+use predicates::prelude::*;
+
+/// A fresh `snapdir` command with the cache pinned under `cache` so tests never
+/// touch the user's real `$HOME/.cache/snapdir`.
+fn snapdir(cache: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("snapdir").expect("snapdir binary built");
+    cmd.env("SNAPDIR_CACHE_DIR", cache);
+    cmd
+}
+
+/// Repo root (the crate lives at `<root>/crates/snapdir-cli`).
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate is two levels under the repo root")
+        .to_path_buf()
+}
+
+/// A frozen oracle script at the repo root, or `None` (crate-only checkout).
+fn oracle(name: &str) -> Option<PathBuf> {
+    let path = repo_root().join(name);
+    path.is_file().then_some(path)
+}
+
+/// Builds a known tiny tree with explicit, deterministic permissions so a
+/// checked-out copy must restore them to re-manifest to the same id.
+fn build_tree(dir: &TempDir) {
+    dir.child("a.txt").write_str("hello").unwrap();
+    std::fs::set_permissions(dir.child("a.txt").path(), PermissionsExt::from_mode(0o644)).unwrap();
+    dir.child("sub/b.txt").write_str("world!!").unwrap();
+    std::fs::set_permissions(
+        dir.child("sub/b.txt").path(),
+        PermissionsExt::from_mode(0o600),
+    )
+    .unwrap();
+    std::fs::set_permissions(dir.child("sub").path(), PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(dir.path(), PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+/// Runs `snapdir <args>` (cache pinned), asserts success, returns trimmed stdout.
+fn stdout_ok(cache: &Path, args: &[&str]) -> String {
+    let out = snapdir(cache).args(args).output().expect("run snapdir");
+    assert!(
+        out.status.success(),
+        "snapdir {args:?} failed ({:?})\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    String::from_utf8(out.stdout).unwrap().trim_end().to_owned()
+}
+
+#[test]
+fn id_is_64_lowercase_hex_and_matches_oracle() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    build_tree(&src);
+    let src_str = src.path().to_string_lossy().into_owned();
+
+    let id = stdout_ok(cache.path(), &["id", &src_str]);
+    assert_eq!(id.len(), 64, "snapshot id must be 64 hex chars: {id:?}");
+    assert!(
+        id.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "snapshot id must be lowercase hex: {id:?}"
+    );
+
+    // When the frozen oracle is present, the id must match it byte-for-byte.
+    if let Some(script) = oracle("snapdir") {
+        let out = Command::new(&script)
+            .args(["id", &src_str])
+            .output()
+            .expect("run oracle id");
+        assert!(out.status.success());
+        let oracle_id = String::from_utf8(out.stdout).unwrap().trim_end().to_owned();
+        assert_eq!(id, oracle_id, "id must match the Bash oracle");
+    }
+}
+
+#[test]
+fn manifest_matches_oracle_bytes() {
+    let Some(script) = oracle("snapdir-manifest") else {
+        eprintln!("skip: ./snapdir-manifest not present");
+        return;
+    };
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    build_tree(&src);
+    let src_str = src.path().to_string_lossy().into_owned();
+
+    let expected = {
+        let out = Command::new(&script)
+            .arg(&src_str)
+            .output()
+            .expect("run oracle manifest");
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+
+    snapdir(cache.path())
+        .args(["manifest", &src_str])
+        .assert()
+        .success()
+        .stdout(predicate::eq(expected));
+}
+
+#[test]
+fn push_fetch_checkout_roundtrip_reproduces_id() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let dest = TempDir::new().unwrap();
+    build_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let dest_str = dest.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    // id is store-independent; capture it for later equality checks.
+    let src_id = stdout_ok(cache.path(), &["id", &src_str]);
+
+    // push prints the source id.
+    let pushed = stdout_ok(cache.path(), &["push", "--store", &store_url, &src_str]);
+    assert_eq!(pushed, src_id, "push must print the source snapshot id");
+
+    // fetch populates the cache (offline checkout works from the cache only).
+    snapdir(cache.path())
+        .args(["fetch", "--store", &store_url, "--id", &src_id])
+        .assert()
+        .success();
+
+    // checkout materializes the tree (no --store needed; reads the cache).
+    snapdir(cache.path())
+        .args(["checkout", "--id", &src_id, &dest_str])
+        .assert()
+        .success();
+
+    // The destination reproduces the source contents...
+    dest.child("a.txt").assert("hello");
+    dest.child("sub/b.txt").assert("world!!");
+    // ...and re-manifests to the SAME id (contents + permissions restored).
+    assert_eq!(
+        stdout_ok(cache.path(), &["id", &dest_str]),
+        src_id,
+        "checked-out tree must re-manifest to the source id"
+    );
+
+    // verify accepts the intact snapshot in the store.
+    snapdir(cache.path())
+        .args(["verify", "--store", &store_url, "--id", &src_id])
+        .assert()
+        .success();
+}
+
+#[test]
+fn pull_is_fetch_plus_checkout() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let dest = TempDir::new().unwrap();
+    build_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let dest_str = dest.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    let src_id = stdout_ok(cache.path(), &["push", "--store", &store_url, &src_str]);
+
+    // pull == fetch + checkout in one step.
+    snapdir(cache.path())
+        .args(["pull", "--store", &store_url, "--id", &src_id, &dest_str])
+        .assert()
+        .success();
+
+    dest.child("a.txt").assert("hello");
+    dest.child("sub/b.txt").assert("world!!");
+    assert_eq!(stdout_ok(cache.path(), &["id", &dest_str]), src_id);
+}
+
+#[test]
+fn fetch_without_store_fails_with_clear_message() {
+    let cache = TempDir::new().unwrap();
+    snapdir(cache.path())
+        .args(["fetch", "--id", &"0".repeat(64)])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing --store option"));
+}
+
+#[test]
+fn checkout_unknown_id_fails() {
+    let cache = TempDir::new().unwrap();
+    let dest = TempDir::new().unwrap();
+    let dest_str = dest.path().to_string_lossy().into_owned();
+    // Nothing fetched into this cache, so the manifest is absent.
+    snapdir(cache.path())
+        .args(["checkout", "--id", &"0".repeat(64), &dest_str])
+        .assert()
+        .failure();
+}

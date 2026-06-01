@@ -1,0 +1,31 @@
+```
+$ snapdir manifest --help
+Print the manifest of a directory
+
+Usage: snapdir manifest [OPTIONS] [PATH]
+
+Arguments:
+  [PATH]  Directory to describe
+
+Options:
+      --absolute              Emit absolute paths instead of `./`-relative paths
+      --cache-dir <DIR>       Directory where the object cache is stored [env: SNAPDIR_CACHE_DIR=]
+      --catalog <NAME>        Catalog adapter to use [env: SNAPDIR_CATALOG=]
+      --no-follow             Do not follow symbolic links (plain `find` instead of `find -L`)
+      --checksum-bin <NAME>   Checksum binary to mirror: `b3sum` (default), `md5sum`, `sha256sum`
+      --store <URI>           Store URI: `protocol://location/path`
+      --exclude <PATTERN>     Exclude paths matching the extended-regex PATTERN (supports the `%system%` / `%common%` macros)
+      --id <ID>               Snapshot ID to operate on
+      --paths <PATTERN>       Only include paths matching PATTERN
+      --linked                Use symlinks instead of copies
+      --force                 Force an action to run
+      --purge                 Purge objects with invalid checksums
+      --keep                  Keep the staging directory
+      --dryrun                Run without making any changes
+      --verbose               Enable verbose output
+      --debug                 Enable debug output
+      --location <DIR|STORE>  Context (directory or store) for catalog queries
+  -h, --help                  Print help
+  -V, --version               Print version
+
+```

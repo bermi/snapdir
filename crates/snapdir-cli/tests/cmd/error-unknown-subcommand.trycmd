@@ -1,0 +1,10 @@
+```
+$ snapdir bogus
+? 2
+error: unrecognized subcommand 'bogus'
+
+Usage: snapdir [OPTIONS] <COMMAND>
+
+For more information, try '--help'.
+
+```
