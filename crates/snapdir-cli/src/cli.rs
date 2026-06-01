@@ -250,6 +250,20 @@ impl Cli {
                     exclude,
                 )?;
                 println!("{manifest}");
+                // Mirror the oracle's `_snapdir_log_event "manifest" "$id"
+                // "$snapdir_dir_abs_path"` (`snapdir` L212): after emitting the
+                // manifest, record it in the catalog at the manifested
+                // directory's absolute path. The id is the b3sum of the
+                // comment-stripped manifest, exactly as the oracle derives
+                // `_SNAPDIR_ID` (via `snapdir_id`) before logging. Best-effort
+                // and a silent no-op when no catalog is enabled, so it never
+                // changes the stdout bytes above. Note: `snapdir id` does NOT
+                // log (the oracle's `snapdir_id` at L223 has no
+                // `_snapdir_log_event`), so only this `manifest` arm logs.
+                let id = snapshot_id(&manifest, &Blake3Hasher::new());
+                let abs = resolve_root(path.as_deref())
+                    .context("resolving the manifested directory path")?;
+                self.log_event("manifest", &id, &abs.to_string_lossy())?;
                 Ok(())
             }
             Command::Id { path } => {
@@ -490,6 +504,12 @@ impl Cli {
             .push(&manifest, &root)
             .with_context(|| format!("staging snapshot {id} into the local cache"))?;
         println!("{id}");
+        // Mirror the oracle's `_snapdir_log_event "stage" "$id" "$base_dir"`
+        // (`snapdir` L826): record the staged snapshot in the catalog at the
+        // staged base directory (the absolute path `stage` walked). Best-effort
+        // and a no-op unless a catalog is enabled, so it never changes the
+        // stdout bytes above.
+        self.log_event("stage", &id, &root.to_string_lossy())?;
         Ok(())
     }
 
