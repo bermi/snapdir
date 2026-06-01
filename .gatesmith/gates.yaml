@@ -747,7 +747,9 @@ gates:
     phase: 8
     owner_agent: tests
     depends_on: [proptest-roundtrip]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T14:17:57Z
+    git_sha: 08b8d7c
     failure_count: 0
     verification_cmd: "test -d tests/fuzz && (command -v cargo-fuzz >/dev/null 2>&1 && cargo fuzz build || echo 'cargo-fuzz not installed - target presence only')"
     pass_criteria:
