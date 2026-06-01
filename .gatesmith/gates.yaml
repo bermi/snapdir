@@ -961,6 +961,26 @@ gates:
     human_checkpoint: false
     description: "Add hidden `snapdir completions <bash|zsh|fish|powershell>` (clap_complete) + `snapdir man` (clap_mangen) generation subcommands so the release pipeline can bundle shell completions + a man page. Hidden (`hide=true`) — the visible 14-subcommand surface is unchanged. Integration test *completions_man* asserts each shell's completion + the man page generate non-empty."
 
+  # GATE-ADD 2026-06-01T18:52:27Z: release.yml triggers ONLY on `push: tags: v*` and publishes
+  # (GitHub Release + GHCR + crates.io — the last irreversible) on any tag, so it can't be safely
+  # dry-run. Add a workflow_dispatch + dry_run input that builds/smokes all targets but skips the
+  # 3 publish jobs, so the operator can run a real dry-run from branch rust-port without publishing.
+  - id: release-dry-run-mode
+    phase: 10
+    owner_agent: packaging
+    depends_on: [release-config, cli-completions-man]
+    status: passed
+    passed_at: 2026-06-01T18:55:17Z
+    git_sha: 4b3b6a9
+    failure_count: 0
+    verification_cmd: "grep -q 'workflow_dispatch' .github/workflows/release.yml && grep -qiE 'dry[_-]?run' .github/workflows/release.yml && (command -v actionlint >/dev/null 2>&1 && actionlint .github/workflows/release.yml || echo 'actionlint not installed - presence only')"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "workflow_dispatch"
+    human_checkpoint: false
+    description: "Add `workflow_dispatch` (+ a `dry_run` boolean input) to release.yml; the dry-run path runs gen-assets + the full per-target build matrix (incl. musl static) but GUARDS the release/docker/crates-io publish jobs so it never publishes (esp. the irreversible crates.io step). Operator can then run a safe dry-run from branch rust-port."
+
   - id: release-dryrun
     phase: 10
     owner_agent: packaging
@@ -971,7 +991,7 @@ gates:
     # cli-catalog-commands, cli-defaults) + migration-guide-refresh — the release cannot sign
     # off until all 14 subcommands are wired and the migration guide reflects it (operator:
     # "make sure it's feature complete").
-    depends_on: [release-config, remote-interop, remote-interop-gcs, coverage-gate, perf-gate, catalog-rebuild, migration-guide, cli-cache-commands, cli-catalog-commands, cli-defaults, migration-guide-refresh, cli-completions-man]
+    depends_on: [release-config, release-dry-run-mode, remote-interop, remote-interop-gcs, coverage-gate, perf-gate, catalog-rebuild, migration-guide, cli-cache-commands, cli-catalog-commands, cli-defaults, migration-guide-refresh, cli-completions-man]
     status: pending
     failure_count: 0
     verification_cmd: "echo 'Run a tag dry-run of release.yml; confirm per-target archives build and the static binary smoke-tests.'"
