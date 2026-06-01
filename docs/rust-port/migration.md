@@ -67,33 +67,40 @@ Notes:
   `sqlite3` for the built-in backends; those tools are only needed by the
   external shim (for third-party stores) and by the test/oracle harness.
 
-### 1.3 Subcommand wiring status (honest)
+### 1.3 Subcommand wiring status
 
-All 14 subcommands are present in the clap surface. **Not all are wired yet** —
-the table below reflects the actual implementation state (matching the
-`cli-trycmd` coverage map). Stubbed commands parse and show `--help`, but emit
-`snapdir: \`<name>\` is not implemented yet` when run.
+All 14 subcommands are present in the clap surface and **all 14 are now wired**
+— the CLI is feature-complete (no stubs remain). The table below reflects the
+actual implementation state (matching the `cli-trycmd` coverage map). Every
+command reuses an already-tested library path (`snapdir-core`, `snapdir-core`'s
+`cache`, `snapdir-catalog`, or `snapdir-stores`); none shells out.
 
-| Subcommand      | Status   | Notes                                                                 |
-| --------------- | -------- | --------------------------------------------------------------------- |
-| `manifest`      | ✅ wired | In-process walk; byte-identical to `snapdir-manifest`.                |
-| `id`            | ✅ wired | Snapshot ID of a dir or a manifest on stdin.                          |
-| `push`          | ✅ wired | Walk + push to the resolved store (`file`/`s3`/`b2`/`gs`/external).   |
-| `fetch`         | ✅ wired | Read+verify manifest, materialize verified objects into the cache.   |
-| `pull`          | ✅ wired | `fetch` + `checkout`.                                                 |
-| `checkout`      | ✅ wired | Materialize from the local cache and restore permissions.            |
-| `verify`        | ✅ wired | Re-hash every referenced object from the store.                      |
-| `stage`         | ⏳ stub  | Pending wiring.                                                       |
-| `verify-cache`  | ⏳ stub  | Core logic exists (`snapdir_core::cache`); CLI wiring pending.        |
-| `flush-cache`   | ⏳ stub  | Core logic exists; CLI wiring pending.                                |
-| `locations`     | ⏳ stub  | Catalog query; `snapdir_catalog` exists, CLI wiring pending.          |
-| `ancestors`     | ⏳ stub  | Catalog query; CLI wiring pending.                                    |
-| `revisions`     | ⏳ stub  | Catalog query; CLI wiring pending.                                    |
-| `defaults`      | ⏳ stub  | Pending wiring.                                                       |
+| Subcommand      | Status      | Notes                                                                                                  |
+| --------------- | ----------- | ------------------------------------------------------------------------------------------------------ |
+| `manifest`      | ✅ wired    | In-process walk; byte-identical to `snapdir-manifest`.                                                  |
+| `id`            | ✅ wired    | Snapshot ID of a dir or a manifest on stdin.                                                            |
+| `push`          | ✅ wired    | Walk + push to the resolved store (`file`/`s3`/`b2`/`gs`/external); also logs the snapshot to the catalog. |
+| `fetch`         | ✅ wired    | Read+verify manifest, materialize verified objects into the cache.                                     |
+| `pull`          | ✅ wired    | `fetch` + `checkout`.                                                                                   |
+| `checkout`      | ✅ wired    | Materialize from the local cache and restore permissions.                                              |
+| `verify`        | ✅ wired    | Re-hash every referenced object from the store.                                                        |
+| `stage`         | ✅ wired    | Caches the tree's objects + manifest into the local cache (a `push` to a `FileStore` rooted at the cache dir); prints the snapshot ID. |
+| `verify-cache`  | ✅ wired    | `[--purge]` → `snapdir_core::cache::verify_cache`; reports each corrupt object, exits non-zero on any failure (oracle exit semantics). |
+| `flush-cache`   | ✅ wired    | Empties the local cache (objects + manifests); idempotent on a missing/empty cache.                    |
+| `locations`     | ✅ wired    | Queries `snapdir-catalog`, emits the frozen JSON lines (latest record per location).                   |
+| `ancestors`     | ✅ wired    | `--id <ID> [--location <LOC>]` → catalog `previous_id` chain, frozen JSON lines, `created_at DESC`.    |
+| `revisions`     | ✅ wired    | `--location <LOC>` → catalog revisions for a location, frozen JSON lines, `created_at DESC`.           |
+| `defaults`      | ✅ wired    | Prints effective defaults + `SNAPDIR_*` env reformatted as `--opt=value`, per oracle `snapdir_defaults`. |
 
-> Do not assume a stubbed subcommand works just because it appears in `--help`.
-> The wired set (manifest/id/push/fetch/pull/checkout/verify) is enough for a
-> full `push → fetch → checkout → verify` round-trip against any supported store.
+The wired set covers a full `stage → verify-cache`, a `push → fetch → checkout →
+verify` round-trip against any supported store, and the `locations` /
+`ancestors` / `revisions` history queries.
+
+> **Known minor catalog gap (honest).** Only `push` currently logs to the
+> catalog. The Bash oracle also logs catalog events on `manifest` and `stage`;
+> the Rust port does not yet. In practice this is enough for the history queries
+> to return real data (every pushed snapshot is recorded), but if you depend on
+> `manifest`/`stage` also populating the catalog, that parity is still pending.
 
 ---
 
@@ -201,10 +208,11 @@ Key points:
   output exactly (compact, identical key order; `revisions` omits `location`;
   `previous_id` is a bare `null`). Anything parsing that JSON keeps working.
 
-> The catalog subcommands (`locations` / `ancestors` / `revisions`) and
-> `catalog rebuild` are not yet wired into the CLI (the `redb` catalog crate
-> exists and is tested; CLI wiring is pending — see §1.3). The on-disk format and
-> JSON output contract are already frozen.
+> The catalog subcommands (`locations` / `ancestors` / `revisions`) are wired
+> into the CLI and emit the frozen JSON lines (see §1.3). The on-disk format and
+> JSON output contract are frozen. One honest caveat: only `push` currently logs
+> to the catalog — the oracle also logs on `manifest`/`stage`, which the Rust
+> port does not yet, so history reflects pushed snapshots only.
 
 ---
 
@@ -282,11 +290,13 @@ accepts `--linked`.
    - **B2** → application key ID/secret as `AWS_*`, region via
      `SNAPDIR_B2_REGION` / `AWS_REGION` (or `SNAPDIR_S3_STORE_ENDPOINT_URL`).
 4. Do **not** copy the old SQLite catalog. Rebuild history with
-   `snapdir catalog rebuild` once it is wired; the query output is unchanged.
+   `snapdir catalog rebuild`; the query output is unchanged. Note that history
+   is populated by `push` (see the catalog caveat in §1.3 / §3).
 5. Fix any `--link` → `--linked` and `verify-transactions` → `ensure-no-errors`
    references.
-6. Until the stubbed subcommands are wired (§1.3), rely on the wired set
-   (`manifest`, `id`, `push`, `fetch`, `pull`, `checkout`, `verify`).
+6. All 14 subcommands are wired (§1.3) — the CLI is feature-complete, so every
+   command (`stage`, `verify-cache`, `flush-cache`, `locations`, `ancestors`,
+   `revisions`, `defaults`, plus the round-trip set) is available.
 
 See also: [`manifest-spec.md`](./manifest-spec.md) (frozen format) and
 [`CHANGELOG.md`](./CHANGELOG.md).
