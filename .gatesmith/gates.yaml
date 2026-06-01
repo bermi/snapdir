@@ -949,7 +949,9 @@ gates:
     phase: 10
     owner_agent: cli
     depends_on: [cli-defaults]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T15:56:07Z
+    git_sha: 4efaac8
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked completions_man"
     pass_criteria:
