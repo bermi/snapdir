@@ -576,7 +576,9 @@ gates:
     phase: 6
     owner_agent: core
     depends_on: [file-store-roundtrip]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T02:05:26Z
+    git_sha: 3763bd3
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --locked cache"
     pass_criteria:

@@ -4,8 +4,9 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **6** (Phase 5 green except the operator-deferred B2 gate).
-Next gate: `cache-id` (phase 6, owner core) — head of the priority queue; `catalog-redb` (phase 6, owner catalog) next.
-Last passed: `remote-interop` + `remote-interop-gcs` + `gcs-store-notfound-fix` @ 2026-06-01T01:52:18Z — real Bash↔Rust remote-store interop **PM-verified** (S3 via MinIO + GCS via real bucket), and a real GcsStore bug fixed. Contract frozen (locks 4/4 OK each tick).
+Next gate: `catalog-redb` (phase 6, owner catalog) — head of the priority queue; then `bench-compile` (P7), `proptest-roundtrip`/`cli-trycmd` (P8), `rustdoc-doctests` (P9).
+Last passed: `cache-id` @ 2026-06-01T02:05:26Z — `snapdir-core::cache`: library-pure XDG content-addressable cache integrity (`check_snapshot_integrity` mirrors `_snapdir_check_integrity`; `verify_cache(purge)` mirrors `verify-cache`; `flush_cache`), reusing the frozen sharded layout + in-process blake3; 10 tests, tamper case cross-checked vs live `./snapdir verify-cache`. Contract frozen (locks 4/4 OK each tick).
+CROSS-LANE follow-up (cli): wire `verify-cache` / `flush-cache` subcommands to `snapdir_core::cache`, and have `checkout`/`verify` call `check_snapshot_integrity`, resolving `${XDG_CACHE_HOME:-$HOME/.cache}/snapdir`. (Mirrors how `cli-store-wire` consumed the `Store` trait.)
 
 **Remote-interop is now PM-auto-verified, not a human rubber-stamp.** `remote-interop` runs `bash tests/integration/remote_stores_live.sh` every tick: MinIO S3 Bash↔Rust cross-tool (byte-identical) + a zero-external-dependency lane (Rust round-trip with `aws`/`b2`/`gcloud` removed from PATH). `remote-interop-gcs` proves the same against the **real** `gs://snapdir-integration-testing` bucket (ADC). Both green. `gcs-store-notfound-fix` repaired a real GcsStore bug — `key_exists`/`get_bytes` only treated HTTP 404 as absent, but `google-cloud-storage` v1.12 reports a missing object as service-level `Code::NotFound` (`http_status_code()==None`), so skip-if-present aborted **every** real GCS push; fixed via an `is_not_found()` helper.
 
@@ -38,7 +39,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
 - Phase 4 (Store trait + FileStore): 5/5 passed ✅
 - Phase 5 (Remote stores): 8/9 passed (S3+GCS interop PM-verified; only `remote-interop-b2` — operator-deferred to post-release-candidate — remains)
-- Phase 6 (Caching + redb catalog): 0/4 passed
+- Phase 6 (Caching + redb catalog): 1/4 passed (`cache-id` ✅; `catalog-redb`/`catalog-compat`/`catalog-rebuild` remain)
 - Phase 7 (Performance): 0/2 passed
 - Phase 8 (Testing/fuzzing): 0/4 passed
 - Phase 9 (Documentation): 0/2 passed
@@ -77,6 +78,7 @@ Open (non-blocking) findings to revisit later:
 - 2026-06-01 — `remote-interop` **GATE-BUMP** (operator-approved): the hollow `echo`+`human_confirm` rubber-stamp was replaced with a real PM-run differential harness `tests/integration/remote_stores_live.sh` — MinIO S3 Bash↔Rust cross-tool (byte-identical) + a **zero-external-dependency** lane (Rust round-trip with `aws`/`b2`/`gcloud` removed from PATH). Hermetic, runs every tick. Caught (and prevented) a near-false-pass; now PM-auto-verified. (git fd17c22)
 - 2026-06-01 — `gcs-store-notfound-fix` (stores): repaired a real GcsStore bug surfaced by the live harness — `key_exists`/`get_bytes` only treated HTTP 404 as absent; `google-cloud-storage` v1.12 reports a missing object as service-level `Code::NotFound` (`http_status_code()==None`), so skip-if-present aborted **every** real GCS push before upload. Fixed via `is_not_found()` (HTTP 404 OR service NotFound), mirroring S3; 3 regression tests; live GCS round-trip now passes. (git f08cb84)
 - 2026-06-01 — `remote-interop-gcs` (tests): GCS Bash↔Rust cross-tool against the **real** bucket `gs://snapdir-integration-testing` (ADC) — Rust round-trip + Rust-push→Bash(`gcloud`)-fetch + Bash-push→Rust-fetch all byte-identical, same snapshot id `e52681b9…` every direction. **Phase 5 remote interop proven for S3+GCS.** B2 deferred to `remote-interop-b2` (post-release-candidate). (git fd17c22)
+- 2026-06-01 — `cache-id` (core): new library-pure `snapdir-core::cache` — `check_snapshot_integrity` (mirrors `_snapdir_check_integrity`: manifest-present + every file object verified vs its content-address), `verify_cache(purge)` (mirrors `verify-cache`: scan `.objects/*/*/*/*`, recompute blake3, compare to path-encoded expected checksum, purge corrupt), `flush_cache`; reuses the frozen sharded helpers + in-process blake3, no `$HOME`/env/IO; 10 tests, tamper case cross-checked vs live `./snapdir verify-cache --purge`. Frozen files untouched. (git 3763bd3)
 
 ## Remote-store test credentials (operator)
 
