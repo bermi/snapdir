@@ -907,6 +907,25 @@ gates:
     human_checkpoint: false
     description: "Wire `snapdir defaults` to print/resolve the effective defaults (cache dir, catalog, store) per the oracle. Integration test named *defaults_command*."
 
+  # GATE-ADD 2026-06-01T19:01:47Z (parity polish, standalone — does NOT gate release-dryrun).
+  # The frozen oracle logs to the catalog at 3 sites (_snapdir_log_event "manifest" @L212,
+  # "push" @L359, "stage" @L826); cli-catalog-commands wired only push. Close the divergence.
+  - id: cli-catalog-logging-parity
+    phase: 6
+    owner_agent: cli
+    depends_on: [cli-catalog-commands]
+    status: passed
+    passed_at: 2026-06-01T19:08:33Z
+    git_sha: 666a299
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked catalog_logging"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "running [1-9][0-9]* tests?"
+    human_checkpoint: false
+    description: "Catalog-logging parity with the oracle: wire `snapdir manifest` (event \"manifest\", location = dir abs path; oracle L212) and `snapdir stage` (event \"stage\", location = base dir; oracle L826) to Catalog::log, matching the existing push logging (L359). No-op when no catalog is configured (same resolution as cli-catalog-commands). Integration test *catalog_logging* asserts manifest/stage entries surface in locations/revisions."
+
   - id: migration-guide-refresh
     phase: 9
     owner_agent: docs
