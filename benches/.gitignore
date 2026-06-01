@@ -1,0 +1,3 @@
+# Runtime artifact emitted by compare.sh (the perf-gate's JSON report).
+# Regenerated on every run; not source.
+/last-compare.json

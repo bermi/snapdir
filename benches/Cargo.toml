@@ -13,6 +13,14 @@ publish = false
 [lints]
 workspace = true
 
+# This crate ships no library code (src/lib.rs is doc-only). Disabling the
+# default lib bench/test harnesses stops the empty libtest binary from
+# intercepting criterion's CLI flags, so `cargo bench -p snapdir-benches`
+# runs the real `hot_paths` benchmark without needing `--bench hot_paths`.
+[lib]
+bench = false
+test = false
+
 [dependencies]
 snapdir-core.workspace = true
 
