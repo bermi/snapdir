@@ -65,6 +65,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use serde::Serialize;
 use thiserror::Error;
 
 /// `(created_at, seq) -> (location, id, previous_id)`.
@@ -203,6 +204,84 @@ pub struct Record {
     /// The previous snapshot id for this location (`None` for the first / a
     /// root id). Only populated where the oracle SQL emits it.
     pub previous_id: Option<String>,
+}
+
+/// CLI-compat JSON line for the `locations` query:
+/// `{"created_at":"…","id":"…","location":"…"}`.
+///
+/// Field declaration order **is** the JSON key order; serde keeps it. This is a
+/// frozen CLI contract (matches the oracle's sqlite `json_object('created_at',
+/// …, 'id', …, 'location', …)`), so do not reorder/rename without a proposal.
+#[derive(Debug, Serialize)]
+struct LocationsLine<'a> {
+    created_at: &'a str,
+    id: &'a str,
+    location: &'a str,
+}
+
+/// CLI-compat JSON line for the `ancestors` query:
+/// `{"created_at":"…","id":"…","location":"…"}` where `id` is the row's
+/// `previous_id` (already projected into [`Record::id`] by
+/// [`Catalog::ancestors`]). Same shape as `locations` but a distinct type so the
+/// two contracts stay independent.
+#[derive(Debug, Serialize)]
+struct AncestorsLine<'a> {
+    created_at: &'a str,
+    id: &'a str,
+    location: &'a str,
+}
+
+/// CLI-compat JSON line for the `revisions` query:
+/// `{"created_at":"…","id":"…","previous_id":…}` — **no** `location`. A NULL
+/// `previous_id` (the root revision) renders as JSON `null`, byte-identical to
+/// sqlite's `json_object('previous_id', NULL)`.
+#[derive(Debug, Serialize)]
+struct RevisionsLine<'a> {
+    created_at: &'a str,
+    id: &'a str,
+    previous_id: Option<&'a str>,
+}
+
+/// Renders a [`Record`] from [`Catalog::locations`] to its compact CLI-compat
+/// JSON line (no trailing newline): `{"created_at":"…","id":"…","location":"…"}`.
+///
+/// `serde_json`'s `to_string` is compact (no spaces after `:`/`,`); struct field
+/// order fixes the key order. Standard JSON escaping is applied to the location.
+#[must_use]
+pub fn locations_json_line(record: &Record) -> String {
+    let line = LocationsLine {
+        created_at: &record.created_at,
+        id: &record.id,
+        location: &record.location,
+    };
+    // Infallible: all fields are plain strings; serde_json never fails here.
+    serde_json::to_string(&line).expect("serialize locations line")
+}
+
+/// Renders a [`Record`] from [`Catalog::ancestors`] to its compact CLI-compat
+/// JSON line: `{"created_at":"…","id":"…","location":"…"}` (`id` already holds
+/// the row's `previous_id`).
+#[must_use]
+pub fn ancestors_json_line(record: &Record) -> String {
+    let line = AncestorsLine {
+        created_at: &record.created_at,
+        id: &record.id,
+        location: &record.location,
+    };
+    serde_json::to_string(&line).expect("serialize ancestors line")
+}
+
+/// Renders a [`Record`] from [`Catalog::revisions`] to its compact CLI-compat
+/// JSON line: `{"created_at":"…","id":"…","previous_id":…}`. A `None`
+/// `previous_id` renders as `null` (the root revision), matching sqlite.
+#[must_use]
+pub fn revisions_json_line(record: &Record) -> String {
+    let line = RevisionsLine {
+        created_at: &record.created_at,
+        id: &record.id,
+        previous_id: record.previous_id.as_deref(),
+    };
+    serde_json::to_string(&line).expect("serialize revisions line")
 }
 
 /// A redb-backed snapdir catalog (single writer, multiple readers).
@@ -648,6 +727,245 @@ mod tests {
         assert_eq!(revs.len(), 2);
         assert_eq!(revs[0].id, B);
         assert_eq!(revs[0].previous_id.as_deref(), Some(A));
+    }
+
+    // ----- json_compat: CLI-compat JSON-line serialization -----------------
+    //
+    // These tests freeze the three query output shapes against the Bash oracle's
+    // sqlite `json_object`. The literal-string assertions verify compactness (no
+    // spaces) and exact key order WITHOUT re-parsing (a re-parse would hide a
+    // formatting regression). The `_golden` test drives the live oracle for a
+    // real byte-for-byte cross-check.
+
+    fn rec(created_at: &str, id: &str, location: &str, previous_id: Option<&str>) -> Record {
+        Record {
+            created_at: created_at.to_owned(),
+            id: id.to_owned(),
+            location: location.to_owned(),
+            previous_id: previous_id.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn json_compat_locations_line_exact_bytes() {
+        let r = rec("2026-06-01 00:00:00.001", A, "s3://bucket/some/path", None);
+        assert_eq!(
+            locations_json_line(&r),
+            format!(
+                r#"{{"created_at":"2026-06-01 00:00:00.001","id":"{A}","location":"s3://bucket/some/path"}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn json_compat_ancestors_line_id_is_previous_id_with_location() {
+        // ancestors projects the row's previous_id into Record::id; location is
+        // present and DESC ordering is the caller's (Catalog::ancestors). Here we
+        // assert the serialized bytes for two rows in DESC order.
+        let rows = [
+            rec("2026-06-01 00:00:00.005", A, "s3://bar", None), // id = previous_id (A)
+            rec("2026-06-01 00:00:00.004", B, "/local/foo", None),
+        ];
+        let lines: Vec<String> = rows.iter().map(ancestors_json_line).collect();
+        assert_eq!(
+            lines[0],
+            format!(
+                r#"{{"created_at":"2026-06-01 00:00:00.005","id":"{A}","location":"s3://bar"}}"#
+            )
+        );
+        assert_eq!(
+            lines[1],
+            format!(
+                r#"{{"created_at":"2026-06-01 00:00:00.004","id":"{B}","location":"/local/foo"}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn json_compat_revisions_lines_desc_incl_null_root() {
+        // created_at DESC: C (prev B), B (prev A), A (prev NULL -> json null).
+        let rows = [
+            rec("2026-06-01 00:00:00.003", C, "s3://bar", Some(B)),
+            rec("2026-06-01 00:00:00.002", B, "s3://bar", Some(A)),
+            rec("2026-06-01 00:00:00.001", A, "s3://bar", None),
+        ];
+        let lines: Vec<String> = rows.iter().map(revisions_json_line).collect();
+        // No `location` key in revisions.
+        assert_eq!(
+            lines[0],
+            format!(r#"{{"created_at":"2026-06-01 00:00:00.003","id":"{C}","previous_id":"{B}"}}"#)
+        );
+        assert_eq!(
+            lines[1],
+            format!(r#"{{"created_at":"2026-06-01 00:00:00.002","id":"{B}","previous_id":"{A}"}}"#)
+        );
+        // The root revision renders previous_id as literal `null` (not "null",
+        // not omitted) — byte-identical to sqlite json_object('previous_id',NULL).
+        assert_eq!(
+            lines[2],
+            format!(r#"{{"created_at":"2026-06-01 00:00:00.001","id":"{A}","previous_id":null}}"#)
+        );
+        assert!(lines[2].contains(r#""previous_id":null"#));
+        assert!(!lines[2].contains(r#""previous_id":"null""#));
+    }
+
+    #[test]
+    fn json_compat_is_compact_no_spaces_and_key_order() {
+        // Assert on the literal string: no `": "` or `, ` anywhere, and keys in
+        // declaration order. (Done on the raw bytes, not via re-parsing.)
+        let loc = locations_json_line(&rec("2026-06-01 00:00:00.001", A, "/p", None));
+        let rev = revisions_json_line(&rec("2026-06-01 00:00:00.001", A, "/p", None));
+        for line in [&loc, &rev] {
+            assert!(
+                !line.contains(": "),
+                "json not compact (space after colon): {line}"
+            );
+            assert!(
+                !line.contains(", "),
+                "json not compact (space after comma): {line}"
+            );
+            assert!(line.starts_with('{') && line.ends_with('}'));
+            assert!(!line.contains('\n'), "no trailing/embedded newline: {line}");
+        }
+        // Key order: created_at before id before location/previous_id.
+        let ca = loc.find("created_at").unwrap();
+        let id = loc.find(r#""id""#).unwrap();
+        let lock = loc.find("location").unwrap();
+        assert!(ca < id && id < lock, "locations key order wrong: {loc}");
+        let rca = rev.find("created_at").unwrap();
+        let rid = rev.find(r#""id""#).unwrap();
+        let rprev = rev.find("previous_id").unwrap();
+        assert!(rca < rid && rid < rprev, "revisions key order wrong: {rev}");
+    }
+
+    #[test]
+    fn json_compat_escapes_match_standard_json() {
+        // Ordinary URIs/paths need no escaping; a quote/backslash uses standard
+        // JSON escaping (\" and \\), which serde_json produces — the same bytes
+        // sqlite json_object emits. We don't hand-roll escaping.
+        let r = rec("2026-06-01 00:00:00.001", A, r#"a/b "q" \back"#, None);
+        let line = locations_json_line(&r);
+        assert!(
+            line.contains(r#""location":"a/b \"q\" \\back""#),
+            "got: {line}"
+        );
+    }
+
+    /// Live-oracle golden test. Drives the FROZEN `./snapdir-sqlite3-catalog`
+    /// (read-only: only `save`, then the three queries) over a throwaway sqlite
+    /// db to produce REAL oracle JSON, then asserts the Rust serializers produce
+    /// byte-identical lines for the same logical rows.
+    ///
+    /// Neutralizing `NOW()`: the oracle stamps `created_at` from the wall clock
+    /// at insert time, so we cannot predict it. Instead we read the oracle's
+    /// emitted `created_at` back out of each oracle line and feed THAT exact
+    /// string into the Rust `Record` before serializing — making the comparison a
+    /// real byte-for-byte check of key set, key order, compactness, and null
+    /// rendering, with the only uncontrollable field (the timestamp) sourced from
+    /// the oracle itself. Guarded behind `which sqlite3`; skip (not fail) if
+    /// absent. sqlite3 is used ONLY here in the test, never in the shipped crate.
+    #[test]
+    fn json_compat_matches_live_sqlite3_oracle_golden() {
+        use std::process::Command;
+
+        // Locate the frozen oracle relative to the workspace root.
+        let oracle = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("snapdir-sqlite3-catalog");
+        if Command::new("sh")
+            .args(["-c", "command -v sqlite3"])
+            .output()
+            .map_or(true, |o| !o.status.success())
+        {
+            eprintln!("skipping golden: sqlite3 not on PATH");
+            return;
+        }
+        if !oracle.exists() {
+            eprintln!("skipping golden: oracle script not found at {oracle:?}");
+            return;
+        }
+
+        let dir = TempDir::new();
+        let db = dir.path.join("oracle.sqlite3.db");
+
+        // Helper: run the oracle with a fixed db path.
+        let run = |args: &[&str]| -> String {
+            let out = Command::new("bash")
+                .arg(&oracle)
+                .args(args)
+                .env("SNAPDIR_SQLITE3_BIN", "sqlite3")
+                .env("SNAPDIR_SQLITE3_CATALOG_DB_PATH", &db)
+                .output()
+                .expect("run oracle");
+            assert!(
+                out.status.success(),
+                "oracle {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).expect("utf8 oracle output")
+        };
+
+        // Scenario: one location, two revisions (root A, then C with prev A).
+        let location = "s3://bucket/some/path";
+        run(&[
+            "save",
+            &format!("--id={A}"),
+            &format!("--location={location}"),
+        ]);
+        run(&[
+            "save",
+            &format!("--id={C}"),
+            &format!("--location={location}"),
+        ]);
+
+        // Pull the `created_at` out of an oracle JSON line.
+        let created_at_of = |line: &str| -> String {
+            let v: serde_json::Value = serde_json::from_str(line).expect("parse oracle line");
+            v["created_at"].as_str().expect("created_at str").to_owned()
+        };
+
+        // --- revisions (incl. the null root) ---
+        let oracle_rev = run(&["revisions", &format!("--location={location}")]);
+        let rev_lines: Vec<&str> = oracle_rev.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            rev_lines.len(),
+            2,
+            "expected 2 revisions, got: {oracle_rev:?}"
+        );
+        // DESC: C (prev A) first, then A (prev null).
+        let r0 = rec(&created_at_of(rev_lines[0]), C, location, Some(A));
+        assert_eq!(revisions_json_line(&r0), rev_lines[0]);
+        let r1 = rec(&created_at_of(rev_lines[1]), A, location, None);
+        assert_eq!(revisions_json_line(&r1), rev_lines[1]);
+        // Confirm the oracle really emitted a bare `null` for the root.
+        assert!(
+            rev_lines[1].contains(r#""previous_id":null"#),
+            "oracle root revision should render null: {}",
+            rev_lines[1]
+        );
+
+        // --- locations (latest id per location -> C) ---
+        let oracle_loc = run(&["locations"]);
+        let loc_lines: Vec<&str> = oracle_loc.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            loc_lines.len(),
+            1,
+            "expected 1 location, got: {oracle_loc:?}"
+        );
+        let l0 = rec(&created_at_of(loc_lines[0]), C, location, None);
+        assert_eq!(locations_json_line(&l0), loc_lines[0]);
+
+        // --- ancestors of C (id=C, previous_id non-null) -> one row, id=A ---
+        let oracle_anc = run(&["ancestors", &format!("--id={C}")]);
+        let anc_lines: Vec<&str> = oracle_anc.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            anc_lines.len(),
+            1,
+            "expected 1 ancestor, got: {oracle_anc:?}"
+        );
+        // The oracle projects previous_id (A) into the `id` field.
+        let a0 = rec(&created_at_of(anc_lines[0]), A, location, None);
+        assert_eq!(ancestors_json_line(&a0), anc_lines[0]);
     }
 
     #[test]

@@ -2994,6 +2994,8 @@ name = "snapdir-catalog"
 version = "0.5.0"
 dependencies = [
  "redb",
+ "serde",
+ "serde_json",
  "snapdir-core",
  "thiserror",
 ]

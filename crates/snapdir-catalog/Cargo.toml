@@ -14,6 +14,11 @@ snapdir-core.workspace = true
 thiserror.workspace = true
 # Pure-Rust embedded KV. No SQLite, no TLS — keeps aws-lc-rs out of the lockfile.
 redb = "=4.1.0"
+# CLI-compat JSON-line serialization of the three query shapes. serde_json emits
+# compact `{"k":"v"}` (no spaces) matching the oracle's sqlite `json_object`;
+# struct field order is the JSON key order. No TLS — does not pull aws-lc-rs.
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
 
 [lints]
 workspace = true
