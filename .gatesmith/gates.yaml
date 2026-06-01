@@ -719,11 +719,17 @@ gates:
     human_checkpoint: false
     description: "proptest manifest parse/emit round-trips."
 
+  # GATE-OWNER-FIX 2026-06-01T13:37:11Z (PM, mechanical): owner_agent tests -> cli.
+  # `cargo test -p snapdir-cli` only runs tests inside the snapdir-cli crate
+  # (crates/snapdir-cli/tests/), which is the cli lane — the top-level tests/ lane
+  # is shell harnesses, not a cargo package. pass_criteria unchanged.
   - id: cli-trycmd
     phase: 8
-    owner_agent: tests
+    owner_agent: cli
     depends_on: [cli-skeleton, file-store-roundtrip]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T13:45:52Z
+    git_sha: 9218c33
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked"
     pass_criteria:

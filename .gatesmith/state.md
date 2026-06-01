@@ -4,8 +4,10 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **8** (Phases 5–7 green except the operator-deferred B2 gate).
-Next gate: `cli-trycmd` (phase 8, owner tests, deps cli-skeleton ✓ + file-store-roundtrip ✓) — head of the priority queue; then `proptest-roundtrip` (P8), `rustdoc-doctests` (P9). `fuzz-parser` (P8) waits on proptest-roundtrip; `coverage-gate` (P8, human checkpoint, CI/Codecov) waits on proptest-roundtrip + cli-trycmd.
-Last passed: `perf-gate` @ 2026-06-01T02:58:21Z — **operator-signed-off HUMAN CHECKPOINT**: `bash benches/compare.sh` exit0, output BYTE-IDENTICAL Bash vs Rust on both corpora, Rust **33.6× (many-small) / 2.69× (few-large)** faster (portable fallback; hyperfine absent). **Phase 7 complete.** Contract frozen (locks 4/4 OK each tick).
+Next gate: `proptest-roundtrip` (phase 8, deps interop-diff ✓) — head of the priority queue; then `rustdoc-doctests` (P9). `fuzz-parser` (P8) waits on proptest-roundtrip; `coverage-gate` (P8, human checkpoint, CI/Codecov) waits on proptest-roundtrip + cli-trycmd ✓.
+⚠ OWNER-FIX likely for `proptest-roundtrip`: its `verification_cmd` is `cargo test -p snapdir-core --locked proptest` — runs tests INSIDE the **snapdir-core** crate, so the proptest manifest parse/emit round-trips must live in `crates/snapdir-core/` (the **core** lane), not the top-level `tests/` lane (which is shell harnesses, not a cargo package). Same correction applied to `cli-trycmd` this phase: next tick reassign `proptest-roundtrip` owner_agent `tests → core` (mechanical, pass_criteria unchanged) and spawn `core`.
+Last passed: `cli-trycmd` @ 2026-06-01T13:45:52Z — `crates/snapdir-cli/tests/` trycmd surface snapshots (29 cases: help/version/all-14-subcommand-help/parse+missing-arg errors/7 stubs' real "not implemented yet") + assert_cmd/assert_fs e2e (6: `id`/`manifest` byte-equal the oracle; `push→fetch→checkout→verify` file:// round-trip). Honest coverage map (wired e2e vs stub-snapshot); no oracle divergence. Contract frozen (locks 4/4 OK each tick).
+GATE-OWNER-FIX this tick: `cli-trycmd` owner `tests → cli` (its `cargo test -p snapdir-cli` runs only the cli crate's tests; top-level `tests/` can't satisfy it). Watch for the same pattern on any `cargo test -p <crate>`-verified gate nominally owned by `tests`.
 CROSS-LANE follow-up (cli): (a) wire `verify-cache`/`flush-cache` to `snapdir_core::cache` + call `check_snapshot_integrity` in `checkout`/`verify` (resolve `${XDG_CACHE_HOME:-$HOME/.cache}/snapdir`); (b) wire the `catalog` subcommands to `snapdir_catalog::Catalog`.
 
 **Remote-interop is now PM-auto-verified, not a human rubber-stamp.** `remote-interop` runs `bash tests/integration/remote_stores_live.sh` every tick: MinIO S3 Bash↔Rust cross-tool (byte-identical) + a zero-external-dependency lane (Rust round-trip with `aws`/`b2`/`gcloud` removed from PATH). `remote-interop-gcs` proves the same against the **real** `gs://snapdir-integration-testing` bucket (ADC). Both green. `gcs-store-notfound-fix` repaired a real GcsStore bug — `key_exists`/`get_bytes` only treated HTTP 404 as absent, but `google-cloud-storage` v1.12 reports a missing object as service-level `Code::NotFound` (`http_status_code()==None`), so skip-if-present aborted **every** real GCS push; fixed via an `is_not_found()` helper.
@@ -41,7 +43,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 5 (Remote stores): 8/9 passed (S3+GCS interop PM-verified; only `remote-interop-b2` — operator-deferred to post-release-candidate — remains)
 - Phase 6 (Caching + redb catalog): 4/4 passed ✅ (`cache-id` `catalog-redb` `catalog-compat` 🔒 `catalog-rebuild`)
 - Phase 7 (Performance): 4/4 passed ✅ (`bench-scaffold` `bench-compile` `perf-harness` `perf-gate` — Rust 33.6×/2.69× faster, output byte-identical, operator-signed-off)
-- Phase 8 (Testing/fuzzing): 0/4 passed
+- Phase 8 (Testing/fuzzing): 1/4 passed (`cli-trycmd` ✅; `proptest-roundtrip`/`fuzz-parser`/`coverage-gate` remain)
 - Phase 9 (Documentation): 0/2 passed
 - Phase 10 (Packaging/release): 0/2 passed
 
@@ -86,6 +88,7 @@ Open (non-blocking) findings to revisit later:
 - 2026-06-01 — `bench-compile` (bench): 3 criterion hot-path groups — `hash/blake3/{64B,4K,64K,1M}` (Throughput::Bytes), `walk/{many_small,few_large}` via `walk()`+`Blake3Hasher`, `manifest/{emit,parse}/{1k,10k}`; `tempfile` corpora, deterministic, self-cleaning; smoke-run e.g. blake3/1M ~1.43 GiB/s. Benches only measure (output bytes unchanged). (git 06ff564)
 - 2026-06-01 — `perf-harness` (bench): `benches/compare.sh` — Rust-vs-Bash `manifest` comparison that asserts **byte-identical output first** (hard-fail on drift) then times both (hyperfine if present, else a portable median-of-N `EPOCHREALTIME` fallback — hyperfine is absent here) over many-small + few-large corpora; jq JSON report for `perf-gate`; `--self-check`. Full run: **~33× (many-small), ~2.7× (few-large), output byte-identical**; perf win is pure in-process walk+BLAKE3 (no core change needed). (git ac688e5)
 - 2026-06-01 — `perf-gate` (bench, **human checkpoint**): operator signed off after the PM ran `bash benches/compare.sh` — byte-identical output both corpora, **33.6× many-small / 2.69× few-large**. **Phase 7 complete.** (git ac688e5)
+- 2026-06-01 — `cli-trycmd` (cli; owner-fixed from `tests`): 29 `trycmd` surface snapshots (help/version, all 14 subcommand `--help`, parse + missing-arg errors, the 7 stubs' real "not implemented yet") + 6 `assert_cmd`/`assert_fs` e2e (`id`/`manifest` byte-equal the oracle, `push→fetch→checkout→verify` file:// round-trip). Honest wired-vs-stub coverage map; no oracle divergence. (git 9218c33)
 
 ## Remote-store test credentials (operator)
 
