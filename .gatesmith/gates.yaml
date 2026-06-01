@@ -814,10 +814,30 @@ gates:
     human_checkpoint: false
     description: "rustdoc with doctests green; manifest spec doc + CHANGELOG present."
 
-  - id: migration-guide
+  # GATE-ADD 2026-06-01T14:27:29Z: prereq so the migration-guide human checkpoint has a guide
+  # to sign off. migration-guide greps docs/rust-port/migration.md, which doesn't exist yet.
+  # This non-checkpoint docs gate WRITES it + passes the file/grep checks; then migration-guide
+  # presents the finished guide for the operator's human_confirm. (perf-harness->perf-gate pattern.)
+  - id: migration-guide-draft
     phase: 9
     owner_agent: docs
     depends_on: [rustdoc-doctests]
+    status: passed
+    passed_at: 2026-06-01T14:31:16Z
+    git_sha: 12da788
+    failure_count: 0
+    verification_cmd: "test -f docs/rust-port/migration.md && grep -q 'snapdir-manifest' docs/rust-port/migration.md && grep -qi 'GOOGLE_APPLICATION_CREDENTIALS' docs/rust-port/migration.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: docs/rust-port/migration.md
+    human_checkpoint: false
+    description: "Write docs/rust-port/migration.md: subcommand-mapping table (snapdir-manifest -> snapdir manifest, snapdir-<name>-store -> snapdir store <name>), per-backend auth-mapping tables (GCS GOOGLE_APPLICATION_CREDENTIALS/_JSON/ADC/metadata; AWS env/profiles/SSO/metadata), redb/catalog rebuild note; doc bugs fixed (--linked, ensure-no-errors). Machine-checkable half of migration-guide."
+
+  - id: migration-guide
+    phase: 9
+    owner_agent: docs
+    depends_on: [rustdoc-doctests, migration-guide-draft]
     status: pending
     failure_count: 0
     verification_cmd: "test -f docs/rust-port/migration.md && grep -q 'snapdir-manifest' docs/rust-port/migration.md && grep -qi 'GOOGLE_APPLICATION_CREDENTIALS' docs/rust-port/migration.md"

@@ -4,8 +4,8 @@
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
 Active phase: **9** (Phases 5–8 green except the operator-deferred B2 gate).
-Next gate: `migration-guide` (phase 9, owner docs, **HUMAN CHECKPOINT**, deps rustdoc-doctests ✓) — head of the priority queue; then Phase 10 `release-config` (deps ci-matrix-green ✓ + migration-guide).
-NEXT-TICK PLAN for `migration-guide`: its `verification_cmd` checks `docs/rust-port/migration.md` exists + greps for `snapdir-manifest` and `GOOGLE_APPLICATION_CREDENTIALS`, plus a `human_confirm`. But migration.md DOESN'T EXIST yet — so escalating the human to confirm a non-existent guide is wrong. Mirror `perf-harness→perf-gate`: GATE-ADD `migration-guide-draft` (docs) to WRITE `docs/rust-port/migration.md` (subcommand-mapping + per-backend auth-mapping tables, redb/catalog note; fix doc bugs `--linked`/`ensure-no-errors`) and pass the grep checks; THEN `migration-guide` presents the finished guide to the operator for the human_confirm sign-off.
+Next gate: `migration-guide` (phase 9, owner docs, **HUMAN CHECKPOINT**, deps rustdoc-doctests ✓ + migration-guide-draft ✓) — head of the priority queue; then Phase 10 `release-config` (deps ci-matrix-green ✓ + migration-guide).
+NEXT-TICK PLAN for `migration-guide`: the guide NOW EXISTS (`docs/rust-port/migration.md`, migration-guide-draft git 12da788) and the machine checks pass. Next tick: re-run the file/grep verification (exit 0), then escalate to the operator via AskUserQuestion presenting the finished guide for the `human_confirm` ("subcommand-mapping + auth-mapping tables, catalog/redb note accurate and complete?"). On YES → mark passed; **Phase 9 complete**, unblocking Phase 10 `release-config`.
 `cargo-llvm-cov` 0.8.7 + `llvm-tools-preview` installed locally (PM). No nightly on host (cargo-fuzz can't build locally; CI cron does).
 Last passed: `rustdoc-doctests` @ 2026-06-01T14:25:07Z — `docs/rust-port/manifest-spec.md` (faithful frozen-format spec; snapshot-id correctly = b3sum of `#`-stripped manifest text, not root checksum) + `CHANGELOG.md` (Keep a Changelog, 0.5.0); doctests green (core 2 + stores 1). PM also fixed a stale `PM_PROMPT.md` "snapshot ID = root dir checksum" line (DESC-CORRECTION). Contract frozen (locks 4/4 OK each tick).
 GATE-OWNER-FIX pattern (this phase): gates verified by `cargo test -p <crate>` but nominally owned by `tests` are corrected to the crate's lane — `cli-trycmd → cli`, `proptest-roundtrip → core`. `fuzz-parser` (`tests/fuzz/...`, `cargo fuzz`) genuinely IS the `tests` lane (top-level `tests/`).
@@ -45,7 +45,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 6 (Caching + redb catalog): 4/4 passed ✅ (`cache-id` `catalog-redb` `catalog-compat` 🔒 `catalog-rebuild`)
 - Phase 7 (Performance): 4/4 passed ✅ (`bench-scaffold` `bench-compile` `perf-harness` `perf-gate` — Rust 33.6×/2.69× faster, output byte-identical, operator-signed-off)
 - Phase 8 (Testing/fuzzing): 5/5 passed ✅ (`cli-trycmd` `proptest-roundtrip` `coverage-gate` 75%-floor `ci-coverage-floor` `fuzz-parser`)
-- Phase 9 (Documentation): 1/2 passed (`rustdoc-doctests` ✅; `migration-guide` remains — needs a `migration-guide-draft` prereq + operator sign-off)
+- Phase 9 (Documentation): 2/3 passed (`rustdoc-doctests` ✅ `migration-guide-draft` ✅; `migration-guide` remains — operator sign-off, guide ready)
 - Phase 10 (Packaging/release): 0/2 passed
 
 ## Recent milestones
@@ -95,6 +95,7 @@ Open (non-blocking) findings to revisit later:
 - 2026-06-01 — `ci-coverage-floor` (ci): `ci.yaml` coverage job `--fail-under-lines 0 → 75` so GitHub CI enforces the operator-approved floor matching the `coverage-gate`; actionlint clean. (git c68ce6f)
 - 2026-06-01 — `fuzz-parser` (tests): `tests/fuzz/` cargo-fuzz target `manifest_parser.rs` (libfuzzer feeds arbitrary bytes to `ManifestEntry::parse_line` + `Manifest::parse`; no-panic + parse→Display→parse stability), isolated via a nested `[workspace]` so the root workspace is unaffected (`snapdir-fuzz` not a root member). cargo-fuzz/nightly absent → presence-only (CI cron runs it). **Phase 8 complete.** (git 08b8d7c)
 - 2026-06-01 — `rustdoc-doctests` (docs): `docs/rust-port/manifest-spec.md` (faithful frozen-format spec; snapshot ID = b3sum of `#`-stripped manifest text, NOT root dir checksum) + `CHANGELOG.md` (Keep a Changelog, 0.5.0). Doctests green (core 2 + stores 1). PM enforced the artifact presence beyond the doctest-only verification, and fixed a stale `PM_PROMPT.md` snapshot-id line. (git 45cd32f)
+- 2026-06-01 — `migration-guide-draft` (docs; PM-added prereq): `docs/rust-port/migration.md` — tool→subcommand mapping, honest 14-subcommand wired-vs-stub table, per-backend auth tables (GCS ADC/`GOOGLE_APPLICATION_CREDENTIALS`, AWS chain, B2 S3-compat), SQLite→redb catalog note, byte-for-byte interop, doc-bug fixes (`--linked`/`ensure-no-errors`). Pinned to oracle scripts. Sets up the `migration-guide` human sign-off. (git 12da788)
 
 ## Remote-store test credentials (operator)
 
