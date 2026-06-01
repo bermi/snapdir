@@ -590,7 +590,9 @@ gates:
     phase: 6
     owner_agent: catalog
     depends_on: [freeze-contract]
-    status: pending
+    status: passed
+    passed_at: 2026-06-01T02:13:23Z
+    git_sha: b63125f
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-catalog --locked"
     pass_criteria:
