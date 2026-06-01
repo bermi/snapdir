@@ -911,7 +911,7 @@ gates:
     phase: 9
     owner_agent: docs
     depends_on: [cli-cache-commands, cli-catalog-commands, cli-defaults]
-    status: pending
+    status: passed
     failure_count: 0
     verification_cmd: "test -f docs/rust-port/migration.md && grep -q 'snapdir-manifest' docs/rust-port/migration.md && grep -qi 'GOOGLE_APPLICATION_CREDENTIALS' docs/rust-port/migration.md && ! grep -qiE 'stage[^A-Za-z].*stub|verify-cache.*stub|flush-cache.*stub|locations.*stub|ancestors.*stub|revisions.*stub|defaults.*stub' docs/rust-port/migration.md"
     pass_criteria:
@@ -920,6 +920,8 @@ gates:
         - file_exists: docs/rust-port/migration.md
     human_checkpoint: false
     description: "Refresh docs/rust-port/migration.md wired-vs-stub table after the 7 subcommands are wired: mark stage/verify-cache/flush-cache/locations/ancestors/revisions/defaults as WIRED (no longer 'stub'), keeping the guide accurate for the release."
+    passed_at: 2026-06-01T15:42:08Z
+    git_sha: 7a66567
 
   # ===================================================================
   # Phase 10 — Packaging / release  (lane: packaging)
