@@ -667,10 +667,31 @@ gates:
     human_checkpoint: false
     description: "criterion benchmarks for hash/walk/manifest hot paths compile and run."
 
-  - id: perf-gate
+  # GATE-ADD 2026-06-01T02:45:47Z: prereq harness for the perf-gate human checkpoint.
+  # perf-gate runs `bash benches/compare.sh`, which did not exist (bench-compile built
+  # criterion micro-benches, not the hyperfine compare script). Build the harness first
+  # (mirrors interop-harness->interop-diff / remote-stores-harness->remote-interop), THEN
+  # run the human checkpoint. hyperfine is absent on this host -> portable timing fallback.
+  - id: perf-harness
     phase: 7
     owner_agent: bench
     depends_on: [bench-compile, file-store-roundtrip]
+    status: passed
+    passed_at: 2026-06-01T02:56:47Z
+    git_sha: ac688e5
+    failure_count: 0
+    verification_cmd: "bash benches/compare.sh --self-check"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: benches/compare.sh
+    human_checkpoint: false
+    description: "benches/compare.sh: Rust-vs-Bash `manifest` timing on many-small + few-large corpora (hyperfine if present, else a portable median-of-N fallback); asserts BYTE-IDENTICAL output (no drift); emits a jq-readable JSON report the perf-gate can json_path; --self-check validates plumbing without a full timed run and without requiring hyperfine."
+
+  - id: perf-gate
+    phase: 7
+    owner_agent: bench
+    depends_on: [bench-compile, file-store-roundtrip, perf-harness]
     status: pending
     failure_count: 0
     verification_cmd: "bash benches/compare.sh"
