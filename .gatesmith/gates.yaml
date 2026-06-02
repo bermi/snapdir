@@ -1127,9 +1127,11 @@ gates:
     # GATE-ADD 2026-06-02: + packaging-drop-windows — the re-run built 6/7 targets but
     # x86_64-pc-windows-msvc failed (snapdir is unix-only); operator chose to drop Windows.
     depends_on: [release-config, release-dry-run-mode, ci-dist-profile, packaging-drop-windows, remote-interop, remote-interop-gcs, coverage-gate, perf-gate, catalog-rebuild, migration-guide, cli-cache-commands, cli-catalog-commands, cli-defaults, migration-guide-refresh, cli-completions-man]
-    status: failed
+    status: passed
+    passed_at: 2026-06-02T02:27:09Z
+    git_sha: f21c36c
     failure_count: 1
-    failure_reason: "2026-06-02 dispatch dry-run (run 26791338254): [profile.dist] fix worked (6/7 targets built) but x86_64-pc-windows-msvc failed — unix-only code (std::os::unix in core/walk.rs + cli.rs). Operator: drop Windows. Re-run after packaging-drop-windows."
+    failure_reason: "2026-06-02 dispatch dry-run #1 (run 26791338254): [profile.dist] fix worked (6/7 targets built) but x86_64-pc-windows-msvc failed — unix-only code. Operator: drop Windows. RESOLVED: re-run #2 (run 26794272253) after packaging-drop-windows + ci-drop-windows = SUCCESS (6 unix targets, publish skipped); operator signed off."
     verification_cmd: "echo 'Run a tag dry-run of release.yml; confirm per-target archives build and the static binary smoke-tests.'"
     pass_criteria:
       human_confirm: "Did release.yml build artifacts for all targets (incl. musl static) and pass the static-binary smoke test on a dry-run tag?"
