@@ -43,3 +43,14 @@ missing_panics_doc = "allow"
 [profile.release]
 lto = "thin"
 strip = true
+
+# Heavily-optimized release profile used for shipped binaries (see
+# packaging/dist-workspace.toml `cargo-build-profile = "dist"`). cargo-dist
+# builds every target with this profile; it must live at the workspace root.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+strip = true
