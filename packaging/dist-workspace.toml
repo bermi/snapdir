@@ -28,8 +28,8 @@ dist = false
 ci = "github"
 hosting = ["github"]
 
-# Installers: shell (curl|sh) for Unix, PowerShell for Windows.
-installers = ["shell", "powershell"]
+# Installers: shell (curl|sh) for Unix. (snapdir is unix-only.)
+installers = ["shell"]
 
 # Per-target distribution matrix. musl is built **static** (see the
 # target-specific config block + Cargo `target.*` rustflags conventions); it is
@@ -42,12 +42,10 @@ targets = [
     "aarch64-unknown-linux-musl",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc",
 ]
 
-# Archive formats: .tar.xz for Unix targets, .zip for Windows.
+# Archive format: .tar.xz for all (unix-only) targets.
 unix-archive = ".tar.xz"
-windows-archive = ".zip"
 
 # Cross-compile the non-native Linux targets via a pinned `cross` image so the
 # musl-static and aarch64 legs build hermetically.
@@ -91,7 +89,6 @@ aarch64-unknown-linux-gnu = "ubuntu-latest"
 aarch64-unknown-linux-musl = "ubuntu-latest"
 x86_64-apple-darwin = "macos-15-intel"
 aarch64-apple-darwin = "macos-14"
-x86_64-pc-windows-msvc = "windows-latest"
 
 # Heavily-optimized release profile used for shipped binaries.
 # (cargo-dist reads `[profile.dist]` from the build root; mirrored here for the

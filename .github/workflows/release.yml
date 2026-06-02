@@ -88,7 +88,7 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 2. Per-target build matrix. Native runners for macOS/Windows/linux-gnu;
+  # 2. Per-target build matrix. Native runners for macOS/linux-gnu;
   #    `cross` for the musl-static and aarch64 legs so they link hermetically.
   # ---------------------------------------------------------------------------
   build:
@@ -123,10 +123,6 @@ jobs:
             os: macos-14
             cross: false
             archive: tar.xz
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            cross: false
-            archive: zip
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -180,11 +176,7 @@ jobs:
           name="${BIN_NAME}-${version}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
 
-          bin="${BIN_NAME}"
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            bin="${BIN_NAME}.exe"
-          fi
-          cp "target/${{ matrix.target }}/${CARGO_PROFILE}/${bin}" "dist/${name}/"
+          cp "target/${{ matrix.target }}/${CARGO_PROFILE}/${BIN_NAME}" "dist/${name}/"
 
           cp README.md LICENSE "dist/${name}/"
           cp docs/rust-port/CHANGELOG.md "dist/${name}/CHANGELOG.md"
@@ -204,15 +196,6 @@ jobs:
           tar -C dist -cJf "dist/${name}.tar.xz" "${name}"
           ( cd dist && shasum -a 256 "${name}.tar.xz" > "${name}.tar.xz.sha256" )
 
-      - name: Create archive (zip)
-        if: ${{ matrix.archive == 'zip' }}
-        shell: pwsh
-        run: |
-          $name = "${{ steps.stage.outputs.name }}"
-          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
-          $hash = (Get-FileHash -Algorithm SHA256 "dist/$name.zip").Hash.ToLower()
-          "$hash  $name.zip" | Out-File -Encoding ascii "dist/$name.zip.sha256"
-
       - name: Upload target archive
         uses: actions/upload-artifact@v4
         with:
@@ -220,8 +203,6 @@ jobs:
           path: |
             dist/*.tar.xz
             dist/*.tar.xz.sha256
-            dist/*.zip
-            dist/*.zip.sha256
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -258,7 +239,6 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/*.tar.xz
-            dist/*.zip
             dist/*.sha256
             dist/SHA256SUMS
         env:
