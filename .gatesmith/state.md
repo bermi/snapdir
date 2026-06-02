@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-Active phase: **6→10** — **55/61 gates passed** (6 new gates added 2026-06-02). The release dry-run FAILED + a Rust-only public-docs cleanup was requested; both are now gated. Queue (phase-asc): `cli-verify-purge-reject` (P6) → `docs-remove-bash-legacy` (P9) → `readme-rewrite` (P9, human checkpoint) → `ci-dist-profile` (P10) → `release-dryrun` (P10, human checkpoint) → `remote-interop-b2` (P5, deferred). The ralph loop drives the non-checkpoint gates; the PM re-runs the gh dry-run + escalates the two human checkpoints.
+Active phase: **9→10** — **56/61 gates passed**. Queue (phase-asc): `docs-remove-bash-legacy` (P9, next) → `readme-rewrite` (P9, human checkpoint) → `ci-dist-profile` (P10, fixes the failed dry-run) → `release-dryrun` (P10, human checkpoint — PM re-runs the gh dry-run after ci-dist-profile) → `remote-interop-b2` (P5, deferred). `cli-verify-purge-reject` ✅ (verify rejects the inert --purge; finding resolved). The ralph loop drives the auto gates; the PM re-runs the gh dry-run + escalates the two human checkpoints.
 
 **Release dry-run FAILED — root cause + fix gate.** Operator ran `gh workflow run release.yml --ref rust-port -f dry_run=true`: gen-assets passed but ALL 8 build jobs failed because `release.yml` uses `--profile dist` while `[profile.dist]` is missing from the ROOT `Cargo.toml` (it only lives in `packaging/dist-workspace.toml`). cargo needs the profile at the workspace root → `error: profile 'dist' is not defined`. Fixed by **`ci-dist-profile`** (ci lane adds `[profile.dist]` to root Cargo.toml). After it lands the PM re-runs the dry-run (`gh workflow run … && gh run watch`) and escalates the real result for the `release-dryrun` sign-off.
 
@@ -50,7 +50,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
 - Phase 4 (Store trait + FileStore): 5/5 passed ✅
 - Phase 5 (Remote stores): 8/9 passed (S3+GCS interop PM-verified; only `remote-interop-b2` — operator-deferred to post-release-candidate — remains)
-- Phase 6 (Caching + redb catalog + CLI wiring): 8/9 passed (…`cli-catalog-logging-parity` ✅; **`cli-verify-purge-reject` pending** — 2026-06-02) — CLI feature-complete, catalog logging at oracle parity
+- Phase 6 (Caching + redb catalog + CLI wiring): 9/9 passed ✅ (…`cli-catalog-logging-parity` `cli-verify-purge-reject`) — CLI feature-complete, catalog logging at oracle parity, verify --purge rejected
 - Phase 7 (Performance): 4/4 passed ✅ (`bench-scaffold` `bench-compile` `perf-harness` `perf-gate` — Rust 33.6×/2.69× faster, output byte-identical, operator-signed-off)
 - Phase 8 (Testing/fuzzing): 5/5 passed ✅ (`cli-trycmd` `proptest-roundtrip` `coverage-gate` 75%-floor `ci-coverage-floor` `fuzz-parser`)
 - Phase 9 (Documentation): 4/6 passed (rustdoc-doctests, migration-guide-draft, migration-guide, migration-guide-refresh ✅; **`docs-remove-bash-legacy` + `readme-rewrite` pending** — Rust-only public docs, 2026-06-02)

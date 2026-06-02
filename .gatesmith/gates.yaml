@@ -934,7 +934,9 @@ gates:
     phase: 6
     owner_agent: cli
     depends_on: [cli-store-wire]
-    status: pending
+    status: passed
+    passed_at: 2026-06-02T00:19:08Z
+    git_sha: e07f408
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked verify_purge"
     pass_criteria:
