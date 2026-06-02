@@ -392,7 +392,7 @@ _snapdir_b2_store_get_transfer_objects_command() {
 		rel_file_path="$(_snapdir_get_object_rel_path "${checksum}")"
 		if ! test -f "${target_dir}/${rel_file_path}"; then
 			# redirect stdout and stderr to the temporary file $log_file but also send stdout to stdout and stderr to stderr
-			echo "nice ${_SNAPDIR_B2_STORE_BIN_PATH} fetch --checksum \"${checksum}\" --source-path \"${rel_file_path}\" --target-path \"${target_dir}/${rel_file_path}\" --log-file \"$log_file\" & "
+			echo "nice ${_SNAPDIR_B2_STORE_BIN_PATH} fetch --checksum \"${checksum}\" --source-path \"${rel_file_path}\" --target-path \"${target_dir}/${rel_file_path}\" --log-file \"$log_file\" --store \"${_SNAPDIR_B2_STORE_STORE}\" & "
 			total_files=$((total_files + 1))
 		fi
 	done
