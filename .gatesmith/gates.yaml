@@ -1079,6 +1079,35 @@ gates:
     human_checkpoint: false
     description: "Add [profile.dist] to the ROOT Cargo.toml (inherits release; lto=fat, codegen-units=1, opt-level=3, panic=abort, strip=true), mirroring packaging/dist-workspace.toml, so release.yml's `cargo build --profile dist` resolves and every target builds. Verified by a local dist-profile build of the snapdir binary."
 
+  # GATE-ADD 2026-06-02 (operator: "Drop Windows from the release"). The dry-run re-run built
+  # 6/7 targets but x86_64-pc-windows-msvc failed: snapdir is unix-only (manifest = unix octal
+  # perms + symlinks; core/walk.rs + cli.rs use std::os::unix). Remove the Windows target.
+  - id: packaging-drop-windows
+    phase: 10
+    owner_agent: packaging
+    depends_on: [ci-dist-profile]
+    status: pending
+    failure_count: 0
+    verification_cmd: "! grep -q 'x86_64-pc-windows-msvc' .github/workflows/release.yml && ! grep -qi 'windows' packaging/dist-workspace.toml && (command -v actionlint >/dev/null 2>&1 && actionlint .github/workflows/release.yml || echo 'actionlint not installed')"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Remove the x86_64-pc-windows-msvc target from .github/workflows/release.yml (build matrix + any zip/windows-only steps) and from packaging/dist-workspace.toml targets. snapdir is unix-only; keep the 6 unix targets (x86_64/aarch64 linux gnu+musl, x86_64/aarch64 apple-darwin) incl. musl-static. actionlint clean."
+
+  # GATE-ADD 2026-06-02: consequence of unix-only — the ci.yaml test matrix includes
+  # windows-latest (ci.yaml:124), which is RED with the unix-only code. Drop it so CI is green.
+  - id: ci-drop-windows
+    phase: 10
+    owner_agent: ci
+    depends_on: [ci-config]
+    status: pending
+    failure_count: 0
+    verification_cmd: "! grep -qi 'windows-latest' .github/workflows/ci.yaml && (command -v actionlint >/dev/null 2>&1 && actionlint .github/workflows/ci.yaml || echo 'actionlint not installed')"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Drop windows-latest from the ci.yaml test matrix os list (snapdir is unix-only; the windows legs fail to compile std::os::unix). Keep ubuntu + macos + the x86_64-unknown-linux-musl static leg + coverage/lint/deny jobs. actionlint clean."
+
   - id: release-dryrun
     phase: 10
     owner_agent: packaging
@@ -1091,9 +1120,12 @@ gates:
     # "make sure it's feature complete").
     # GATE-ADD 2026-06-02: + ci-dist-profile — the dry-run failed because `[profile.dist]` was
     # missing from the root Cargo.toml; the release cannot pass until that build fix lands.
-    depends_on: [release-config, release-dry-run-mode, ci-dist-profile, remote-interop, remote-interop-gcs, coverage-gate, perf-gate, catalog-rebuild, migration-guide, cli-cache-commands, cli-catalog-commands, cli-defaults, migration-guide-refresh, cli-completions-man]
-    status: pending
-    failure_count: 0
+    # GATE-ADD 2026-06-02: + packaging-drop-windows — the re-run built 6/7 targets but
+    # x86_64-pc-windows-msvc failed (snapdir is unix-only); operator chose to drop Windows.
+    depends_on: [release-config, release-dry-run-mode, ci-dist-profile, packaging-drop-windows, remote-interop, remote-interop-gcs, coverage-gate, perf-gate, catalog-rebuild, migration-guide, cli-cache-commands, cli-catalog-commands, cli-defaults, migration-guide-refresh, cli-completions-man]
+    status: failed
+    failure_count: 1
+    failure_reason: "2026-06-02 dispatch dry-run (run 26791338254): [profile.dist] fix worked (6/7 targets built) but x86_64-pc-windows-msvc failed — unix-only code (std::os::unix in core/walk.rs + cli.rs). Operator: drop Windows. Re-run after packaging-drop-windows."
     verification_cmd: "echo 'Run a tag dry-run of release.yml; confirm per-target archives build and the static binary smoke-tests.'"
     pass_criteria:
       human_confirm: "Did release.yml build artifacts for all targets (incl. musl static) and pass the static-binary smoke test on a dry-run tag?"
