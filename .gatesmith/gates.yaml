@@ -1086,7 +1086,9 @@ gates:
     phase: 10
     owner_agent: packaging
     depends_on: [ci-dist-profile]
-    status: pending
+    status: passed
+    passed_at: 2026-06-02T02:16:36Z
+    git_sha: b4b3eb9
     failure_count: 0
     verification_cmd: "! grep -q 'x86_64-pc-windows-msvc' .github/workflows/release.yml && ! grep -qi 'windows' packaging/dist-workspace.toml && (command -v actionlint >/dev/null 2>&1 && actionlint .github/workflows/release.yml || echo 'actionlint not installed')"
     pass_criteria:

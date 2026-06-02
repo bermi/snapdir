@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-Active phase: **10** — **60/63 gates passed**. Queue: `packaging-drop-windows` (next, packaging — remove x86_64-pc-windows-msvc from release.yml + dist-workspace.toml) → `release-dryrun` (re-run, PM runs the gh dry-run for the 6 unix targets) → `remote-interop-b2` (P5, deferred). `ci-drop-windows` ✅ (windows-latest dropped from ci.yaml; CI now unix-only/green-able).
+Active phase: **10** — **61/63 gates passed**. Only `release-dryrun` (re-run, next) + `remote-interop-b2` (P5, deferred) remain. Windows is fully dropped (release.yml + dist-workspace.toml via `packaging-drop-windows` ✅ git b4b3eb9; ci.yaml via `ci-drop-windows` ✅). NEXT-TICK PLAN for `release-dryrun` (status=failed fc=1, all deps now passed): the PM re-runs `gh workflow run release.yml --ref rust-port -f dry_run=true` → `gh run watch`, confirms the now-6 unix targets (incl. x86_64/aarch64 musl-static) all build + gen-assets + publish jobs skipped, then escalates the real conclusion for the operator sign-off. The prior run already built all 6 unix targets green, so this should pass.
 **release-dryrun re-run FAILED (fc=1) — and again the dry-run caught a real issue.** The `[profile.dist]` fix worked: 6/7 targets built (x86_64/aarch64 linux gnu+musl + x86_64/aarch64 macOS) + gen-assets; publish jobs correctly skipped. But **x86_64-pc-windows-msvc failed** — snapdir is **unix-only** (manifest = unix octal perms + symlinks; `core/walk.rs:46` + `cli.rs:16` use `std::os::unix`). **Operator decided: drop Windows.** GATE-ADDed `packaging-drop-windows` (release.yml matrix + dist-workspace.toml) + `ci-drop-windows` (ci.yaml test matrix `windows-latest`, which is also red). After both land, the PM re-runs the gh dispatch dry-run (now 6 unix targets) → expected green → escalate `release-dryrun` sign-off. The frozen oracle scripts + manifest format stay unix-only by design.
 FINDING (non-blocking, unowned root file): the repo `Makefile` still has a Retype-docs-site target that `cp docs/images/favicon.ico` (now deleted). Stale; the public docs are README + docs/rust-port/. No lane owns the Makefile — flag for a future cleanup (could extend ci or generic).
 
@@ -56,7 +56,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 7 (Performance): 4/4 passed ✅ (`bench-scaffold` `bench-compile` `perf-harness` `perf-gate` — Rust 33.6×/2.69× faster, output byte-identical, operator-signed-off)
 - Phase 8 (Testing/fuzzing): 5/5 passed ✅ (`cli-trycmd` `proptest-roundtrip` `coverage-gate` 75%-floor `ci-coverage-floor` `fuzz-parser`)
 - Phase 9 (Documentation): 6/6 passed ✅ (rustdoc-doctests, migration-guide-draft/-guide/-refresh, `docs-remove-bash-legacy`, `readme-rewrite` — Rust-only public docs + operator-signed-off README)
-- Phase 10 (Packaging/release): 5/7 passed (`release-config` `cli-completions-man` `release-dry-run-mode` `ci-dist-profile` `ci-drop-windows` ✅; **`packaging-drop-windows` pending**; `release-dryrun` FAILED fc=1 — re-runs after windows dropped from release)
+- Phase 10 (Packaging/release): 6/7 passed (`release-config` `cli-completions-man` `release-dry-run-mode` `ci-dist-profile` `ci-drop-windows` `packaging-drop-windows` ✅; `release-dryrun` FAILED fc=1 → ready for re-run, deps now all green)
 
 ## Recent milestones
 
