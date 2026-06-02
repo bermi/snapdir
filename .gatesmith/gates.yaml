@@ -606,10 +606,34 @@ gates:
     human_checkpoint: true
     description: "FROZEN-ORACLE fix (operator-approved): snapdir-b2-store:395 parallel object-fetch must pass --store \"${_SNAPDIR_B2_STORE_STORE}\" (mirroring the manifest fetch on line 204); the worker requires it (line 472). Requires the operator to lift the Edit(snapdir-b2-store) deny so the stores lane can apply the one-liner. Without it, Bash-pull-from-B2 with a cold cache fails."
 
+  - id: b2-harness-rust-aws-creds
+    phase: 5
+    owner_agent: tests
+    depends_on: [b2-harness-isolation-and-cli]
+    # GATE-ADD 2026-06-03. The remote-interop-b2 live run caught a 4th tests-lane B2 gap
+    # (the endpoint-isolation fix worked — it now reaches real B2, not MinIO). The Rust B2
+    # S3-compatible client authenticates via the STANDARD AWS chain (AWS_ACCESS_KEY_ID /
+    # AWS_SECRET_ACCESS_KEY), but the harness sources test-creds which sets those to the
+    # REAL-AWS key (AKIA…) for the AWS-S3 lane and never remaps them to the B2 application
+    # key for the B2 lane -> the Rust B2 preflight HEAD gets a 403 ("S3 HEAD object failed:
+    # unhandled error", no code). Confirmed by repro: AWS_ACCESS_KEY_ID=AKIA… -> 403;
+    # AWS_ACCESS_KEY_ID=$SNAPDIR_B2_STORE_APPLICATION_KEY_ID -> push succeeds.
+    # Fix (remote_stores_live.sh B2 section only): before the B2 preflight AND the delegate
+    # B2 lane, export AWS_ACCESS_KEY_ID=$SNAPDIR_B2_STORE_APPLICATION_KEY_ID,
+    # AWS_SECRET_ACCESS_KEY=$SNAPDIR_B2_STORE_APPLICATION_KEY, AWS_REGION=$SNAPDIR_B2_REGION.
+    # Must NOT disturb the S3/MinIO + zero-dep lanes (they run earlier). Frozen oracle/crates untouched.
+    status: pending
+    failure_count: 0
+    verification_cmd: "bash tests/integration/remote_stores_live.sh --self-check && grep -Eq 'AWS_ACCESS_KEY_ID=.*SNAPDIR_B2_STORE_APPLICATION_KEY_ID' tests/integration/remote_stores_live.sh && grep -Eq 'AWS_SECRET_ACCESS_KEY=.*SNAPDIR_B2_STORE_APPLICATION_KEY' tests/integration/remote_stores_live.sh"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "tests-lane: the B2 lane must export the B2 application key as AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (+ AWS_REGION) for the Rust B2 S3-compat client, which uses the standard AWS chain — otherwise it authenticates with the real-AWS key from test-creds and the preflight HEAD 403s. --self-check still green; S3/zero-dep lanes (earlier) undisturbed."
+
   - id: remote-interop-b2
     phase: 5
     owner_agent: tests
-    depends_on: [remote-interop-gcs, release-dryrun, b2-harness-isolation-and-cli, b2-oracle-fetch-store-arg]
+    depends_on: [remote-interop-gcs, release-dryrun, b2-harness-isolation-and-cli, b2-oracle-fetch-store-arg, b2-harness-rust-aws-creds]
     # GATE-ADD 2026-06-01T01:52:18Z (operator: "skip b2 for the very last ... once we've done gcs
     # and aws and have a release candidate"). Deferred to AFTER release-dryrun. No local emulator
     # serves both B2-native (Bash) + S3 (Rust) APIs, so this needs the real B2 sandbox.
@@ -621,7 +645,7 @@ gates:
     # both pass, this gate's verification_cmd should print the B2-green line. Harness loud-skips B2
     # until truly reachable (never a silent pass).
     status: pending
-    failure_count: 0
+    failure_count: 1
     verification_cmd: "source ~/.config/snapdir/test-creds.sh >/dev/null 2>&1; bash tests/integration/remote_stores_live.sh"
     pass_criteria:
       and:
