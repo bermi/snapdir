@@ -1067,7 +1067,9 @@ gates:
     phase: 10
     owner_agent: ci
     depends_on: [release-config]
-    status: pending
+    status: passed
+    passed_at: 2026-06-02T00:47:03Z
+    git_sha: dd144c0
     failure_count: 0
     verification_cmd: "grep -q '^\\[profile.dist\\]' Cargo.toml && cargo build --locked --profile dist -p snapdir-cli --bin snapdir"
     pass_criteria:

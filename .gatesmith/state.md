@@ -3,7 +3,8 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-Active phase: **10** — **58/61 gates passed**. Queue (phase-asc): `ci-dist-profile` (P10, next — adds [profile.dist] to root Cargo.toml; **the fix for the failed dry-run**) → `release-dryrun` (P10, human checkpoint — **PM re-runs `gh workflow run release.yml --ref rust-port -f dry_run=true && gh run watch` after ci-dist-profile lands**, confirms all 8 targets build, escalates the real conclusion for sign-off) → `remote-interop-b2` (P5, deferred, operator B2-sandbox fix). Phase 9 docs ✅ complete: `cli-verify-purge-reject`, `docs-remove-bash-legacy` (Rust-only docs), `readme-rewrite` (operator-signed-off, git f17bf34).
+Active phase: **10** — **59/61 gates passed**. Only 2 remain: `release-dryrun` (next, **HUMAN CHECKPOINT**) and `remote-interop-b2` (P5, deferred, operator B2-sandbox fix).
+`ci-dist-profile` ✅ (git dd144c0) — `[profile.dist]` added to root Cargo.toml + pushed; the failed-dry-run root cause is FIXED (local dist build of the snapdir binary succeeds). NEXT-TICK PLAN for `release-dryrun`: the PM **re-runs the gh dispatch dry-run** (`gh workflow run release.yml --ref rust-port -f dry_run=true` → `gh run watch` for run conclusion) against the pushed fix, confirms all 8 build jobs (incl. x86_64/aarch64 musl-static) succeed + archives produced + publish jobs skipped, captures the conclusion as evidence, then escalates the **real result** to the operator for the human_confirm sign-off (not a blind ask).
 FINDING (non-blocking, unowned root file): the repo `Makefile` still has a Retype-docs-site target that `cp docs/images/favicon.ico` (now deleted). Stale; the public docs are README + docs/rust-port/. No lane owns the Makefile — flag for a future cleanup (could extend ci or generic).
 
 **Release dry-run FAILED — root cause + fix gate.** Operator ran `gh workflow run release.yml --ref rust-port -f dry_run=true`: gen-assets passed but ALL 8 build jobs failed because `release.yml` uses `--profile dist` while `[profile.dist]` is missing from the ROOT `Cargo.toml` (it only lives in `packaging/dist-workspace.toml`). cargo needs the profile at the workspace root → `error: profile 'dist' is not defined`. Fixed by **`ci-dist-profile`** (ci lane adds `[profile.dist]` to root Cargo.toml). After it lands the PM re-runs the dry-run (`gh workflow run … && gh run watch`) and escalates the real result for the `release-dryrun` sign-off.
@@ -55,7 +56,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 7 (Performance): 4/4 passed ✅ (`bench-scaffold` `bench-compile` `perf-harness` `perf-gate` — Rust 33.6×/2.69× faster, output byte-identical, operator-signed-off)
 - Phase 8 (Testing/fuzzing): 5/5 passed ✅ (`cli-trycmd` `proptest-roundtrip` `coverage-gate` 75%-floor `ci-coverage-floor` `fuzz-parser`)
 - Phase 9 (Documentation): 6/6 passed ✅ (rustdoc-doctests, migration-guide-draft/-guide/-refresh, `docs-remove-bash-legacy`, `readme-rewrite` — Rust-only public docs + operator-signed-off README)
-- Phase 10 (Packaging/release): 3/5 passed (`release-config` `cli-completions-man` `release-dry-run-mode` ✅; **`ci-dist-profile` pending** [fixes the failed dry-run] + `release-dryrun` human checkpoint)
+- Phase 10 (Packaging/release): 4/5 passed (`release-config` `cli-completions-man` `release-dry-run-mode` `ci-dist-profile` ✅; only `release-dryrun` remains — human checkpoint, PM re-runs the gh dry-run against the [profile.dist] fix)
 
 ## Recent milestones
 
