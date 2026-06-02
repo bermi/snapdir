@@ -241,6 +241,79 @@ build_sanitized_bin() {
 }
 
 # ===========================================================================
+# b2 CLI v3 provisioning for the BASH ORACLE side.
+#
+# The frozen oracle `snapdir-b2-store` is written against b2 CLI v3 subcommands
+# (`upload-file`, `download-file-by-name`, two-arg `b2 ls <bucket> <dir>`). b2
+# CLI v4 REMOVED those (they became `b2 file upload` / `b2 file download`), so a
+# system b2 v4+ makes the oracle's push/fetch fail. This is purely an oracle-side
+# CLI-version mismatch, NOT a Rust defect.
+#
+# Strategy (prints, on stdout, a directory to PREPEND to PATH for the B2 lane,
+# or nothing if the system b2 is already usable / no shim is needed):
+#   * system b2 is v3.x         -> use it as-is, print nothing (empty).
+#   * system b2 is v4+ + uvx    -> emit a tiny `b2` shim that execs a pinned
+#                                  b2<4 via `uvx` (with docutils==0.18.1, which
+#                                  b2 v3 needs — b2 v3 imports
+#                                  docutils.utils.error_reporting, removed in
+#                                  docutils 0.19). Print the shim dir.
+#   * no v3 b2 and no uvx        -> return 1 (caller LOUD-SKIPs with remediation).
+#
+# The shim dir lives under WORKDIR, so the EXIT trap removes it. It is named
+# `b2`, which the zero-dependency PATH-sanitizer already drops by name, so it can
+# never leak into the pure-Rust zero-dep lane (which runs BEFORE this anyway).
+# ===========================================================================
+B2_SHIM_DIR=""
+b2_is_v3() {
+	# True iff the b2 currently first on PATH is major version 3.
+	#
+	# `b2 version` prints e.g. "b2 command line tool, version 4.7.0 (b2sdk
+	# version 2.12.0)". We extract the FIRST major.minor.patch token that follows
+	# the word "version" (the CLI version, not the b2sdk version) and test its
+	# major. Note: a probe like `b2 upload-file --help` is NOT reliable — b2 v4.x
+	# still accepts `upload-file` as a deprecated alias (exit 0), so it cannot
+	# distinguish v3 from v4. The version string is the source of truth.
+	local verline major
+	command -v b2 >/dev/null 2>&1 || return 1
+	verline="$(b2 version 2>/dev/null | head -n1)"
+	# Take the FIRST "<digits>.<digits>.<digits>" token on the line (the CLI
+	# version; the b2sdk version that follows is ignored). grep -o + head avoids
+	# sed's greedy ".*version" matching the trailing "b2sdk version".
+	major="$(printf '%s\n' "${verline}" \
+		| grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
+		| head -n1 \
+		| cut -d. -f1)"
+	[[ "${major}" == "3" ]]
+}
+provision_b2_v3() {
+	# Echo a PATH dir that resolves `b2` to a v3 client, or empty if the system
+	# b2 already works. Return 1 if a v3 b2 cannot be provided at all.
+	if [[ -n "${B2_SHIM_DIR}" ]]; then
+		printf '%s\n' "${B2_SHIM_DIR}"; return 0
+	fi
+	if b2_is_v3; then
+		# System b2 already speaks v3 — no shim needed.
+		printf '%s\n' ""
+		return 0
+	fi
+	# System b2 is v4+ (or unusable). Need uvx to run a pinned b2<4.
+	command -v uvx >/dev/null 2>&1 || return 1
+	local dir="${WORKDIR}/b2v3-shim"
+	mkdir -p "${dir}"
+	cat >"${dir}/b2" <<'SHIM'
+#!/usr/bin/env bash
+# Pinned b2 CLI v3 for the snapdir Bash oracle (system b2 is v4+, which dropped
+# the oracle's subcommands). docutils==0.18.1 is REQUIRED: b2 v3 imports
+# docutils.utils.error_reporting, removed in docutils 0.19.
+exec uvx --quiet --python 3.11 --from 'b2<4' --with 'docutils==0.18.1' b2 "$@"
+SHIM
+	chmod 755 "${dir}/b2"
+	B2_SHIM_DIR="${dir}"
+	printf '%s\n' "${dir}"
+	return 0
+}
+
+# ===========================================================================
 # MinIO S3 emulator bring-up. Exports the env both tools read, then returns 0.
 # ===========================================================================
 S3_PORT=""
@@ -337,7 +410,7 @@ run_delegate_for() {
 		case "${name}" in
 			s3)  unset SNAPDIR_B2_TEST_STORE SNAPDIR_GCS_TEST_STORE STORAGE_EMULATOR_HOST 2>/dev/null || true ;;
 			gcs) unset SNAPDIR_S3_TEST_STORE SNAPDIR_S3_TEST_ENDPOINT SNAPDIR_B2_TEST_STORE 2>/dev/null || true ;;
-			b2)  unset SNAPDIR_S3_TEST_STORE SNAPDIR_S3_TEST_ENDPOINT SNAPDIR_GCS_TEST_STORE STORAGE_EMULATOR_HOST 2>/dev/null || true ;;
+			b2)  unset SNAPDIR_S3_TEST_STORE SNAPDIR_S3_TEST_ENDPOINT SNAPDIR_GCS_TEST_STORE STORAGE_EMULATOR_HOST SNAPDIR_S3_STORE_ENDPOINT_URL 2>/dev/null || true ;;
 		esac
 		bash "${HARNESS}"
 	)
@@ -526,22 +599,50 @@ fi
 if [[ -z "${SNAPDIR_B2_TEST_STORE:-}" ]]; then
 	skip "b2: skipped (no SNAPDIR_B2_TEST_STORE — no local emulator serves both B2 native + S3 APIs; set it + B2 creds for the real-sandbox lane)"
 	SKIPPED_BACKENDS+=("b2")
-elif ! command -v b2 >/dev/null; then
-	skip "b2: skipped (b2 CLI not on PATH; required by the Bash oracle side)"
+elif ! command -v b2 >/dev/null && ! command -v uvx >/dev/null; then
+	skip "b2: skipped (neither a b2 CLI nor uvx is on PATH; the Bash oracle side needs a b2 v3 client — install b2 v3.x or uvx so a pinned 'b2<4' can be provisioned)"
 	SKIPPED_BACKENDS+=("b2")
 else
-	info "b2: preflighting real B2 sandbox reachability against ${SNAPDIR_B2_TEST_STORE} (Rust uses the S3-compatible endpoint SNAPDIR_B2_TEST_ENDPOINT=${SNAPDIR_B2_TEST_ENDPOINT:-<unset>})"
-	if store_preflight b2 "${SNAPDIR_B2_TEST_STORE}"; then
-		ok "b2: reachability preflight OK; delegating B2 differential lanes"
-		if run_delegate_for b2; then
-			RAN_BACKENDS+=("b2")
-			ok "b2 (real sandbox): all Bash<->Rust differential lanes passed byte-identically"
-		else
-			die "b2 (real sandbox): differential lanes FAILED — a real interop diff (NOT normalized). Owner: core/stores."
-		fi
-	else
-		skip "b2: skipped — Rust could not reach ${SNAPDIR_B2_TEST_STORE} via SNAPDIR_B2_TEST_ENDPOINT=${SNAPDIR_B2_TEST_ENDPOINT:-<unset>}. Remediation (operator-env, NOT a code bug): the B2 application key resolves its own S3 endpoint/region (e.g. 'b2 account authorize' then read .s3endpoint); set SNAPDIR_B2_TEST_ENDPOINT to that region's endpoint so the Rust S3-compatible client and the bucket are in the same region. Preflight error: $(tr '\n' ' ' <"${WORKDIR}/b2-preflight.err" 2>/dev/null | tail -c 300)"
+	# FIX A (endpoint leak): the S3 lane exported SNAPDIR_S3_STORE_ENDPOINT_URL=<MinIO>
+	# (see start_minio) and never unset it. The Rust CLI's store_for_adapter reads
+	# SNAPDIR_S3_STORE_ENDPOINT_URL as an endpoint override that takes precedence
+	# over SNAPDIR_B2_TEST_ENDPOINT (crates/snapdir-cli/src/cli.rs, Adapter::B2), so
+	# the B2 preflight PUT would be misrouted to MinIO -> NoSuchBucket -> silent
+	# B2 skip. Clear it here, BEFORE the preflight, so the Rust B2 client targets
+	# real B2. The S3 + zero-dependency lanes (which legitimately need it pointed at
+	# MinIO) already ran above, so unsetting it now is safe.
+	unset SNAPDIR_S3_STORE_ENDPOINT_URL 2>/dev/null || true
+
+	# FIX B (b2 CLI version): the frozen oracle uses b2 v3 subcommands; a system
+	# b2 v4+ dropped them. Provision a v3 client (system b2 if already v3, else a
+	# uvx-pinned 'b2<4' shim) and PREPEND it to PATH for the B2 lane only.
+	B2_LANE_BIN=""
+	if ! B2_LANE_BIN="$(provision_b2_v3)"; then
+		# No system v3 b2 and no uvx to run a pinned 'b2<4' — LOUD-SKIP, never a
+		# false pass.
+		skip "b2: skipped — no usable b2 v3 client (system b2 is v4+ and uvx is unavailable to run a pinned 'b2<4'). Remediation (operator-env, NOT a code bug): install b2 CLI v3.x, or install uvx (e.g. 'brew install uv') so a pinned 'b2<4' can be provisioned."
 		SKIPPED_BACKENDS+=("b2")
+	else
+		if [[ -n "${B2_LANE_BIN}" ]]; then
+			info "b2: using pinned b2 v3 client via shim ${B2_LANE_BIN} (system b2 is v4+; oracle needs v3 subcommands)"
+			PATH="${B2_LANE_BIN}:${PATH}"
+			export PATH
+		else
+			info "b2: system b2 already speaks v3 subcommands; using it as-is"
+		fi
+		info "b2: preflighting real B2 sandbox reachability against ${SNAPDIR_B2_TEST_STORE} (Rust uses the S3-compatible endpoint SNAPDIR_B2_TEST_ENDPOINT=${SNAPDIR_B2_TEST_ENDPOINT:-<unset>})"
+		if store_preflight b2 "${SNAPDIR_B2_TEST_STORE}"; then
+			ok "b2: reachability preflight OK; delegating B2 differential lanes"
+			if run_delegate_for b2; then
+				RAN_BACKENDS+=("b2")
+				ok "b2 (real sandbox): all Bash<->Rust differential lanes passed byte-identically"
+			else
+				die "b2 (real sandbox): differential lanes FAILED — a real interop diff (NOT normalized). Owner: core/stores."
+			fi
+		else
+			skip "b2: skipped — Rust could not reach ${SNAPDIR_B2_TEST_STORE} via SNAPDIR_B2_TEST_ENDPOINT=${SNAPDIR_B2_TEST_ENDPOINT:-<unset>}. Remediation (operator-env, NOT a code bug): the B2 application key resolves its own S3 endpoint/region (e.g. 'b2 account authorize' then read .s3endpoint); set SNAPDIR_B2_TEST_ENDPOINT to that region's endpoint so the Rust S3-compatible client and the bucket are in the same region. Preflight error: $(tr '\n' ' ' <"${WORKDIR}/b2-preflight.err" 2>/dev/null | tail -c 300)"
+			SKIPPED_BACKENDS+=("b2")
+		fi
 	fi
 fi
 
