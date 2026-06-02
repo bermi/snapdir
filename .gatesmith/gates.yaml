@@ -594,7 +594,9 @@ gates:
     # must lift that deny so the stores lane can apply the one-liner in a tick (then restore
     # it), OR apply the one-liner directly — agents cannot self-modify permission settings.
     # human_checkpoint=true.
-    status: pending
+    status: passed
+    passed_at: 2026-06-02T23:14:26Z
+    git_sha: a5bc23e
     failure_count: 0
     verification_cmd: "grep -Eq 'fetch --checksum[^\\n]*--store[^\\n]*_SNAPDIR_B2_STORE_STORE' snapdir-b2-store"
     pass_criteria:
