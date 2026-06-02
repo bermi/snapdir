@@ -926,6 +926,24 @@ gates:
     human_checkpoint: false
     description: "Catalog-logging parity with the oracle: wire `snapdir manifest` (event \"manifest\", location = dir abs path; oracle L212) and `snapdir stage` (event \"stage\", location = base dir; oracle L826) to Catalog::log, matching the existing push logging (L359). No-op when no catalog is configured (same resolution as cli-catalog-commands). Integration test *catalog_logging* asserts manifest/stage entries surface in locations/revisions."
 
+  # GATE-ADD 2026-06-02 (operator: "get rid of verify --purge"). The global --purge flag is
+  # inert on `verify` (run_verify never reads it); --purge is meaningful only on verify-cache.
+  # `verify` must REJECT --purge with a clear error rather than silently ignore it. (Redo of a
+  # premature PM hand-edit that was reverted — the cli lane owns this.) Standalone; not release-gating.
+  - id: cli-verify-purge-reject
+    phase: 6
+    owner_agent: cli
+    depends_on: [cli-store-wire]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked verify_purge"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "running [1-9][0-9]* tests?"
+    human_checkpoint: false
+    description: "`snapdir verify --purge` must fail with a clear error (verify has no purge path; --purge belongs to verify-cache) instead of silently ignoring the flag. Do NOT implement cache/store purge for verify. Integration test *verify_purge* asserts the rejection + message."
+
   - id: migration-guide-refresh
     phase: 9
     owner_agent: docs
@@ -941,6 +959,41 @@ gates:
     description: "Refresh docs/rust-port/migration.md wired-vs-stub table after the 7 subcommands are wired: mark stage/verify-cache/flush-cache/locations/ancestors/revisions/defaults as WIRED (no longer 'stub'), keeping the guide accurate for the release."
     passed_at: 2026-06-01T15:42:08Z
     git_sha: 7a66567
+
+  # ===================================================================
+  # Phase 9 (late-added) — Rust-only public docs  (lane: docs, extended)
+  # GATE-ADD 2026-06-02 (operator): remove bash-era legacy public docs + rewrite README to a
+  # Rust-only, AI-slop-free, discoverable entry point. The docs lane was extended to own
+  # README.md, CONTRIBUTING.md, and the root-level docs/ (see PM_PROMPT.md Lanes + LANE-SCOPE).
+  # ===================================================================
+  - id: docs-remove-bash-legacy
+    phase: 9
+    owner_agent: docs
+    depends_on: [migration-guide-refresh]
+    status: pending
+    failure_count: 0
+    verification_cmd: "! test -d docs/api && ! test -f docs/install.md && ! test -f docs/guide.md && ! test -f docs/index.md && ! test -f docs/authoring-stores.md && ! test -f docs/understanding-manifests.md && test -f docs/rust-port/manifest-spec.md && test -f docs/rust-port/migration.md && test -f docs/rust-port/CHANGELOG.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [docs/rust-port/manifest-spec.md, docs/rust-port/migration.md]
+    human_checkpoint: false
+    description: "Delete the bash-era root docs (docs/index.md, install.md, guide.md, authoring-stores.md, understanding-manifests.md, snapdir-manifest-readme.md, snapdir-b2-store-readme.md, retype.yml, docs/api/**) and rewrite CONTRIBUTING.md succinctly for Rust contributors (cargo/fmt/clippy/test; no bash/v1-v2 history). KEEP docs/rust-port/** incl. migration.md (operator: transitional). Never touch the frozen oracle scripts or utils/qa-fixtures/."
+
+  - id: readme-rewrite
+    phase: 9
+    owner_agent: docs
+    depends_on: [docs-remove-bash-legacy]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f README.md && grep -qi 'content-addressable' README.md && grep -qiE 's3://|gs://|b2://' README.md && grep -q 'snapdir ' README.md && ! grep -qiE 'snapdir-manifest|b3sum|bash scripts|pre v1.0|sqlite3' README.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "content-addressable"
+        - human_confirm: "Is the README AI-slop-free, succinct, accurate, and does it convey snapdir's vision + use cases for discovery (incl. agentic search)?"
+    human_checkpoint: true
+    description: "Rewrite the repo-root README.md: Rust-only, succinct, AI-slop-free, problem-first + keyword-rich for discovery; quick-start with real `snapdir` commands; single zero-dependency static binary install; use-case bullets; how-it-works (link manifest-spec.md); stores (file/s3/b2/gs); short comparison; v0.5.0 status + links. NO bash-install/script framing, no historical/AI reasoning. See plan section D for the structure + discoverability/AI-slop rules."
 
   # ===================================================================
   # Phase 10 — Packaging / release  (lane: packaging)
@@ -1000,6 +1053,24 @@ gates:
     human_checkpoint: false
     description: "Add `workflow_dispatch` (+ a `dry_run` boolean input) to release.yml; the dry-run path runs gen-assets + the full per-target build matrix (incl. musl static) but GUARDS the release/docker/crates-io publish jobs so it never publishes (esp. the irreversible crates.io step). Operator can then run a safe dry-run from branch rust-port."
 
+  # GATE-ADD 2026-06-02: the release dry-run FAILED — release.yml builds with `--profile dist`
+  # but `[profile.dist]` was never added to the ROOT Cargo.toml (cargo requires it at the
+  # workspace root; it only lived in packaging/dist-workspace.toml). Every target failed with
+  # `profile 'dist' is not defined`. The fix is a ci-lane change to the root Cargo.toml.
+  - id: ci-dist-profile
+    phase: 10
+    owner_agent: ci
+    depends_on: [release-config]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -q '^\\[profile.dist\\]' Cargo.toml && cargo build --locked --profile dist -p snapdir-cli --bin snapdir"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "\\[profile.dist\\]"
+    human_checkpoint: false
+    description: "Add [profile.dist] to the ROOT Cargo.toml (inherits release; lto=fat, codegen-units=1, opt-level=3, panic=abort, strip=true), mirroring packaging/dist-workspace.toml, so release.yml's `cargo build --profile dist` resolves and every target builds. Verified by a local dist-profile build of the snapdir binary."
+
   - id: release-dryrun
     phase: 10
     owner_agent: packaging
@@ -1010,7 +1081,9 @@ gates:
     # cli-catalog-commands, cli-defaults) + migration-guide-refresh — the release cannot sign
     # off until all 14 subcommands are wired and the migration guide reflects it (operator:
     # "make sure it's feature complete").
-    depends_on: [release-config, release-dry-run-mode, remote-interop, remote-interop-gcs, coverage-gate, perf-gate, catalog-rebuild, migration-guide, cli-cache-commands, cli-catalog-commands, cli-defaults, migration-guide-refresh, cli-completions-man]
+    # GATE-ADD 2026-06-02: + ci-dist-profile — the dry-run failed because `[profile.dist]` was
+    # missing from the root Cargo.toml; the release cannot pass until that build fix lands.
+    depends_on: [release-config, release-dry-run-mode, ci-dist-profile, remote-interop, remote-interop-gcs, coverage-gate, perf-gate, catalog-rebuild, migration-guide, cli-cache-commands, cli-catalog-commands, cli-defaults, migration-guide-refresh, cli-completions-man]
     status: pending
     failure_count: 0
     verification_cmd: "echo 'Run a tag dry-run of release.yml; confirm per-target archives build and the static binary smoke-tests.'"

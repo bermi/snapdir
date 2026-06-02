@@ -26,7 +26,7 @@ The PM may never edit inside a lane; it spawns the lane owner. A diff touching t
 | `cli` | `crates/snapdir-cli/` |
 | `tests` | `tests/` |
 | `bench` | `benches/` |
-| `docs` | `docs/rust-port/` |
+| `docs` | `docs/rust-port/`, `README.md`, `CONTRIBUTING.md`, `docs/` (root-level public docs; the docs lane may delete the bash-era legacy docs here) |
 | `packaging` | `packaging/`, `.github/workflows/release.yml` |
 | `generic` | gate-scoped cross-cutting jobs the PM scopes explicitly |
 

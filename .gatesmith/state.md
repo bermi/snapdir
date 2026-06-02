@@ -3,15 +3,15 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-Active phase: **10** — **54/56 gates passed**. Only 2 remain: `release-dryrun` (next, **human checkpoint** — release sign-off) and `remote-interop-b2` (operator-deferred, post-RC).
-Next gate: `release-dryrun` (phase 10, owner packaging, **HUMAN CHECKPOINT**) — ALL deps satisfied. The release workflow is now **safely dry-runnable** (release-dry-run-mode git 4b3b6a9): a `workflow_dispatch` run builds gen-assets + the full per-target matrix (incl. musl static) and NEVER publishes (the 3 publish jobs are gated on a real `v*` tag push).
-**OPERATOR — how to run the dry-run (answer to the open question):** Actions tab → "Release" → "Run workflow" → branch `rust-port`, `dry_run: true`; OR `gh workflow run release.yml --ref rust-port -f dry_run=true` then `gh run watch`. It builds all 7 targets incl. x86_64/aarch64 musl-static + completions/man archives, with zero publishing. Local pre-flight already green. Then tell the PM the result to record `release-dryrun`.
+Active phase: **6→10** — **55/61 gates passed** (6 new gates added 2026-06-02). The release dry-run FAILED + a Rust-only public-docs cleanup was requested; both are now gated. Queue (phase-asc): `cli-verify-purge-reject` (P6) → `docs-remove-bash-legacy` (P9) → `readme-rewrite` (P9, human checkpoint) → `ci-dist-profile` (P10) → `release-dryrun` (P10, human checkpoint) → `remote-interop-b2` (P5, deferred). The ralph loop drives the non-checkpoint gates; the PM re-runs the gh dry-run + escalates the two human checkpoints.
 
-**⛔ AUTONOMOUS WORK EXHAUSTED.** 55/57 gates passed. The only two remaining are operator-only external actions: `release-dryrun` (run the dispatch dry-run above + sign off) and `remote-interop-b2` (gated behind it; needs the B2 sandbox endpoint/key fix). The PM has no further gates it can complete on its own — every `/gatesmith` tick now lands on `release-dryrun` awaiting the operator. (The last journaled non-blocking parity item — catalog logging on manifest/stage — was closed by `cli-catalog-logging-parity`.)
-Catalog logging is now at **full oracle parity** (manifest@L212 + push@L359 + stage@L826) via `cli-catalog-logging-parity` (git 666a299).
-**OPEN FINDINGS needing an operator decision (NOT release blockers; no gate added):**
-1. `verify --purge` is a **no-op** in the Rust CLI (run_verify never reads `purge`), and `verify` is **store**-based whereas the oracle's is a **cache**-purge op. Fixing it is a design call (cache-purge à la oracle, reuse `snapdir_core::cache`; vs store-purge needing a `Store::delete`). It also touches the signed-off store-based `verify`. **Operator decision (2026-06-02): leave as-is, revisit post-release** — no gate added.
-2. `Store` trait lacks object copy/delete → `fetch` double-copies (efficiency); a future store-API extension.
+**Release dry-run FAILED — root cause + fix gate.** Operator ran `gh workflow run release.yml --ref rust-port -f dry_run=true`: gen-assets passed but ALL 8 build jobs failed because `release.yml` uses `--profile dist` while `[profile.dist]` is missing from the ROOT `Cargo.toml` (it only lives in `packaging/dist-workspace.toml`). cargo needs the profile at the workspace root → `error: profile 'dist' is not defined`. Fixed by **`ci-dist-profile`** (ci lane adds `[profile.dist]` to root Cargo.toml). After it lands the PM re-runs the dry-run (`gh workflow run … && gh run watch`) and escalates the real result for the `release-dryrun` sign-off.
+
+**Rust-only public docs (operator).** GATE-ADDED `docs-remove-bash-legacy` (delete root bash-era docs `docs/index|install|guide|authoring-stores|understanding-manifests|*-readme.md` + `docs/retype.yml` + `docs/api/**`; rewrite CONTRIBUTING for Rust; KEEP `docs/rust-port/**` incl. migration.md as transitional) and `readme-rewrite` (rewrite README Rust-only/AI-slop-free/discoverable; machine checks + operator human_confirm). The `docs` lane was **extended** to own `README.md`, `CONTRIBUTING.md`, root `docs/` (LANE-SCOPE, PM_PROMPT.md updated). README discoverability guidance is in `/Users/bermi/.claude/plans/can-we-do-the-foamy-pike.md` §D.
+
+**verify --purge resolution.** Operator chose to REMOVE the inert flag → `cli-verify-purge-reject` (cli) makes `verify` reject `--purge` with a clear error (no purge path; --purge is verify-cache's). A premature PM hand-edit was reverted; the cli lane does it via the gate.
+
+Open finding (future, no gate): the `Store` trait lacks object copy/delete → `fetch` double-copies (a store-API extension).
 ⚠ **FEATURE-COMPLETENESS GAP (operator-flagged at migration-guide sign-off).** 7 of 14 subcommands were never CLI-wired despite their library logic existing: `stage`/`verify-cache`/`flush-cache` (→ `snapdir_core::cache`), `locations`/`ancestors`/`revisions` (→ `snapdir_catalog`), `defaults`. The original ledger gated manifest/id + push/fetch/pull/checkout/verify + remote routing but MISSED these. GATE-ADDED `cli-cache-commands` + `cli-catalog-commands` + `cli-defaults` (cli, P6) to wire them, `migration-guide-refresh` (docs, P9) to update the guide's wired-vs-stub table afterward, and made `release-dryrun` depend on all four — **release cannot sign off until the CLI is feature-complete**. Each cli gate's pass_criteria guards against a vacuous 0-test filter via regex `running [1-9]`.
 Last passed: `migration-guide` @ 2026-06-01T14:32:56Z — **operator-signed-off HUMAN CHECKPOINT** ("the guide is ok"). The guide honestly documents the current state; the operator's feature-completeness concern is tracked by the new CLI gates above. Contract frozen (locks 4/4 OK each tick).
 `cargo-llvm-cov` 0.8.7 + `llvm-tools-preview` installed locally (PM). No nightly on host (cargo-fuzz can't build locally; CI cron does).
@@ -50,11 +50,11 @@ Open (non-blocking) findings to revisit later:
 - Phase 3 (Interop keystone, HARD): 4/4 passed ✅ 🔑 KEYSTONE PROVEN
 - Phase 4 (Store trait + FileStore): 5/5 passed ✅
 - Phase 5 (Remote stores): 8/9 passed (S3+GCS interop PM-verified; only `remote-interop-b2` — operator-deferred to post-release-candidate — remains)
-- Phase 6 (Caching + redb catalog + CLI wiring): 8/8 passed ✅ (`cache-id` `catalog-redb` `catalog-compat` 🔒 `catalog-rebuild` `cli-cache-commands` `cli-catalog-commands` `cli-defaults` `cli-catalog-logging-parity`) — **CLI feature-complete, 0 stubs, catalog logging at oracle parity**
+- Phase 6 (Caching + redb catalog + CLI wiring): 8/9 passed (…`cli-catalog-logging-parity` ✅; **`cli-verify-purge-reject` pending** — 2026-06-02) — CLI feature-complete, catalog logging at oracle parity
 - Phase 7 (Performance): 4/4 passed ✅ (`bench-scaffold` `bench-compile` `perf-harness` `perf-gate` — Rust 33.6×/2.69× faster, output byte-identical, operator-signed-off)
 - Phase 8 (Testing/fuzzing): 5/5 passed ✅ (`cli-trycmd` `proptest-roundtrip` `coverage-gate` 75%-floor `ci-coverage-floor` `fuzz-parser`)
-- Phase 9 (Documentation): 4/4 passed ✅ (`rustdoc-doctests` `migration-guide-draft` `migration-guide` `migration-guide-refresh`)
-- Phase 10 (Packaging/release): 3/4 passed (`release-config` ✅ `cli-completions-man` ✅ `release-dry-run-mode` ✅; only `release-dryrun` remains — human checkpoint, now safely dry-runnable)
+- Phase 9 (Documentation): 4/6 passed (rustdoc-doctests, migration-guide-draft, migration-guide, migration-guide-refresh ✅; **`docs-remove-bash-legacy` + `readme-rewrite` pending** — Rust-only public docs, 2026-06-02)
+- Phase 10 (Packaging/release): 3/5 passed (`release-config` `cli-completions-man` `release-dry-run-mode` ✅; **`ci-dist-profile` pending** [fixes the failed dry-run] + `release-dryrun` human checkpoint)
 
 ## Recent milestones
 

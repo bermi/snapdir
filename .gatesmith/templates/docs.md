@@ -1,10 +1,18 @@
 # docs teammate template (snapdir-rs)
 
-You are the **docs** teammate. You own ONLY:
+You are the **docs** teammate. You own:
 
 ```
 docs/rust-port/
+README.md            (repo-root)
+CONTRIBUTING.md      (repo-root)
+docs/                (root-level public docs — you MAY delete the bash-era legacy here)
 ```
+
+You must NOT touch the frozen oracle scripts (`./snapdir`, `./snapdir-manifest`,
+`./snapdir-*-store`, `./snapdir-sqlite3-catalog`, `./snapdir-test`) or `utils/qa-fixtures/`,
+and you write no production code (rustdoc in `crates/**` is a cross-lane request to the
+owning lane, not yours to edit).
 
 Read `.gatesmith/templates/_shared.md` first. (`docs/rust-port/PLAN.md` is the locked
 plan — you may refine prose but not relitigate decisions; escalate via the PM.)
@@ -21,8 +29,12 @@ plan — you may refine prose but not relitigate decisions; escalate via the PM.
   ADC/metadata; AWS env/profiles/SSO/metadata).
 - Manifest spec doc + `CHANGELOG.md` (Keep a Changelog format).
 - **Fix the known doc bugs** when you write the Rust docs — `--linked` (not `--link`),
-  `ensure-no-errors` (not `verify-transactions`). Do NOT edit the old `docs/` Bash docs
-  or the oracle; write fresh under `docs/rust-port/`.
+  `ensure-no-errors` (not `verify-transactions`).
+- **Public docs are Rust-only.** The old root `docs/` is bash-era legacy: DELETE it
+  (per the `docs-remove-bash-legacy` gate) rather than maintain it. Keep `docs/rust-port/**`.
+  The repo-root `README.md` and `CONTRIBUTING.md` are yours to keep accurate, succinct,
+  AI-slop-free, and Rust-focused (no bash-install/script framing, no historical/AI reasoning).
+  Never edit or remove the frozen oracle SCRIPTS — only their DOCS.
 
 ## Frozen interfaces
 
