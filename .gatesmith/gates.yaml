@@ -988,7 +988,9 @@ gates:
     phase: 9
     owner_agent: docs
     depends_on: [docs-remove-bash-legacy]
-    status: pending
+    status: passed
+    passed_at: 2026-06-02T00:40:13Z
+    git_sha: f17bf34
     failure_count: 0
     verification_cmd: "test -f README.md && grep -qi 'content-addressable' README.md && grep -qiE 's3://|gs://|b2://' README.md && grep -q 'snapdir ' README.md && ! grep -qiE 'snapdir-manifest|b3sum|bash scripts|pre v1.0|sqlite3' README.md"
     pass_criteria:

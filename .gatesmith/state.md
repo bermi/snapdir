@@ -3,8 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-Active phase: **9→10** — **57/61 gates passed**. Queue (phase-asc): `readme-rewrite` (P9, next, HUMAN CHECKPOINT — docs writes README, PM machine-checks + escalates the human_confirm in one tick) → `ci-dist-profile` (P10, fixes the failed dry-run) → `release-dryrun` (P10, human checkpoint — PM re-runs the gh dry-run after ci-dist-profile) → `remote-interop-b2` (P5, deferred). `cli-verify-purge-reject` ✅ + `docs-remove-bash-legacy` ✅ (public docs now Rust-only; `docs/` = only `rust-port/`; CONTRIBUTING rewritten for Rust).
-README guidance for the docs teammate: `/Users/bermi/.claude/plans/can-we-do-the-foamy-pike.md` §D (problem-first one-liner, quick-start, zero-dep install, use-case bullets, how-it-works, stores, short comparison; AI-slop-free; keyword-rich for agentic discovery).
+Active phase: **10** — **58/61 gates passed**. Queue (phase-asc): `ci-dist-profile` (P10, next — adds [profile.dist] to root Cargo.toml; **the fix for the failed dry-run**) → `release-dryrun` (P10, human checkpoint — **PM re-runs `gh workflow run release.yml --ref rust-port -f dry_run=true && gh run watch` after ci-dist-profile lands**, confirms all 8 targets build, escalates the real conclusion for sign-off) → `remote-interop-b2` (P5, deferred, operator B2-sandbox fix). Phase 9 docs ✅ complete: `cli-verify-purge-reject`, `docs-remove-bash-legacy` (Rust-only docs), `readme-rewrite` (operator-signed-off, git f17bf34).
 FINDING (non-blocking, unowned root file): the repo `Makefile` still has a Retype-docs-site target that `cp docs/images/favicon.ico` (now deleted). Stale; the public docs are README + docs/rust-port/. No lane owns the Makefile — flag for a future cleanup (could extend ci or generic).
 
 **Release dry-run FAILED — root cause + fix gate.** Operator ran `gh workflow run release.yml --ref rust-port -f dry_run=true`: gen-assets passed but ALL 8 build jobs failed because `release.yml` uses `--profile dist` while `[profile.dist]` is missing from the ROOT `Cargo.toml` (it only lives in `packaging/dist-workspace.toml`). cargo needs the profile at the workspace root → `error: profile 'dist' is not defined`. Fixed by **`ci-dist-profile`** (ci lane adds `[profile.dist]` to root Cargo.toml). After it lands the PM re-runs the dry-run (`gh workflow run … && gh run watch`) and escalates the real result for the `release-dryrun` sign-off.
@@ -55,7 +54,7 @@ Open (non-blocking) findings to revisit later:
 - Phase 6 (Caching + redb catalog + CLI wiring): 9/9 passed ✅ (…`cli-catalog-logging-parity` `cli-verify-purge-reject`) — CLI feature-complete, catalog logging at oracle parity, verify --purge rejected
 - Phase 7 (Performance): 4/4 passed ✅ (`bench-scaffold` `bench-compile` `perf-harness` `perf-gate` — Rust 33.6×/2.69× faster, output byte-identical, operator-signed-off)
 - Phase 8 (Testing/fuzzing): 5/5 passed ✅ (`cli-trycmd` `proptest-roundtrip` `coverage-gate` 75%-floor `ci-coverage-floor` `fuzz-parser`)
-- Phase 9 (Documentation): 5/6 passed (rustdoc-doctests, migration-guide-draft, migration-guide, migration-guide-refresh, `docs-remove-bash-legacy` ✅; **`readme-rewrite` pending** — human checkpoint, Rust-only README)
+- Phase 9 (Documentation): 6/6 passed ✅ (rustdoc-doctests, migration-guide-draft/-guide/-refresh, `docs-remove-bash-legacy`, `readme-rewrite` — Rust-only public docs + operator-signed-off README)
 - Phase 10 (Packaging/release): 3/5 passed (`release-config` `cli-completions-man` `release-dry-run-mode` ✅; **`ci-dist-profile` pending** [fixes the failed dry-run] + `release-dryrun` human checkpoint)
 
 ## Recent milestones
