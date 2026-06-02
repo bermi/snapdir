@@ -1100,7 +1100,9 @@ gates:
     phase: 10
     owner_agent: ci
     depends_on: [ci-config]
-    status: pending
+    status: passed
+    passed_at: 2026-06-02T01:56:36Z
+    git_sha: 57a8f52
     failure_count: 0
     verification_cmd: "! grep -qi 'windows-latest' .github/workflows/ci.yaml && (command -v actionlint >/dev/null 2>&1 && actionlint .github/workflows/ci.yaml || echo 'actionlint not installed')"
     pass_criteria:
