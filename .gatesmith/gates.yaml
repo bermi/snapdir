@@ -1079,10 +1079,25 @@ gates:
     human_checkpoint: false
     description: "Add [profile.dist] to the ROOT Cargo.toml (inherits release; lto=fat, codegen-units=1, opt-level=3, panic=abort, strip=true), mirroring packaging/dist-workspace.toml, so release.yml's `cargo build --profile dist` resolves and every target builds. Verified by a local dist-profile build of the snapdir binary."
 
-  # GATE-ADD 2026-06-02 (operator: "Drop Windows from the release"). The dry-run re-run built
-  # 6/7 targets but x86_64-pc-windows-msvc failed: snapdir is unix-only (manifest = unix octal
-  # perms + symlinks; core/walk.rs + cli.rs use std::os::unix). Remove the Windows target.
-  - id: packaging-drop-windows
+  # GATE-ADD 2026-06-02 (operator: "Rewrite for Rust"). The repo-root Makefile is entirely
+  # bash-era + broken after docs-remove-bash-legacy (docs target -> deleted docs/api/, website
+  # -> deleted docs/images, test/lint/install/release drive the bash scripts). generic-lane,
+  # PM-scoped to the Makefile ONLY. Standalone (does not gate release).
+  - id: repo-makefile-rust
+    phase: 10
+    owner_agent: generic
+    depends_on: [ci-dist-profile]
+    status: passed
+    passed_at: 2026-06-02T16:24:38Z
+    git_sha: a99de17
+    failure_count: 0
+    verification_cmd: "test -f Makefile && ! grep -qiE 'snapdir-test|shellcheck|shfmt|docs/api|docs/images|retype' Makefile && grep -q 'cargo' Makefile && make -n test >/dev/null 2>&1"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "cargo"
+    human_checkpoint: false
+    description: "Replace the bash-era root Makefile with a thin Rust convenience wrapper over cargo (e.g. build/test/fmt/clippy/lint/check + a help default), no bash-era targets (no ./snapdir-test, shellcheck/shfmt, docs/api, docs/images, retype, sed-version release). Scope: the Makefile ONLY. Never touch the frozen oracle scripts or utils/qa-fixtures/. `make -n test` must reference cargo and parse."
     phase: 10
     owner_agent: packaging
     depends_on: [ci-dist-profile]
