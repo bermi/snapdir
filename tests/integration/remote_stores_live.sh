@@ -630,6 +630,18 @@ else
 		else
 			info "b2: system b2 already speaks v3 subcommands; using it as-is"
 		fi
+		# FIX C (AWS credential chain): the Rust B2 store uses aws-sdk-s3 against
+		# Backblaze's S3 endpoint and reads the STANDARD AWS credential chain
+		# (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). test-creds set AWS_* to the
+		# real-AWS key (AKIA…) for the S3/AWS lane; remap them to the B2 application
+		# key for this lane so the Rust client authenticates against B2 (else the
+		# preflight HEAD 403s). This is in scope for BOTH store_preflight b2 and the
+		# subsequent run_delegate_for b2 subshell (which inherits the parent env).
+		# The S3/MinIO + zero-dependency lanes ran earlier and are unaffected.
+		export AWS_ACCESS_KEY_ID="${SNAPDIR_B2_STORE_APPLICATION_KEY_ID:?b2 lane needs SNAPDIR_B2_STORE_APPLICATION_KEY_ID}"
+		export AWS_SECRET_ACCESS_KEY="${SNAPDIR_B2_STORE_APPLICATION_KEY:?b2 lane needs SNAPDIR_B2_STORE_APPLICATION_KEY}"
+		export AWS_REGION="${SNAPDIR_B2_REGION:-us-west-001}"
+
 		info "b2: preflighting real B2 sandbox reachability against ${SNAPDIR_B2_TEST_STORE} (Rust uses the S3-compatible endpoint SNAPDIR_B2_TEST_ENDPOINT=${SNAPDIR_B2_TEST_ENDPOINT:-<unset>})"
 		if store_preflight b2 "${SNAPDIR_B2_TEST_STORE}"; then
 			ok "b2: reachability preflight OK; delegating B2 differential lanes"
