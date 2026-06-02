@@ -622,7 +622,9 @@ gates:
     # B2 lane, export AWS_ACCESS_KEY_ID=$SNAPDIR_B2_STORE_APPLICATION_KEY_ID,
     # AWS_SECRET_ACCESS_KEY=$SNAPDIR_B2_STORE_APPLICATION_KEY, AWS_REGION=$SNAPDIR_B2_REGION.
     # Must NOT disturb the S3/MinIO + zero-dep lanes (they run earlier). Frozen oracle/crates untouched.
-    status: pending
+    status: passed
+    passed_at: 2026-06-02T23:24:30Z
+    git_sha: 431cda8
     failure_count: 0
     verification_cmd: "bash tests/integration/remote_stores_live.sh --self-check && grep -Eq 'AWS_ACCESS_KEY_ID=.*SNAPDIR_B2_STORE_APPLICATION_KEY_ID' tests/integration/remote_stores_live.sh && grep -Eq 'AWS_SECRET_ACCESS_KEY=.*SNAPDIR_B2_STORE_APPLICATION_KEY' tests/integration/remote_stores_live.sh"
     pass_criteria:
