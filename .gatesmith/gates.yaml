@@ -568,7 +568,9 @@ gates:
     #      shim calling `uvx --from 'b2<4' --with docutils==0.18.1 b2`) when the system b2 is v4+,
     #      else loud-skip with remediation. Never shell Rust out to b2 (zero-dep lane still holds).
     # Frozen oracle scripts + crates/** stay untouched.
-    status: pending
+    status: passed
+    passed_at: 2026-06-02T23:06:37Z
+    git_sha: 310e690
     failure_count: 0
     verification_cmd: "bash tests/integration/remote_stores_live.sh --self-check && grep -Eq 'unset[^\\n]*SNAPDIR_S3_STORE_ENDPOINT_URL' tests/integration/remote_stores_live.sh && grep -Eqi \"b2<4|uvx|b2 .*version|upload-file|account authorize\" tests/integration/remote_stores_live.sh"
     pass_criteria:
