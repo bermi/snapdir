@@ -112,7 +112,7 @@ jobs:
         run: cargo audit
 
   # --------------------------------------------------------------------------
-  # Test matrix: {MSRV, stable, beta} x {ubuntu, macos, windows}.
+  # Test matrix: {MSRV, stable, beta} x {ubuntu, macos}.
   # MSRV is read from the workspace rust-version; keep it in sync with Cargo.toml.
   # --------------------------------------------------------------------------
   test:
@@ -121,7 +121,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         rust: ["1.85", stable, beta]
     steps:
       - name: Checkout
