@@ -549,16 +549,73 @@ gates:
     human_checkpoint: false
     description: "GCS Bash<->Rust cross-tool live interop (real bucket, ADC): Rust round-trip; Rust-push->Bash(gcloud)-fetch; Bash-push->Rust-fetch — byte-identical manifests + identical snapshot ids. Requires gcs-store-notfound-fix."
 
+  - id: b2-harness-isolation-and-cli
+    phase: 5
+    owner_agent: tests
+    depends_on: [remote-interop-gcs]
+    # GATE-ADD 2026-06-03 (operator: "do the proper validation in a gatesmith loop").
+    # Two tests-lane fixes to tests/integration/remote_stores_live.sh that the live B2
+    # investigation proved are REQUIRED for the real B2 lane to execute (neither is a
+    # Rust-code defect; Lane A Rust<->Rust B2 already passes):
+    #  (a) ENDPOINT ISOLATION: the S3/MinIO lane exports SNAPDIR_S3_STORE_ENDPOINT_URL and
+    #      never unsets it before the B2 lane; cli.rs store_for_adapter Adapter::B2 reads it
+    #      as an endpoint override that outranks SNAPDIR_B2_TEST_ENDPOINT, so the Rust B2
+    #      preflight PUT is misrouted to MinIO -> NoSuchBucket -> B2 silently skipped. Fix:
+    #      `unset SNAPDIR_S3_STORE_ENDPOINT_URL` before the B2 preflight AND in
+    #      run_delegate_for's b2) case. (The S3 + zero-dep lanes that need it run earlier.)
+    #  (b) ORACLE CLI v3: the frozen oracle speaks b2 CLI v3 (upload-file / download-file-by-name);
+    #      b2 v4+ removed those. Provision a pinned b2 v3 for the BASH ORACLE side (e.g. a PATH
+    #      shim calling `uvx --from 'b2<4' --with docutils==0.18.1 b2`) when the system b2 is v4+,
+    #      else loud-skip with remediation. Never shell Rust out to b2 (zero-dep lane still holds).
+    # Frozen oracle scripts + crates/** stay untouched.
+    status: pending
+    failure_count: 0
+    verification_cmd: "bash tests/integration/remote_stores_live.sh --self-check && grep -Eq 'unset[^\\n]*SNAPDIR_S3_STORE_ENDPOINT_URL' tests/integration/remote_stores_live.sh && grep -Eqi \"b2<4|uvx|b2 .*version|upload-file|account authorize\" tests/integration/remote_stores_live.sh"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "tests-lane: make the live B2 lane actually executable — (a) clear the leaked MinIO endpoint (SNAPDIR_S3_STORE_ENDPOINT_URL) before the B2 lane so the Rust B2 client targets real B2; (b) provision a pinned b2 CLI v3 for the bash-oracle side (system b2 v4+ dropped the oracle's subcommands). Harness --self-check still green; frozen oracle + crates/** untouched."
+
+  - id: b2-oracle-fetch-store-arg
+    phase: 5
+    owner_agent: stores
+    depends_on: [remote-interop-gcs]
+    # GATE-ADD 2026-06-03. FROZEN-ORACLE one-line fix, operator-approved verbatim
+    # ("I approve the one-line --store fix", 2026-06-02). snapdir-b2-store line 395
+    # (_snapdir_b2_store_get_transfer_objects_command) emits the PARALLEL object-fetch
+    # worker WITHOUT --store; the worker requires _SNAPDIR_B2_STORE_STORE (line 472) -> a
+    # cold-cache Bash fetch from B2 fails "Missing --store". Latent bug, never caught
+    # because the B2 lane was never run end-to-end. Fix = append --store
+    # "${_SNAPDIR_B2_STORE_STORE}" to line 395, mirroring the working manifest fetch (line 204).
+    # FROZEN-INTERFACE EXCEPTION: snapdir-b2-store is deny-listed against Edit
+    # (.claude/settings.json "Edit(snapdir-b2-store)"); NO agent can edit it. The OPERATOR
+    # must lift that deny so the stores lane can apply the one-liner in a tick (then restore
+    # it), OR apply the one-liner directly — agents cannot self-modify permission settings.
+    # human_checkpoint=true.
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -Eq 'fetch --checksum[^\\n]*--store[^\\n]*_SNAPDIR_B2_STORE_STORE' snapdir-b2-store"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Frozen-oracle change: does snapdir-b2-store:395 now pass --store \"${_SNAPDIR_B2_STORE_STORE}\" to the parallel object-fetch worker (mirroring line 204), and do you approve this frozen-interface edit?"
+    human_checkpoint: true
+    description: "FROZEN-ORACLE fix (operator-approved): snapdir-b2-store:395 parallel object-fetch must pass --store \"${_SNAPDIR_B2_STORE_STORE}\" (mirroring the manifest fetch on line 204); the worker requires it (line 472). Requires the operator to lift the Edit(snapdir-b2-store) deny so the stores lane can apply the one-liner. Without it, Bash-pull-from-B2 with a cold cache fails."
+
   - id: remote-interop-b2
     phase: 5
     owner_agent: tests
-    depends_on: [remote-interop-gcs, release-dryrun]
+    depends_on: [remote-interop-gcs, release-dryrun, b2-harness-isolation-and-cli, b2-oracle-fetch-store-arg]
     # GATE-ADD 2026-06-01T01:52:18Z (operator: "skip b2 for the very last ... once we've done gcs
     # and aws and have a release candidate"). Deferred to AFTER release-dryrun. No local emulator
     # serves both B2-native (Bash) + S3 (Rust) APIs, so this needs the real B2 sandbox.
-    # OPERATOR PREREQ before it can pass: fix SNAPDIR_B2_TEST_ENDPOINT to the key's real region
-    # (key reports us-west-001; creds file says us-west-004) + a key with object HEAD/GET/PUT.
-    # b2 CLI is installed (oracle side). The harness loud-skips B2 until reachable (never a silent pass).
+    # 2026-06-03 UPDATE: the endpoint/region prereq is RESOLVED — operator created bucket
+    # snapdir-tests + key in us-west-001 and updated test-creds (endpoint us-west-001); creds
+    # verified valid and Lane A Rust<->Rust B2 already passes. The remaining blockers are the two
+    # new dependency gates: b2-harness-isolation-and-cli (clear the leaked MinIO endpoint + provision
+    # a v3 b2 for the oracle) and b2-oracle-fetch-store-arg (frozen-oracle --store one-liner). When
+    # both pass, this gate's verification_cmd should print the B2-green line. Harness loud-skips B2
+    # until truly reachable (never a silent pass).
     status: pending
     failure_count: 0
     verification_cmd: "source ~/.config/snapdir/test-creds.sh >/dev/null 2>&1; bash tests/integration/remote_stores_live.sh"
