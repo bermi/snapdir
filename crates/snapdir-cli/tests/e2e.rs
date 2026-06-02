@@ -176,6 +176,51 @@ fn push_fetch_checkout_roundtrip_reproduces_id() {
         .success();
 }
 
+/// `verify --purge` must be rejected: the global `--purge` flag is inert on
+/// `verify` (a store-based integrity check that never touches the cache), so
+/// rather than silently ignore it the command bails with an actionable message
+/// pointing at `verify-cache --purge`. The rejection fires before any store
+/// resolution, so a bogus store/id still surfaces the purge error.
+#[test]
+fn verify_purge_is_rejected() {
+    let cache = TempDir::new().unwrap();
+    let zeros = "0".repeat(64);
+
+    snapdir(cache.path())
+        .args([
+            "verify",
+            "--store",
+            "file:///tmp/nonexistent-snapdir-verify-purge",
+            "--id",
+            &zeros,
+            "--purge",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("verify").and(predicate::str::contains("--purge")));
+}
+
+/// Sanity: plain `verify` (no `--purge`) does NOT hit the purge rejection. It
+/// still fails here (the manifest is missing from the bogus store), but the
+/// failure must not be the purge message.
+#[test]
+fn verify_without_purge_does_not_hit_purge_error() {
+    let cache = TempDir::new().unwrap();
+    let zeros = "0".repeat(64);
+
+    snapdir(cache.path())
+        .args([
+            "verify",
+            "--store",
+            "file:///tmp/nonexistent-snapdir-verify-purge",
+            "--id",
+            &zeros,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not support --purge").not());
+}
+
 #[test]
 fn pull_is_fetch_plus_checkout() {
     let cache = TempDir::new().unwrap();

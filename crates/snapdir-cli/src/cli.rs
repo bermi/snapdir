@@ -467,7 +467,19 @@ impl Cli {
     /// `snapdir verify --id <id>`: confirm the snapshot in the store is intact —
     /// the manifest hashes back to `id` and every referenced object is present
     /// and matches its checksum.
+    ///
+    /// The global `--purge` flag is *not* meaningful here: `verify` is a
+    /// store-based integrity check and never mutates the cache. Rather than
+    /// silently ignore the flag (as it did before), reject it with an actionable
+    /// message pointing at `verify-cache --purge`, which is the only command that
+    /// removes corrupt objects. The check runs before any store work so a bogus
+    /// `--store`/`--id` still surfaces the purge rejection, not a store error.
     fn run_verify(&self) -> Result<()> {
+        if self.globals.purge {
+            anyhow::bail!(
+                "snapdir: `verify` does not support --purge; use `verify-cache --purge` to remove corrupt objects from the local cache"
+            );
+        }
         let store = self.resolve_store()?;
         let id = self.require_id()?;
         let manifest = store
