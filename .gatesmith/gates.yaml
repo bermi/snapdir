@@ -972,7 +972,9 @@ gates:
     phase: 9
     owner_agent: docs
     depends_on: [migration-guide-refresh]
-    status: pending
+    status: passed
+    passed_at: 2026-06-02T00:23:40Z
+    git_sha: adefa38
     failure_count: 0
     verification_cmd: "! test -d docs/api && ! test -f docs/install.md && ! test -f docs/guide.md && ! test -f docs/index.md && ! test -f docs/authoring-stores.md && ! test -f docs/understanding-manifests.md && test -f docs/rust-port/manifest-spec.md && test -f docs/rust-port/migration.md && test -f docs/rust-port/CHANGELOG.md"
     pass_criteria:
