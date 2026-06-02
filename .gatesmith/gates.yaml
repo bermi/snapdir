@@ -647,7 +647,7 @@ gates:
     # both pass, this gate's verification_cmd should print the B2-green line. Harness loud-skips B2
     # until truly reachable (never a silent pass).
     status: pending
-    failure_count: 1
+    failure_count: 2
     verification_cmd: "source ~/.config/snapdir/test-creds.sh >/dev/null 2>&1; bash tests/integration/remote_stores_live.sh"
     pass_criteria:
       and:
