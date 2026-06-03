@@ -1,8 +1,8 @@
 name: S3
 on:
   schedule:
-    # Once a month to ensure future
-    # aws cli versions are tested
+    # Once a month to ensure the S3 backend keeps working against a
+    # fresh S3-compatible emulator.
     - cron: "1 0 * * 1"
   # Only when pushing to main branch
   push:
@@ -16,85 +16,48 @@ defaults:
     shell: bash
 
 jobs:
-  s3:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget curl unzip
-          sudo wget -q "https://github.com/BLAKE3-team/BLAKE3/releases/download/1.3.1/b3sum_linux_x64_bin" -O /usr/local/bin/b3sum
-          sudo chmod +x /usr/local/bin/b3sum
-      - name: Check out the repo
-        uses: actions/checkout@v3
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v1
-      - name: s3 integration test
-        run: |
-          docker run \
-            --rm \
-            -e SNAPDIR_S3_STORE_TEST_BUCKET=snapdir-test-bucket \
-            -e SNAPDIR_S3_STORE_AWS_ACCESS_KEY_ID="${{ secrets.SNAPDIR_AWS_ACCESS_KEY_ID}}" \
-            -e SNAPDIR_S3_STORE_AWS_SECRET_ACCESS_KEY=${{ secrets.SNAPDIR_AWS_SECRET_ACCESS_KEY}} \
-            -e AWS_DEFAULT_REGION=us-east-1 \
-            -v $(pwd)/snapdir-manifest:/usr/bin/snapdir-manifest \
-            -v $(pwd)/snapdir:/usr/bin/snapdir \
-            -v $(pwd)/snapdir-s3-store:/usr/bin/snapdir-s3-store \
-            -v $(pwd)/snapdir-file-store:/usr/bin/snapdir-file-store \
-            -v $(pwd)/snapdir-test:/usr/bin/snapdir-test \
-            -v /usr/local/bin/b3sum:/usr/bin/b3sum \
-            --entrypoint /bin/bash \
-            amazon/aws-cli \
-            -c "snapdir-s3-store test --store s3://snapdir-test-bucket"
-      # - name: Setup upterm session
-      #   uses: lhotari/action-upterm@v1
-      #   if: ${{ failure() }}
-      #   with:
-      #     ## limits ssh access and adds the ssh public key for the user which triggered the workflow
-      #     # limit-access-to-actor: true
-      #     ## limits ssh access and adds the ssh public keys of the listed GitHub users
-      #     limit-access-to-users: bermi
+  # In-process Rust S3 backend (crates/snapdir-stores) round-tripped against a
+  # SeaweedFS S3-compatible emulator. The live test in `snapdir-stores` is gated
+  # behind SNAPDIR_S3_TEST_ENDPOINT + SNAPDIR_S3_TEST_STORE, so it only runs here
+  # where the emulator is stood up.
   seaweedfs:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    env:
+      AWS_ACCESS_KEY_ID: none
+      AWS_SECRET_ACCESS_KEY: none
+      AWS_REGION: us-east-1
+      SNAPDIR_S3_TEST_ENDPOINT: http://localhost:8333
+      SNAPDIR_S3_TEST_STORE: s3://snapdir-ci-bucket
     steps:
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y wget curl unzip
-          sudo wget -q "https://github.com/BLAKE3-team/BLAKE3/releases/download/1.3.1/b3sum_linux_x64_bin" -O /usr/local/bin/b3sum
-          sudo chmod +x /usr/local/bin/b3sum
           wget -qO- https://github.com/chrislusf/seaweedfs/releases/download/3.09/linux_amd64.tar.gz | sudo tar xvz -C /usr/local/bin
       - name: Check out the repo
-        uses: actions/checkout@v3
-      - name: seaweedfs integration test
+        uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+      - name: Start SeaweedFS S3 emulator + create bucket
         run: |
-          export AWS_ACCESS_KEY_ID=none
-          export AWS_SECRET_ACCESS_KEY=none
-          export AWS_REGION=us-east-1
-          export SNAPDIR_S3_STORE_ENDPOINT_URL=http://localhost:8333
-
           echo "# [setup] Starting seaweedfs"
           mkdir ~/seaweed-test-data
           # redirect both stdout and stderr to a file
           weed server -dir=~/seaweed-test-data -s3 > ~/seaweed.log 2>&1 &
-          SERVER_PID=$!
           tail -f ~/seaweed.log | sed -E 's/^/# [seaweed] /' 1>&2 &
           TAIL_PID=$!
 
           echo "# [setup] Creating test bucket"
           # run command until it succeeds
-          while ! aws --endpoint-url http://localhost:8333 s3 mb s3://snapdir-test 2>/dev/null; do
+          while ! aws --endpoint-url http://localhost:8333 s3 mb s3://snapdir-ci-bucket 2>/dev/null; do
             echo "# [setup] Waiting for seaweedfs to start" >&2
             sleep 1
           done
 
-          kill $TAIL_PID
-
-          ./snapdir-s3-store test --store s3://snapdir-test
-
-          kill $SERVER_PID
-
-          rm -rf ~/seaweed-test-data
-          rm -rf ~/seaweed.log
+          kill "$TAIL_PID"
+      - name: S3 integration test (snapdir-stores, live round-trip)
+        run: |
+          cargo test --locked -p snapdir-stores --all-features s3_store_live_round_trip_when_configured -- --nocapture

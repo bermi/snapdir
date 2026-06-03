@@ -9,9 +9,8 @@
     "terminal.integrated.defaultProfile.linux": "bash"
   },
   "extensions": [
-	"timonwong.shellcheck",
+	"rust-lang.rust-analyzer",
 	"github.copilot",
-	"rogalmic.bash-debug",
 	"redhat.vscode-yaml"
 ],
   "hostRequirements": {

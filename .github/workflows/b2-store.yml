@@ -1,8 +1,7 @@
 name: B2
 on:
   schedule:
-    # Once a month to ensure future
-    # b3sum versions are tested
+    # Once a month to ensure the B2 backend keeps working against Backblaze.
     - cron: "2 0 * * 1"
   # Only when pushing to main branch
   push:
@@ -14,24 +13,28 @@ on:
 defaults:
   run:
     shell: bash
+
+# In-process Rust B2 backend (crates/snapdir-stores) round-tripped against a
+# real Backblaze B2 bucket. The live test in `snapdir-stores` is gated behind
+# SNAPDIR_B2_TEST_ENDPOINT + SNAPDIR_B2_TEST_STORE; the B2 application key
+# id/secret are supplied as the AWS access-key/secret-key the SDK expects.
 env:
-  SNAPDIR_B2_STORE_TEST_BUCKET: bermilabs-test-bucket
-  SNAPDIR_B2_STORE_APPLICATION_KEY_ID: ${{ secrets.SNAPDIR_B2_STORE_APPLICATION_KEY_ID }}
-  SNAPDIR_B2_STORE_APPLICATION_KEY: ${{ secrets.SNAPDIR_B2_STORE_APPLICATION_KEY }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.SNAPDIR_B2_STORE_APPLICATION_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.SNAPDIR_B2_STORE_APPLICATION_KEY }}
+  SNAPDIR_B2_TEST_ENDPOINT: ${{ secrets.SNAPDIR_B2_TEST_ENDPOINT }}
+  SNAPDIR_B2_TEST_STORE: b2://bermilabs-test-bucket
 
 jobs:
   b2:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget curl unzip
-          sudo wget -q "https://github.com/BLAKE3-team/BLAKE3/releases/download/1.3.1/b3sum_linux_x64_bin" -O /usr/local/bin/b3sum
-          sudo chmod +x /usr/local/bin/b3sum
       - name: Check out the repo
-        uses: actions/checkout@v3
-      - name: b2 integration test
+        uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+      - name: B2 integration test (snapdir-stores, live round-trip)
         run: |
-          ./snapdir-b2-store test --store b2://$SNAPDIR_B2_STORE_TEST_BUCKET
+          cargo test --locked -p snapdir-stores --all-features b2_store_live_round_trip_when_configured -- --nocapture
