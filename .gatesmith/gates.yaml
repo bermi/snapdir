@@ -1316,7 +1316,11 @@ gates:
     # utils/qa-fixtures/{expected-guide-commands.txt,guide-commands.sh,tested-commands.sh}.
     # OPERATOR must lift the Edit(snapdir*)/Edit(utils/qa-fixtures/**) deny + ./snapdir* allow
     # rules in .claude/settings.json (agents can't self-modify permissions) -> human_checkpoint.
-    status: pending
+    # DONE 2026-06-03: operator approved (AskUserQuestion) + ran the settings.json strip command;
+    # PM git rm'd the 8 scripts + bash Dockerfile + pre-commit-hook + qa-fixtures. verify_exit=0.
+    status: passed
+    passed_at: 2026-06-03T12:27:00Z
+    git_sha: 98cd355
     failure_count: 0
     verification_cmd: "! ls snapdir snapdir-manifest snapdir-file-store snapdir-s3-store snapdir-b2-store snapdir-gcs-store snapdir-sqlite3-catalog snapdir-test 2>/dev/null && ! grep -q 'Edit(snapdir' .claude/settings.json && ! grep -q 'qa-fixtures' .claude/settings.json"
     pass_criteria:

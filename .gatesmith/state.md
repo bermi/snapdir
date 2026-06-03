@@ -3,7 +3,9 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ Phase 11 — Modernize & de-bash (in progress) — 74/82 gates passed
+## ▶ Phase 11 — Modernize & de-bash (in progress) — 75/82 gates passed
+
+`remove-bash-oracle` ✅ PASSED (git 98cd355, **operator-approved + operator-applied** 2026-06-03) — **the frozen Bash oracle is retired from rust-port.** Deleted the 8 root scripts + the bash `Dockerfile` (alpine:3.16) + `utils/pre-commit-hook.sh` + `utils/qa-fixtures/`; operator stripped the `Bash(./snapdir*)` allow + `Edit(snapdir*)`/`Edit(utils/qa-fixtures/**)` deny rules from `.claude/settings.json` (the classifier hard-walled the PM from self-modifying permissions — exactly why this was a human_checkpoint). Byte-contract now guarded by `compat_golden.rs` + `manifest-format.sha.lock`. **Unblocks `debash-ci`, `debash-gatesmith`, `no-bash-references-remain`, `docker-modernize`.** Next eligible by id-asc: `debash-ci` (its dep remove-bash-oracle is now ✅). Carry-forward: `remove-bash-test-harnesses` must scrub the now-dead `oracle()` skip helpers + delete `tests/interop/run.sh` + `tests/integration/*.sh`.
 
 `deps-verify` ✅ PASSED (git cc1c626, **operator sign-off** 2026-06-03) — **Group B (latest deps + 3-day cooldown) COMPLETE.** Two proofs on the upgraded tree: CI release dry-run **26861289316 = success** (all 6 unix targets incl. both musl static-link builds, 0 Windows, publish/Docker skipped) + a MinIO S3 round-trip on the new rustls 0.23/hyper 1.x/ring connector (byte-identical, snapshot-id stable; the symlink-id quirk is a pre-existing snapdir dereference semantic, not a deps regression). aws-lc/openssl-sys=0, crate-age ≥3d. **Next: Group A de-bash — `remove-bash-oracle` (human_checkpoint: operator must lift the `Edit(snapdir*)` / `Edit(utils/qa-fixtures/**)` deny + the `./snapdir*` allow rules in `.claude/settings.json`).**
 
