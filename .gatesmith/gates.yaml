@@ -675,7 +675,9 @@ gates:
     # a v3 b2 for the oracle) and b2-oracle-fetch-store-arg (frozen-oracle --store one-liner). When
     # both pass, this gate's verification_cmd should print the B2-green line. Harness loud-skips B2
     # until truly reachable (never a silent pass).
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T00:58:00Z
+    git_sha: cfad28f
     failure_count: 0
     verification_cmd: "source ~/.config/snapdir/test-creds.sh >/dev/null 2>&1; bash tests/integration/remote_stores_live.sh"
     pass_criteria:
