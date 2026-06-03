@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1]
+
+### Fixed
+
+- **`snapdir push --store … --id <id>` (no PATH)** now pushes the *staged*
+  snapshot named by `--id`. It previously ignored `--id` and fell through to the
+  current-working-directory default, silently snapshotting the CWD instead of the
+  staged snapshot (which looked like a hang when the CWD was large). Pushing by id
+  materializes the snapshot from the local cache and uploads that, mirroring
+  `fetch` in reverse.
+
+### Removed
+
+- **The published Docker/GHCR container image** and its build pipeline
+  (`packaging/Dockerfile`, the root `Dockerfile`, the `docker-publish.yml`
+  workflow, and the `docker` release job) are removed — the image is no longer
+  maintained. Install via `cargo install snapdir-cli` or the prebuilt release
+  archives. The library crates and signed release archives are unaffected.
+
 ## [1.0.0] — Port complete
 
 The Rust port is **complete** and the legacy Bash implementation has been
@@ -129,6 +148,7 @@ Bash-written caches and remote buckets stay mutually readable.
   `gcloud`) in the shipped binary. External tools are used only by the test/oracle
   harness.
 
-[Unreleased]: https://github.com/bermi/snapdir/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/bermi/snapdir/releases/tag/v1.0.0
-[0.5.0]: https://github.com/bermi/snapdir/releases/tag/v0.5.0
+[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/snapdir/snapdir/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/snapdir/snapdir/releases/tag/v1.0.0
+[0.5.0]: https://github.com/snapdir/snapdir/releases/tag/v0.5.0

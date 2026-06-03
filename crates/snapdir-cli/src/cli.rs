@@ -389,6 +389,40 @@ impl Cli {
     /// resolved store. Prints the resulting snapshot id, matching the oracle.
     fn run_push(&self, path: Option<&Path>) -> Result<()> {
         let store = self.resolve_store()?;
+
+        // `snapdir push --store … --id <id>` with no PATH: push a *staged* (or
+        // already-fetched) snapshot identified by id. Its objects live in the
+        // local cache as content-addressed blobs, not under a source tree, so we
+        // can't walk a directory — materialize the snapshot from the cache into a
+        // scratch tree (the cache re-hashes every object) and push that. This is
+        // `fetch` in reverse and reuses the same store primitives.
+        //
+        // Without this branch, a path-less push fell through to `build_manifest`
+        // /`resolve_root(None)`, which default to the current working directory —
+        // so `push --id` silently snapshotted the CWD instead of honoring `--id`.
+        if path.is_none() && self.globals.id.is_some() {
+            let id = self.require_id()?;
+            let cache = self.cache_store();
+            let manifest = cache.get_manifest(id).with_context(|| {
+                format!("manifest {id} not found in the local cache; stage or fetch it first")
+            })?;
+            let scratch = ScratchDir::new("push")?;
+            cache
+                .fetch_files(&manifest, scratch.path())
+                .with_context(|| format!("materializing staged snapshot {id}"))?;
+            store
+                .push(&manifest, scratch.path())
+                .with_context(|| format!("pushing snapshot {id} to store"))?;
+            println!("{id}");
+            let store_url = self
+                .globals
+                .store
+                .as_deref()
+                .context("missing --store option")?;
+            self.log_event("push", id, store_url)?;
+            return Ok(());
+        }
+
         // Push always uses the default checksum surface (b3sum / keyed-b3sum),
         // relative paths, follow symlinks — the same wiring `snapdir id` uses.
         let manifest =

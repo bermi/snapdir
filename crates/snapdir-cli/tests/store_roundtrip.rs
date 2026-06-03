@@ -144,6 +144,89 @@ fn store_roundtrip_push_then_checkout_reproduces_tree() {
     }
 }
 
+/// Regression: `snapdir push --store … --id <id>` (no PATH) must push the
+/// *staged* snapshot named by `--id`. It used to ignore `--id` and fall through
+/// to `resolve_root(None)`, snapshotting the current working directory instead.
+#[test]
+fn push_by_staged_id_pushes_the_staged_snapshot_not_cwd() {
+    let src = temp_dir("src-staged");
+    let store = temp_dir("store-staged");
+    let dest = temp_dir("dest-staged");
+    let cache = temp_dir("cache-staged");
+
+    fs::write(src.join("a.txt"), b"hello").unwrap();
+    fs::set_permissions(src.join("a.txt"), fs::Permissions::from_mode(0o644)).unwrap();
+    fs::set_permissions(&src, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let store_url = format!("file://{}", store.display());
+    let src_str = src.to_string_lossy().into_owned();
+    let dest_str = dest.to_string_lossy().into_owned();
+
+    // Stage the tree: its objects + manifest land in the local cache, no store.
+    let staged_id = run_snapdir(&["stage", &src_str], &cache);
+    assert_eq!(staged_id.len(), 64, "staged id should be 64 hex chars");
+
+    // Push BY ID with no PATH. The printed id must equal the staged snapshot's
+    // id — proof it pushed the staged snapshot and not a snapshot of the CWD.
+    let pushed_id = run_snapdir(&["push", "--store", &store_url, "--id", &staged_id], &cache);
+    assert_eq!(
+        pushed_id, staged_id,
+        "push --id must push the staged snapshot, not the working directory"
+    );
+
+    // The staged snapshot's manifest + object really landed in the store.
+    assert!(
+        store.join(sharded(".manifests", &staged_id)).is_file(),
+        "manifest must land in the store under its sharded key"
+    );
+    let obj = store.join(sharded(".objects", &Blake3Hasher::new().hash_hex(b"hello")));
+    assert!(obj.is_file(), "the file object must land in the store");
+
+    // And it pulls back to the same id from a fresh restore.
+    run_snapdir(
+        &["pull", "--store", &store_url, "--id", &staged_id, &dest_str],
+        &cache,
+    );
+    assert_eq!(
+        run_snapdir(&["id", &dest_str], &cache),
+        staged_id,
+        "restore from the store must re-manifest to the staged id"
+    );
+
+    for dir in [&src, &store, &dest, &cache] {
+        fs::remove_dir_all(dir).ok();
+    }
+}
+
+/// Regression: `push --id <unknown>` must fail with an actionable error instead
+/// of silently snapshotting the current working directory.
+#[test]
+fn push_by_unknown_id_errors_without_walking_cwd() {
+    let store = temp_dir("store-unknown");
+    let cache = temp_dir("cache-unknown");
+    let store_url = format!("file://{}", store.display());
+    let unknown = "0".repeat(64); // valid shape, never staged
+
+    let output = Command::new(snapdir_bin())
+        .args(["push", "--store", &store_url, "--id", &unknown])
+        .env("SNAPDIR_CACHE_DIR", &cache)
+        .output()
+        .expect("run snapdir");
+    assert!(
+        !output.status.success(),
+        "push --id with an unknown id must fail, not push a snapshot of the CWD"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not found in the local cache"),
+        "error should explain the id was never staged/fetched; got: {stderr}"
+    );
+
+    for dir in [&store, &cache] {
+        fs::remove_dir_all(dir).ok();
+    }
+}
+
 #[test]
 fn store_roundtrip_fetch_then_checkout_separately() {
     let src = temp_dir("src2");

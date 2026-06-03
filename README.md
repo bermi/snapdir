@@ -19,9 +19,6 @@ Other ways:
 # Prebuilt release archives (static musl + per-platform builds)
 #   https://github.com/snapdir/snapdir/releases
 
-# Run the published container image (FROM scratch: just the static binary + CA roots)
-docker run --rm ghcr.io/snapdir/snapdir version
-
 # As a Rust library
 cargo add snapdir-core
 ```
@@ -129,7 +126,7 @@ Cloud backends use native SDKs and standard credential chains — no bespoke env
 
 ## Status & links
 
-- **v1.0.0.** 14 subcommands: `manifest id stage push fetch pull checkout verify verify-cache flush-cache locations ancestors revisions defaults`.
+- **v1.0.1.** 14 subcommands: `manifest id stage push fetch pull checkout verify verify-cache flush-cache locations ancestors revisions defaults`.
 - An embedded redb catalog tracks where snapshots live (`locations` / `ancestors` / `revisions`).
 - Changelog: [docs/rust-port/CHANGELOG.md](docs/rust-port/CHANGELOG.md)
 - Migrating from the earlier version: [docs/rust-port/migration.md](docs/rust-port/migration.md)

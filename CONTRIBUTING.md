@@ -6,7 +6,7 @@ binary for content-addressable directory snapshots. Contributions are welcome.
 ## Getting started
 
 ```bash
-git clone https://github.com/bermi/snapdir
+git clone https://github.com/snapdir/snapdir
 cd snapdir
 cargo build --workspace
 ```

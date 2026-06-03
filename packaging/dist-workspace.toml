@@ -76,12 +76,12 @@ auto-includes = false
 # Checksums attached next to each archive on the GitHub release.
 checksum = "sha256"
 
-# Build the slim Docker image / publish crates.io out-of-band in release.yml
-# rather than via dist's experimental publishers (kept explicit + auditable).
+# Publish crates.io out-of-band in release.yml rather than via dist's
+# experimental publishers (kept explicit + auditable).
 publish-jobs = []
 
-# Run our extra release jobs (asset generation, docker, crates.io) as part of
-# the dist-generated CI graph. These map to top-level jobs in release.yml.
+# Run our extra release jobs (asset generation, crates.io) as part of the
+# dist-generated CI graph. These map to top-level jobs in release.yml.
 [dist.github-custom-runners]
 x86_64-unknown-linux-gnu = "ubuntu-latest"
 x86_64-unknown-linux-musl = "ubuntu-latest"

@@ -3,16 +3,16 @@ name: Release
 # Rust-port release pipeline. Triggered by semver tags (v*). Builds the
 # `snapdir` binary for every distribution target (incl. static musl), generates
 # shell completions + a man page, packs per-target archives with checksums,
-# attaches them to the GitHub release, builds a slim scratch/distroless
-# musl-static Docker image, and publishes the library crates to crates.io.
+# attaches them to the GitHub release, and publishes the library crates to
+# crates.io.
 #
 # Packaging config of record: packaging/dist-workspace.toml (cargo-dist). This
 # workflow is the hand-rolled matrix that implements the same plan with full
-# control over the cross/musl/completions/man/docker/crates.io steps.
+# control over the cross/musl/completions/man/crates.io steps.
 #
 # DRY RUN (no publishing): build + smoke every target (incl. musl static),
-# producing the archives/checksums WITHOUT touching the GitHub release, GHCR, or
-# crates.io. The publish jobs (release/docker/crates-io) are hard-gated on a real
+# producing the archives/checksums WITHOUT touching the GitHub release or
+# crates.io. The publish jobs (release/crates-io) are hard-gated on a real
 # `v*` TAG PUSH (`github.event_name == 'push'`), so a manual run can never publish
 # regardless of the `dry_run` input value.
 #   - GitHub UI: Actions -> Release -> Run workflow -> branch `dev`,
@@ -28,13 +28,12 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Build + smoke all targets WITHOUT publishing (no GitHub release, no GHCR, no crates.io)"
+        description: "Build + smoke all targets WITHOUT publishing (no GitHub release, no crates.io)"
         type: boolean
         default: true
 
 permissions:
   contents: write   # create the GitHub release + upload assets
-  packages: write   # push the container image to GHCR
 
 env:
   CARGO_TERM_COLOR: always
@@ -257,94 +256,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ---------------------------------------------------------------------------
-  # 4. Slim scratch/distroless musl-static Docker image (replaces the old
-  #    ~8 MB Alpine+Bash image). Reuses the musl archive from the build matrix.
-  # ---------------------------------------------------------------------------
-  docker:
-    name: Build & push Docker image
-    needs: build
-    # Publish ONLY on a real `v*` tag push; a workflow_dispatch dry-run stops here.
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read       # checkout
-      packages: write      # push the image to GHCR
-      id-token: write      # cosign keyless signing + Sigstore OIDC
-      attestations: write  # write image build-provenance attestation
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download musl archive
-        uses: actions/download-artifact@v4
-        with:
-          name: archive-x86_64-unknown-linux-musl
-          path: dist
-
-      - name: Extract static binary
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          archive="dist/${BIN_NAME}-${version}-x86_64-unknown-linux-musl.tar.xz"
-          tar -C dist -xJf "${archive}"
-          # Stage outside target/ — the repo .dockerignore excludes target/ (kept small
-          # for the from-source root Dockerfile), which would otherwise hide the binary
-          # from the packaging/Dockerfile COPY.
-          mkdir -p release-bin
-          cp "dist/${BIN_NAME}-${version}-x86_64-unknown-linux-musl/${BIN_NAME}" \
-            release-bin/snapdir
-
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push (scratch, static musl)
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: packaging/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            BIN=release-bin/snapdir
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-
-      # Keyless (OIDC) signature on the pushed image, by digest (not tag).
-      # The signing cert identity is this workflow:
-      #   https://github.com/snapdir/snapdir/.github/workflows/release.yml@refs/tags/v*
-      - name: Sign image (cosign keyless)
-        run: cosign sign --yes "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
-
-      - name: Attest build provenance (image)
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ghcr.io/${{ github.repository }}
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
-
-  # ---------------------------------------------------------------------------
-  # 5. Publish library crates to crates.io (core -> catalog/stores -> cli).
+  # 4. Publish library crates to crates.io (core -> catalog/stores -> cli).
   #    Order respects the internal dependency graph. The CLI binary is shipped
   #    via the archives above; publishing it is optional and kept last.
   # ---------------------------------------------------------------------------
