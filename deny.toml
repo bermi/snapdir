@@ -31,6 +31,11 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "MPL-2.0",
+    # License of `webpki-root-certs` (a Mozilla CA-trust-roots *data* crate,
+    # pulled transitively via rustls-platform-verifier <- reqwest <-
+    # google-cloud-auth). CDLA-Permissive-2.0 is a permissive data license,
+    # appropriate for an MIT project shipping CA trust anchors.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 

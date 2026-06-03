@@ -20,10 +20,15 @@ thiserror.workspace = true
 # its default HTTP connector, so we:
 #   * disable default features on aws-config / aws-sdk-s3 (drops the default
 #     aws-lc-rs-backed connector + default crypto),
-#   * build our own `hyper-rustls` HTTP client pinned to the `ring` provider and
-#     hand it to the SDK as a custom `HttpClient`,
+#   * build the SDK's modern hyper-1.x HTTP client (`aws-smithy-http-client`)
+#     with its `rustls-ring` provider and hand it to the SDK as a custom
+#     `HttpClient`. Native root trust anchors stay on (the builder's default
+#     `TrustStore`), matching the GCS path and the operator's keep-native-roots
+#     decision.
 #   * keep `behavior-version-latest` for stable SDK behavior.
-# After building, `grep -i aws-lc Cargo.lock` MUST be empty.
+# After building, `grep -i aws-lc Cargo.lock` MUST be empty. This uses the same
+# rustls 0.23 / hyper 1.x island as the GCS/reqwest path — there is exactly one
+# TLS stack in the lock.
 aws-config = { version = "1", default-features = false, features = [
     "behavior-version-latest",
     "rt-tokio",
@@ -35,18 +40,13 @@ aws-sdk-s3 = { version = "1", default-features = false, features = [
     "sigv4a",
 ] }
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-1x"] }
-aws-smithy-runtime = { version = "1", default-features = false, features = [
-    "client",
-    "connector-hyper-0-14-x",
-] }
-# Pin the rustls crypto provider to `ring` everywhere.
-rustls = { version = "0.21", default-features = false, features = ["dangerous_configuration"] }
-hyper-rustls = { version = "0.24", default-features = false, features = [
-    "http1",
-    "http2",
-    "tls12",
-    "native-tokio",
-    "logging",
+# The SDK's hyper-1.x HTTP client + rustls(ring) TLS connector. `rustls-ring`
+# pulls `default-client` (hyper 1.x) and rustls 0.23 with the ring backend; no
+# aws-lc-rs, no hyper 0.14. We build it with `Provider::Rustls(CryptoMode::Ring)`
+# and its default native-root TrustStore, then hand the `SharedHttpClient` to
+# `aws_config`.
+aws-smithy-http-client = { version = "1", default-features = false, features = [
+    "rustls-ring",
 ] }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread"] }
 
@@ -63,15 +63,17 @@ tokio = { version = "1", default-features = false, features = ["rt-multi-thread"
 # `reqwest` with `rustls-no-provider`, i.e. it uses whatever rustls *process
 # default* crypto provider is installed — `GcsStore::connect` installs the ring
 # provider as that default. After building, `grep -i aws-lc Cargo.lock` MUST be
-# empty (and no openssl-sys, which deny.toml also bans).
-google-cloud-storage = { version = "=1.12.0", default-features = false }
+# empty (and no openssl-sys, which deny.toml also bans). Unpinned from the old
+# `=1.12.0` exact pin to a caret range (the supply-chain cooldown in
+# `utils/ci/check-crate-age.sh` already gates against too-fresh releases).
+google-cloud-storage = { version = "1", default-features = false }
 # `google-cloud-gax` is already in the graph transitively (via
-# `google-cloud-storage`); we name it directly, pinned to the exact transitive
-# version, only to reach its error model — `Error::status()` -> `rpc::Code` — so
-# `key_exists`/`get_bytes` can classify the SDK's service-level `NOT_FOUND`
-# (which carries no HTTP 404) as "object absent". `default-features = false`
-# keeps it from adding anything to the graph (no aws-lc).
-google-cloud-gax = { version = "=1.10.0", default-features = false }
+# `google-cloud-storage`); we name it directly only to reach its error model —
+# `Error::status()` -> `rpc::Code` — so `key_exists`/`get_bytes` can classify the
+# SDK's service-level `NOT_FOUND` (which carries no HTTP 404) as "object absent".
+# `default-features = false` keeps it from adding anything to the graph (no
+# aws-lc). Unpinned from the old `=1.10.0` exact pin to a caret range.
+google-cloud-gax = { version = "1", default-features = false }
 # Force the `ring`-backed rustls crypto provider into the graph and expose its
 # `CryptoProvider` so we can install it as the process default at runtime.
 rustls-ring = { package = "rustls", version = "0.23", default-features = false, features = [

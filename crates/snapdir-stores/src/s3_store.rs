@@ -26,8 +26,10 @@
 //! The shipped binary must statically link on musl, so the workspace
 //! standardizes on the **`ring`** rustls provider; `aws-lc-rs` is banned. The
 //! AWS SDK defaults to an aws-lc-rs-backed HTTP connector, so this module builds
-//! its own [`hyper_rustls`] HTTPS connector (ring) and hands it to the SDK as a
-//! custom [`HttpClient`](aws_smithy_runtime_api::client::http::HttpClient).
+//! the SDK's modern hyper-1.x HTTP client ([`aws_smithy_http_client`]) with its
+//! `rustls`/**`ring`** TLS provider and hands it to the SDK as a custom
+//! [`HttpClient`](aws_smithy_runtime_api::client::http::HttpClient). Native root
+//! trust anchors stay on (the builder's default `TrustStore`).
 //!
 //! # Sync trait, async SDK
 //!
@@ -41,7 +43,9 @@ use std::sync::Arc;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::config::Region;
 use aws_sdk_s3::Client;
-use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
+use aws_smithy_http_client::tls::rustls_provider::CryptoMode;
+use aws_smithy_http_client::tls::Provider as TlsProvider;
+use aws_smithy_http_client::Builder as HttpClientBuilder;
 use snapdir_core::manifest::{Manifest, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
@@ -416,17 +420,15 @@ fn build_runtime() -> Result<Runtime, StoreError> {
         .map_err(|e| backend("creating tokio runtime for S3Store", e))
 }
 
-/// Builds an AWS-SDK HTTP client backed by `hyper-rustls` using the **`ring`**
-/// crypto provider, with native-root trust anchors. This is the load-bearing
-/// piece that keeps `aws-lc-rs` out of the dependency graph.
+/// Builds the AWS-SDK hyper-1.x HTTP client backed by `rustls` using the
+/// **`ring`** crypto provider, with native-root trust anchors (the builder's
+/// default `TrustStore` enables them). This is the load-bearing piece that keeps
+/// `aws-lc-rs` (and the legacy hyper-0.14 TLS island) out of the dependency
+/// graph.
 fn ring_https_client() -> aws_smithy_runtime_api::client::http::SharedHttpClient {
-    let tls = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots()
-        .https_or_http()
-        .enable_http1()
-        .enable_http2()
-        .build();
-    HyperClientBuilder::new().build(tls)
+    HttpClientBuilder::new()
+        .tls_provider(TlsProvider::Rustls(CryptoMode::Ring))
+        .build_https()
 }
 
 /// Wraps any backend error into [`StoreError::Backend`] with a message.
