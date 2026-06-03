@@ -1216,6 +1216,8 @@ gates:
         - regex_match: "cargo"
     human_checkpoint: false
     description: "Replace the bash-era root Makefile with a thin Rust convenience wrapper over cargo (e.g. build/test/fmt/clippy/lint/check + a help default), no bash-era targets (no ./snapdir-test, shellcheck/shfmt, docs/api, docs/images, retype, sed-version release). Scope: the Makefile ONLY. Never touch the frozen oracle scripts or utils/qa-fixtures/. `make -n test` must reference cargo and parse."
+
+  - id: packaging-drop-windows
     phase: 10
     owner_agent: packaging
     depends_on: [ci-dist-profile]
@@ -1517,7 +1519,9 @@ gates:
     phase: 11
     owner_agent: docs
     depends_on: [docker-modernize, no-bash-references-remain, adr-records]
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T15:05:00Z
+    git_sha: 0e4969c
     failure_count: 0
     verification_cmd: "! grep -riqE 'frozen bash oracle|differential oracle|\\./snapdir-(manifest|s3-store|b2-store|gcs-store|file-store)' README.md CONTRIBUTING.md docs/rust-port/ && grep -iq scratch README.md"
     pass_criteria:

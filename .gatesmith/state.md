@@ -7,7 +7,11 @@
 
 > The operator's push-hold (*"why push to paid CI before local gates exist?"*) is **cleared**: ci.yaml run 26891142751 @ a79c080 concluded **success — all 12 jobs green**. The local pre-push hook is **installed** (`make install-hooks` → `core.hooksPath=utils/git-hooks`), so every future push runs the full CI-equivalent suite first and blocks on failure. Normal (hook-guarded) pushing resumes; ledger-only pushes may use `git push --no-verify`.
 
-## ▶ Phase 11 — Modernize & de-bash (in progress) — 83/84 gates passed
+## ▶ Phase 11 — Modernize & de-bash — 84/85 gates passed — ONLY `phase11-complete` (operator sign-off) REMAINS
+
+`readme-docs-final` ✅ PASSED (git 0e4969c) — **Groups D+E done.** README/CONTRIBUTING/docs/rust-port finalized: oracle prose → past-tense, accurate `FROM scratch` image story (static musl + bundled CA roots, zero runtime executables), install paths, ADR link, CHANGELOG **[0.6.0] Port-complete**. CONTRIBUTING's "frozen Bash oracle" section → "byte-format contract" (compat_golden.rs + SHA-lock). Hook-fast follow-up landed (git 944669f): the pre-push hook runs the fast legs (~2-4 min); musl+coverage in CI + `make ci-local`.
+
+**Ledger integrity fix:** restored the `packaging-drop-windows` gate header (a pre-existing Phase-10 corruption had merged its body into `repo-makefile-rust` with duplicate keys); 85 gates now parse 1:1 (84 passed, 1 pending).
 
 `no-bash-references-remain` ✅ PASSED (git 28a88c8) — **Group A (de-bash) COMPLETE.** `utils/ci/check-no-bash.sh` guards against oracle re-introduction/invocation (path-existence + live-invocation checks; excludes the new CI tooling + .git/target/.gatesmith/docs/*.rs comments + the sha-locked core files). Removed 3 dead bash-era scripts (`utils/{verify-docs,generate-docs,install}.sh`); scrubbed live-oracle comments → past-tense in 6 non-locked files. guard exit0, cargo build+test green (232/0), sha-locks intact. The Bash oracle + all live references are out of rust-port. **Remaining: `readme-docs-final` → `phase11-complete` (hc).**
 
