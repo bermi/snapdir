@@ -1418,7 +1418,9 @@ gates:
     # General teammate's verified bumps (md-5 0.11, sha2 0.11, criterion 0.8, rustls-native-certs
     # 0.8.3 cooldown pin) are documented in handoffs/deps-upgrade-general-handoff.md for re-run.
     depends_on: [deps-cooldown-automation, deps-upgrade-tls-sdk]
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T03:08:00Z
+    git_sha: 5d1a13d
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test --workspace --locked && cargo clippy --workspace --all-targets -- -D warnings && cargo deny check && bash utils/ci/check-crate-age.sh"
     pass_criteria:

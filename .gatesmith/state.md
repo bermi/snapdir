@@ -3,7 +3,9 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ Phase 11 — Modernize & de-bash (in progress) — 72/82 gates passed
+## ▶ Phase 11 — Modernize & de-bash (in progress) — 73/82 gates passed
+
+`deps-upgrade-general` ✅ PASSED (git 5d1a13d) — re-ran on the deny-clean post-tls-sdk tree: bumped md-5 0.11 (67d) / sha2 0.11 (69d) / criterion 0.8 (118d) via targeted lock update (bitflags/log held aged); build/test/clippy/deny all green, crate-age ≥3d, aws-lc/openssl-sys absent. **Group B (latest deps + 3-day cooldown) is now complete except `deps-verify`** (human_checkpoint — CI release dry-run musl-static + MinIO round-trip on the upgraded tree).
 
 `deps-upgrade-tls-sdk` ✅ PASSED (git b2d0676) — **the hard gate.** Collapsed the two TLS islands into the **rustls 0.23 / hyper 1.x / ring** island, deleting the OLD island the AWS S3 connector pulled (rustls 0.21, hyper-rustls 0.24, hyper 0.14, tokio-rustls 0.24, rustls-webpki 0.101, rustls-pemfile — all gone). S3 connector rewritten onto `aws-smithy-http-client` (rustls-ring) + hyper-1.x, **native roots kept** (decision #2); GCS unpinned (`google-cloud-storage`/`-gax` `=x`→`1`); `deny.toml` allows CDLA-Permissive-2.0; `rustls-native-certs` pinned 0.8.4→0.8.3 (cooldown). Verified: build+test -p snapdir-stores green, **aws-lc/openssl-sys absent**, `cargo deny check` clean (advisories/bans/licenses/sources ok — clears RUSTSEC-2026-0098/0099 + 2025-0134 + the CDLA license), crate-age ≥3 days. **This unblocks `deps-upgrade-general`** (deny now clean) — re-run the parked bumps (md-5 0.11, sha2 0.11, criterion 0.8, rustls-native-certs 0.8.3) from `handoffs/deps-upgrade-general-handoff.md`.
 
