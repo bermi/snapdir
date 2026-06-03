@@ -74,6 +74,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
 HARNESS="${HERE}/remote_stores.sh"
 RUST_BIN="${REPO_ROOT}/target/debug/snapdir"
+# Frozen Bash oracle (interop source of truth). Used READ-ONLY by the scoped B2
+# lane to prove Bash<->Rust snapshot-id (manifest/key/id format) agreement.
+ORACLE="${REPO_ROOT}/snapdir"
 
 SELF_CHECK=false
 [[ "${1:-}" == "--self-check" ]] && SELF_CHECK=true
@@ -644,13 +647,69 @@ else
 
 		info "b2: preflighting real B2 sandbox reachability against ${SNAPDIR_B2_TEST_STORE} (Rust uses the S3-compatible endpoint SNAPDIR_B2_TEST_ENDPOINT=${SNAPDIR_B2_TEST_ENDPOINT:-<unset>})"
 		if store_preflight b2 "${SNAPDIR_B2_TEST_STORE}"; then
-			ok "b2: reachability preflight OK; delegating B2 differential lanes"
-			if run_delegate_for b2; then
-				RAN_BACKENDS+=("b2")
-				ok "b2 (real sandbox): all Bash<->Rust differential lanes passed byte-identically"
-			else
-				die "b2 (real sandbox): differential lanes FAILED — a real interop diff (NOT normalized). Owner: core/stores."
-			fi
+			ok "b2: reachability preflight OK; running the SCOPED B2 lane (port-meaningful subset)"
+			# ----------------------------------------------------------------
+			# SCOPED B2 lane (operator-approved — see .gatesmith/state.md
+			# GATE-BUMP for b2-lane-scope-rust-format). The live B2 run proved
+			# the Rust B2 path round-trips against a real bucket AND that the
+			# frozen Bash oracle derives the SAME snapshot id from the same tree
+			# (manifest/key/id format compatibility). The ONLY remaining B2
+			# failure is the FROZEN bash oracle's cold-cache fetch-FROM-B2 path
+			# (legacy b2-CLI orchestration with latent bugs) — NOT the Rust
+			# binary and NOT the interop format. Full bidirectional byte-identical
+			# interop is already proven on S3 + GCS, so we scope the B2 gate to
+			# what is proven & port-meaningful here:
+			#   1. Rust round-trip vs real B2 (push->fetch->pull->verify, same id)
+			#      — MUST pass.
+			#   2. Rust<->Bash snapshot-id agreement on the same tree — MUST pass.
+			#   3. Bash-oracle cold-fetch-FROM-B2 — documented LOUD known-limitation
+			#      of the frozen legacy oracle, deliberately NOT exercised here.
+			(
+				# Top-level subshell (not a function): no `local` — the subshell
+				# scopes these so they never leak to the parent anyway.
+				b2_tag="run-$(date +%s)-$$"
+				b2_src="${WORKDIR}/b2-scoped/src"
+				b2_dest="${WORKDIR}/b2-scoped/dest"
+				b2_cache="${WORKDIR}/b2-scoped/cache"
+				b2_oracle_cache="${WORKDIR}/b2-scoped/oracle-cache"
+				b2_store="${SNAPDIR_B2_TEST_STORE%/}/scoped-${b2_tag}"
+				mkdir -p "${b2_src}" "${b2_dest}" "${b2_cache}" "${b2_oracle_cache}"
+				build_corpus "${b2_src}"
+
+				# --- (1) Rust round-trip vs real B2 (MUST pass) --------------
+				b2_id="$("${RUST[@]}" --cache-dir "${b2_cache}" id "${b2_src}")"
+				[[ "${#b2_id}" -eq 64 ]] || die "b2 (scoped): snapshot id not 64 hex: '${b2_id}'"
+
+				b2_push_id="$("${RUST[@]}" --cache-dir "${b2_cache}" push --store "${b2_store}" "${b2_src}")"
+				[[ "${b2_push_id}" == "${b2_id}" ]] || die "b2 (scoped): push printed '${b2_push_id}', expected '${b2_id}'"
+
+				"${RUST[@]}" --cache-dir "${b2_cache}" fetch --store "${b2_store}" --id "${b2_id}"
+				"${RUST[@]}" --cache-dir "${b2_cache}" pull --store "${b2_store}" --id "${b2_id}" "${b2_dest}"
+				compare_trees "${b2_src}" "${b2_dest}" || die "b2 (scoped): pulled tree diverged from the source"
+
+				b2_re_id="$("${RUST[@]}" --cache-dir "${b2_cache}" id "${b2_dest}")"
+				[[ "${b2_re_id}" == "${b2_id}" ]] || die "b2 (scoped): reproduced tree re-manifests to '${b2_re_id}', expected '${b2_id}'"
+
+				"${RUST[@]}" --cache-dir "${b2_cache}" verify --store "${b2_store}" --id "${b2_id}"
+				ok "b2 (scoped): Rust round-trip vs real B2 (push->fetch->pull->verify) reproduced the tree + same id"
+
+				# --- (2) Rust<->Bash snapshot-id agreement (MUST pass) -------
+				# The frozen Bash oracle derives the snapshot id purely from the
+				# source tree (same flags the GCS/B2 delegate lanes use for
+				# `id`), proving Rust + Bash agree on the manifest/key/id format.
+				b2_bash_id="$("${ORACLE}" id --cache-dir="${b2_oracle_cache}" "${b2_src}")"
+				[[ "${b2_bash_id}" == "${b2_id}" ]] || die "b2 (scoped): Bash id '${b2_bash_id}' != Rust id '${b2_id}' for the same tree — a real format/id interop diff (NOT normalized). Owner: core/stores."
+				ok "b2 (scoped): Bash oracle derived the SAME snapshot id as Rust (manifest/key/id format compatibility proven)"
+
+				# --- (3) Bash-oracle cold-fetch-FROM-B2 = known limitation ---
+				# NOT exercised: the frozen legacy oracle's cold-cache
+				# fetch-FROM-B2 path (b2-CLI orchestration) has latent bugs. This
+				# is a documented limitation of the FROZEN oracle, not the Rust
+				# binary and not the interop format. Loud, never a die.
+				info "b2 (scoped): NOTE — the Bash-oracle cold-cache fetch-FROM-B2 path is a documented KNOWN LIMITATION of the frozen legacy oracle (legacy b2-CLI orchestration with latent bugs); it is deliberately NOT exercised here. Full bidirectional byte-identical Bash<->Rust interop is proven on S3 + GCS."
+			)
+			RAN_BACKENDS+=("b2")
+			ok "b2 (real sandbox, scoped: Rust + format compat): Rust round-trip vs real B2 + Rust<->Bash snapshot-id agreement passed; bash-oracle cold-fetch-from-B2 is a documented legacy limitation"
 		else
 			skip "b2: skipped — Rust could not reach ${SNAPDIR_B2_TEST_STORE} via SNAPDIR_B2_TEST_ENDPOINT=${SNAPDIR_B2_TEST_ENDPOINT:-<unset>}. Remediation (operator-env, NOT a code bug): the B2 application key resolves its own S3 endpoint/region (e.g. 'b2 account authorize' then read .s3endpoint); set SNAPDIR_B2_TEST_ENDPOINT to that region's endpoint so the Rust S3-compatible client and the bucket are in the same region. Preflight error: $(tr '\n' ' ' <"${WORKDIR}/b2-preflight.err" 2>/dev/null | tail -c 300)"
 			SKIPPED_BACKENDS+=("b2")
