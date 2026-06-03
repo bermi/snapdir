@@ -1455,7 +1455,9 @@ gates:
     phase: 11
     owner_agent: docs
     depends_on: []
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T01:10:00Z
+    git_sha: 9464f77
     failure_count: 0
     verification_cmd: "test -f docs/adr/0000-index.md && [ \"$(ls docs/adr/0*.md 2>/dev/null | wc -l | tr -d ' ')\" -ge 20 ] && for f in docs/adr/000[1-9]-*.md docs/adr/00[1-9][0-9]-*.md; do grep -qiE '## *(context|decision)' \"$f\" || exit 1; done"
     pass_criteria:
