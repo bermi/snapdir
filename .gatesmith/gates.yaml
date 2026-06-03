@@ -1546,6 +1546,9 @@ gates:
     phase: 11
     owner_agent: ci
     depends_on: [debash-ci]
+    status: passed
+    passed_at: 2026-06-03T13:10:00Z
+    git_sha: local-only-0f967e8
     # OPERATOR REQUEST 2026-06-03: ci.yaml was failing badly with no local mirror — lint,
     # coverage, musl, MSRV all only ran in CI. Add a git pre-push hook (+ installer + docs)
     # that runs the CI-equivalent suite locally and BLOCKS the push on failure, so breakage
@@ -1553,7 +1556,6 @@ gates:
     # --all-features --locked -D warnings, cargo test --workspace --locked, cargo deny check,
     # cargo build --target x86_64-unknown-linux-musl (static), coverage threshold (llvm-cov),
     # cargo-shear, cargo-semver-checks. Hook installable via core.hooksPath or a make/just target.
-    status: pending
     failure_count: 0
     verification_cmd: "test -x utils/ci/pre-push.sh && grep -q -- '--all-features' utils/ci/pre-push.sh && grep -q 'x86_64-unknown-linux-musl' utils/ci/pre-push.sh && grep -qE 'llvm-cov|coverage' utils/ci/pre-push.sh && grep -q 'cargo-shear\\|shear' utils/ci/pre-push.sh && grep -qE 'semver-checks' utils/ci/pre-push.sh && grep -qE 'deny' utils/ci/pre-push.sh"
     pass_criteria:
