@@ -13,8 +13,10 @@ on:
         required: true
 
 permissions:
-  contents: read
-  packages: write
+  contents: read       # checkout
+  packages: write      # push the image to GHCR
+  id-token: write      # cosign keyless signing + Sigstore OIDC
+  attestations: write  # write image build-provenance attestation
 
 jobs:
   publish-image:
@@ -59,6 +61,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push (scratch, static musl)
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -69,3 +72,19 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BIN=release-bin/snapdir
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Keyless (OIDC) signature on the pushed image, by digest (not tag).
+      # The signing cert identity is this workflow:
+      #   https://github.com/snapdir/snapdir/.github/workflows/docker-publish.yml@<ref>
+      - name: Sign image (cosign keyless)
+        run: cosign sign --yes "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+
+      - name: Attest build provenance (image)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

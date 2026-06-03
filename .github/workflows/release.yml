@@ -15,9 +15,9 @@ name: Release
 # crates.io. The publish jobs (release/docker/crates-io) are hard-gated on a real
 # `v*` TAG PUSH (`github.event_name == 'push'`), so a manual run can never publish
 # regardless of the `dry_run` input value.
-#   - GitHub UI: Actions -> Release -> Run workflow -> branch `rust-port`,
+#   - GitHub UI: Actions -> Release -> Run workflow -> branch `dev`,
 #     leave `dry_run: true`.
-#   - CLI:       gh workflow run release.yml --ref rust-port -f dry_run=true
+#   - CLI:       gh workflow run release.yml --ref dev -f dry_run=true
 # A real publish still happens ONLY by pushing a semver tag (e.g. `git tag v0.5.0
 # && git push origin v0.5.0`).
 
@@ -214,6 +214,10 @@ jobs:
     # Publish ONLY on a real `v*` tag push; a workflow_dispatch dry-run stops here.
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write      # create the GitHub release + upload assets
+      id-token: write      # Sigstore OIDC for build-provenance attestations
+      attestations: write  # write SLSA build-provenance attestations
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -229,6 +233,14 @@ jobs:
         run: |
           set -euo pipefail
           ( cd dist && cat ./*.sha256 > SHA256SUMS )
+
+      # SLSA build-provenance attestations (Sigstore-backed) for every release
+      # archive. Verify later with:
+      #   gh attestation verify <file> --repo snapdir/snapdir
+      - name: Attest build provenance (release archives)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/*.tar.xz'
 
       - name: Create / update GitHub release
         uses: softprops/action-gh-release@v2
@@ -254,6 +266,11 @@ jobs:
     # Publish ONLY on a real `v*` tag push; a workflow_dispatch dry-run stops here.
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read       # checkout
+      packages: write      # push the image to GHCR
+      id-token: write      # cosign keyless signing + Sigstore OIDC
+      attestations: write  # write image build-provenance attestation
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -270,6 +287,9 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           archive="dist/${BIN_NAME}-${version}-x86_64-unknown-linux-musl.tar.xz"
           tar -C dist -xJf "${archive}"
+          # Stage outside target/ — the repo .dockerignore excludes target/ (kept small
+          # for the from-source root Dockerfile), which would otherwise hide the binary
+          # from the packaging/Dockerfile COPY.
           mkdir -p release-bin
           cp "dist/${BIN_NAME}-${version}-x86_64-unknown-linux-musl/${BIN_NAME}" \
             release-bin/snapdir
@@ -296,6 +316,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push (scratch, static musl)
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -306,23 +327,50 @@ jobs:
           build-args: |
             BIN=release-bin/snapdir
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Keyless (OIDC) signature on the pushed image, by digest (not tag).
+      # The signing cert identity is this workflow:
+      #   https://github.com/snapdir/snapdir/.github/workflows/release.yml@refs/tags/v*
+      - name: Sign image (cosign keyless)
+        run: cosign sign --yes "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+
+      - name: Attest build provenance (image)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
   # ---------------------------------------------------------------------------
   # 5. Publish library crates to crates.io (core -> catalog/stores -> cli).
   #    Order respects the internal dependency graph. The CLI binary is shipped
   #    via the archives above; publishing it is optional and kept last.
   # ---------------------------------------------------------------------------
+  # Trusted Publishing — register the publisher on crates.io for each crate
+  # (snapdir-core/-catalog/-stores/-cli): crate Settings -> Trusted Publishing ->
+  # GitHub -> repo `snapdir/snapdir`, workflow `release.yml`. No stored token
+  # needed once registered.
   crates-io:
     name: Publish crates.io
     needs: release
     # Publish ONLY on a real `v*` tag push; a workflow_dispatch dry-run stops here.
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read   # checkout
+      id-token: write  # OIDC exchange for a short-lived crates.io token
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Authenticate to crates.io (Trusted Publishing)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
 
       - name: Publish in dependency order
         run: |
@@ -333,4 +381,4 @@ jobs:
             echo "::endgroup::"
           done
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
