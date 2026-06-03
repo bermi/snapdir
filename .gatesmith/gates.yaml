@@ -647,7 +647,9 @@ gates:
     #       report LOUD (non-silent), do NOT hard-fail the B2 lane.
     # Print a distinct scoped-green line containing "scoped: Rust + format compat".
     # S3 + GCS lanes keep the FULL A/B/C differential UNCHANGED. Frozen oracle + crates untouched.
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T00:50:00Z
+    git_sha: a7a895b
     failure_count: 0
     verification_cmd: "bash tests/integration/remote_stores_live.sh --self-check && grep -Eq 'scoped: Rust \\+ format compat' tests/integration/remote_stores_live.sh"
     pass_criteria:
