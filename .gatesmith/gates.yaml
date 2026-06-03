@@ -1579,7 +1579,9 @@ gates:
     phase: 11
     owner_agent: generic
     depends_on: [no-bash-references-remain, deps-verify, docker-modernize, readme-docs-final, adr-records, ci-green, local-pre-push-gates]
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T15:20:00Z
+    git_sha: 2b8b222
     failure_count: 0
     verification_cmd: "bash utils/ci/check-no-bash.sh && bash utils/ci/check-crate-age.sh && test -f docs/adr/0000-index.md"
     pass_criteria:

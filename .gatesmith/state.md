@@ -7,7 +7,11 @@
 
 > The operator's push-hold (*"why push to paid CI before local gates exist?"*) is **cleared**: ci.yaml run 26891142751 @ a79c080 concluded **success — all 12 jobs green**. The local pre-push hook is **installed** (`make install-hooks` → `core.hooksPath=utils/git-hooks`), so every future push runs the full CI-equivalent suite first and blocks on failure. Normal (hook-guarded) pushing resumes; ledger-only pushes may use `git push --no-verify`.
 
-## ▶ Phase 11 — Modernize & de-bash — 84/85 gates passed — ONLY `phase11-complete` (operator sign-off) REMAINS
+## ✅ PROJECT COMPLETE — 85/85 gates green (Phase 11 signed off 2026-06-03)
+
+`phase11-complete` ✅ PASSED (operator sign-off) — verification exit 0 (check-no-bash + check-crate-age "all 429 crates ≥3 days" + ADR index) AND operator approved. **Phase 11 (Modernize & de-bash) is complete; all 85 gates are green.** The `rust-port` branch is bash-free (oracle removed, byte-contract = `compat_golden.rs` + `manifest-format.sha.lock`, guarded by `check-no-bash.sh`), deps are modernized (rustls 0.23/hyper 1.x/ring, latest AWS SDK, unpinned google-cloud, MSRV 1.91.1) with a 3-day supply-chain cooldown, the scratch+musl+CA-certs image builds, **ci.yaml is fully green** with a hook-guarded local pre-push gate, and 27 ADRs + README/CONTRIBUTING/docs (CHANGELOG 0.6.0) are accurate. The human owns stopping ralph.
+
+### Phase 11 — Modernize & de-bash — 85/85 gates passed (history below)
 
 `readme-docs-final` ✅ PASSED (git 0e4969c) — **Groups D+E done.** README/CONTRIBUTING/docs/rust-port finalized: oracle prose → past-tense, accurate `FROM scratch` image story (static musl + bundled CA roots, zero runtime executables), install paths, ADR link, CHANGELOG **[0.6.0] Port-complete**. CONTRIBUTING's "frozen Bash oracle" section → "byte-format contract" (compat_golden.rs + SHA-lock). Hook-fast follow-up landed (git 944669f): the pre-push hook runs the fast legs (~2-4 min); musl+coverage in CI + `make ci-local`.
 
