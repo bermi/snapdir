@@ -1411,7 +1411,13 @@ gates:
   - id: deps-upgrade-general
     phase: 11
     owner_agent: generic
-    depends_on: [deps-cooldown-automation]
+    # RE-SEQUENCED (GATE-FIX 2026-06-03): +deps-upgrade-tls-sdk. The verification ends with
+    # `cargo deny check`, whose failures (RUSTSEC-2026-0098/0099 rustls-webpki<-rustls 0.21,
+    # RUSTSEC-2025-0134 rustls-pemfile, CDLA-Permissive-2.0 webpki-root-certs<-google-cloud-auth)
+    # are all rooted in the TLS/cloud-SDK stack this lane can't touch -> must run AFTER tls-sdk.
+    # General teammate's verified bumps (md-5 0.11, sha2 0.11, criterion 0.8, rustls-native-certs
+    # 0.8.3 cooldown pin) are documented in handoffs/deps-upgrade-general-handoff.md for re-run.
+    depends_on: [deps-cooldown-automation, deps-upgrade-tls-sdk]
     status: pending
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test --workspace --locked && cargo clippy --workspace --all-targets -- -D warnings && cargo deny check && bash utils/ci/check-crate-age.sh"
@@ -1427,6 +1433,11 @@ gates:
     # The hard one. Unify rustls->0.23, hyper-rustls->0.27, hyper 1.x connector for aws-sdk-s3,
     # latest aws-sdk-s3/aws-config, UNPIN google-cloud-storage/-gax. Keep ring + with_native_roots.
     # musl-static link is proven by deps-verify (CI dry-run); local host can't musl-link.
+    # DENY CARRY-FORWARD (this upgrade must make `cargo deny check` pass — it gates deps-upgrade-general
+    # which runs after this): rustls 0.23/hyper-rustls 0.27 clears RUSTSEC-2026-0098/0099 (rustls-webpki
+    # ->0.103.12+) + RUSTSEC-2025-0134 (drops rustls-pemfile 1.0). CDLA-Permissive-2.0 (webpki-root-certs
+    # <-rustls-platform-verifier<-reqwest<-google-cloud-auth) needs the google-cloud unpin to drop it OR
+    # add CDLA-Permissive-2.0 to deny.toml allow-list (license of a CA-roots data crate; permissive, OK).
     status: pending
     failure_count: 0
     verification_cmd: "cargo build -p snapdir-stores --locked && ! grep -iq 'aws-lc' Cargo.lock && ! grep -iq 'openssl-sys' Cargo.lock && cargo test -p snapdir-stores --locked && bash utils/ci/check-crate-age.sh"
