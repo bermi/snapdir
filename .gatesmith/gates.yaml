@@ -1456,7 +1456,12 @@ gates:
     depends_on: [deps-upgrade-general, deps-upgrade-tls-sdk]
     # PM triggers the gh dispatch dry-run (proves musl-static + all 6 unix targets) + a MinIO
     # S3 hermetic round-trip on the upgraded tree. Human checkpoint mirrors release-dryrun.
-    status: pending
+    # SIGNED OFF 2026-06-03: CI dry-run 26861289316 success (6 unix targets incl 2 musl static, 0 windows,
+    # publish/docker skipped) + MinIO S3 round-trip byte-identical id-stable on the new rustls 0.23/hyper 1.x
+    # connector + aws-lc/openssl-sys=0 + crate-age >=3d. Operator confirmed via AskUserQuestion.
+    status: passed
+    passed_at: 2026-06-03T03:19:00Z
+    git_sha: cc1c626
     failure_count: 0
     verification_cmd: "echo 'PM: gh workflow run release.yml --ref rust-port -f dry_run=true && gh run watch <id>; then a MinIO S3 round-trip on the upgraded tree.'"
     pass_criteria:

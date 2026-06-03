@@ -3,7 +3,9 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ Phase 11 — Modernize & de-bash (in progress) — 73/82 gates passed
+## ▶ Phase 11 — Modernize & de-bash (in progress) — 74/82 gates passed
+
+`deps-verify` ✅ PASSED (git cc1c626, **operator sign-off** 2026-06-03) — **Group B (latest deps + 3-day cooldown) COMPLETE.** Two proofs on the upgraded tree: CI release dry-run **26861289316 = success** (all 6 unix targets incl. both musl static-link builds, 0 Windows, publish/Docker skipped) + a MinIO S3 round-trip on the new rustls 0.23/hyper 1.x/ring connector (byte-identical, snapshot-id stable; the symlink-id quirk is a pre-existing snapdir dereference semantic, not a deps regression). aws-lc/openssl-sys=0, crate-age ≥3d. **Next: Group A de-bash — `remove-bash-oracle` (human_checkpoint: operator must lift the `Edit(snapdir*)` / `Edit(utils/qa-fixtures/**)` deny + the `./snapdir*` allow rules in `.claude/settings.json`).**
 
 `deps-upgrade-general` ✅ PASSED (git 5d1a13d) — re-ran on the deny-clean post-tls-sdk tree: bumped md-5 0.11 (67d) / sha2 0.11 (69d) / criterion 0.8 (118d) via targeted lock update (bitflags/log held aged); build/test/clippy/deny all green, crate-age ≥3d, aws-lc/openssl-sys absent. **Group B (latest deps + 3-day cooldown) is now complete except `deps-verify`** (human_checkpoint — CI release dry-run musl-static + MinIO round-trip on the upgraded tree).
 
