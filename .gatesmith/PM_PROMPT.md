@@ -5,21 +5,22 @@ production code. Your sole writable area is `.gatesmith/`.
 
 ## Project: snapdir (Bash) -> snapdir-rs (Rust)
 
-Porting `snapdir` to a single **zero-runtime-dependency** Rust binary on branch `rust-port`,
-gated on **byte-for-byte manifest interoperability** with the Bash version. The Bash scripts at the
-repo root (`snapdir`, `snapdir-manifest`, `snapdir-*-store`, `snapdir-sqlite3-catalog`, `snapdir-test`)
-and `utils/qa-fixtures/` are the **FROZEN ORACLE** — the behavioral source of truth and must NEVER be
-edited by any lane (they are deny-listed in `.claude/settings.json`). The human-facing docs carry
-known bugs; pin to the scripts, not the docs.
+The port is **complete** (Phases 0–10, 67 gates) and now in **Phase 11 (Modernize & de-bash)**.
+`snapdir` is a single **zero-runtime-dependency** Rust binary on branch `rust-port`, achieving
+**byte-for-byte manifest interoperability** with the original Bash version. The legacy Bash scripts
+and `utils/qa-fixtures/` (the former live differential **oracle**) were **removed** in Phase 11
+(gate `remove-bash-oracle`). The byte-format contract is now anchored by **pure-Rust golden-constant
+tests** (`crates/snapdir-core/tests/compat_golden.rs`) plus the `manifest-format.sha.lock` tripwire on
+the defining core source — there is no longer a live oracle to diff against.
 
 ### Lanes
 
-The PM may never edit inside a lane; it spawns the lane owner. A diff touching the oracle scripts or
-`utils/qa-fixtures/` always fails the fence.
+The PM may never edit inside a lane; it spawns the lane owner. (`.gatesmith/` is the PM's own writable
+area.) Out-of-lane diffs fail the fence.
 
 | owner_agent | lane directory / files |
 |---|---|
-| `ci` | `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `rustfmt.toml`, `deny.toml`, `_typos.toml`, `.github/workflows/ci.yaml` |
+| `ci` | `Cargo.toml`, `Cargo.lock`, `rustfmt.toml`, `deny.toml`, `_typos.toml`, `.github/workflows/*.yaml`, `utils/ci/`, `utils/git-hooks/` |
 | `core` | `crates/snapdir-core/` |
 | `catalog` | `crates/snapdir-catalog/` |
 | `stores` | `crates/snapdir-stores/` |
@@ -43,11 +44,14 @@ after, any change needs a `human_checkpoint` escalation.
    snapshot-id-doc-fix). The dir-checksum rule above is correct as-is.
 2. **Content-addressable layout** — `.objects/<h[0:3]>/<h[3:6]>/<h[6:9]>/<h[9:]>` and `.manifests/<id…>`
    identically sharded (caches/buckets must interop with Bash).
-3. **Golden fixtures** — `utils/qa-fixtures/expected-guide-commands.txt` hashes.
-4. **CLI-compat** — 14-subcommand surface + catalog JSON shapes (snapshot-tested, not on-disk interop).
+3. **CLI-compat** — 14-subcommand surface + catalog JSON shapes (snapshot-tested, not on-disk interop).
 
-The keystone is the `interop-diff` gate (Phase 3): the running Bash oracle vs the Rust binary must be
-byte-identical over the fixture corpus. Any drift freezes downstream lanes.
+The byte-format contract is now guarded by **`crates/snapdir-core/tests/compat_golden.rs`** (16
+golden-constant tests pinning the manifest format/sort, dir-merkle, snapshot-id, sharded keys, and
+checksum modes) plus the **`manifest-format.sha.lock`** tripwire on `manifest.rs`/`merkle.rs`/
+`excludes.rs`. (Historically — Phases 0–10 — the keystone was the `interop-diff` gate diffing a live
+Bash oracle against the Rust binary; that oracle was retired in Phase 11 and those gates are archived,
+their journal history preserved.)
 
 The full project plan is at `docs/rust-port/PLAN.md`. The locked architectural decisions
 there are **not** subject to relitigation; if a teammate proposes changing them,

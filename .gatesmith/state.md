@@ -7,7 +7,9 @@
 
 > The operator's push-hold (*"why push to paid CI before local gates exist?"*) is **cleared**: ci.yaml run 26891142751 @ a79c080 concluded **success — all 12 jobs green**. The local pre-push hook is **installed** (`make install-hooks` → `core.hooksPath=utils/git-hooks`), so every future push runs the full CI-equivalent suite first and blocks on failure. Normal (hook-guarded) pushing resumes; ledger-only pushes may use `git push --no-verify`.
 
-## ▶ Phase 11 — Modernize & de-bash (in progress) — 81/84 gates passed
+## ▶ Phase 11 — Modernize & de-bash (in progress) — 82/84 gates passed
+
+`debash-gatesmith` ✅ PASSED — retired the oracle-differential methodology in `.gatesmith/`: `golden-fixtures.sha.lock` removed (only `manifest-format.sha.lock` remains), `PM_PROMPT.md` rewritten (FROZEN ORACLE → past-tense; byte-contract anchored on `compat_golden.rs` + the SHA-lock; ci-lane row de-staled). Oracle-differential gates (interop-*, remote-interop*, b2-*) stay `passed` as historical record, documented as archived. **Unblocks `no-bash-references-remain`** (last Group-A gate). 
 
 `ci-green` ✅ PASSED (git a79c080) — **ci.yaml fully green** (run 26891142751: Lint, Supply-chain, Test matrix [1.91.1/stable/beta × ubuntu/macOS], both Static musl, Doctests, Coverage 78%). The confirmation push surfaced **4 distinct CI failures the local suite false-passed** (version/runtime divergence): mock-store `declare -A` (CI macOS bash 3.2), `rust-toolchain.toml` 1.96.0 pin shadowing the musl target + faking the matrix, **true MSRV 1.91.1** (AWS SDK; was falsely 1.85), and actionlint (install-action can't provide it → direct download + bump to 1.7.12 for the `macos-15-intel` label). All fixed.
 

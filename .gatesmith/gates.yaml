@@ -1376,7 +1376,9 @@ gates:
     phase: 11
     owner_agent: generic
     depends_on: [remove-bash-oracle, remove-bash-test-harnesses]
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T14:38:00Z
+    git_sha: local-pending-push
     failure_count: 0
     verification_cmd: "! test -e .gatesmith/golden-fixtures.sha.lock && test -e .gatesmith/manifest-format.sha.lock && ! grep -qiE 'frozen bash oracle|differential oracle' .gatesmith/PM_PROMPT.md"
     pass_criteria:
