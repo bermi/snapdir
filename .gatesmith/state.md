@@ -3,7 +3,11 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ Phase 11 — Modernize & de-bash (in progress) — 75/82 gates passed
+## ▶ Phase 11 — Modernize & de-bash (in progress) — 77/84 gates passed
+
+`debash-ci` ✅ PASSED (git cc72605) — stripped the oracle from CI: deleted `sqlite3-catalog.yml`, `unit_tests.yml`, `build.yml`, `docs.yml` (oracle-only / built the deleted bash Dockerfile); repurposed `s3-store.yml`/`b2-store.yml` to drive the Rust env-gated round-trips; cleaned the devcontainer. actionlint clean; Rust coverage stays in `ci.yaml`.
+
+**🔔 Backlog (operator request 2026-06-03):** ci.yaml is RED on rust-port (run 26877611844 @ cc1c626) and there's no local pre-push gate. Two gates added (Group F): **`ci-green`** (fix the red CI — Lint/`--all-features`/cargo-shear/cargo-semver-checks, Static musl, Coverage; the oracle Test failures clear via `remove-bash-test-harnesses`) and **`local-pre-push-gates`** (a git pre-push hook + installer running the full CI-equivalent suite — fmt, clippy `--all-features` -D, test, deny, **musl static build**, **coverage**, cargo-shear, cargo-semver-checks — that BLOCKS push on failure). `phase11-complete` now depends on both.
 
 `remove-bash-oracle` ✅ PASSED (git 98cd355, **operator-approved + operator-applied** 2026-06-03) — **the frozen Bash oracle is retired from rust-port.** Deleted the 8 root scripts + the bash `Dockerfile` (alpine:3.16) + `utils/pre-commit-hook.sh` + `utils/qa-fixtures/`; operator stripped the `Bash(./snapdir*)` allow + `Edit(snapdir*)`/`Edit(utils/qa-fixtures/**)` deny rules from `.claude/settings.json` (the classifier hard-walled the PM from self-modifying permissions — exactly why this was a human_checkpoint). Byte-contract now guarded by `compat_golden.rs` + `manifest-format.sha.lock`. **Unblocks `debash-ci`, `debash-gatesmith`, `no-bash-references-remain`, `docker-modernize`.** Next eligible by id-asc: `debash-ci` (its dep remove-bash-oracle is now ✅). Carry-forward: `remove-bash-test-harnesses` must scrub the now-dead `oracle()` skip helpers + delete `tests/interop/run.sh` + `tests/integration/*.sh`.
 

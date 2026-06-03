@@ -1346,7 +1346,9 @@ gates:
     phase: 11
     owner_agent: ci
     depends_on: [remove-bash-oracle]
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T12:34:00Z
+    git_sha: cc72605
     failure_count: 0
     verification_cmd: "! test -e .github/workflows/sqlite3-catalog.yml && ! grep -rIlE 'shellcheck|shfmt|snapdir-manifest|snapdir-test|snapdir-[a-z]+-store' .github/workflows/ .devcontainer/"
     pass_criteria:
@@ -1516,10 +1518,47 @@ gates:
     description: "Finalize README/CONTRIBUTING/docs: accurate scratch-image story (static binary + bundled CA roots, zero runtime executables), latest install paths, link to docs/adr/; rewrite the CONTRIBUTING 'frozen Bash oracle' section; update CHANGELOG (bump to 0.6.0)."
 
   # ---- Final sign-off ----
+  # ---- Group F: CI health + local pre-push gates (operator request 2026-06-03) ----
+  - id: ci-green
+    phase: 11
+    owner_agent: ci
+    depends_on: [remove-bash-test-harnesses, debash-ci, deps-upgrade-general, deps-upgrade-tls-sdk]
+    # ci.yaml went RED on the upgraded tree (run 26877611844 @ cc1c626): all Test (oracle
+    # cache_commands_stage_id_matches_oracle etc — cleared by remove-bash-test-harnesses),
+    # Lint (clippy --all-features / cargo-shear unused-deps / cargo-semver-checks on the
+    # md-5/sha2 0.11 + aws-smithy-http-client change), Static musl, Coverage. Get a fresh
+    # ci.yaml run on rust-port HEAD fully green. PM dispatches + watches the run.
+    status: pending
+    failure_count: 0
+    verification_cmd: "echo 'PM: gh workflow run ci.yaml --ref rust-port && gh run watch <id> --exit-status; every job must conclude success'"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Get ci.yaml fully green on the upgraded + de-bashed rust-port HEAD: fix Lint (clippy --all-features, cargo-shear, cargo-semver-checks), Static musl, and Coverage; the oracle Test failures are cleared by remove-bash-test-harnesses."
+
+  - id: local-pre-push-gates
+    phase: 11
+    owner_agent: ci
+    depends_on: [ci-green]
+    # OPERATOR REQUEST 2026-06-03: ci.yaml was failing badly with no local mirror — lint,
+    # coverage, musl, MSRV all only ran in CI. Add a git pre-push hook (+ installer + docs)
+    # that runs the CI-equivalent suite locally and BLOCKS the push on failure, so breakage
+    # never reaches CI. Must cover: cargo fmt --check, clippy --workspace --all-targets
+    # --all-features --locked -D warnings, cargo test --workspace --locked, cargo deny check,
+    # cargo build --target x86_64-unknown-linux-musl (static), coverage threshold (llvm-cov),
+    # cargo-shear, cargo-semver-checks. Hook installable via core.hooksPath or a make/just target.
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -x utils/ci/pre-push.sh && grep -q -- '--all-features' utils/ci/pre-push.sh && grep -q 'x86_64-unknown-linux-musl' utils/ci/pre-push.sh && grep -qE 'llvm-cov|coverage' utils/ci/pre-push.sh && grep -q 'cargo-shear\\|shear' utils/ci/pre-push.sh && grep -qE 'semver-checks' utils/ci/pre-push.sh && grep -qE 'deny' utils/ci/pre-push.sh"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Add a git pre-push hook (utils/ci/pre-push.sh) + installer + docs that runs the full CI-equivalent suite locally (fmt, clippy --all-features -D, test, deny, musl static build, coverage, cargo-shear, cargo-semver-checks) and blocks push on failure, mirroring ci.yaml so failures are caught before any push."
+
   - id: phase11-complete
     phase: 11
     owner_agent: generic
-    depends_on: [no-bash-references-remain, deps-verify, docker-modernize, readme-docs-final, adr-records]
+    depends_on: [no-bash-references-remain, deps-verify, docker-modernize, readme-docs-final, adr-records, ci-green, local-pre-push-gates]
     status: pending
     failure_count: 0
     verification_cmd: "bash utils/ci/check-no-bash.sh && bash utils/ci/check-crate-age.sh && test -f docs/adr/0000-index.md"
