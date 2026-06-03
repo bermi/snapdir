@@ -632,10 +632,37 @@ gates:
     human_checkpoint: false
     description: "tests-lane: the B2 lane must export the B2 application key as AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (+ AWS_REGION) for the Rust B2 S3-compat client, which uses the standard AWS chain — otherwise it authenticates with the real-AWS key from test-creds and the preflight HEAD 403s. --self-check still green; S3/zero-dep lanes (earlier) undisturbed."
 
+  - id: b2-lane-scope-rust-format
+    phase: 5
+    owner_agent: tests
+    depends_on: [b2-harness-rust-aws-creds]
+    # GATE-ADD 2026-06-03 (operator AskUserQuestion "Scope to Rust + format compat").
+    # The live B2 run proved: Rust B2 Lane A (push/fetch/pull/verify) green; Rust pushes to b2://
+    # and Bash derives the SAME snapshot id (format/key/id compat). The only failures are in the
+    # FROZEN BASH ORACLE's cold-cache fetch-FROM-B2 path (legacy b2-CLI orchestration, latent bugs).
+    # tests-lane change to remote_stores_live.sh's B2 lane ONLY:
+    #   (1) Rust round-trip vs real B2 (push->fetch->pull->verify) MUST pass.
+    #   (2) Rust-push -> Bash derives the same snapshot id MUST pass (format/key compat).
+    #   (3) Bash-oracle cold-fetch/pull-FROM-B2 (legacy) -> DOCUMENTED known limitation:
+    #       report LOUD (non-silent), do NOT hard-fail the B2 lane.
+    # Print a distinct scoped-green line containing "scoped: Rust + format compat".
+    # S3 + GCS lanes keep the FULL A/B/C differential UNCHANGED. Frozen oracle + crates untouched.
+    status: pending
+    failure_count: 0
+    verification_cmd: "bash tests/integration/remote_stores_live.sh --self-check && grep -Eq 'scoped: Rust \\+ format compat' tests/integration/remote_stores_live.sh"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "tests-lane: scope the live B2 lane to the proven, port-meaningful subset — Rust round-trip vs real B2 + Rust<->Bash snapshot-id agreement MUST pass; the legacy bash-oracle cold-fetch-from-B2 is a documented loud known-limitation (not a hard fail). S3/GCS keep full differential. Prints a distinct scoped-green line for the gate regex."
+
   - id: remote-interop-b2
     phase: 5
     owner_agent: tests
-    depends_on: [remote-interop-gcs, release-dryrun, b2-harness-isolation-and-cli, b2-oracle-fetch-store-arg, b2-harness-rust-aws-creds]
+    depends_on: [remote-interop-gcs, release-dryrun, b2-harness-isolation-and-cli, b2-oracle-fetch-store-arg, b2-harness-rust-aws-creds, b2-lane-scope-rust-format]
+    # GATE-BUMP 2026-06-03 (operator-approved via AskUserQuestion): SCOPED to Rust-side + Rust<->Bash
+    # format/id compat. Full bidirectional differential was blocked ONLY by legacy frozen-bash-oracle
+    # cold-fetch bugs (not the Rust binary, not the interop format). pass_criteria + failure_count
+    # redefined (was: regex 'all Bash<->Rust differential lanes passed'). See journal GATE-BUMP entry.
     # GATE-ADD 2026-06-01T01:52:18Z (operator: "skip b2 for the very last ... once we've done gcs
     # and aws and have a release candidate"). Deferred to AFTER release-dryrun. No local emulator
     # serves both B2-native (Bash) + S3 (Rust) APIs, so this needs the real B2 sandbox.
@@ -647,14 +674,14 @@ gates:
     # both pass, this gate's verification_cmd should print the B2-green line. Harness loud-skips B2
     # until truly reachable (never a silent pass).
     status: pending
-    failure_count: 2
+    failure_count: 0
     verification_cmd: "source ~/.config/snapdir/test-creds.sh >/dev/null 2>&1; bash tests/integration/remote_stores_live.sh"
     pass_criteria:
       and:
         - exit_code: 0
-        - regex_match: "b2 \\(real sandbox\\): all Bash<->Rust differential lanes passed"
+        - regex_match: "b2 \\(real sandbox, scoped: Rust \\+ format compat\\)"
     human_checkpoint: true
-    description: "DEFERRED (final phase-5 gate, post-release-candidate): B2 Bash<->Rust cross-tool against the real B2 sandbox; identical sharded keys/ids both directions."
+    description: "SCOPED (operator-approved) final phase-5 gate: against the real B2 sandbox, the Rust round-trip (push/fetch/pull/verify) + Rust<->Bash snapshot-id agreement pass byte-identically; full bidirectional byte-identical interop is proven on S3+GCS. The legacy bash-oracle cold-fetch-from-B2 is a documented known limitation of the retired tool (not the Rust port). Loud-skips if the sandbox is unreachable (never a false pass)."
 
   # ===================================================================
   # Phase 6 — Caching + redb catalog  (lanes: core, catalog)
