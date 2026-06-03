@@ -17,7 +17,6 @@
       "Bash(git push origin rust-port:rust-port)",
       "Bash(git fetch:*)",
       "Bash(git pull --ff-only:*)",
-
       "Bash(test :*)",
       "Bash(shasum :*)",
       "Bash(b3sum :*)",
@@ -35,7 +34,6 @@
       "Bash(rm .gatesmith/handoff/:*)",
       "Bash(date:*)",
       "Bash(echo :*)",
-
       "Bash(cargo build:*)",
       "Bash(cargo run:*)",
       "Bash(cargo test:*)",
@@ -61,12 +59,8 @@
       "Bash(hyperfine:*)",
       "Bash(shellcheck:*)",
       "Bash(shfmt:*)",
-
-      "Bash(./snapdir:*)",
-      "Bash(./snapdir-manifest:*)",
       "Bash(bash tests/:*)",
       "Bash(bash benches/:*)",
-
       "Edit(.gatesmith/**)",
       "Write(.gatesmith/**)"
     ],
@@ -77,18 +71,8 @@
       "Bash(git push origin --delete:*)",
       "Bash(git reset --hard:*)",
       "Bash(rm -rf:*)",
-      "Bash(sudo rm:*)",
-
-      "Edit(snapdir)",
-      "Edit(snapdir-manifest)",
-      "Edit(snapdir-file-store)",
-      "Edit(snapdir-s3-store)",
-      "Edit(snapdir-b2-store)",
-      "Edit(snapdir-gcs-store)",
-      "Edit(snapdir-sqlite3-catalog)",
-      "Edit(snapdir-test)",
-      "Edit(utils/qa-fixtures/**)"
+      "Bash(sudo rm:*)"
     ]
   },
-  "_note": "PM + teammate allowlist for the snapdir-rs Rust port. Lane fence is enforced at PM tick step 5 (git diff --stat). The Bash oracle scripts and utils/qa-fixtures/ are the FROZEN ORACLE: deny-listed against Edit so no teammate can mutate them. Cargo/rust toolchain commands are allowed so unattended ticks don't stall. Heavy tools (nextest, deny, llvm-cov, fuzz, semver-checks, actionlint, hyperfine, typos) are allow-listed but may need install by the ci lane."
+  "_note": "snapdir-rs allowlist; Bash oracle retired in Phase 11; byte-contract guarded by compat_golden.rs + manifest-format.sha.lock."
 }
