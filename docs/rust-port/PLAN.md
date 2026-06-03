@@ -2,9 +2,11 @@
 
 > Vendored copy of the approved plan, used by the gatesmith PM and lane teammates.
 > Authoritative for decisions, the frozen contract, and the phase→gate map.
-> Source of truth for behavior is the **Bash oracle** in the repo root
-> (`./snapdir`, `./snapdir-manifest`, the `snapdir-*-store` scripts), **not the docs**
-> (the docs carry known bugs — see "Doc bugs").
+> This is a historical planning document. During the port, the source of truth
+> for behavior was the original Bash `snapdir` (the `snapdir`, `snapdir-manifest`,
+> and `snapdir-<name>-store` scripts), **not the old docs** (which carried known
+> bugs — see "Doc bugs"). The byte-format contract is now guarded by the Rust
+> golden tests and the `manifest-format.sha.lock` tripwire.
 
 ## Goal
 

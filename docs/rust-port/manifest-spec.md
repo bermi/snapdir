@@ -1,16 +1,15 @@
 # snapdir manifest specification (FROZEN)
 
 > This document describes the **frozen** snapdir manifest format and the
-> content-addressable storage layout that the Bash→Rust port is gated on. It is
-> a faithful description of the format defined by the Bash oracle
-> (`./snapdir`, `./snapdir-manifest`) and reproduced byte-for-byte by
-> `snapdir-core`.
+> content-addressable storage layout. It is a faithful description of the format
+> the original snapdir defined, reproduced byte-for-byte by `snapdir-core`.
 >
-> **The frozen spec wins.** The behavioral source of truth is the Bash oracle
-> and the locked contract in `docs/rust-port/PLAN.md`, cross-checked against the
-> Rust core source (`crates/snapdir-core/src/{manifest.rs,merkle.rs,excludes.rs}`).
-> If you find a disagreement between this prose and the frozen contract, the
-> contract wins — report the discrepancy rather than "correcting" the spec.
+> **The frozen spec wins.** The byte-format contract is now guarded by the Rust
+> golden-constant tests in `crates/snapdir-core/tests/compat_golden.rs` and the
+> `manifest-format.sha.lock` tripwire, cross-checked against the core source
+> (`crates/snapdir-core/src/{manifest.rs,merkle.rs,excludes.rs}`). If you find a
+> disagreement between this prose and the golden contract, the contract wins —
+> report the discrepancy rather than "correcting" the spec.
 
 A snapdir manifest is a UTF-8 text document that fully describes the contents of
 a directory tree: every file and directory, its permissions, its content
@@ -57,10 +56,10 @@ F 600 abc... 4 ./a file with spaces.txt
 ```
 
 In Rust this is `line.splitn(5, ' ')`; in the oracle it is the equivalent field
-read. (Note: the **frozen Bash oracle has a known bug** where space-bearing
-paths are truncated on the *push* path — `IFS=' ' read -r -a line_parts` then
-`line_parts[4]`. That is an oracle limitation, not part of the spec; the Rust
-port handles spaces correctly. See the project state notes.)
+read. (Note: the **original snapdir had a known bug** where space-bearing
+paths were truncated on the *push* path — `IFS=' ' read -r -a line_parts` then
+`line_parts[4]`. That was an implementation limitation, not part of the spec;
+the Rust port handles spaces correctly.)
 
 ### 1.2 Path type and the trailing slash
 

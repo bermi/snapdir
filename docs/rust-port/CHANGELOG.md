@@ -7,12 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — Port complete
+
+The Rust port is **complete** and the legacy Bash implementation has been
+removed. With nothing left to differentially test against, the byte-format
+contract is now guarded entirely in Rust, the dependency tree is modernized, and
+the distribution story (static musl on `scratch`, release archives, ADRs) is
+finalized.
+
 ### Added
 
 - **Migration guide** (`docs/rust-port/migration.md`) and **manifest
   specification** (`docs/rust-port/manifest-spec.md`) documenting the frozen
   manifest format, the content-addressable storage layout, the directory merkle
   rule, and the snapshot-ID derivation.
+- **Architecture Decision Records** (`docs/adr/`) capturing the significant port
+  decisions (manifest-format freeze, snapshot-ID derivation, ring TLS provider,
+  in-process cloud stores, redb catalog, scratch image, bundled CA roots,
+  retiring the Bash implementation, dependency-cooldown policy, and more).
+- **Rust golden-format contract** — `crates/snapdir-core/tests/compat_golden.rs`
+  pins the exact manifest line bytes, directory merkle checksums, and snapshot
+  IDs as golden constants, replacing the live differential comparison as the
+  guarantor of byte-format stability.
+- **`manifest-format.sha.lock` tripwire** over the format-defining source, so any
+  accidental change to the line format, ordering, checksum algorithm, sharded
+  layout, or exclude sets trips CI and demands an explicit, reviewed bump.
+- **Local pre-push CI gate** (`utils/ci/pre-push.sh`, installed via
+  `make install-hooks`) running the fast CI legs (~2–4 min) before every push;
+  the slow musl + coverage legs run in CI and via `make ci-local`.
+- **`scratch` Docker image** — a `FROM scratch` final stage shipping only the
+  fully-static musl `snapdir` binary plus the bundled CA roots
+  (`ca-certificates.crt`): zero runtime executables, no libc, no shell.
+
+### Changed
+
+- **Dependencies modernized.** TLS/crypto moved to **rustls 0.23** with the
+  **ring** provider over **hyper 1.x**; the AWS SDK crates were bumped to their
+  latest releases and the `google-cloud-storage` SDK was unpinned. All updates
+  honor a **3-day minimum-release-age cooldown** (supply-chain hardening).
+- **MSRV raised to 1.91.1**, driven by the AWS SDK crates.
+
+### Removed
+
+- **The legacy Bash implementation was removed.** Its role as the behavioral
+  source of truth is now served by the Rust golden-format tests and the
+  `manifest-format.sha.lock` tripwire. The shipped binary remains fully
+  in-process with no runtime dependency on external executables.
 
 ## [0.5.0] — Rust port
 
@@ -35,7 +75,7 @@ Bash-written caches and remote buckets stay mutually readable.
   reproduced in-process via the `md-5`/`sha2` crates.
 - **In-process filesystem walk** producing the frozen manifest format, with
   symlink follow/no-follow, `--absolute`, and the `%system%`/`%common%` exclude
-  macros — verified byte-for-byte against the live `./snapdir-manifest` oracle.
+  macros — verified byte-for-byte against the original snapdir's manifest output.
 - **Native-SDK remote stores** — S3 (`aws-sdk-s3`), B2 (Backblaze's
   S3-compatible endpoint, a thin wrapper over the S3 store), and GCS
   (`google-cloud-storage`). No shelling out to `aws`, `b2`, or `gcloud`.
@@ -89,5 +129,6 @@ Bash-written caches and remote buckets stay mutually readable.
   `gcloud`) in the shipped binary. External tools are used only by the test/oracle
   harness.
 
-[Unreleased]: https://github.com/bermi/snapdir/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/bermi/snapdir/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/bermi/snapdir/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/bermi/snapdir/releases/tag/v0.5.0

@@ -88,19 +88,26 @@ Missing tools (`typos-cli`, `cargo-shear`, `cargo-semver-checks`, `cargo-deny`,
 `cargo install` / `rustup target add`. Pass `--no-install` to opt out and have
 the script print the exact install command instead.
 
-## The frozen Bash oracle
+## The byte-format contract
 
-The Bash scripts at the repo root — `snapdir`, `snapdir-manifest`,
-`snapdir-*-store`, `snapdir-sqlite3-catalog`, `snapdir-test` — and everything
-under `utils/qa-fixtures/` are the **frozen interop oracle**. The differential
-tests run the Rust binary against them to prove byte-for-byte compatibility of
-manifests, snapshot IDs, and on-disk store layout.
+The port is **complete**: the legacy Bash implementation was removed in
+Phase 11, and the manifest byte-format contract is now guarded entirely in Rust.
+Two mechanisms keep the on-disk format frozen:
 
-Do not edit these scripts or the fixtures: if the Rust port disagrees with the
-oracle, the oracle is the source of truth. Changing manifest line format,
-ordering, the checksum algorithm, sharding, or exclude sets requires
-maintainer approval. New behavior belongs in `crates/`, validated against the
-oracle.
+- **`crates/snapdir-core/tests/compat_golden.rs`** — Rust golden-constant tests
+  that assert the exact bytes of manifest lines, directory merkle checksums, and
+  snapshot IDs against pinned golden values.
+- **`manifest-format.sha.lock`** — a tripwire over the format-defining source so
+  any accidental change to the line format, ordering, checksum algorithm,
+  sharded layout, or exclude sets trips CI and demands an explicit, reviewed
+  bump.
+
+Changing the manifest line format, ordering, the checksum algorithm, sharding,
+or the exclude sets is a breaking change to the storage format: it requires
+maintainer approval and a deliberate update to the golden tests and the
+SHA-lock. See [`docs/rust-port/manifest-spec.md`](docs/rust-port/manifest-spec.md)
+for the frozen format and the architecture decision records in
+[`docs/adr/`](docs/adr/) for the rationale.
 
 ## Zero runtime dependencies
 

@@ -15,12 +15,12 @@ model* (each backend uses its native SDK's standard credential chain instead of
 bespoke snapdir env vars), and the *catalog backend* (internal `redb` instead of
 on-disk SQLite).
 
-> This guide is pinned to the **real behavior of the frozen Bash oracle**
-> (`./snapdir`, `./snapdir-manifest`, the `snapdir-*-store` scripts,
-> `./snapdir-sqlite3-catalog`) cross-checked against the Rust clap surface in
-> `crates/snapdir-cli/src/cli.rs`. Where the *old Bash docs* carry known bugs,
-> this guide uses the **correct** names — see
-> [Corrected doc bugs](#6-corrected-documentation-bugs).
+> This guide describes the **real behavior of the original Bash `snapdir`**
+> (the `snapdir`, `snapdir-manifest`, `snapdir-<name>-store`, and
+> `snapdir-sqlite3-catalog` scripts), reproduced byte-for-byte by the Rust port
+> and cross-checked against its clap surface in `crates/snapdir-cli/src/cli.rs`.
+> Where the *old Bash docs* carried known bugs, this guide uses the **correct**
+> names — see [Corrected doc bugs](#6-corrected-documentation-bugs).
 
 ---
 

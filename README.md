@@ -4,7 +4,7 @@ Content-addressable directory snapshots: hash a directory into a deterministic I
 
 `snapdir` snapshots a directory by content. Every snapshot is a BLAKE3 manifest — one line per file/dir as `TYPE PERMISSIONS CHECKSUM SIZE PATH`, sorted by path, with directory checksums computed as a merkle hash of their children. The **snapshot ID** is the BLAKE3 of the manifest text, so identical content produces an identical ID on any machine. Objects and manifests are stored at content-addressed sharded keys, so identical files and snapshots are stored once and interoperate across stores.
 
-Single static binary, zero runtime dependencies. v0.5.0.
+Single static binary, zero runtime dependencies. v0.6.0.
 
 ## Quick start
 
@@ -27,17 +27,27 @@ snapdir verify --store s3://my-bucket/snapshots --id <snapshot-id>
 
 ## Install
 
-A single, statically-linkable binary with **no runtime dependencies** — nothing else to install, all hashing and storage is in-process.
+A single, statically-linked binary with **no runtime dependencies** — nothing else to install; all hashing and storage is in-process.
 
 ```sh
-# Release archives (musl static + per-platform builds)
+# Prebuilt release archives (cargo-dist; static musl + per-platform builds)
 # https://github.com/bermi/snapdir/releases
 
 # From source
 cargo install --git https://github.com/bermi/snapdir snapdir-cli
 ```
 
-A `FROM scratch` Docker image is published for the static binary.
+### Docker
+
+The published image is built `FROM scratch`: it contains the fully-static musl `snapdir` binary and the bundled CA roots (`ca-certificates.crt`) for HTTPS to S3/B2/GCS — and **nothing else**. There is no libc, no shell, and no other runtime executables in the image.
+
+```sh
+# Run the published image
+docker run --rm ghcr.io/bermi/snapdir manifest /data
+
+# Or build the same scratch image from a clean checkout (no build-args needed)
+docker build -t snapdir .
+```
 
 ## Use cases
 
@@ -86,10 +96,11 @@ Cloud backends use native SDKs and standard credential chains — no bespoke env
 
 ## Status & links
 
-- v0.5.0. 14 subcommands: `manifest id stage push fetch pull checkout verify verify-cache flush-cache locations ancestors revisions defaults`.
+- v0.6.0. 14 subcommands: `manifest id stage push fetch pull checkout verify verify-cache flush-cache locations ancestors revisions defaults`.
 - An embedded redb catalog tracks where snapshots live (`locations` / `ancestors` / `revisions`).
 - Changelog: [docs/rust-port/CHANGELOG.md](docs/rust-port/CHANGELOG.md)
 - Migrating from the earlier version: [docs/rust-port/migration.md](docs/rust-port/migration.md)
+- Architecture Decision Records: [docs/adr/](docs/adr/)
 
 ## License
 
