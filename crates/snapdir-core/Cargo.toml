@@ -11,9 +11,9 @@ description = "snapdir core: manifest format, BLAKE3 merkle hashing, store trait
 
 [dependencies]
 blake3 = "1.8.5"
-md-5 = "0.10"
+md-5 = "0.11"
 regex = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror.workspace = true
 
 [dev-dependencies]

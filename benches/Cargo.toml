@@ -27,7 +27,7 @@ snapdir-core.workspace = true
 [dev-dependencies]
 # Pinned criterion; default-features = false keeps it lean (no gnuplot/HTML
 # report deps). It carries no TLS, so the ring / no-aws-lc stance is unaffected.
-criterion = { version = "0.7", default-features = false }
+criterion = { version = "0.8", default-features = false }
 
 # Scratch trees for the walk hot-path benchmarks. Carries no TLS, so the ring /
 # no-aws-lc stance is unaffected. Corpora are generated deterministically (no
