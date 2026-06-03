@@ -270,9 +270,9 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           archive="dist/${BIN_NAME}-${version}-x86_64-unknown-linux-musl.tar.xz"
           tar -C dist -xJf "${archive}"
-          mkdir -p target/x86_64-unknown-linux-musl/dist
+          mkdir -p release-bin
           cp "dist/${BIN_NAME}-${version}-x86_64-unknown-linux-musl/${BIN_NAME}" \
-            target/x86_64-unknown-linux-musl/dist/snapdir
+            release-bin/snapdir
 
       - name: Docker meta
         id: meta
@@ -304,7 +304,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            BIN=target/x86_64-unknown-linux-musl/dist/snapdir
+            BIN=release-bin/snapdir
 
   # ---------------------------------------------------------------------------
   # 5. Publish library crates to crates.io (core -> catalog/stores -> cli).
