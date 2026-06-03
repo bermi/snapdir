@@ -1,13 +1,12 @@
 //! Backwards-compatibility golden tests (`compat_*`).
 //!
 //! These pin the **frozen byte-format contract** of snapdir using only embedded
-//! recorded constants and the public `snapdir-core` API. No live oracle, no
-//! shelling out: every expected value below was produced by the frozen Bash
-//! oracle (`snapdir` / `snapdir-manifest`, `b3sum --no-names`) during the port
-//! and is cross-checked against `utils/qa-fixtures/expected-guide-commands.txt`
-//! and `docs/rust-port/manifest-spec.md`. This module is the contract anchor
-//! that replaces the live oracle differential once the Bash oracle is deleted
-//! from the branch.
+//! recorded constants and the public `snapdir-core` API. No oracle, no
+//! shelling out: every expected value below was produced by the original Bash
+//! implementation (the `snapdir` / `snapdir-manifest` scripts, `b3sum
+//! --no-names`) during the port and is documented in
+//! `docs/rust-port/manifest-spec.md`. Now that the Bash implementation has been
+//! removed from the branch, this module is the standalone contract anchor.
 //!
 //! Coverage:
 //!

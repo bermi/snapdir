@@ -10,8 +10,8 @@
 //!
 //! ## Behavioral source of truth
 //!
-//! Pinned to the frozen oracle script `./snapdir-sqlite3-catalog` (read only).
-//! Its data model is one core table
+//! Reproduces the data model and query output of the original
+//! `snapdir-sqlite3-catalog`. Its data model is one core table
 //! `snapdir_history(location, id, previous_id, created_at)` plus an
 //! `snapdir_event_log(event, id, location, created_at)`. `save(location, id)`
 //! looks up the location's current head (latest `created_at`), uses it as
@@ -851,11 +851,12 @@ mod tests {
 
     // ----- json_compat: CLI-compat JSON-line serialization -----------------
     //
-    // These tests freeze the three query output shapes against the Bash oracle's
-    // sqlite `json_object`. The literal-string assertions verify compactness (no
-    // spaces) and exact key order WITHOUT re-parsing (a re-parse would hide a
-    // formatting regression). The `_golden` test drives the live oracle for a
-    // real byte-for-byte cross-check.
+    // These tests freeze the three query output shapes against the original
+    // sqlite `json_object` output. The literal-string assertions verify
+    // compactness (no spaces) and exact key order WITHOUT re-parsing (a re-parse
+    // would hide a formatting regression). The `_golden` test below cross-checked
+    // byte-for-byte against the original `snapdir-sqlite3-catalog`; since that
+    // script was removed it self-skips when the script is absent.
 
     fn rec(created_at: &str, id: &str, location: &str, previous_id: Option<&str>) -> Record {
         Record {
@@ -971,10 +972,11 @@ mod tests {
         );
     }
 
-    /// Live-oracle golden test. Drives the FROZEN `./snapdir-sqlite3-catalog`
+    /// Golden cross-check against the original `snapdir-sqlite3-catalog` script
     /// (read-only: only `save`, then the three queries) over a throwaway sqlite
-    /// db to produce REAL oracle JSON, then asserts the Rust serializers produce
-    /// byte-identical lines for the same logical rows.
+    /// db to produce its JSON, then asserts the Rust serializers produce
+    /// byte-identical lines for the same logical rows. The script has been
+    /// removed from the branch, so this test self-skips when it is not present.
     ///
     /// Neutralizing `NOW()`: the oracle stamps `created_at` from the wall clock
     /// at insert time, so we cannot predict it. Instead we read the oracle's
@@ -988,7 +990,8 @@ mod tests {
     fn json_compat_matches_live_sqlite3_oracle_golden() {
         use std::process::Command;
 
-        // Locate the frozen oracle relative to the workspace root.
+        // Locate the original catalog script relative to the workspace root
+        // (removed from the branch; the test self-skips below if absent).
         let oracle = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join("snapdir-sqlite3-catalog");
@@ -1102,8 +1105,8 @@ mod tests {
     }
 
     /// Serializes a catalog's three queries for a location into a single byte
-    /// blob, so two catalogs can be compared byte-for-byte through the FROZEN
-    /// serializers (the public contract).
+    /// blob, so two catalogs can be compared byte-for-byte through the
+    /// frozen-format serializers (the public contract).
     fn query_bytes(cat: &Catalog, location: &str) -> String {
         let mut out = String::new();
         let mut locs = cat.locations().unwrap();

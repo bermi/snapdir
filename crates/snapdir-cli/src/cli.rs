@@ -1,8 +1,9 @@
 //! clap-derive command surface for the `snapdir` binary.
 //!
-//! The surface mirrors the Bash oracle (`./snapdir`) exactly: 14 subcommands
-//! plus `version`, and the global options shared across commands. Pinned to the
-//! scripts, not the docs (e.g. `--linked`, never `--link`).
+//! The surface reproduces the original `snapdir` Bash command surface exactly:
+//! 14 subcommands plus `version`, and the global options shared across commands.
+//! Pinned to the original script behavior, not the docs (e.g. `--linked`, never
+//! `--link`).
 //!
 //! `manifest`/`id` are wired to `snapdir-core`'s in-process walk and emit
 //! oracle-identical stdout; `push`/`fetch`/`pull`/`checkout`/`verify` are wired
@@ -267,7 +268,7 @@ impl Cli {
                 Ok(())
             }
             Command::Id { path } => {
-                // `snapdir id` mirrors `./snapdir id`: the snapshot id is the
+                // `snapdir id` reproduces the original `snapdir id`: the snapshot id is the
                 // b3sum of the comment-stripped manifest text. The wrapper
                 // walks with the default checksum (b3sum) and default
                 // path/follow modes; the id is checksum-mode independent here.
@@ -313,8 +314,8 @@ impl Cli {
 }
 
 /// `snapdir defaults`: print the effective default settings + environment, in
-/// sorted-unique order. Faithfully mirrors the frozen oracle
-/// `snapdir_defaults()` (`./snapdir` L1083), whose pipeline is:
+/// sorted-unique order. Reproduces the behavior of the original
+/// `snapdir_defaults()` (snapdir L1083), whose pipeline was:
 ///
 /// ```sh
 /// {
@@ -567,9 +568,9 @@ impl Cli {
     }
 
     /// `snapdir locations`: list every location tracked by the catalog (the
-    /// latest record per location), one frozen JSON line per record, in the
-    /// catalog's order. Mirrors the oracle's `snapdir locations`
-    /// (`snapdir-sqlite3-catalog locations`).
+    /// latest record per location), one JSON line per record, in the
+    /// catalog's order. Reproduces the original `snapdir locations` /
+    /// `snapdir-sqlite3-catalog locations` query output.
     fn run_locations(&self) -> Result<()> {
         let catalog = self.open_catalog()?;
         for record in catalog.locations().context("querying catalog locations")? {

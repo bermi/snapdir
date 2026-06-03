@@ -13,3 +13,6 @@ utils/qa-fixtures/latest-guide-commands.txt
 # --- Gatesmith run artifacts ---
 .gatesmith/evidence/
 .gatesmith/handoff/
+
+# Coverage output (cargo llvm-cov / pre-push suite)
+lcov.info

@@ -1,7 +1,7 @@
 //! In-process filesystem walk producing a frozen-format [`Manifest`].
 //!
-//! This module reproduces `./snapdir-manifest`'s `generate` behavior in pure
-//! Rust, consuming the frozen [`manifest`](crate::manifest),
+//! This module reproduces the original `snapdir-manifest generate` behavior in
+//! pure Rust, consuming the frozen [`manifest`](crate::manifest),
 //! [`merkle`](crate::merkle) and [`excludes`](crate::excludes) APIs without
 //! changing any of them. It walks a directory tree and emits one
 //! [`ManifestEntry`] per file (`F`) and directory (`D`), computing per-file
@@ -156,8 +156,8 @@ struct DirRecord {
 }
 
 /// Walks the directory tree rooted at `root`, producing a [`Manifest`] that
-/// matches `./snapdir-manifest`'s output byte-for-byte for the same tree and
-/// checksum function.
+/// matches the original `snapdir-manifest` output byte-for-byte for the same
+/// tree and checksum function.
 ///
 /// `root` must be an **absolute** path to a directory (the CLI lane resolves
 /// the user's argument first, mirroring the oracle's `readlink`). `hasher`
@@ -430,9 +430,10 @@ fn rewrite_path(abs_path: &str, root: &str, mode: PathMode) -> String {
 mod tests {
     //! Pure-Rust walk tests.
     //!
-    //! Originally these shelled out to the frozen Bash oracle
-    //! (`./snapdir-manifest`) and asserted byte-identity. The oracle has since
-    //! been deleted from the branch, so each case is now pinned against an
+    //! Originally these shelled out to the legacy Bash oracle
+    //! (the `snapdir-manifest` script) and asserted byte-identity. The oracle
+    //! has since been deleted from the branch, so each case is now pinned
+    //! against an
     //! **embedded golden manifest constant** (or, where a column is
     //! platform-dependent, a structural assertion). The golden bytes were
     //! captured once from this very `walk` implementation over fixtures with

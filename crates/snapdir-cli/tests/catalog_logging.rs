@@ -2,7 +2,7 @@
 //! the oracle's `_snapdir_log_event` sites (`snapdir` L212 for `manifest`, L826
 //! for `stage`; `push` is covered by `catalog_commands.rs`).
 //!
-//! The frozen Bash oracle logs to the catalog at three places:
+//! The original Bash implementation logged to the catalog at three places:
 //!   - `snapdir manifest <dir>` → `_snapdir_log_event "manifest" "$id"
 //!     "$snapdir_dir_abs_path"` (location = the manifested dir's absolute path).
 //!   - `snapdir push`          → already covered (gate cli-catalog-commands).

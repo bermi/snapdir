@@ -244,8 +244,9 @@ pub trait Store {
 mod tests {
     use super::*;
 
-    // The canonical oracle cross-check: this exact hash → exact sharded path,
-    // matching `_snapdir_get_object_rel_path` in `./snapdir`:
+    // The canonical cross-check: this exact hash → exact sharded path,
+    // matching the original `_snapdir_get_object_rel_path` in the `snapdir`
+    // script:
     //   .objects/${c:0:3}/${c:3:3}/${c:6:3}/${c:9}
     const SAMPLE: &str = "49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92";
 
