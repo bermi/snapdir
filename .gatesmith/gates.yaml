@@ -1334,7 +1334,9 @@ gates:
     phase: 11
     owner_agent: tests
     depends_on: [compat-golden-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T13:40:00Z
+    git_sha: local-only-58272a3
     failure_count: 0
     verification_cmd: "! ls tests/interop/run.sh tests/integration/remote_stores.sh tests/integration/remote_stores_live.sh tests/integration/file_store_roundtrip.sh 2>/dev/null && cargo test --workspace --locked"
     pass_criteria:
