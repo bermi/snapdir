@@ -1,1 +1,6 @@
+# Keep the build context small: the root Dockerfile builds from source inside
+# the builder stage, so host build artifacts and VCS metadata must not be sent.
 .env
+.git
+target
+**/target

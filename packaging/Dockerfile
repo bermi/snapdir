@@ -9,11 +9,13 @@
 #   docker build -f packaging/Dockerfile \
 #     --build-arg BIN=target/x86_64-unknown-linux-musl/dist/snapdir .
 #
-# Lane note (packaging): this lives under packaging/ — the repo-root Dockerfile
-# is the frozen Bash-era image and belongs to the oracle, not this lane.
+# Lane note (packaging): this lives under packaging/ — it's the lightweight
+# `BIN` build-arg variant consumed by release.yml from the prebuilt musl
+# artifact. The self-contained user image (builds from source) is the repo-root
+# Dockerfile.
 
 # ---- stage: gather CA certificates from a tiny base ----
-FROM alpine:3.20 AS certs
+FROM alpine:3.21 AS certs
 RUN apk add --no-cache ca-certificates
 
 # ---- final: scratch + static binary + certs ----

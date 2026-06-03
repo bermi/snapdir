@@ -3,7 +3,14 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ Phase 11 — Modernize & de-bash (in progress) — 77/84 gates passed
+## ⛔ PUSH HOLD (operator directive 2026-06-03) — until `ci-green`
+
+> **Do NOT `git push origin rust-port` until `ci-green` passes.** Operator: *"why are we even pushing work to pay for github actions when lint and deploy are not in place yet locally?"* ci.yaml triggers on `push` and is currently RED — every push burns paid Actions minutes on red runs.
+> **Tick behavior while held:** commit LOCALLY only (the work is saved); skip the `git push` step. The plan to clear the hold: (1) `remove-bash-test-harnesses` (clears oracle test failures), (2) `local-pre-push-gates` (build `utils/ci/pre-push.sh` — the CI-equivalent suite), (3) run it locally + fix all failures (clippy `--all-features`, musl, coverage, cargo-shear, cargo-semver-checks) until green, (4) `ci-green` = ONE intentional push + dispatch to confirm ci.yaml green. After that the pre-push hook guards every future push.
+
+## ▶ Phase 11 — Modernize & de-bash (in progress) — 78/84 gates passed (local commits; unpushed since fa09dd8→ held)
+
+`docker-modernize` ✅ PASSED (local commit, **unpushed** — push held) — self-contained root `Dockerfile` (rust:1.96-slim-bookworm builder → `FROM scratch` + CA-certs from the builder + native-arch musl binary; no bash/b3sum/apk), deleted `utils/website.dockerfile`, bumped `packaging/Dockerfile` certs to alpine:3.21, `.dockerignore` excludes target/.git. Runtime proof: `docker run --rm snapdir-phase11-test --version` → `snapdir 0.5.0` (25.4 MB scratch image).
 
 `debash-ci` ✅ PASSED (git cc72605) — stripped the oracle from CI: deleted `sqlite3-catalog.yml`, `unit_tests.yml`, `build.yml`, `docs.yml` (oracle-only / built the deleted bash Dockerfile); repurposed `s3-store.yml`/`b2-store.yml` to drive the Rust env-gated round-trips; cleaned the devcontainer. actionlint clean; Rust coverage stays in `ci.yaml`.
 

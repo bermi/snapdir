@@ -1481,7 +1481,9 @@ gates:
     phase: 11
     owner_agent: packaging
     depends_on: [remove-bash-oracle, deps-verify]
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T12:50:00Z
+    git_sha: pending-local
     failure_count: 0
     verification_cmd: "docker build -t snapdir-phase11-test . && docker run --rm snapdir-phase11-test --version && ! test -e utils/website.dockerfile && ! grep -riqE 'bash|b3sum|apk add' Dockerfile"
     pass_criteria:
@@ -1522,7 +1524,11 @@ gates:
   - id: ci-green
     phase: 11
     owner_agent: ci
-    depends_on: [remove-bash-test-harnesses, debash-ci, deps-upgrade-general, deps-upgrade-tls-sdk]
+    depends_on: [local-pre-push-gates, remove-bash-test-harnesses, debash-ci, deps-upgrade-general, deps-upgrade-tls-sdk]
+    # RE-SEQUENCED 2026-06-03 (operator: "why push to paid CI before local gates exist?"):
+    # the local pre-push suite is BUILT FIRST (local-pre-push-gates) and used to drive the
+    # tree green locally; ci-green is then ONE intentional push+dispatch to confirm — not
+    # many red runs. Until ci-green, PUSHES ARE HELD (commit locally only). See state.md.
     # ci.yaml went RED on the upgraded tree (run 26877611844 @ cc1c626): all Test (oracle
     # cache_commands_stage_id_matches_oracle etc — cleared by remove-bash-test-harnesses),
     # Lint (clippy --all-features / cargo-shear unused-deps / cargo-semver-checks on the
@@ -1539,7 +1545,7 @@ gates:
   - id: local-pre-push-gates
     phase: 11
     owner_agent: ci
-    depends_on: [ci-green]
+    depends_on: [debash-ci]
     # OPERATOR REQUEST 2026-06-03: ci.yaml was failing badly with no local mirror — lint,
     # coverage, musl, MSRV all only ran in CI. Add a git pre-push hook (+ installer + docs)
     # that runs the CI-equivalent suite locally and BLOCKS the push on failure, so breakage
