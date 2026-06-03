@@ -3,9 +3,9 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ Phase 11 — Modernize & de-bash (in progress) — 70/82 gates passed
+## ▶ Phase 11 — Modernize & de-bash (in progress) — 71/82 gates passed
 
-`debash-stores-comments` ✅ PASSED (git 56df3cd) — scrubbed the legacy oracle script-names from `crates/snapdir-stores/src/` comments (kept the third-party ExternalStore shim). `compat-golden-tests` ✅ PASSED (git ea4dcbc, owner GATE-OWNER-FIX'd tests→core) — `crates/snapdir-core/tests/compat_golden.rs` pins the frozen byte-format with 16 embedded-constant Rust tests (manifest format/sort, dir-merkle, snapshot-id, sharded keys, md5/sha256/keyed modes). **This is the contract anchor** — the byte-format is now guarded without the oracle, so `remove-bash-oracle` + `remove-bash-test-harnesses` are unblocked. `adr-records` ✅ (git 9464f77, 26 MADR ADRs in `docs/adr/`).
+`deps-cooldown-automation` ✅ PASSED (git 89f2468) — Dependabot cooldown (default-days:3) + `utils/ci/check-crate-age.sh` (every dep ≥3 days old) + supply-chain.yml. **The check already caught `rustls-native-certs 0.8.4` (<3 days) in the current lock** → `deps-upgrade-tls-sdk`/`deps-verify` must pin it to a ≥3-day version or re-run on/after 2026-06-04. `debash-stores-comments` ✅ (git 56df3cd). `compat-golden-tests` ✅ (git ea4dcbc, owner GATE-OWNER-FIX'd tests→core) — `crates/snapdir-core/tests/compat_golden.rs` pins the frozen byte-format with 16 embedded-constant Rust tests (manifest format/sort, dir-merkle, snapshot-id, sharded keys, md5/sha256/keyed modes). **This is the contract anchor** — the byte-format is now guarded without the oracle, so `remove-bash-oracle` + `remove-bash-test-harnesses` are unblocked. `adr-records` ✅ (git 9464f77, 26 MADR ADRs in `docs/adr/`).
 
 **Eligible now:** `debash-stores-comments` (stores) · `deps-cooldown-automation` (ci) · `remove-bash-test-harnesses` (tests) · `remove-bash-oracle` (generic, **human_checkpoint** — operator lifts the `Edit(snapdir*)` deny rules).
 

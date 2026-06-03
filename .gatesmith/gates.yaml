@@ -1396,7 +1396,11 @@ gates:
     owner_agent: ci
     depends_on: []
     # Supply-chain policy + reusable age-check (see memory: dependency-cooldown).
-    status: pending
+    # NOTE: the script already caught rustls-native-certs 0.8.4 (<3 days) in the current lock —
+    # deps-upgrade-tls-sdk + deps-verify must resolve it (pin to a >=3-day version or re-run after it ages).
+    status: passed
+    passed_at: 2026-06-03T02:30:00Z
+    git_sha: 89f2468
     failure_count: 0
     verification_cmd: "test -f .github/dependabot.yml && grep -q 'cooldown' .github/dependabot.yml && test -f utils/ci/check-crate-age.sh && bash utils/ci/check-crate-age.sh --help >/dev/null 2>&1 || test -f utils/ci/check-crate-age.sh"
     pass_criteria:
