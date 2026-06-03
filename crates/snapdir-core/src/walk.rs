@@ -554,7 +554,10 @@ mod tests {
         // zero children == blake3("") and whose size is 0. Root chmod'd to 755.
         let scratch = Scratch::new("empty-dir");
         let expected = format!("D 755 {EMPTY_B3} 0 ./");
-        assert_eq!(manifest_text(scratch.root(), &WalkOptions::default()), expected);
+        assert_eq!(
+            manifest_text(scratch.root(), &WalkOptions::default()),
+            expected
+        );
     }
 
     #[test]
@@ -567,7 +570,10 @@ mod tests {
             "D 755 dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b 0 ./\n\
              F 600 {EMPTY_B3} 0 ./empty.txt"
         );
-        assert_eq!(manifest_text(scratch.root(), &WalkOptions::default()), expected);
+        assert_eq!(
+            manifest_text(scratch.root(), &WalkOptions::default()),
+            expected
+        );
     }
 
     /// The deep guide tree under [`PathMode::Relative`]. Dirs are `0o700`, files
@@ -614,7 +620,10 @@ F 600 27a55588c59999fd686667c4b186af08161b95c287216f0cde723f0e191d1974 4 ./r1f";
         let scratch = Scratch::new("nested-rel");
         build_nested(scratch.root());
         assert_eq!(
-            manifest_text(scratch.root(), &opts(FollowMode::Follow, PathMode::Relative, None)),
+            manifest_text(
+                scratch.root(),
+                &opts(FollowMode::Follow, PathMode::Relative, None)
+            ),
             NESTED_RELATIVE_GOLDEN
         );
     }
@@ -673,7 +682,11 @@ F 600 3ae7d805f6789a6402acb70ad4096a85a56bf6804eaf25c0493ac697548d30b5 1 ./sub/f
 
         // Structural cross-check of the summation rule independent of the bytes.
         let root_dir = manifest.entries().iter().find(|e| e.path == "./").unwrap();
-        let sub_dir = manifest.entries().iter().find(|e| e.path == "./sub/").unwrap();
+        let sub_dir = manifest
+            .entries()
+            .iter()
+            .find(|e| e.path == "./sub/")
+            .unwrap();
         assert_eq!(sub_dir.size, 8, "sub = f2(7) + f3(1)");
         assert_eq!(root_dir.size, 13, "root = f1(5) + sub(8)");
     }
@@ -816,7 +829,10 @@ D 700 069cd5e102d7dd39faa7093b5b2d784c32e19b01f829a902c14aa10b7182debc 13 ./src/
 F 600 2d1ebfa706ba230165250f744796a92accba5e1b6fa357983b65319da33f8e93 13 ./src/main.rs";
         assert_eq!(manifest, expected);
         assert!(!manifest.contains(".git"), "%common% excludes .git");
-        assert!(!manifest.contains("node_modules"), "%common% excludes node_modules");
+        assert!(
+            !manifest.contains("node_modules"),
+            "%common% excludes node_modules"
+        );
     }
 
     #[test]
@@ -836,7 +852,10 @@ F 600 2d1ebfa706ba230165250f744796a92accba5e1b6fa357983b65319da33f8e93 13 ./src/
         let mut bytes = manifest.to_string().into_bytes();
         bytes.push(b'\n');
         let expected = hasher.hash_hex(&bytes);
-        assert_eq!(id, expected, "snapshot id == blake3(manifest_text + \"\\n\")");
+        assert_eq!(
+            id, expected,
+            "snapshot id == blake3(manifest_text + \"\\n\")"
+        );
         assert_eq!(id.len(), 64, "id is 64 lowercase hex chars");
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
     }

@@ -20,7 +20,19 @@ locale = "en"
 snapdir = "snapdir"
 # blake3 hashing terminology.
 blake = "blake"
-# "ba" / short hex-ish tokens show up in content-address fixtures.
+# Short hex digest fragments from the FROZEN golden content-addresses
+# (e.g. `8af03a1b…ba82b9be`, `8aed4caf…`). These are checksum data, not prose —
+# they must never be "corrected".
+ba = "ba"
+caf = "caf"
+# `_snapdir_file_store_persit` is the VERBATIM (misspelled) function name from the
+# now-deleted Bash oracle `snapdir-file-store`; the doc-comments quote it exactly.
+persit = "persit"
+# `anc` / `anc_lines` / `oracle_anc` are local variable identifiers (short for
+# "ancestor(s)") used across the catalog tests.
+anc = "anc"
 
 [default.extend-identifiers]
 # crate / API identifiers that look like typos but are intentional.
+# `CHECKs` = the SQL `CHECK` constraint keyword pluralized in a prose comment.
+CHECKs = "CHECKs"

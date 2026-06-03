@@ -219,7 +219,10 @@ F 644 8df06c5f5e6dcfcc59412fc9afafd46cbe4fbfbff16793befe474b152a5a993d 7 ./sub/b
         &["manifest", &root_str],
         &[("SNAPDIR_MANIFEST_CONTEXT", "sekret")],
     );
-    assert_eq!(actual, expected, "keyed (SNAPDIR_MANIFEST_CONTEXT) manifest");
+    assert_eq!(
+        actual, expected,
+        "keyed (SNAPDIR_MANIFEST_CONTEXT) manifest"
+    );
     assert_ne!(actual, GOLDEN_B3, "keyed output must differ from unkeyed");
     fs::remove_dir_all(&root).ok();
 }

@@ -117,11 +117,7 @@ fn compat_manifest_line_format_fields_and_round_trip() {
 fn compat_manifest_round_trips_multiline_byte_identical() {
     // Parse -> Display of a recorded multi-line manifest stays byte-identical
     // for every guide/oracle fixture, proving format + ordering are frozen.
-    for fixture in [
-        EMPTY_FILES_MANIFEST,
-        MODIFIED_MANIFEST,
-        MULTILEVEL_MANIFEST,
-    ] {
+    for fixture in [EMPTY_FILES_MANIFEST, MODIFIED_MANIFEST, MULTILEVEL_MANIFEST] {
         let manifest = Manifest::parse(fixture).expect("fixture parses");
         assert_eq!(manifest.to_string(), fixture);
     }
@@ -296,7 +292,10 @@ fn compat_checksum_mode_md5_golden_vector() {
     // after `md5sum | cut -d' ' -f1`. md5("foo\n") matches the guide's foo.txt.
     let hasher = Md5Hasher::new();
     assert_eq!(hasher.hash_hex(b""), "d41d8cd98f00b204e9800998ecf8427e");
-    assert_eq!(hasher.hash_hex(b"foo\n"), "d3b07384d113edec49eaa6238ad5ff00");
+    assert_eq!(
+        hasher.hash_hex(b"foo\n"),
+        "d3b07384d113edec49eaa6238ad5ff00"
+    );
 }
 
 #[test]
@@ -340,5 +339,8 @@ fn compat_checksum_mode_md5_drives_merkle_and_snapshot_id() {
 
     let manifest = Manifest::parse(EMPTY_FILES_MANIFEST).expect("parses");
     let text = format!("{manifest}\n");
-    assert_eq!(snapshot_id(&manifest, &hasher), hasher.hash_hex(text.as_bytes()));
+    assert_eq!(
+        snapshot_id(&manifest, &hasher),
+        hasher.hash_hex(text.as_bytes())
+    );
 }

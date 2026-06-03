@@ -10,7 +10,6 @@ homepage.workspace = true
 description = "snapdir catalog: redb-backed locations/ancestors/revisions."
 
 [dependencies]
-snapdir-core.workspace = true
 thiserror.workspace = true
 # Pure-Rust embedded KV. No SQLite, no TLS — keeps aws-lc-rs out of the lockfile.
 redb = "=4.1.0"

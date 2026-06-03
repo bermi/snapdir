@@ -21,10 +21,11 @@ workspace = true
 bench = false
 test = false
 
-[dependencies]
+[dev-dependencies]
+# `snapdir-core` is exercised only by the `hot_paths` benchmark (a bench/dev
+# target — `src/lib.rs` is doc-only), so it belongs in dev-dependencies.
 snapdir-core.workspace = true
 
-[dev-dependencies]
 # Pinned criterion; default-features = false keeps it lean (no gnuplot/HTML
 # report deps). It carries no TLS, so the ring / no-aws-lc stance is unaffected.
 criterion = { version = "0.8", default-features = false }
