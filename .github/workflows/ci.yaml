@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, rust-port]
+    branches: [main, dev]
   pull_request:
-    branches: [main, rust-port]
+    branches: [main, dev]
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
