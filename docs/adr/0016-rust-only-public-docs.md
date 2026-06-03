@@ -8,8 +8,8 @@ The repository carried a bash-era public documentation set: a Retype website
 (`docs/index.md`, `install.md`, `guide.md`, `authoring-stores.md`,
 `understanding-manifests.md`, per-script readmes, `docs/api/**`, `docs/images/**`,
 `retype.yml`) plus a README and CONTRIBUTING framed around installing and running the
-shell scripts. Those docs also carried known bugs (ADR-0001). After the port, this
-material describes a tool that no longer ships.
+shell scripts. Those docs also carried known bugs. After the port, this material
+describes a tool that no longer ships.
 
 ## Decision
 
@@ -20,7 +20,7 @@ Make the public documentation Rust-only:
 - Rewrite `README.md` (Rust-only, discovery-oriented, no bash-install/script framing,
   no AI/historical reasoning) and `CONTRIBUTING.md` (a Rust contributor guide: cargo
   build/test/fmt/clippy, workspace layout, MSRV, the frozen-oracle note).
-- Keep `docs/rust-port/**` (PLAN, manifest spec, CHANGELOG, migration guide).
+- Keep `docs/rust-port/**` (manifest spec, CHANGELOG, migration guide).
 - Fix the known doc bugs in the Rust docs (`--linked` not `--link`; `ensure-no-errors`
   not `verify-transactions`).
 
@@ -31,7 +31,7 @@ The frozen oracle scripts themselves are never edited — only their docs.
 - **Maintain the bash-era docs alongside the Rust docs.** Rejected: they describe a
   retired tool and would mislead users.
 - **Delete all docs and start over.** Rejected: `docs/rust-port/**` (spec, migration
-  guide, changelog) is the accurate, transitional documentation and is kept.
+  guide, CHANGELOG) is the accurate, transitional documentation and is kept.
 
 ## Consequences
 

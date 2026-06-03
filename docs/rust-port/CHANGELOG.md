@@ -27,12 +27,11 @@ finalized.
   retiring the Bash implementation, dependency-cooldown policy, and more).
 - **Rust golden-format contract** — `crates/snapdir-core/tests/compat_golden.rs`
   pins the exact manifest line bytes, directory merkle checksums, and snapshot
-  IDs as golden constants, replacing the live differential comparison as the
-  guarantor of byte-format stability.
-- **`manifest-format.sha.lock` tripwire** over the format-defining source, so any
-  accidental change to the line format, ordering, checksum algorithm, sharded
-  layout, or exclude sets trips CI and demands an explicit, reviewed bump.
-- **Local pre-push CI gate** (`utils/ci/pre-push.sh`, installed via
+  IDs as golden constants, replacing the live comparison against the Bash version
+  as the guarantor of byte-format stability. Any accidental change to the line
+  format, ordering, checksum algorithm, sharded layout, or exclude sets fails the
+  golden tests.
+- **Local pre-push CI hook** (`utils/ci/pre-push.sh`, installed via
   `make install-hooks`) running the fast CI legs (~2–4 min) before every push;
   the slow musl + coverage legs run in CI and via `make ci-local`.
 - **`scratch` Docker image** — a `FROM scratch` final stage shipping only the
@@ -50,9 +49,9 @@ finalized.
 ### Removed
 
 - **The legacy Bash implementation was removed.** Its role as the behavioral
-  source of truth is now served by the Rust golden-format tests and the
-  `manifest-format.sha.lock` tripwire. The shipped binary remains fully
-  in-process with no runtime dependency on external executables.
+  source of truth is now served by the Rust golden-format tests. The shipped
+  binary remains fully in-process with no runtime dependency on external
+  executables.
 
 ## [0.5.0] — Rust port
 
@@ -90,12 +89,12 @@ Bash-written caches and remote buckets stay mutually readable.
 - **`file://` FileStore** with the sharded `.objects`/`.manifests` layout,
   objects-before-manifest push (skip-if-present), and verified fetch
   (temp download → BLAKE3 verify → retry ≤5 → atomic rename).
-- **Differential interop harness** (`tests/interop/run.sh`) proving byte-identical
-  manifests and snapshot IDs Bash↔Rust across every checksum/keyed/no-follow
-  mode, plus live cross-tool harnesses for S3 (MinIO) and GCS.
+- **Interop verification** proving byte-identical manifests and snapshot IDs
+  Bash↔Rust across every checksum/keyed/no-follow mode, plus live cross-tool
+  checks for S3 (MinIO) and GCS.
 - **Performance**: in-process walk + BLAKE3 makes the Rust `manifest` command
   ~33.6× faster on many-small files and ~2.69× faster on few-large files than the
-  Bash oracle, with byte-identical output.
+  Bash version, with byte-identical output.
 
 ### Changed
 
@@ -126,8 +125,8 @@ Bash-written caches and remote buckets stay mutually readable.
 ### Removed
 
 - No runtime dependency on external binaries (`b3sum`, `sqlite3`, `aws`, `b2`,
-  `gcloud`) in the shipped binary. External tools are used only by the test/oracle
-  harness.
+  `gcloud`) in the shipped binary. External tools are used only by the test
+  suite.
 
 [Unreleased]: https://github.com/bermi/snapdir/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/bermi/snapdir/releases/tag/v1.0.0

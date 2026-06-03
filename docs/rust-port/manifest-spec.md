@@ -5,8 +5,8 @@
 > the original snapdir defined, reproduced byte-for-byte by `snapdir-core`.
 >
 > **The frozen spec wins.** The byte-format contract is now guarded by the Rust
-> golden-constant tests in `crates/snapdir-core/tests/compat_golden.rs` and the
-> `manifest-format.sha.lock` tripwire, cross-checked against the core source
+> golden-constant tests in `crates/snapdir-core/tests/compat_golden.rs`,
+> cross-checked against the core source
 > (`crates/snapdir-core/src/{manifest.rs,merkle.rs,excludes.rs}`). If you find a
 > disagreement between this prose and the golden contract, the contract wins —
 > report the discrepancy rather than "correcting" the spec.

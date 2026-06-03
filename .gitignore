@@ -10,9 +10,5 @@ utils/qa-fixtures/latest-guide-commands.txt
 **/*.rs.bk
 # Cargo.lock is intentionally committed (binary workspace).
 
-# --- Gatesmith run artifacts ---
-.gatesmith/evidence/
-.gatesmith/handoff/
-
 # Coverage output (cargo llvm-cov / pre-push suite)
 lcov.info

@@ -37,5 +37,5 @@ is unchanged. No cache or store purge is added to `verify`.
 
 - `--purge` has one clear home: `verify-cache`.
 - Users get an actionable error instead of a no-op.
-- The decision was implemented through the gate (a premature direct edit was reverted
-  for traceability — see ADR-0017).
+- `verify` keeps a single, well-defined responsibility: store-side verification, with
+  cache purging handled exclusively by `verify-cache`.

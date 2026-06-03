@@ -8,13 +8,12 @@ Records use the [MADR](https://adr.github.io/madr/) format. Each record states t
 **Context**, the **Decision**, the **Alternatives considered**, and the
 **Consequences**, plus a short status line. Records are immutable once accepted; a
 later decision that changes course is written as a new record that supersedes the
-earlier one (see ADR-0024, which supersedes ADR-0001).
+earlier one.
 
 ## Index
 
 | ADR | Title | Status |
 | --- | --- | --- |
-| [0001](0001-differential-oracle-methodology.md) | Differential-oracle methodology | Accepted (superseded by 0024) |
 | [0002](0002-manifest-format-freeze.md) | Freeze the manifest format and on-disk layout | Accepted |
 | [0003](0003-snapshot-id-is-blake3-of-manifest-text.md) | Snapshot ID is BLAKE3 of the `#`-stripped manifest text | Accepted |
 | [0004](0004-ring-tls-provider.md) | Use the `ring` rustls provider, ban aws-lc-rs | Accepted |
@@ -30,13 +29,9 @@ earlier one (see ADR-0024, which supersedes ADR-0001).
 | [0014](0014-remove-verify-purge.md) | Remove `verify --purge` | Accepted |
 | [0015](0015-all-14-subcommands-wired.md) | Wire all 14 CLI subcommands, no stubs | Accepted |
 | [0016](0016-rust-only-public-docs.md) | Rust-only public documentation | Accepted |
-| [0017](0017-gatesmith-pm-orchestration.md) | Gatesmith PM orchestration model | Accepted |
-| [0018](0018-no-false-passes.md) | No false passes: every checkpoint has a machine check | Accepted |
-| [0019](0019-frozen-interface-sha-locks.md) | Frozen-interface SHA locks | Accepted |
-| [0020](0020-interop-diff-keystone-gate.md) | Interop-diff keystone gate | Accepted |
 | [0021](0021-performance-secondary-to-correctness.md) | Performance is secondary to byte-identical output | Accepted |
 | [0022](0022-testing-strategy.md) | Testing strategy: proptest, trycmd, cargo-fuzz | Accepted |
-| [0023](0023-b2-scope-rust-and-format-compat.md) | Scope the B2 interop gate to Rust round-trip and format compat | Accepted |
-| [0024](0024-retire-the-bash-oracle.md) | Retire the Bash oracle (full cut) | Accepted (supersedes 0001) |
+| [0023](0023-b2-scope-rust-and-format-compat.md) | Scope the B2 interop to Rust round-trip and format compat | Accepted |
+| [0024](0024-retire-the-bash-oracle.md) | Retire the Bash oracle (full cut) | Accepted |
 | [0025](0025-keep-native-certs.md) | Keep native-certs in the scratch image | Accepted |
 | [0026](0026-latest-deps-with-release-age-cooldown.md) | Adopt latest deps with a 3-day minimum-release-age | Accepted |

@@ -7,12 +7,12 @@ Status: Accepted, 2026-06
 The manifest is the interoperability boundary of snapdir. Its exact byte layout,
 sort order, checksum rules, and the content-addressable directory layout all had to
 match the Bash oracle so that caches and stores written by either tool remain mutually
-readable. Without an explicit freeze, downstream lanes (stores, catalog, CLI) would
+readable. Without an explicit freeze, downstream components (stores, catalog, CLI) would
 build against a moving target.
 
 ## Decision
 
-Freeze the manifest format and layout after the core hashing lane landed, exactly as
+Freeze the manifest format and layout once the core hashing was in place, exactly as
 read from the Bash source:
 
 - **Manifest line:** `PATH_TYPE PERMISSIONS CHECKSUM SIZE PATH`, single-space
@@ -30,19 +30,21 @@ read from the Bash source:
   `.manifests/<id[0:3]>/<id[3:6]>/<id[6:9]>/<id[9:]>` — a 3-level shard, mirrored in
   the cache and in every store.
 
-The freeze is recorded in `.gatesmith/manifest-format.sha.lock`, re-verified each
-tick.
+The freeze is guarded by the Rust golden tests
+(`crates/snapdir-core/tests/compat_golden.rs`), which assert the frozen byte layout so
+any accidental change to the format-defining code fails the test suite.
 
 ## Alternatives considered
 
 - **A new, cleaner Rust-native format.** Rejected: it would break interoperability,
   which is the hard constraint of the whole port.
-- **Document the format without a lock.** Rejected: a SHA-lock makes accidental drift
-  in the core files a hard failure rather than a silent change.
+- **Document the format without an enforced guard.** Rejected: golden tests make
+  accidental drift in the core files a hard failure rather than a silent change.
 
 ## Consequences
 
-- Downstream lanes build against an immutable contract.
-- Any change to the frozen files trips the SHA-lock and requires explicit approval.
+- Downstream components build against an immutable contract.
+- Any change to the frozen byte layout fails the golden tests and requires explicit
+  approval.
 - The format carries forward a few oracle quirks (octal perms, dir-size summation)
   that are now contractually fixed rather than free to "improve".

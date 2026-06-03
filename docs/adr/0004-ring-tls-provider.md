@@ -42,5 +42,5 @@ empty (and likewise no `openssl-sys`).
 - The SDK wiring is more verbose (custom connector, manual provider install) than the
   defaults.
 - `deny.toml` enforces the ban permanently; the `grep -i aws-lc Cargo.lock` empty check
-  is part of every dependency-touching gate. (The provider stack was later unified on
+  runs in CI on every dependency change. (The provider stack was later unified on
   rustls 0.23 / hyper-rustls 0.27 while keeping ring — see ADR-0026.)

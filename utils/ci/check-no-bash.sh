@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# check-no-bash.sh — the final de-bash guard (phase 11).
+# check-no-bash.sh — the final de-bash guard.
 #
 # The legacy Bash oracle (8 root `snapdir*` scripts, the root bash Dockerfile,
 # utils/qa-fixtures/, the .sh QA harness, and the oracle CI) has been DELETED.
@@ -27,21 +27,17 @@
 #   * .git/ and target/ — VCS internals and build output; never source of truth
 #     and huge, so we never content-scan them.
 #
-#   * .gatesmith/ — the PM's ledger / journal / handoffs / templates. These
-#     record the de-bash history in prose and quote the old invocations on
-#     purpose; they are not executable.
-#
 #   * docs/ — ADRs, the rust-port history, README/CONTRIBUTING. They document
 #     what the port replaced and quote the original commands historically.
 #
 #   * Rust source/doc COMMENTS (*.rs) — engineering notes explaining what the
 #     port reproduces. We never scan .rs files for "invocations": the only
 #     `Command::new`-style references left are in a self-skipping catalog test
-#     whose oracle no longer exists, and the frozen sha-locked core files
+#     whose oracle no longer exists, and the frozen core files
 #     (crates/snapdir-core/src/{manifest,merkle,excludes}.rs) MUST NOT be
 #     edited, so their historical comments are excluded by construction.
 #
-# Re-verify (the PM re-runs this):
+# Re-verify:
 #   bash utils/ci/check-no-bash.sh
 # ---------------------------------------------------------------------------
 

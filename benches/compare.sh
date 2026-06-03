@@ -2,8 +2,8 @@
 #
 # benches/compare.sh
 #
-# End-to-end Rust-vs-Bash performance comparison harness for the snapdir
-# `manifest` hot path. This is what the `perf-gate` human checkpoint runs.
+# End-to-end Rust-vs-Bash performance comparison for the snapdir
+# `manifest` hot path.
 #
 # It does TWO things, in this order:
 #

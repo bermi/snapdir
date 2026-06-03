@@ -40,5 +40,5 @@ checksums `dba5865c…` and `4a0732cf…`.
   rustdoc, tests) before the contract was frozen.
 - A dedicated `snapshot_id` function exists rather than reusing the directory-checksum
   path.
-- This was caught precisely because the port diffed against the live oracle (ADR-0001)
-  rather than trusting the docs.
+- This was caught precisely because the port diffed against the live oracle rather than
+  trusting the docs.

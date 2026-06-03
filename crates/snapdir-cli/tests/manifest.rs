@@ -4,7 +4,7 @@
 //! built with **explicit, fixed permissions** (files `0o644`, dirs `0o755`) so
 //! its `TYPE PERMS CHECKSUM SIZE PATH` stdout is fully deterministic, and assert
 //! it against **embedded golden constants**. They previously diffed against the
-//! frozen Bash differential oracle (now deleted from the branch); the frozen
+//! frozen Bash version (now deleted from the branch); the frozen
 //! byte-format contract is anchored by
 //! `crates/snapdir-core/tests/compat_golden.rs`. What remains here is
 //! the CLI-binary wiring coverage: that the `manifest` subcommand honors

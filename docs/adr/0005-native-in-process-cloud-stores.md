@@ -13,10 +13,10 @@ zero runtime dependencies: requiring those external CLIs at runtime would defeat
 Implement all cloud stores in-process using native Rust SDKs: `aws-sdk-s3` for S3 and
 B2, `google-cloud-storage` for GCS. The shipped binary never shells out to `aws`,
 `gcloud`, `b2`, `b3sum`, or `sqlite3`. External system binaries are permitted only in
-the test/oracle harness, never in `crates/`. The emit-shell-command shim is retained
-only for third-party external stores (see ADR-0017's lane map and the store router).
+the test suite, never in `crates/`. The emit-shell-command shim is retained
+only for third-party external stores, dispatched by the store router.
 
-This is proven by a zero-external-dependency test lane that runs the Rust round-trip
+This is proven by a zero-external-dependency test that runs the Rust round-trip
 with `aws`, `b2`, and `gcloud` removed from `PATH` via a sanitized symlink farm.
 
 ## Alternatives considered
@@ -32,4 +32,4 @@ with `aws`, `b2`, and `gcloud` removed from `PATH` via a sanitized symlink farm.
   env vars), simplifying the auth story.
 - The binary depends on the SDK crates and their TLS stack — see ADR-0004 for the
   resulting `ring`/aws-lc constraint.
-- The PATH-sanitized lane is a standing guard that no accidental shell-out slips in.
+- The PATH-sanitized test is a standing guard that no accidental shell-out slips in.

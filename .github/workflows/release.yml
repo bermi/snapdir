@@ -15,9 +15,9 @@ name: Release
 # crates.io. The publish jobs (release/docker/crates-io) are hard-gated on a real
 # `v*` TAG PUSH (`github.event_name == 'push'`), so a manual run can never publish
 # regardless of the `dry_run` input value.
-#   - GitHub UI: Actions -> Release -> Run workflow -> branch `rust-port`,
+#   - GitHub UI: Actions -> Release -> Run workflow -> branch `main`,
 #     leave `dry_run: true`.
-#   - CLI:       gh workflow run release.yml --ref rust-port -f dry_run=true
+#   - CLI:       gh workflow run release.yml --ref main -f dry_run=true
 # A real publish still happens ONLY by pushing a semver tag (e.g. `git tag v0.5.0
 # && git push origin v0.5.0`).
 

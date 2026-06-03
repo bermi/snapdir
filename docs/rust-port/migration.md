@@ -65,7 +65,7 @@ Notes:
   tool used. This keeps third-party stores working without bundling them.
 - The shipped binary never shells out to `b3sum`, `aws`, `b2`, `gcloud`, or
   `sqlite3` for the built-in backends; those tools are only needed by the
-  external shim (for third-party stores) and by the test/oracle harness.
+  external shim (for third-party stores) and by the test suite.
 
 ### 1.3 Subcommand wiring status
 
@@ -236,7 +236,7 @@ frozen format; the essentials for migration:
 Because manifests, IDs, and the sharded object/manifest layout
 (`.objects/…`, `.manifests/…`) are identical, **stores interoperate**: the Rust
 binary can read and write stores written by the Bash tool, and vice-versa. This
-is proven by the differential interop harness (manifests + IDs across every
+is proven by interop verification (manifests + IDs across every
 checksum/keyed/no-follow mode) and live S3 (MinIO) and GCS cross-tool round-trips.
 
 ---
