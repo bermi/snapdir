@@ -1,0 +1,50 @@
+name: Supply chain (crate age)
+
+# Enforce that every crates.io dependency in Cargo.lock has been public for at
+# least MIN_AGE_DAYS (default 3) days, mirroring the Dependabot cooldown. Runs
+# on pull requests that touch the lockfile and on a weekly schedule so newly
+# aged-out dependencies are re-validated even without a PR.
+on:
+  pull_request:
+    branches: [main, rust-port]
+    paths:
+      - "Cargo.lock"
+      - "utils/ci/check-crate-age.sh"
+      - ".github/workflows/supply-chain.yml"
+  schedule:
+    # Weekly, Mondays 07:00 UTC.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: supply-chain-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  crate-age:
+    name: Crate age (>= 3 days)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check crate age
+        run: bash utils/ci/check-crate-age.sh
+
+  advisories:
+    name: cargo-deny advisories
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: cargo deny check advisories
+        run: cargo deny --workspace --all-features check advisories
