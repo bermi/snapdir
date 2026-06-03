@@ -23,8 +23,11 @@
 #   utils/ci/pre-push.sh [--fast] [--no-install] [--help]
 #
 #   --fast        Skip the musl leg (group 4) and coverage (group 6) for quick
-#                 local iteration. The installed git hook always runs the FULL
-#                 suite — --fast is for manual runs only.
+#                 local iteration. The installed git pre-push hook uses --fast
+#                 (musl + coverage are covered by CI on native Linux runners).
+#                 Run the FULL suite manually via `make ci-local` (or
+#                 `bash utils/ci/pre-push.sh` with no flag) before a release or
+#                 when touching the TLS/musl path.
 #   --no-install  Never auto-install a missing tool; fail with the exact
 #                 install command instead.
 #   --help        Show this help and exit.
@@ -281,7 +284,7 @@ done
 
 banner "snapdir local pre-push gate (mirrors .github/workflows/ci.yaml)"
 if [ "$FAST" -eq 1 ]; then
-  warn "--fast: skipping the static musl leg and coverage. The git hook runs the FULL suite."
+  warn "--fast: skipping the static musl leg and coverage (covered by CI; run 'make ci-local' for the full suite)."
 fi
 
 # ===========================================================================

@@ -3,13 +3,19 @@
 # Tracked git pre-push hook. Installed via `make install-hooks`, which points
 # `git config core.hooksPath` at this directory (utils/git-hooks/).
 #
-# It runs the FULL local CI-equivalent suite (utils/ci/pre-push.sh) and blocks
-# the push if any check fails — so red never reaches the paid GitHub Actions
-# runners. ci.yaml triggers on every push; this mirrors it locally first.
+# It runs the FAST CI-equivalent legs (utils/ci/pre-push.sh --fast:
+# fmt / clippy --all-features -D / test / deny / audit / doctests / shear /
+# semver) and blocks the push if any fails — so red never reaches the paid
+# GitHub Actions runners. These run in ~2–4 min to keep pushes quick.
+#
+# musl + coverage are deliberately NOT run here: they're slow on this host
+# (emulated docker) but are verified in CI on native Linux runners (and locally
+# via `make ci-local`). ci.yaml triggers on every push; this mirrors its fast
+# legs locally first.
 #
 # Bypass (use sparingly, e.g. a docs-only emergency): `git push --no-verify`.
 
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-exec "$REPO_ROOT/utils/ci/pre-push.sh"
+exec "$REPO_ROOT/utils/ci/pre-push.sh" --fast

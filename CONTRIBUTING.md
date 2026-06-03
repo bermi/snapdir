@@ -42,7 +42,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 `ci.yaml` runs on every push and burns paid GitHub Actions minutes — including
 on red commits. To catch failures *before* they reach CI, `utils/ci/pre-push.sh`
-runs the full CI-equivalent suite locally and **blocks the push on any failure**.
+runs the CI-equivalent suite locally and **blocks the push on any failure**.
 
 Install it once as a git `pre-push` hook:
 
@@ -50,9 +50,13 @@ Install it once as a git `pre-push` hook:
 make install-hooks    # points git config core.hooksPath at utils/git-hooks/
 ```
 
-From then on, `git push` runs the full suite first and aborts the push if
-anything fails. Remove it with `make uninstall-hooks`; bypass a single push
-(use sparingly) with `git push --no-verify`.
+From then on, `git push` runs the **fast legs** first (fmt, clippy
+`--all-features -D warnings`, test, deny, audit, doctests, shear, semver — ~2–4
+min) and aborts the push if anything fails. The slow **musl + coverage** legs
+are skipped here: they're verified by CI on native Linux runners, and you can
+run them locally any time via `make ci-local` (full suite). Remove the hook with
+`make uninstall-hooks`; bypass a single push (use sparingly) with
+`git push --no-verify`.
 
 Run it manually any time:
 
