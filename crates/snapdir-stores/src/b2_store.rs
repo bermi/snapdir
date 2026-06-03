@@ -16,9 +16,9 @@
 //! b2://<bucket>/<prefix>/.manifests/<sharded snapshot id> manifest text
 //! ```
 //!
-//! # URL parsing (matches the oracle)
+//! # URL parsing (frozen contract)
 //!
-//! `b2://bucket/base/dir` parses exactly like `s3://...` in `./snapdir`
+//! `b2://bucket/base/dir` parses exactly like `s3://...`
 //! (`_snapdir_export_store_vars`): the bucket is the segment after the `//`
 //! (`cut -d'/' -f3`) and the prefix is everything after it (`cut -d'/' -f4-`)
 //! with a trailing slash stripped (matching `_snapdir_b2_store_get_remote_prefix`).
@@ -30,9 +30,10 @@
 //! [`S3Store`]). The Backblaze **application key id** maps to the AWS access key
 //! id and the **application key** maps to the AWS secret access key — i.e. the
 //! usual `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` env vars, a profile, etc.
-//! No bespoke snapdir credential variables are introduced. (The Bash oracle
-//! shells out to the `b2` CLI and reads `B2_APPLICATION_KEY[_ID]`; the native
-//! S3-compatible path uses the AWS chain instead, which is what the SDK expects.)
+//! No bespoke snapdir credential variables are introduced. (The original
+//! implementation shelled out to the `b2` CLI and read `B2_APPLICATION_KEY[_ID]`;
+//! the native S3-compatible path uses the AWS chain instead, which is what the
+//! SDK expects.)
 //!
 //! # Endpoint / region derivation
 //!
@@ -168,7 +169,7 @@ fn resolve_region(region: Option<&str>) -> String {
 mod tests {
     use super::*;
 
-    // The canonical oracle fixtures from `./snapdir-b2-store`'s test_suite.
+    // The canonical content-addressable fixtures from the b2 store test suite.
     const FOO_CHECKSUM: &str = "49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92";
     const FOO_SHARDED: &str = "49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92";
     const MANIFEST_ID: &str = "aa91e498f401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d";
@@ -205,8 +206,8 @@ mod tests {
 
     #[test]
     fn b2_store_object_key_matches_sharded_scheme() {
-        // Key layout must be byte-identical to the Bash/S3 sharded scheme so the
-        // bucket is interchangeable across tools.
+        // Key layout must be byte-identical to the frozen S3 sharded scheme so
+        // the bucket is interchangeable across tools.
         let loc = S3Location::parse("b2://b/long/term/storage");
         assert_eq!(
             loc.object_key(FOO_CHECKSUM),
@@ -289,8 +290,8 @@ mod tests {
     // (the B2 application key id/secret as AWS access-key/secret-key) in the
     // environment. Gated behind `SNAPDIR_B2_TEST_ENDPOINT` and
     // `SNAPDIR_B2_TEST_STORE` (a `b2://bucket/prefix` URL) so it is skipped
-    // unless explicitly configured. Real Backblaze round-trips + Bash<->Rust
-    // cross-tool checks are the later `remote-interop` gate.
+    // unless explicitly configured. Real Backblaze round-trips are exercised by
+    // the later `remote-interop` gate.
     #[test]
     fn b2_store_live_round_trip_when_configured() {
         use snapdir_core::manifest::{ManifestEntry, PathType};

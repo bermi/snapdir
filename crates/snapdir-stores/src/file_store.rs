@@ -1,8 +1,8 @@
 //! `FileStore`: the `file://` storage backend.
 //!
-//! A [`FileStore`] is rooted at a local directory and holds the same
-//! content-addressable layout the Bash oracle (`./snapdir-file-store`) writes,
-//! so a store directory is interchangeable between the two implementations:
+//! A [`FileStore`] is rooted at a local directory and holds the frozen
+//! content-addressable `.objects`/`.manifests` sharded layout, so a store
+//! directory written by any conforming implementation is interchangeable:
 //!
 //! ```text
 //! <root>/.objects/<sharded checksum>     raw file bytes
@@ -366,7 +366,7 @@ mod tests {
             static COUNTER: AtomicU64 = AtomicU64::new(0);
             let n = COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "snapdir-file-store-test-{}-{tag}-{n}",
+                "snapdir-filestore-test-{}-{tag}-{n}",
                 std::process::id()
             ));
             fs::create_dir_all(&path).expect("create temp dir");

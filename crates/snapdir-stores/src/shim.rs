@@ -8,10 +8,10 @@
 //! `gcs` adapters in-process, but for any third-party adapter it preserves this
 //! contract verbatim via [`ExternalStore`].
 //!
-//! # The contract (confirmed against `./snapdir` + `./snapdir-file-store`)
+//! # The emit-command contract
 //!
-//! The three emit subcommands and their argument/stdin protocol, exactly as
-//! `./snapdir` invokes them (`_snapdir_get_fetch_snapdir_manifest_command`,
+//! The three emit subcommands and their argument/stdin protocol, as the
+//! orchestrator invokes them (`_snapdir_get_fetch_snapdir_manifest_command`,
 //! `_snapdir_get_fetch_snapdir_files_command`, `_snapdir_get_push_command`):
 //!
 //! ```text
@@ -186,8 +186,8 @@ impl ExternalStore {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    /// `eval`s an emitted shell `script` the way `./snapdir` does
-    /// (`bash -c "set -eEuo pipefail; trap 'kill 0' INT; <script> wait"`),
+    /// `eval`s an emitted shell `script` the way the orchestrator historically
+    /// did (`bash -c "set -eEuo pipefail; trap 'kill 0' INT; <script> wait"`),
     /// optionally feeding `stdin`, returning the script's stdout.
     fn eval(&self, script: &str, stdin: Option<&[u8]>) -> Result<EvalOutput, StoreError> {
         let wrapped = format!("set -eEuo pipefail;\ntrap 'kill 0' INT;\n{script}\nwait");

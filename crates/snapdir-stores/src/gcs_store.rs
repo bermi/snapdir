@@ -1,9 +1,9 @@
 //! `GcsStore`: the `gs://` storage backend, backed by the native
 //! `google-cloud-storage` SDK.
 //!
-//! A [`GcsStore`] targets a `gs://bucket/prefix` location and holds the same
-//! content-addressable layout the Bash oracle (`./snapdir-gcs-store`) writes, so
-//! a bucket/prefix is interchangeable between the two implementations:
+//! A [`GcsStore`] targets a `gs://bucket/prefix` location and holds the frozen
+//! content-addressable `.objects`/`.manifests` sharded layout, so a
+//! bucket/prefix is interchangeable across conforming implementations:
 //!
 //! ```text
 //! gs://<bucket>/<prefix>/.objects/<sharded checksum>     raw object bytes
@@ -513,8 +513,8 @@ fn strip_leading_dot_slash(path: &str) -> &str {
 mod tests {
     use super::*;
 
-    // The canonical oracle fixtures (shared with `./snapdir-s3-store` and
-    // `./snapdir-gcs-store` test suites).
+    // The canonical content-addressable fixtures (shared across the s3/gcs
+    // store test suites).
     const FOO_CHECKSUM: &str = "49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92";
     const FOO_SHARDED: &str = "49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92";
     const MANIFEST_ID: &str = "aa91e498f401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d";
@@ -676,8 +676,8 @@ mod tests {
     //
     // Requires real Google Cloud credentials (ADC) plus a writable bucket.
     // Gated behind `SNAPDIR_GCS_TEST_STORE` (a `gs://bucket/prefix` URL) so it is
-    // skipped unless explicitly configured. Real round-trips + Bash<->Rust
-    // cross-tool checks are the later `remote-interop` gate.
+    // skipped unless explicitly configured. Real round-trips are exercised by
+    // the later `remote-interop` gate.
     #[test]
     fn gcs_store_live_round_trip_when_configured() {
         use snapdir_core::manifest::ManifestEntry;

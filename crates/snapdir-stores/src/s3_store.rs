@@ -1,8 +1,8 @@
 //! `S3Store`: the `s3://` storage backend, backed by the native AWS SDK.
 //!
-//! An [`S3Store`] targets an `s3://bucket/prefix` location and holds the same
-//! content-addressable layout the Bash oracle (`./snapdir-s3-store`) writes, so
-//! a bucket/prefix is interchangeable between the two implementations:
+//! An [`S3Store`] targets an `s3://bucket/prefix` location and holds the frozen
+//! content-addressable `.objects`/`.manifests` sharded layout, so a
+//! bucket/prefix is interchangeable across conforming implementations:
 //!
 //! ```text
 //! s3://<bucket>/<prefix>/.objects/<sharded checksum>     raw object bytes
@@ -64,8 +64,8 @@ pub struct S3Location {
 impl S3Location {
     /// Parses an `s3://bucket/prefix` URL into its bucket and prefix.
     ///
-    /// Matches the oracle's derivation (`./snapdir`
-    /// `_snapdir_export_store_vars`): splitting the store URL on `/`, the
+    /// Matches the frozen URL derivation
+    /// (`_snapdir_export_store_vars`): splitting the store URL on `/`, the
     /// bucket is `cut -f3` (the segment after `s3://`) and the base dir is
     /// `cut -f4-` (everything after). The prefix has any trailing slash
     /// stripped, matching `_snapdir_s3_store_get_remote_prefix`.
@@ -473,7 +473,7 @@ fn strip_leading_dot_slash(path: &str) -> &str {
 mod tests {
     use super::*;
 
-    // The canonical oracle fixtures from `./snapdir-s3-store`'s test_suite.
+    // The canonical content-addressable fixtures from the s3 store test suite.
     const FOO_CHECKSUM: &str = "49dc870df1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92";
     const FOO_SHARDED: &str = "49d/c87/0df/1de7fd60794cebce449f5ccdae575affaa67a24b62acb03e039db92";
     const MANIFEST_ID: &str = "aa91e498f401ea9e6ddbaa1138a0dbeb030fab8defc1252d80c77ebefafbc70d";
@@ -575,8 +575,8 @@ mod tests {
     // Requires an S3-compatible endpoint (e.g. MinIO/SeaweedFS) plus AWS
     // credentials in the environment. Gated behind `SNAPDIR_S3_TEST_ENDPOINT`
     // and `SNAPDIR_S3_TEST_STORE` (an `s3://bucket/prefix` URL) so it is skipped
-    // unless explicitly configured. Real emulator round-trips + Bash<->Rust
-    // cross-tool checks are the later `remote-interop` gate.
+    // unless explicitly configured. Real emulator round-trips are exercised by
+    // the later `remote-interop` gate.
     #[test]
     fn s3_store_live_round_trip_when_configured() {
         use snapdir_core::manifest::ManifestEntry;
