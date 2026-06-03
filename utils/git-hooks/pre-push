@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#
+# Tracked git pre-push hook. Installed via `make install-hooks`, which points
+# `git config core.hooksPath` at this directory (utils/git-hooks/).
+#
+# It runs the FULL local CI-equivalent suite (utils/ci/pre-push.sh) and blocks
+# the push if any check fails — so red never reaches the paid GitHub Actions
+# runners. ci.yaml triggers on every push; this mirrors it locally first.
+#
+# Bypass (use sparingly, e.g. a docs-only emergency): `git push --no-verify`.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+exec "$REPO_ROOT/utils/ci/pre-push.sh"
