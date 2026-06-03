@@ -4,7 +4,7 @@ Content-addressable directory snapshots: hash a directory into a deterministic I
 
 `snapdir` snapshots a directory by content. Every snapshot is a BLAKE3 manifest — one line per file/dir as `TYPE PERMISSIONS CHECKSUM SIZE PATH`, sorted by path, with directory checksums computed as a merkle hash of their children. The **snapshot ID** is the BLAKE3 of the manifest text, so identical content produces an identical ID on any machine. Objects and manifests are stored at content-addressed sharded keys, so identical files and snapshots are stored once and interoperate across stores.
 
-Single static binary, zero runtime dependencies. v0.6.0.
+Single static binary, zero runtime dependencies. v1.0.0.
 
 ## Quick start
 
@@ -96,7 +96,7 @@ Cloud backends use native SDKs and standard credential chains — no bespoke env
 
 ## Status & links
 
-- v0.6.0. 14 subcommands: `manifest id stage push fetch pull checkout verify verify-cache flush-cache locations ancestors revisions defaults`.
+- v1.0.0. 14 subcommands: `manifest id stage push fetch pull checkout verify verify-cache flush-cache locations ancestors revisions defaults`.
 - An embedded redb catalog tracks where snapshots live (`locations` / `ancestors` / `revisions`).
 - Changelog: [docs/rust-port/CHANGELOG.md](docs/rust-port/CHANGELOG.md)
 - Migrating from the earlier version: [docs/rust-port/migration.md](docs/rust-port/migration.md)

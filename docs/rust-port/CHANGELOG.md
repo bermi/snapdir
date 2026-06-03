@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.0] — Port complete
+## [1.0.0] — Port complete
 
 The Rust port is **complete** and the legacy Bash implementation has been
 removed. With nothing left to differentially test against, the byte-format
@@ -129,6 +129,6 @@ Bash-written caches and remote buckets stay mutually readable.
   `gcloud`) in the shipped binary. External tools are used only by the test/oracle
   harness.
 
-[Unreleased]: https://github.com/bermi/snapdir/compare/v0.6.0...HEAD
-[0.6.0]: https://github.com/bermi/snapdir/compare/v0.5.0...v0.6.0
+[Unreleased]: https://github.com/bermi/snapdir/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/bermi/snapdir/releases/tag/v1.0.0
 [0.5.0]: https://github.com/bermi/snapdir/releases/tag/v0.5.0
