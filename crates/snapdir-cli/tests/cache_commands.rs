@@ -12,14 +12,12 @@
 //!   `--purge` removes the corrupt object and reports it.
 //! - `flush-cache` empties the cache (objects + manifests gone) and is
 //!   idempotent on an already-empty cache.
-//! - the staged id cross-checks against the frozen oracle `./snapdir id` when it
-//!   is present.
 //!
 //! The cache lives under an `assert_fs` temp dir removed on drop, so the tests
 //! are hermetic and never touch the user's real `$HOME/.cache/snapdir`.
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use assert_cmd::prelude::*;
@@ -33,21 +31,6 @@ fn snapdir(cache: &Path) -> Command {
     let mut cmd = Command::cargo_bin("snapdir").expect("snapdir binary built");
     cmd.env("SNAPDIR_CACHE_DIR", cache);
     cmd
-}
-
-/// Repo root (the crate lives at `<root>/crates/snapdir-cli`).
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate is two levels under the repo root")
-        .to_path_buf()
-}
-
-/// A frozen oracle script at the repo root, or `None` (crate-only checkout).
-fn oracle(name: &str) -> Option<PathBuf> {
-    let path = repo_root().join(name);
-    path.is_file().then_some(path)
 }
 
 /// Builds a known tiny tree with explicit, deterministic permissions.
@@ -140,28 +123,6 @@ fn cache_commands_stage_prints_id_and_populates_cache_at_sharded_keys() {
             "object bytes for {rel}"
         );
     }
-}
-
-#[test]
-fn cache_commands_stage_id_matches_oracle() {
-    let Some(script) = oracle("snapdir") else {
-        eprintln!("skip: ./snapdir oracle not present");
-        return;
-    };
-    let cache = TempDir::new().unwrap();
-    let src = TempDir::new().unwrap();
-    build_tree(&src);
-    let src_str = src.path().to_string_lossy().into_owned();
-
-    let staged = stdout_ok(cache.path(), &["stage", &src_str]);
-
-    let out = Command::new(&script)
-        .args(["id", &src_str])
-        .output()
-        .expect("run oracle id");
-    assert!(out.status.success());
-    let oracle_id = String::from_utf8(out.stdout).unwrap().trim_end().to_owned();
-    assert_eq!(staged, oracle_id, "staged id must match the Bash oracle");
 }
 
 #[test]

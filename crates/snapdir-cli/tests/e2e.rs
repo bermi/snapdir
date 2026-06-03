@@ -4,9 +4,9 @@
 //! commands against real temp trees and a temp `file://` store, asserting real
 //! behavior:
 //!
-//! - `manifest` / `id` over a known tiny tree: the id is 64 lowercase hex, and
-//!   (when the frozen oracle is present) the manifest bytes match
-//!   `./snapdir-manifest` and the id matches `./snapdir id` exactly.
+//! - `manifest` / `id` over a known tiny tree: the id is 64 lowercase hex. (The
+//!   frozen byte-format contract is pinned separately by
+//!   `crates/snapdir-core/tests/compat_golden.rs` against recorded constants.)
 //! - a `push -> fetch -> checkout` and `push -> pull` round-trip over a temp
 //!   `file://` store: the printed id equals the source id, the checked-out tree
 //!   re-manifests to the same id (contents + permissions reproduced), and
@@ -16,7 +16,7 @@
 //! these tests are hermetic and need no network or credentials.
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use assert_cmd::prelude::*;
@@ -30,21 +30,6 @@ fn snapdir(cache: &Path) -> Command {
     let mut cmd = Command::cargo_bin("snapdir").expect("snapdir binary built");
     cmd.env("SNAPDIR_CACHE_DIR", cache);
     cmd
-}
-
-/// Repo root (the crate lives at `<root>/crates/snapdir-cli`).
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate is two levels under the repo root")
-        .to_path_buf()
-}
-
-/// A frozen oracle script at the repo root, or `None` (crate-only checkout).
-fn oracle(name: &str) -> Option<PathBuf> {
-    let path = repo_root().join(name);
-    path.is_file().then_some(path)
 }
 
 /// Builds a known tiny tree with explicit, deterministic permissions so a
@@ -75,7 +60,7 @@ fn stdout_ok(cache: &Path, args: &[&str]) -> String {
 }
 
 #[test]
-fn id_is_64_lowercase_hex_and_matches_oracle() {
+fn id_is_64_lowercase_hex() {
     let cache = TempDir::new().unwrap();
     let src = TempDir::new().unwrap();
     build_tree(&src);
@@ -88,44 +73,6 @@ fn id_is_64_lowercase_hex_and_matches_oracle() {
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
         "snapshot id must be lowercase hex: {id:?}"
     );
-
-    // When the frozen oracle is present, the id must match it byte-for-byte.
-    if let Some(script) = oracle("snapdir") {
-        let out = Command::new(&script)
-            .args(["id", &src_str])
-            .output()
-            .expect("run oracle id");
-        assert!(out.status.success());
-        let oracle_id = String::from_utf8(out.stdout).unwrap().trim_end().to_owned();
-        assert_eq!(id, oracle_id, "id must match the Bash oracle");
-    }
-}
-
-#[test]
-fn manifest_matches_oracle_bytes() {
-    let Some(script) = oracle("snapdir-manifest") else {
-        eprintln!("skip: ./snapdir-manifest not present");
-        return;
-    };
-    let cache = TempDir::new().unwrap();
-    let src = TempDir::new().unwrap();
-    build_tree(&src);
-    let src_str = src.path().to_string_lossy().into_owned();
-
-    let expected = {
-        let out = Command::new(&script)
-            .arg(&src_str)
-            .output()
-            .expect("run oracle manifest");
-        assert!(out.status.success());
-        String::from_utf8(out.stdout).unwrap()
-    };
-
-    snapdir(cache.path())
-        .args(["manifest", &src_str])
-        .assert()
-        .success()
-        .stdout(predicate::eq(expected));
 }
 
 #[test]

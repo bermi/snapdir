@@ -3,7 +3,7 @@
 //! These exercise [`snapdir_stores::ExternalStore`] end-to-end against the
 //! `tests/snapdir-mock-store` script, which mirrors the documented emit-command
 //! contract (`get-manifest-command` / `get-fetch-files-command` /
-//! `get-push-command`) the same way `./snapdir-file-store` does. The shim spawns
+//! `get-push-command`) a third-party store binary implements. The shim spawns
 //! the (third-party) mock binary, captures the shell scripts it emits, and
 //! `eval`s them — proving the shim honors the contract and its invariants
 //! (objects-before-manifest on push, id-verify on get-manifest, error scan on

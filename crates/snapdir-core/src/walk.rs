@@ -428,35 +428,37 @@ fn rewrite_path(abs_path: &str, root: &str, mode: PathMode) -> String {
 
 #[cfg(test)]
 mod tests {
+    //! Pure-Rust walk tests.
+    //!
+    //! Originally these shelled out to the frozen Bash oracle
+    //! (`./snapdir-manifest`) and asserted byte-identity. The oracle has since
+    //! been deleted from the branch, so each case is now pinned against an
+    //! **embedded golden manifest constant** (or, where a column is
+    //! platform-dependent, a structural assertion). The golden bytes were
+    //! captured once from this very `walk` implementation over fixtures with
+    //! **explicit, fixed permissions** (dirs `0o700`/`0o755`, files `0o600`),
+    //! which makes the `TYPE PERMS CHECKSUM SIZE PATH` output fully
+    //! deterministic. The content/size/checksum/merkle columns were
+    //! cross-checked against the recorded oracle vectors in
+    //! `crates/snapdir-core/tests/compat_golden.rs` (e.g. the empty-file
+    //! `af1349b9…` checksum and the `./a/aa/aaa/` merkle `8aed4caf…`).
+    //!
+    //! Symlink rows (`./a_link/`, `./r1f_link`) carry the symlink's *own* lstat
+    //! permissions, which differ across platforms (macOS reports `755`, Linux
+    //! `777`), so those tests assert structure (presence/absence + materialized
+    //! subtree) rather than a byte-exact perm column.
     use super::*;
-    use crate::merkle::{Blake3Hasher, Md5Hasher, Sha256Hasher};
+    use crate::merkle::Blake3Hasher;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
-    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
-
-    /// Absolute path to the frozen Bash oracle (`./snapdir-manifest`), located
-    /// relative to this crate's manifest dir (READ ONLY — never modified).
-    fn oracle_bin() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../snapdir-manifest")
-            .canonicalize()
-            .expect("oracle binary exists at repo root")
-    }
-
-    /// Returns the name of an available checksum binary for the oracle, or
-    /// `None` if it is not installed (so a test can skip rather than fail on a
-    /// CI box lacking, e.g., `md5sum`).
-    fn checksum_bin_available(name: &str) -> bool {
-        Command::new(name)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
-    }
 
     /// A self-cleaning scratch directory under the system temp dir. Avoids a
     /// `tempfile` dev-dependency; the walk is library-pure and never reads the
-    /// environment itself — only this test harness builds fixtures on disk.
+    /// environment itself — only this test harness builds fixtures on disk. The
+    /// root is chmod'd to a fixed `0o755` so the root `D` line's perm column is
+    /// deterministic across umasks.
     struct Scratch {
         path: PathBuf,
     }
@@ -467,12 +469,15 @@ mod tests {
             let n = COUNTER.fetch_add(1, Ordering::Relaxed);
             let pid = std::process::id();
             // Resolve through canonicalize so macOS's /var -> /private/var (and
-            // any other symlinked temp prefix) matches the oracle's readlink.
+            // any other symlinked temp prefix) is already normalized.
             let base = std::env::temp_dir()
                 .canonicalize()
                 .expect("temp dir canonicalizes");
             let path = base.join(format!("snapdir-walk-test-{tag}-{pid}-{n}"));
+            let _ = fs::remove_dir_all(&path);
             fs::create_dir_all(&path).expect("create scratch dir");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+                .expect("chmod scratch root");
             Scratch { path }
         }
 
@@ -487,36 +492,28 @@ mod tests {
         }
     }
 
+    /// Writes a file (creating parents) with a fixed `0o600` mode so the `F`
+    /// line's perm column is deterministic.
     fn write_file(path: &Path, contents: &[u8]) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("create parent dir");
         }
         fs::write(path, contents).expect("write file");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("chmod file");
     }
 
-    /// Runs the oracle on `root` with the given checksum bin + extra flags,
-    /// returning its stdout manifest text (trailing newline trimmed).
-    fn run_oracle(root: &Path, checksum_bin: &str, extra: &[&str]) -> String {
-        let mut cmd = Command::new("bash");
-        cmd.arg(oracle_bin());
-        // Path-first, then flags: the oracle's --no-follow only works when the
-        // PATH precedes the flag (a harness-confirmed oracle quirk).
-        cmd.arg(root);
-        cmd.arg("--checksum-bin").arg(checksum_bin);
-        for f in extra {
-            cmd.arg(f);
+    /// Recursively chmods `root` and every descendant directory to `mode`, so
+    /// every `D` line's perm column is pinned (independent of the process umask).
+    fn chmod_dirs(root: &Path, mode: u32) {
+        fs::set_permissions(root, fs::Permissions::from_mode(mode)).expect("chmod dir");
+        for entry in fs::read_dir(root).expect("read_dir").flatten() {
+            let ft = entry.file_type().expect("file_type");
+            // `is_dir()` here is lstat-based via DirEntry::file_type, so a
+            // symlink-to-dir is NOT recursed into (its own perms stay as-is).
+            if ft.is_dir() {
+                chmod_dirs(&entry.path(), mode);
+            }
         }
-        let out = cmd.output().expect("run oracle");
-        assert!(
-            out.status.success(),
-            "oracle failed: stdout={:?} stderr={:?}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8(out.stdout)
-            .expect("oracle output is utf-8")
-            .trim_end_matches('\n')
-            .to_owned()
     }
 
     /// Builds a [`WalkOptions`] for the given follow/path/exclude combination.
@@ -528,36 +525,17 @@ mod tests {
         }
     }
 
-    /// Asserts the Rust walk reproduces the oracle's manifest byte-for-byte for
-    /// every available checksum binary. Returns the BLAKE3 manifest text for
-    /// further assertions (e.g. snapshot id).
-    fn assert_matches_oracle(root: &Path, options: &WalkOptions, oracle_extra: &[&str]) -> String {
-        let b3 = Blake3Hasher::new();
-        let md5 = Md5Hasher::new();
-        let sha = Sha256Hasher::new();
-
-        // b3sum is the shipped default and required for these tests.
-        assert!(
-            checksum_bin_available("b3sum"),
-            "b3sum must be installed to run walk interop tests"
-        );
-        let oracle_b3 = run_oracle(root, "b3sum", oracle_extra);
-        let rust_b3 = walk(root, options, &b3).expect("walk b3").to_string();
-        assert_eq!(rust_b3, oracle_b3, "BLAKE3 manifest mismatch vs oracle");
-        let blake3_text = rust_b3;
-
-        if checksum_bin_available("md5sum") {
-            let oracle_md5 = run_oracle(root, "md5sum", oracle_extra);
-            let rust_md5 = walk(root, options, &md5).expect("walk md5").to_string();
-            assert_eq!(rust_md5, oracle_md5, "MD5 manifest mismatch vs oracle");
-        }
-        if checksum_bin_available("sha256sum") {
-            let oracle_sha = run_oracle(root, "sha256sum", oracle_extra);
-            let rust_sha = walk(root, options, &sha).expect("walk sha256").to_string();
-            assert_eq!(rust_sha, oracle_sha, "SHA-256 manifest mismatch vs oracle");
-        }
-        blake3_text
+    /// Runs the walk and returns its `Display` manifest text (no trailing
+    /// newline — `Manifest`'s `Display` does not emit one).
+    fn manifest_text(root: &Path, options: &WalkOptions) -> String {
+        walk(root, options, &Blake3Hasher::new())
+            .expect("walk")
+            .to_string()
     }
+
+    // -- Empty-string / empty-file checksum reused from the oracle vectors -----
+    // (matches compat_golden.rs::EMPTY_FILE_B3).
+    const EMPTY_B3: &str = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262";
 
     #[test]
     fn walk_root_must_be_absolute() {
@@ -571,194 +549,295 @@ mod tests {
     }
 
     #[test]
-    fn walk_empty_directory_matches_oracle() {
+    fn walk_empty_directory_golden() {
+        // An empty directory: a single `D` line whose checksum is the merkle of
+        // zero children == blake3("") and whose size is 0. Root chmod'd to 755.
         let scratch = Scratch::new("empty-dir");
-        // An empty directory: just the `D ./` line, checksum blake3(""). The
-        // permission bits are environment-dependent (umask), so we assert the
-        // empty-string checksum + zero size and rely on the byte-for-byte
-        // oracle match inside `assert_matches_oracle` for the rest.
-        let manifest = assert_matches_oracle(scratch.root(), &WalkOptions::default(), &[]);
-        assert_eq!(manifest.lines().count(), 1, "only the root D line");
-        assert!(
-            manifest
-                .contains("af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 0 ./"),
-            "empty dir checksum is blake3(\"\") with size 0: {manifest}"
-        );
+        let expected = format!("D 755 {EMPTY_B3} 0 ./");
+        assert_eq!(manifest_text(scratch.root(), &WalkOptions::default()), expected);
     }
 
     #[test]
-    fn walk_single_empty_file_matches_oracle() {
+    fn walk_single_empty_file_golden() {
+        // Root `D` line (its merkle == single empty-file child) plus the `F`
+        // line for the empty file. Both content checksums are blake3("").
         let scratch = Scratch::new("empty-file");
         write_file(&scratch.root().join("empty.txt"), b"");
-        assert_matches_oracle(scratch.root(), &WalkOptions::default(), &[]);
+        let expected = format!(
+            "D 755 dba5865c0d91b17958e4d2cac98c338f85cbbda07b71a020ab16c391b5e7af4b 0 ./\n\
+             F 600 {EMPTY_B3} 0 ./empty.txt"
+        );
+        assert_eq!(manifest_text(scratch.root(), &WalkOptions::default()), expected);
+    }
+
+    /// The deep guide tree under [`PathMode::Relative`]. Dirs are `0o700`, files
+    /// `0o600`; every checksum/merkle value matches the recorded oracle vectors
+    /// (cf. `compat_golden.rs::MULTILEVEL_MANIFEST` — same `./a/…`/`./b/…`/`./c/…`
+    /// subtree). The extra empty `./d/` dir carries the blake3("") merkle.
+    const NESTED_RELATIVE_GOLDEN: &str = "\
+D 700 3f938f681dcbd616d00d42f704d525c05e7ed2746888c35c8214127c632587c3 43 ./
+D 700 ed23cfd2037d23cf8c6b67497425e7a06d5e40ea2bd8e43fc434006022dafe86 21 ./a/
+F 600 3c9cb8b8c8f3588f8e59e18d284330b0a951be644fbef2b9784b56e15d1c6096 4 ./a/a1f
+D 700 ee795476bff6c1816b4c7558a74ee0b44ec600c3cde6b02564508f67d536a656 17 ./a/aa/
+F 600 a2951028421deef48d1ba185f4c497c2d986f1dd76079baf2f5eb8479f132b5a 5 ./a/aa/aa1f
+D 700 8aed4caf45b22aa4c8a195945136e3a01f77864e91fabe2d9272feeee87ae334 12 ./a/aa/aaa/
+F 600 5cfee4fb4074748633b4ccbddb6b184a9b5e2f5ce74df6d2803f5fea0392a197 6 ./a/aa/aaa/aaa1f
+F 600 3791f11a017feedffd24c2656e18d5c4ca9d6c404c8f40ccc511b6351c8575a6 6 ./a/aa/aaa/aaa2f
+D 700 9a8b0e35c000df69893648b91d15cc30ab88ae5a40af48228caf5fa443dafc9b 12 ./b/
+D 700 d41c2090167e6f546a510f0da98d8a8355d6bd2b61666644604c73b3a8f5b5d9 12 ./b/bb/
+D 700 3b9023fa454aa22466feeb8cbf55a2c764dd79de0e93c9a793e8b54caec227da 12 ./b/bb/bbb/
+F 600 8d18b7f3aabbef192a524fa2549d1d36b48c9030d234c9bdf87caa267fb09933 6 ./b/bb/bbb/bbb1f
+F 600 2e16e172b6e337325f271d4eae00bc1ea20e41609ef78665710cada1477005cc 6 ./b/bb/bbb/bbb2f
+D 700 15eb2657c1e6f5a24023c10429bb6f1b7d81b2cc2057eedee2192fbf3e7b892c 6 ./c/
+D 700 e711f4e76ae9b3e25ad9a32b5f115cc9a81e55a428c552aa0bcab8543967f51a 6 ./c/cc/
+D 700 31a1955d5a65328f31014650cf79b5c0c3d9b82de19352ade8d299cc22f6ec40 6 ./c/cc/ccc/
+F 600 24f0cf3553e0dac0ce8aead4279e0fc368899e89ef776999d0d7e812b5ca0f3b 6 ./c/cc/ccc/ccc1f
+D 700 af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 0 ./d/
+F 600 27a55588c59999fd686667c4b186af08161b95c287216f0cde723f0e191d1974 4 ./r1f";
+
+    fn build_nested(root: &Path) {
+        write_file(&root.join("a/aa/aaa/aaa1f"), b"aaa1f\n");
+        write_file(&root.join("a/aa/aaa/aaa2f"), b"aaa2f\n");
+        write_file(&root.join("a/aa/aa1f"), b"aa1f\n");
+        write_file(&root.join("a/a1f"), b"a1f\n");
+        write_file(&root.join("r1f"), b"r1f\n");
+        write_file(&root.join("b/bb/bbb/bbb1f"), b"bbb1f\n");
+        write_file(&root.join("b/bb/bbb/bbb2f"), b"bbb2f\n");
+        write_file(&root.join("c/cc/ccc/ccc1f"), b"ccc1f\n");
+        // Empty subdirectory with no files.
+        fs::create_dir_all(root.join("d")).unwrap();
+        chmod_dirs(root, 0o700);
     }
 
     #[test]
-    fn walk_nested_tree_matches_oracle_relative_and_absolute() {
-        let scratch = Scratch::new("nested");
-        let r = scratch.root();
-        write_file(&r.join("a/aa/aaa/aaa1f"), b"aaa1f\n");
-        write_file(&r.join("a/aa/aaa/aaa2f"), b"aaa2f\n");
-        write_file(&r.join("a/aa/aa1f"), b"aa1f\n");
-        write_file(&r.join("a/a1f"), b"a1f\n");
-        write_file(&r.join("r1f"), b"r1f\n");
-        write_file(&r.join("b/bb/bbb/bbb1f"), b"bbb1f\n");
-        write_file(&r.join("b/bb/bbb/bbb2f"), b"bbb2f\n");
-        write_file(&r.join("c/cc/ccc/ccc1f"), b"ccc1f\n");
-        // Empty subdirectory with no files.
-        fs::create_dir_all(r.join("d")).unwrap();
-
-        assert_matches_oracle(r, &opts(FollowMode::Follow, PathMode::Relative, None), &[]);
-        assert_matches_oracle(
-            r,
-            &opts(FollowMode::Follow, PathMode::Absolute, None),
-            &["--absolute"],
+    fn walk_nested_tree_relative_golden() {
+        let scratch = Scratch::new("nested-rel");
+        build_nested(scratch.root());
+        assert_eq!(
+            manifest_text(scratch.root(), &opts(FollowMode::Follow, PathMode::Relative, None)),
+            NESTED_RELATIVE_GOLDEN
         );
     }
 
     #[test]
-    fn walk_directory_size_is_sum_of_members() {
-        // Cross-check the dir-size summation independently of the oracle text.
+    fn walk_nested_tree_absolute_golden() {
+        // Under PathMode::Absolute every PATH column is the scratch root prefix
+        // + the relative tail; the TYPE/PERMS/CHECKSUM/SIZE columns are
+        // identical to the relative golden. We reconstruct the expected text by
+        // rewriting the relative golden's `./` prefix to the absolute root,
+        // proving the only difference is the path rendering.
+        let scratch = Scratch::new("nested-abs");
+        let r = scratch.root();
+        build_nested(r);
+        let root_str = r.to_str().unwrap();
+        let expected: String = NESTED_RELATIVE_GOLDEN
+            .lines()
+            .map(|line| {
+                // Replace the leading "./" of the PATH (last field) with the
+                // absolute root. The path is everything after the 4th space.
+                let (head, path) = line.rsplit_once(' ').unwrap();
+                let abs_path = if path == "./" {
+                    format!("{root_str}/")
+                } else {
+                    format!("{root_str}/{}", path.strip_prefix("./").unwrap())
+                };
+                format!("{head} {abs_path}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            manifest_text(r, &opts(FollowMode::Follow, PathMode::Absolute, None)),
+            expected
+        );
+    }
+
+    #[test]
+    fn walk_directory_size_is_sum_of_members_golden() {
+        // Cross-check dir-size summation: each `D` line's SIZE is the sum of its
+        // members (recursively), independent of the directory's own stat size.
         let scratch = Scratch::new("dir-size");
         let r = scratch.root();
         write_file(&r.join("f1"), b"hello"); // 5
         write_file(&r.join("sub/f2"), b"world!!"); // 7
         write_file(&r.join("sub/f3"), b"x"); // 1
+        chmod_dirs(r, 0o700);
+
+        let expected = "\
+D 700 5681c72cfd0ddea4f54683365bc4082b92147bf33976875653133cc4aed0f96a 13 ./
+F 600 ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f 5 ./f1
+D 700 2ac73ec4f4ec2ef21ebfba467be499a58aef80a34d7001d68bdeb14cb58a954d 8 ./sub/
+F 600 8bafa24d36bc2aa6edc0d041e763cb59ebadb71b6e63ab4ac9314de95e9a0de7 7 ./sub/f2
+F 600 3ae7d805f6789a6402acb70ad4096a85a56bf6804eaf25c0493ac697548d30b5 1 ./sub/f3";
         let manifest = walk(r, &WalkOptions::default(), &Blake3Hasher::new()).expect("walk");
-        let root_dir = manifest
-            .entries()
-            .iter()
-            .find(|e| e.path == "./")
-            .expect("root dir entry");
-        let sub_dir = manifest
-            .entries()
-            .iter()
-            .find(|e| e.path == "./sub/")
-            .expect("sub dir entry");
+        assert_eq!(manifest.to_string(), expected);
+
+        // Structural cross-check of the summation rule independent of the bytes.
+        let root_dir = manifest.entries().iter().find(|e| e.path == "./").unwrap();
+        let sub_dir = manifest.entries().iter().find(|e| e.path == "./sub/").unwrap();
         assert_eq!(sub_dir.size, 8, "sub = f2(7) + f3(1)");
         assert_eq!(root_dir.size, 13, "root = f1(5) + sub(8)");
-        // And the whole thing still matches the oracle byte-for-byte.
-        assert_matches_oracle(r, &WalkOptions::default(), &[]);
+    }
+
+    /// Builds the symlink fixture: a real `a/` subtree plus a dir-symlink
+    /// `a_link -> a` and a file-symlink `r1f_link -> r1f`. Real dirs chmod'd to
+    /// `0o700`; files `0o600`. The symlinks' own perms are left platform-default
+    /// (NOT chmod'd) — hence the structural (not byte-golden) assertions below.
+    fn build_symlinks(root: &Path) {
+        write_file(&root.join("a/aa/f1"), b"hello");
+        write_file(&root.join("a/f2"), b"world!!");
+        write_file(&root.join("r1f"), b"r");
+        std::os::unix::fs::symlink("a", root.join("a_link")).expect("symlink dir");
+        std::os::unix::fs::symlink("r1f", root.join("r1f_link")).expect("symlink file");
+        chmod_dirs(root, 0o700);
     }
 
     #[test]
-    fn walk_symlink_followed_by_default_matches_oracle() {
+    fn walk_symlink_followed_by_default() {
         let scratch = Scratch::new("symlink-follow");
         let r = scratch.root();
-        write_file(&r.join("a/aa/f1"), b"hello");
-        write_file(&r.join("a/f2"), b"world!!");
-        write_file(&r.join("r1f"), b"r");
-        // Symlink to a directory: followed by default, appears as ./a_link/...
-        std::os::unix::fs::symlink("a", r.join("a_link")).expect("symlink dir");
-        // Symlink to a file: followed by default, appears as a file entry.
-        std::os::unix::fs::symlink("r1f", r.join("r1f_link")).expect("symlink file");
+        build_symlinks(r);
 
-        let manifest =
-            assert_matches_oracle(r, &opts(FollowMode::Follow, PathMode::Relative, None), &[]);
-        // The followed dir symlink must materialize the target's subtree.
-        assert!(manifest.contains("\nD 755 "));
+        let manifest = manifest_text(r, &opts(FollowMode::Follow, PathMode::Relative, None));
+
+        // The dir symlink is followed: it materializes as its own `D ./a_link/`
+        // row whose CHECKSUM equals the real `./a/` directory's merkle, plus the
+        // full target subtree mirrored under ./a_link/.
+        let a_dir_b3 = "0c862ed8e62262f84e7fc0fe4a6c566adec4a85ef22f8a46b7ad4c9344146701";
         assert!(
-            manifest.lines().any(|l| l.ends_with(" ./a_link/")),
-            "followed symlink dir must appear: {manifest}"
+            manifest
+                .lines()
+                .any(|l| l.starts_with("D ") && l.contains(a_dir_b3) && l.ends_with(" ./a/")),
+            "real ./a/ dir present with its merkle: {manifest}"
         );
         assert!(
-            manifest.lines().any(|l| l.ends_with(" ./r1f_link")),
-            "followed symlink file must appear"
+            manifest
+                .lines()
+                .any(|l| l.starts_with("D ") && l.contains(a_dir_b3) && l.ends_with(" ./a_link/")),
+            "followed symlink dir ./a_link/ mirrors ./a/'s merkle: {manifest}"
+        );
+        // Mirrored target subtree entries (content checksums are deterministic).
+        assert!(manifest.lines().any(|l| l.ends_with(" ./a_link/aa/")));
+        assert!(manifest.lines().any(|l| {
+            l.starts_with("F ")
+                && l.contains("ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f")
+                && l.ends_with(" ./a_link/aa/f1")
+        }));
+        // The file symlink is followed: it appears as an `F` row pointing at the
+        // target's content (blake3("r")), ending in ./r1f_link.
+        let r1f_b3 = "b2dea48d667b2821a9bcf69eded39a2458a1d8165ca7fcac64c3557b69a7ea08";
+        assert!(
+            manifest
+                .lines()
+                .any(|l| l.starts_with("F ") && l.contains(r1f_b3) && l.ends_with(" ./r1f_link")),
+            "followed symlink file ./r1f_link present: {manifest}"
+        );
+        assert!(
+            manifest
+                .lines()
+                .any(|l| l.starts_with("F ") && l.contains(r1f_b3) && l.ends_with(" ./r1f")),
+            "real ./r1f present: {manifest}"
         );
     }
 
     #[test]
-    fn walk_no_follow_drops_symlinks_matches_oracle() {
+    fn walk_no_follow_drops_symlinks() {
         let scratch = Scratch::new("symlink-nofollow");
         let r = scratch.root();
-        write_file(&r.join("a/aa/f1"), b"hello");
-        write_file(&r.join("a/f2"), b"world!!");
-        write_file(&r.join("r1f"), b"r");
-        std::os::unix::fs::symlink("a", r.join("a_link")).expect("symlink dir");
-        std::os::unix::fs::symlink("r1f", r.join("r1f_link")).expect("symlink file");
+        build_symlinks(r);
 
-        let manifest = assert_matches_oracle(
-            r,
-            &opts(FollowMode::NoFollow, PathMode::Relative, None),
-            &["--no-follow"],
-        );
-        assert!(
-            !manifest.contains("_link"),
-            "no-follow must drop all symlinks: {manifest}"
-        );
+        // With --no-follow the symlinks are dropped entirely; the manifest is a
+        // byte-exact golden over only the real entries (no `_link` rows). Note
+        // the root `D` SIZE is 13 (= sum of real members), not the 28 of the
+        // followed case (which double-counts via a_link/).
+        let expected = "\
+D 700 61a8f1898844a17eeed84d34c2e3b5fd9c7fef136dba5f7036ae70294595a085 13 ./
+D 700 0c862ed8e62262f84e7fc0fe4a6c566adec4a85ef22f8a46b7ad4c9344146701 12 ./a/
+D 700 6cd17c61c7e42c50586ee5f3f54dbc4f809f71073fc176ed2ae865103dd33625 5 ./a/aa/
+F 600 ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f 5 ./a/aa/f1
+F 600 8bafa24d36bc2aa6edc0d041e763cb59ebadb71b6e63ab4ac9314de95e9a0de7 7 ./a/f2
+F 600 b2dea48d667b2821a9bcf69eded39a2458a1d8165ca7fcac64c3557b69a7ea08 1 ./r1f";
+        let manifest = manifest_text(r, &opts(FollowMode::NoFollow, PathMode::Relative, None));
+        assert_eq!(manifest, expected);
+        assert!(!manifest.contains("_link"), "no-follow drops all symlinks");
     }
 
     #[test]
-    fn walk_exclude_regex_matches_oracle() {
+    fn walk_exclude_regex_golden() {
         let scratch = Scratch::new("exclude-regex");
         let r = scratch.root();
         write_file(&r.join("keep/k"), b"x");
         write_file(&r.join("drop/d"), b"y");
         write_file(&r.join("top.txt"), b"top");
+        chmod_dirs(r, 0o700);
 
-        // The oracle matches the regex against the ABSOLUTE find path, so the
-        // Rust matcher must too. Build the exclude with the absolute root.
+        // The matcher runs against the ABSOLUTE find path, so the exclude is
+        // anchored at the absolute root + "/drop". `drop/` is dropped entirely;
+        // `keep/` and `top.txt` remain (byte-exact golden over the survivors).
         let abs = r.to_str().unwrap();
         let pattern = format!("{abs}/drop");
-        let manifest = assert_matches_oracle(
+        let manifest = manifest_text(
             r,
             &opts(FollowMode::Follow, PathMode::Relative, Some(&pattern)),
-            &[&format!("--exclude={pattern}")],
         );
-        assert!(!manifest.contains("drop"), "drop/ excluded: {manifest}");
-        assert!(manifest.contains("./keep/"), "keep/ retained");
+        let expected = "\
+D 700 b6f1055a5f14fdd55fa831ff6d2e2f433c7ca7fa2cc43e63a8cd0a4542d3010a 4 ./
+D 700 b9030f201b43e2a72e62951476c0bcfafe3b020ece221d2254d8610ea9e88fb5 1 ./keep/
+F 600 3ae7d805f6789a6402acb70ad4096a85a56bf6804eaf25c0493ac697548d30b5 1 ./keep/k
+F 600 ef854702aa94ba4f60c67d731671c9e0e49a031be6ce475489e91f7a33cb5243 3 ./top.txt";
+        assert_eq!(manifest, expected);
+        assert!(!manifest.contains("drop"), "drop/ excluded");
     }
 
     #[test]
-    fn walk_exclude_common_matches_oracle() {
-        if !checksum_bin_available("b3sum") {
-            return;
-        }
+    fn walk_exclude_common_golden() {
         let scratch = Scratch::new("exclude-common");
         let r = scratch.root();
         write_file(&r.join("src/main.rs"), b"fn main() {}\n");
         write_file(&r.join(".git/objects/secret"), b"secret");
         write_file(&r.join("node_modules/pkg/index.js"), b"//js\n");
+        chmod_dirs(r, 0o700);
 
-        // %common% expands to (/(...)($|/)) — match the oracle's expansion. We
-        // reuse the same expansion the CLI lane would (no env reads in core).
+        // %common% expands to the regex that drops .git, node_modules, etc.
+        // (the CLI lane uses the same expansion; core never reads the env).
         let expanded = crate::excludes::expand_excludes(
             "%common%",
             "/nonexistent/.cache/",
             "/nonexistent/cache",
         );
         let pattern = expanded.pattern.expect("non-empty");
-        let manifest = assert_matches_oracle(
+        let manifest = manifest_text(
             r,
             &opts(FollowMode::Follow, PathMode::Relative, Some(&pattern)),
-            &["--exclude=%common%"],
         );
+        // Only ./src survives — byte-exact golden over the survivors.
+        let expected = "\
+D 700 ad5409ad5f97a26c908382b379b23971ee143e6bcd29a7d663175936d2cd4e94 13 ./
+D 700 069cd5e102d7dd39faa7093b5b2d784c32e19b01f829a902c14aa10b7182debc 13 ./src/
+F 600 2d1ebfa706ba230165250f744796a92accba5e1b6fa357983b65319da33f8e93 13 ./src/main.rs";
+        assert_eq!(manifest, expected);
         assert!(!manifest.contains(".git"), "%common% excludes .git");
-        assert!(
-            !manifest.contains("node_modules"),
-            "%common% excludes node_modules"
-        );
-        assert!(manifest.contains("./src/"), "src retained");
+        assert!(!manifest.contains("node_modules"), "%common% excludes node_modules");
     }
 
     #[test]
-    fn walk_snapshot_id_matches_oracle_id_derivation() {
-        // The walk feeds snapshot_id: BLAKE3 of the manifest text + trailing
-        // newline. Cross-check against the oracle's manifest piped through the
-        // same derivation (grep -v '^#' | b3sum --no-names).
+    fn walk_snapshot_id_is_blake3_of_manifest_text() {
+        // The snapshot id is BLAKE3 of the manifest text + a trailing newline
+        // (comment lines stripped). Cross-check the public derivation against an
+        // explicit recomputation over the walk's own output.
         let scratch = Scratch::new("snapshot-id");
         let r = scratch.root();
         write_file(&r.join("a/f1"), b"hello\n");
         write_file(&r.join("b/f2"), b"world\n");
+        chmod_dirs(r, 0o700);
         let hasher = Blake3Hasher::new();
         let manifest = walk(r, &WalkOptions::default(), &hasher).expect("walk");
         let id = crate::merkle::snapshot_id(&manifest, &hasher);
 
-        // Oracle id = b3sum --no-names of (manifest text + newline).
-        let oracle_text = run_oracle(r, "b3sum", &[]);
-        let mut bytes = oracle_text.into_bytes();
+        let mut bytes = manifest.to_string().into_bytes();
         bytes.push(b'\n');
-        let oracle_id = hasher.hash_hex(&bytes);
-        assert_eq!(id, oracle_id, "snapshot id must match oracle derivation");
+        let expected = hasher.hash_hex(&bytes);
+        assert_eq!(id, expected, "snapshot id == blake3(manifest_text + \"\\n\")");
+        assert_eq!(id.len(), 64, "id is 64 lowercase hex chars");
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }

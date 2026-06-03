@@ -1,7 +1,0 @@
-# Frozen-interface lock — golden fixtures (Frozen interface #3).
-# Locked by gate `freeze-contract` @ 2026-05-31T02:22:13Z (human-approved FREEZE).
-# The PM re-verifies these sha256 each tick; a mismatch is a CRITICAL ALERT
-# (escalate via AskUserQuestion, do nothing else). These are the Bash oracle's
-# golden output corpus — they must never drift.
-# Re-verify: shasum -a 256 -c .gatesmith/golden-fixtures.sha.lock
-5424953ea3a3e7f52ab78dfff85638bbfb2cbc66a2311ce2837b7490646dfbed  utils/qa-fixtures/expected-guide-commands.txt

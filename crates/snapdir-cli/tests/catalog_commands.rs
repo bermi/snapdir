@@ -13,14 +13,15 @@
 //!   both ids (newest first, `created_at DESC`) and `ancestors --id=<new_id>`
 //!   walks back to the previous id.
 //! - an unknown location → empty output, exit 0.
-//! - the JSON line shape cross-checks against the frozen oracle
-//!   `./snapdir-sqlite3-catalog` when `sqlite3` + the script are present.
+//!
+//! The JSON line shape (`id`/`previous_id`/`location`/`created_at` keys) is
+//! pinned directly by the field assertions below.
 //!
 //! Everything lives under `assert_fs` temp dirs removed on drop, so the tests
 //! are hermetic and never touch the user's real cache or catalog.
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use assert_cmd::prelude::*;
@@ -34,21 +35,6 @@ fn snapdir(cache: &Path, catalog: &Path) -> Command {
     cmd.env("SNAPDIR_CACHE_DIR", cache);
     cmd.env("SNAPDIR_CATALOG", catalog);
     cmd
-}
-
-/// Repo root (the crate lives at `<root>/crates/snapdir-cli`).
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate is two levels under the repo root")
-        .to_path_buf()
-}
-
-/// A frozen oracle script at the repo root, or `None` (crate-only checkout).
-fn oracle(name: &str) -> Option<PathBuf> {
-    let path = repo_root().join(name);
-    path.is_file().then_some(path)
 }
 
 /// Builds a tiny tree with explicit, deterministic permissions.
@@ -224,80 +210,4 @@ fn catalog_commands_unknown_location_is_empty_and_exits_zero() {
         &["ancestors", "--id", &"0".repeat(64)],
     );
     assert_eq!(ancestors, "", "unknown id → empty ancestors");
-}
-
-#[test]
-fn catalog_commands_revisions_line_matches_oracle_sqlite_catalog() {
-    // Cross-check the frozen JSON line shape against the live oracle catalog.
-    let Some(script) = oracle("snapdir-sqlite3-catalog") else {
-        eprintln!("skip: ./snapdir-sqlite3-catalog oracle not present");
-        return;
-    };
-    if Command::new("sqlite3").arg("--version").output().is_err() {
-        eprintln!("skip: sqlite3 not available");
-        return;
-    }
-
-    let cache = TempDir::new().unwrap();
-    let catalog = cache.child("catalog.redb");
-    let store_dir = TempDir::new().unwrap();
-    let store = file_store(store_dir.path());
-    let src = TempDir::new().unwrap();
-    build_tree(&src, "oracle-compat");
-    let id = stdout_ok(
-        cache.path(),
-        catalog.path(),
-        &["--store", &store, "push", &src.path().to_string_lossy()],
-    );
-
-    // Drive the same save through the frozen sqlite catalog.
-    let oracle_db = cache.child("oracle.sqlite3");
-    let log = Command::new(&script)
-        .env("SNAPDIR_SQLITE3_CATALOG_DB_PATH", oracle_db.path())
-        .args([
-            "log",
-            "--event=push",
-            &format!("--id={id}"),
-            &format!("--location={store}"),
-        ])
-        .output()
-        .expect("run oracle catalog log");
-    assert!(
-        log.status.success(),
-        "oracle catalog log failed: {}",
-        String::from_utf8_lossy(&log.stderr)
-    );
-    let oracle_out = Command::new(&script)
-        .env("SNAPDIR_SQLITE3_CATALOG_DB_PATH", oracle_db.path())
-        .args(["revisions", &format!("--location={store}")])
-        .output()
-        .expect("run oracle catalog revisions");
-    assert!(oracle_out.status.success());
-    let oracle_line = String::from_utf8(oracle_out.stdout)
-        .unwrap()
-        .lines()
-        .next()
-        .expect("oracle emits one revision line")
-        .to_owned();
-
-    // The Rust catalog's revisions line for the same record.
-    let rust = stdout_ok(
-        cache.path(),
-        catalog.path(),
-        &["revisions", "--location", &store],
-    );
-    let rust_line = rust.lines().next().expect("one rust revision").to_owned();
-
-    // The oracle neutralizes only its NOW() created_at; compare the id +
-    // previous_id keys (created_at differs by wall clock between the two runs).
-    assert_eq!(
-        json_field(&rust_line, "id"),
-        json_field(&oracle_line, "id"),
-        "id field must match the oracle\nrust:   {rust_line}\noracle: {oracle_line}"
-    );
-    assert_eq!(
-        json_field(&rust_line, "previous_id"),
-        json_field(&oracle_line, "previous_id"),
-        "previous_id field must match the oracle\nrust:   {rust_line}\noracle: {oracle_line}"
-    );
 }

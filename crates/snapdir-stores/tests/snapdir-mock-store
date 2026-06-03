@@ -6,7 +6,7 @@
 # emit-command contract (get-manifest-command / get-fetch-files-command /
 # get-push-command) that ExternalStore dispatches against.
 #
-# Contract mirrored from ./snapdir-file-store: each interface subcommand prints
+# Contract per the documented store protocol: each interface subcommand prints
 # a shell script on stdout; the caller eval's it. The script does the actual
 # transfer. A `mock:///abs/dir` store maps to the local directory `/abs/dir`
 # (absolute path embedded in the URL, like file://).
