@@ -1270,3 +1270,223 @@ gates:
       human_confirm: "Did release.yml build artifacts for all targets (incl. musl static) and pass the static-binary smoke test on a dry-run tag?"
     human_checkpoint: true
     description: "RELEASE SIGN-OFF: per-target archives (binary + completions + man + CHANGELOG + migration guide) build; static smoke test passes."
+
+  # ===================================================================
+  # Phase 11 — Modernize & de-bash (post-1.0 cleanup)
+  # Operator-approved plan 2026-06-03 (~/.claude/plans/can-we-do-the-foamy-pike.md):
+  #   (1) full-cut de-bash + Rust golden-constant compat tests; (2) keep native-certs
+  #   (scratch + CA roots, no stores TLS change); (3) full-latest deps with a 3-day
+  #   minimum-release-age cooldown; (4) just delete the bash (no archive).
+  # NOTE: removing the oracle retires the live oracle-differential methodology — the
+  # byte-contract is henceforth guarded by the new compat tests + manifest-format.sha.lock.
+  # ===================================================================
+
+  # ---- Group A: de-bash (retire the frozen oracle) ----
+  - id: compat-golden-tests
+    phase: 11
+    owner_agent: tests
+    depends_on: []
+    # MUST land first: the backwards-compat anchor BEFORE any oracle deletion. Pure-Rust
+    # golden-constant tests pinning the frozen format with embedded recorded values:
+    # manifest line format+sort, dir-merkle, snapshot-id = BLAKE3(#-stripped manifest),
+    # sharded .objects/.manifests keys, checksum modes (b3/md5/sha256)+keyed BLAKE3,
+    # catalog JSON shapes. Reuse + extend crates/snapdir-core/tests/golden_*.rs.
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked compat"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "running [1-9][0-9]* test"
+    human_checkpoint: false
+    description: "Pure-Rust backwards-compat golden tests pinning the frozen byte-format (manifest/snapshot-id/sharded-keys/checksum-modes/catalog-JSON) with embedded recorded values — the contract anchor that replaces the live oracle differential."
+
+  - id: remove-bash-oracle
+    phase: 11
+    owner_agent: generic
+    depends_on: [compat-golden-tests]
+    # Delete the 8 root bash scripts + root bash Dockerfile + utils/pre-commit-hook.sh +
+    # utils/qa-fixtures/{expected-guide-commands.txt,guide-commands.sh,tested-commands.sh}.
+    # OPERATOR must lift the Edit(snapdir*)/Edit(utils/qa-fixtures/**) deny + ./snapdir* allow
+    # rules in .claude/settings.json (agents can't self-modify permissions) -> human_checkpoint.
+    status: pending
+    failure_count: 0
+    verification_cmd: "! ls snapdir snapdir-manifest snapdir-file-store snapdir-s3-store snapdir-b2-store snapdir-gcs-store snapdir-sqlite3-catalog snapdir-test 2>/dev/null && ! grep -q 'Edit(snapdir' .claude/settings.json && ! grep -q 'qa-fixtures' .claude/settings.json"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Operator: the bash oracle scripts + qa-fixtures + the Edit/allow deny-rules are removed, and you approve retiring the frozen oracle from rust-port?"
+    human_checkpoint: true
+    description: "Delete the legacy Bash oracle (8 root scripts), the bash-era root Dockerfile, pre-commit hook, and qa-fixtures; remove the oracle deny/allow rules from settings.json (operator-lifted)."
+
+  - id: remove-bash-test-harnesses
+    phase: 11
+    owner_agent: tests
+    depends_on: [compat-golden-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "! ls tests/interop/run.sh tests/integration/remote_stores.sh tests/integration/remote_stores_live.sh tests/integration/file_store_roundtrip.sh 2>/dev/null && cargo test --workspace --locked"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Delete the bash differential harnesses (interop/run.sh, remote_stores*.sh, file_store_roundtrip.sh) and the dead oracle()-skip branches in crates/*/tests; keep pure-Rust e2e + env-gated cloud round-trips."
+
+  - id: debash-ci
+    phase: 11
+    owner_agent: ci
+    depends_on: [remove-bash-oracle]
+    status: pending
+    failure_count: 0
+    verification_cmd: "! test -e .github/workflows/sqlite3-catalog.yml && ! grep -rIlE 'shellcheck|shfmt|snapdir-manifest|snapdir-test|snapdir-[a-z]+-store' .github/workflows/ .devcontainer/"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Remove oracle from CI: delete the shellcheck/shfmt linting job + snapdir-test runs (unit_tests.yml), delete sqlite3-catalog.yml, drop oracle mounts in s3/b2-store.yml, drop oracle linting from the devcontainer."
+
+  - id: debash-stores-comments
+    phase: 11
+    owner_agent: stores
+    depends_on: []
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build -p snapdir-stores --locked && ! grep -rIqE 'confirmed against \\./snapdir|the frozen .*oracle|against the live oracle' crates/snapdir-stores/src/"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Update snapdir-stores comments (shim.rs/router.rs) that reference the live bash oracle to past tense; KEEP the ExternalStore emit-command shim (third-party snapdir-<scheme>-store extensibility, not the legacy impl)."
+
+  - id: debash-gatesmith
+    phase: 11
+    owner_agent: generic
+    depends_on: [remove-bash-oracle, remove-bash-test-harnesses]
+    status: pending
+    failure_count: 0
+    verification_cmd: "! test -e .gatesmith/golden-fixtures.sha.lock && test -e .gatesmith/manifest-format.sha.lock && ! grep -qiE 'frozen bash oracle|differential oracle' .gatesmith/PM_PROMPT.md"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Retire the oracle-differential methodology in .gatesmith/: archive the oracle-differential gates (interop-*, file-store-interop, remote-interop*, b2-*), delete golden-fixtures.sha.lock (fixture gone), KEEP manifest-format.sha.lock, rewrite PM_PROMPT.md to anchor the byte-contract on the compat tests + core SHA-lock."
+
+  - id: no-bash-references-remain
+    phase: 11
+    owner_agent: generic
+    depends_on: [remove-bash-oracle, remove-bash-test-harnesses, debash-ci, debash-stores-comments, debash-gatesmith]
+    # Final Group-A verify. The tests/generic lane creates utils/ci/check-no-bash.sh which
+    # greps the repo (excluding .git, target, .gatesmith/journal.md, docs/adr historical notes).
+    status: pending
+    failure_count: 0
+    verification_cmd: "bash utils/ci/check-no-bash.sh && cargo build --workspace --locked && cargo test --workspace --locked"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Repo-wide guard: no `./snapdir-*` oracle refs, no `#!/bin/bash` scripts, no shellcheck/shfmt outside historical journal/ADR notes; workspace builds + tests green."
+
+  # ---- Group B: latest dependency versions (3-day cooldown) ----
+  - id: deps-cooldown-automation
+    phase: 11
+    owner_agent: ci
+    depends_on: []
+    # Supply-chain policy + reusable age-check (see memory: dependency-cooldown).
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .github/dependabot.yml && grep -q 'cooldown' .github/dependabot.yml && test -f utils/ci/check-crate-age.sh && bash utils/ci/check-crate-age.sh --help >/dev/null 2>&1 || test -f utils/ci/check-crate-age.sh"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Add Dependabot cooldown (default-days:3) [or Renovate minimumReleaseAge '3 days'] for cargo/github-actions/docker, + utils/ci/check-crate-age.sh enforcing every locked dep version is >=3 days old (crates.io created_at)."
+
+  - id: deps-upgrade-general
+    phase: 11
+    owner_agent: generic
+    depends_on: [deps-cooldown-automation]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test --workspace --locked && cargo clippy --workspace --all-targets -- -D warnings && cargo deny check && bash utils/ci/check-crate-age.sh"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Bump all non-TLS/SDK deps to the latest version published >=3 days ago (clap, serde, redb, blake3, walkdir/ignore, tokio, clap_complete/mangen, ...); build/test/clippy/deny green; crate-age check passes."
+
+  - id: deps-upgrade-tls-sdk
+    phase: 11
+    owner_agent: stores
+    depends_on: [compat-golden-tests, deps-cooldown-automation]
+    # The hard one. Unify rustls->0.23, hyper-rustls->0.27, hyper 1.x connector for aws-sdk-s3,
+    # latest aws-sdk-s3/aws-config, UNPIN google-cloud-storage/-gax. Keep ring + with_native_roots.
+    # musl-static link is proven by deps-verify (CI dry-run); local host can't musl-link.
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build -p snapdir-stores --locked && ! grep -iq 'aws-lc' Cargo.lock && ! grep -iq 'openssl-sys' Cargo.lock && cargo test -p snapdir-stores --locked && bash utils/ci/check-crate-age.sh"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Upgrade the TLS/SDK stack to latest (>=3-day) keeping ring / zero aws-lc-rs+openssl-sys / native-certs: unify rustls 0.23, hyper-rustls 0.27, hyper 1.x connector, latest aws-sdk-s3/aws-config, unpin google-cloud-storage/-gax (re-verify GcsStore is_not_found)."
+
+  - id: deps-verify
+    phase: 11
+    owner_agent: ci
+    depends_on: [deps-upgrade-general, deps-upgrade-tls-sdk]
+    # PM triggers the gh dispatch dry-run (proves musl-static + all 6 unix targets) + a MinIO
+    # S3 hermetic round-trip on the upgraded tree. Human checkpoint mirrors release-dryrun.
+    status: pending
+    failure_count: 0
+    verification_cmd: "echo 'PM: gh workflow run release.yml --ref rust-port -f dry_run=true && gh run watch <id>; then a MinIO S3 round-trip on the upgraded tree.'"
+    pass_criteria:
+      and:
+        - human_confirm: "Did the dry-run build all 6 unix targets (incl. musl-static, no aws-lc) AND a MinIO S3 round-trip pass on the upgraded deps, with crate-age >=3 days?"
+    human_checkpoint: true
+    description: "Re-verify the dependency upgrade end-to-end: release dry-run SUCCESS (6 unix targets, musl-static, no aws-lc/openssl) + hermetic MinIO S3 round-trip + crate-age >=3 days on the final lock."
+
+  # ---- Group C: docker / packaging (native-certs kept) ----
+  - id: docker-modernize
+    phase: 11
+    owner_agent: packaging
+    depends_on: [remove-bash-oracle, deps-verify]
+    status: pending
+    failure_count: 0
+    verification_cmd: "docker build -t snapdir-phase11-test . && docker run --rm snapdir-phase11-test --version && ! test -e utils/website.dockerfile && ! grep -riqE 'bash|b3sum|apk add' Dockerfile"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Make the scratch + static-musl + CA-certs image canonical: a self-contained multi-stage root Dockerfile (musl builder -> FROM scratch + ca-certificates + binary) so `docker build .` works; keep packaging/Dockerfile (BIN build-arg) for release.yml; bump base images to latest; delete utils/website.dockerfile."
+
+  # ---- Group D: ADRs ----
+  - id: adr-records
+    phase: 11
+    owner_agent: docs
+    depends_on: []
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f docs/adr/0000-index.md && [ \"$(ls docs/adr/0*.md 2>/dev/null | wc -l | tr -d ' ')\" -ge 20 ] && for f in docs/adr/000[1-9]-*.md docs/adr/00[1-9][0-9]-*.md; do grep -qiE '## *(context|decision)' \"$f\" || exit 1; done"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Create docs/adr/ (MADR format, numbered + index) capturing the ~25 port decisions (oracle-differential as history, manifest/snapshot-id freeze, ring-not-aws-lc, native stores+zero-dep, redb-not-sqlite, unix-only, cargo-dist+scratch, coverage floor, Gatesmith model, B2 scope, + the 3 Phase-11 decisions). Each: Context/Decision/Alternatives/Consequences."
+
+  # ---- Group E: README + final docs ----
+  - id: readme-docs-final
+    phase: 11
+    owner_agent: docs
+    depends_on: [docker-modernize, no-bash-references-remain, adr-records]
+    status: pending
+    failure_count: 0
+    verification_cmd: "! grep -riqE 'frozen bash oracle|differential oracle|\\./snapdir-(manifest|s3-store|b2-store|gcs-store|file-store)' README.md CONTRIBUTING.md docs/rust-port/ && grep -iq scratch README.md"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Finalize README/CONTRIBUTING/docs: accurate scratch-image story (static binary + bundled CA roots, zero runtime executables), latest install paths, link to docs/adr/; rewrite the CONTRIBUTING 'frozen Bash oracle' section; update CHANGELOG (bump to 0.6.0)."
+
+  # ---- Final sign-off ----
+  - id: phase11-complete
+    phase: 11
+    owner_agent: generic
+    depends_on: [no-bash-references-remain, deps-verify, docker-modernize, readme-docs-final, adr-records]
+    status: pending
+    failure_count: 0
+    verification_cmd: "bash utils/ci/check-no-bash.sh && bash utils/ci/check-crate-age.sh && test -f docs/adr/0000-index.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 11 done: rust-port is bash-free, deps are current (>=3-day), the scratch image builds, and the ADRs/docs are accurate. Approve?"
+    human_checkpoint: true
+    description: "PHASE 11 SIGN-OFF: branch is bash-free, dependencies refreshed to latest (>=3-day cooldown), docker image modernized, ADRs + docs accurate."

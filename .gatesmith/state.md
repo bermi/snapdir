@@ -3,7 +3,15 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ✅ PROJECT COMPLETE — 67/67 gates green (2026-06-03)
+## ▶ Phase 11 — Modernize & de-bash (in progress) — 67/82 gates passed
+
+The Bash→Rust port (Phases 0–10) is **complete & verified, 67/67**. The operator opened **Phase 11** (plan: `~/.claude/plans/can-we-do-the-foamy-pike.md`) — 15 new gates to: **(A)** remove the legacy Bash oracle + all references (full cut; the byte-contract is re-anchored as pure-Rust golden-constant compat tests + `manifest-format.sha.lock`), **(B)** upgrade all deps to latest with a **≥3-day cooldown** (Dependabot/Renovate + a crates.io `created_at` check; unify rustls 0.23 / hyper-rustls 0.27 / hyper 1.x / latest AWS SDK / unpin google-cloud-storage, keep ring + native-certs), **(C)** modernize the Docker image (scratch + musl + CA roots; self-contained root Dockerfile), **(D)** author `docs/adr/` (~25 ADRs), **(E)** finalize README/docs.
+
+Decisions (operator, AskUserQuestion 2026-06-03): full-cut de-bash w/ Rust golden tests · **keep native-certs** (scratch+CA-certs, no stores TLS change) · **full-latest** deps · just delete the bash (no archive). Methodology shift: removing the oracle retires the live oracle-differential model.
+
+**Eligible now** (no unmet deps): `compat-golden-tests` (tests — land FIRST, the contract anchor) · `deps-cooldown-automation` (ci) · `debash-stores-comments` (stores) · `adr-records` (docs). `remove-bash-oracle` + `deps-verify` + `phase11-complete` are **human_checkpoints** (operator lifts the `Edit(snapdir*)` deny rules; confirms the dry-run; final sign-off).
+
+## ✅ Phase 10 complete — 67/67 prior gates green (2026-06-03)
 
 `remote-interop-b2` ✅ PASSED (git cfad28f) — the final scoped live harness run exited 0: **S3(MinIO) + GCS(real) full A/B/C differential byte-identical green; zero-external-dependency lane green; B2 (real sandbox) scoped green** (Rust round-trip vs real B2 + Rust↔Bash snapshot-id agreement; the legacy bash-oracle cold-fetch-from-B2 loudly documented as a known limitation). `backends ran: s3 gcs b2`. The Bash→Rust port is feature-complete and verified: frozen manifest/merkle/excludes format byte-identical to the oracle; redb catalog; native in-process S3/B2/GCS stores (zero external CLI dependency, proven by the PATH-sanitized lane); 14 CLI subcommands wired; coverage floor; release dry-run (6 unix targets, Windows dropped); Rust-only docs + README; cargo Makefile. The human owns project end (stop ralph).
 
