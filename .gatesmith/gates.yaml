@@ -1536,9 +1536,11 @@ gates:
     # Lint (clippy --all-features / cargo-shear unused-deps / cargo-semver-checks on the
     # md-5/sha2 0.11 + aws-smithy-http-client change), Static musl, Coverage. Get a fresh
     # ci.yaml run on rust-port HEAD fully green. PM dispatches + watches the run.
-    status: pending
     failure_count: 0
     verification_cmd: "echo 'PM: gh workflow run ci.yaml --ref rust-port && gh run watch <id> --exit-status; every job must conclude success'"
+    status: passed
+    passed_at: 2026-06-03T14:30:00Z
+    git_sha: a79c080
     pass_criteria:
       exit_code: 0
     human_checkpoint: false
