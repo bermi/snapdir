@@ -56,9 +56,11 @@ jobs:
         run: typos
 
       - name: Install actionlint
-        uses: taiki-e/install-action@v2
-        with:
-          tool: actionlint@1.7.7
+        run: |
+          VER=1.7.7
+          curl -sSL "https://github.com/rhysd/actionlint/releases/download/v${VER}/actionlint_${VER}_linux_amd64.tar.gz" | tar -xz actionlint
+          sudo mv actionlint /usr/local/bin/actionlint
+          actionlint --version
 
       - name: actionlint
         run: actionlint -color
