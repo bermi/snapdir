@@ -7,7 +7,9 @@
 
 > The operator's push-hold (*"why push to paid CI before local gates exist?"*) is **cleared**: ci.yaml run 26891142751 @ a79c080 concluded **success — all 12 jobs green**. The local pre-push hook is **installed** (`make install-hooks` → `core.hooksPath=utils/git-hooks`), so every future push runs the full CI-equivalent suite first and blocks on failure. Normal (hook-guarded) pushing resumes; ledger-only pushes may use `git push --no-verify`.
 
-## ▶ Phase 11 — Modernize & de-bash (in progress) — 82/84 gates passed
+## ▶ Phase 11 — Modernize & de-bash (in progress) — 83/84 gates passed
+
+`no-bash-references-remain` ✅ PASSED (git 28a88c8) — **Group A (de-bash) COMPLETE.** `utils/ci/check-no-bash.sh` guards against oracle re-introduction/invocation (path-existence + live-invocation checks; excludes the new CI tooling + .git/target/.gatesmith/docs/*.rs comments + the sha-locked core files). Removed 3 dead bash-era scripts (`utils/{verify-docs,generate-docs,install}.sh`); scrubbed live-oracle comments → past-tense in 6 non-locked files. guard exit0, cargo build+test green (232/0), sha-locks intact. The Bash oracle + all live references are out of rust-port. **Remaining: `readme-docs-final` → `phase11-complete` (hc).**
 
 `debash-gatesmith` ✅ PASSED — retired the oracle-differential methodology in `.gatesmith/`: `golden-fixtures.sha.lock` removed (only `manifest-format.sha.lock` remains), `PM_PROMPT.md` rewritten (FROZEN ORACLE → past-tense; byte-contract anchored on `compat_golden.rs` + the SHA-lock; ci-lane row de-staled). Oracle-differential gates (interop-*, remote-interop*, b2-*) stay `passed` as historical record, documented as archived. **Unblocks `no-bash-references-remain`** (last Group-A gate). 
 

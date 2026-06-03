@@ -1392,7 +1392,9 @@ gates:
     depends_on: [remove-bash-oracle, remove-bash-test-harnesses, debash-ci, debash-stores-comments, debash-gatesmith]
     # Final Group-A verify. The tests/generic lane creates utils/ci/check-no-bash.sh which
     # greps the repo (excluding .git, target, .gatesmith/journal.md, docs/adr historical notes).
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T14:50:00Z
+    git_sha: 28a88c8
     failure_count: 0
     verification_cmd: "bash utils/ci/check-no-bash.sh && cargo build --workspace --locked && cargo test --workspace --locked"
     pass_criteria:
