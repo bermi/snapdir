@@ -14,7 +14,7 @@
 #   1. Lint        — fmt, clippy (-D warnings, --all-features), typos,
 #                    actionlint, cargo-shear, cargo-semver-checks (non-blocking)
 #   2. Supply chain — cargo-deny, cargo-audit
-#   3. Test        — build + test (host stable, plus MSRV 1.85 if installed)
+#   3. Test        — build + test (host stable, plus MSRV 1.91.1 if installed)
 #   4. Static musl — x86_64-unknown-linux-musl build, debug AND release
 #   5. Doctests    — cargo test --doc
 #   6. Coverage    — cargo llvm-cov --fail-under-lines 75
@@ -48,7 +48,7 @@ FAST=0
 NO_INSTALL=0
 
 MUSL_TARGET="x86_64-unknown-linux-musl"
-MSRV="1.85"
+MSRV="1.91.1"
 COVERAGE_FLOOR=75
 BUILDER_IMAGE="rust:1.96-slim-bookworm"
 
@@ -347,7 +347,7 @@ else
 fi
 
 # ===========================================================================
-# Group 3 — Build + Test (host stable; MSRV 1.85 if installed)
+# Group 3 — Build + Test (host stable; MSRV 1.91.1 if installed)
 # ===========================================================================
 banner "3/6 Build + Test"
 

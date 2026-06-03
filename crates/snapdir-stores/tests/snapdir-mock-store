@@ -14,8 +14,25 @@
 set -eEuo pipefail
 
 # --- argument parsing: subcommand + --key value / --key=value -----------------
+#
+# bash-3.2 compatible (CI macos-latest ships bash 3.2, which has no associative
+# arrays): instead of `declare -A opt`, recognized options are stored in plain
+# `opt_<name>` scalar variables. Hyphens in option names map to underscores
+# (e.g. --staging-dir -> opt_staging_dir) so they are valid identifiers.
 command=""
-declare -A opt=()
+opt_store=""
+opt_id=""
+opt_staging_dir=""
+opt_cache_dir=""
+
+# set_opt <name> <value>: assign opt_<name-with-underscores>=<value>.
+set_opt() {
+	local name="$1"
+	local value="$2"
+	name="${name//-/_}"
+	eval "opt_${name}=\$value"
+}
+
 while [ $# -gt 0 ]; do
 	case "$1" in
 	get-manifest-command | get-fetch-files-command | get-push-command)
@@ -29,21 +46,21 @@ while [ $# -gt 0 ]; do
 	--*=*)
 		key="${1%%=*}"
 		key="${key#--}"
-		opt["$key"]="${1#*=}"
+		set_opt "$key" "${1#*=}"
 		shift
 		;;
 	--*)
 		key="${1#--}"
 		shift
-		opt["$key"]="${1:-true}"
+		set_opt "$key" "${1:-true}"
 		shift || true
 		;;
 	*) shift ;;
 	esac
 done
 
-store="${opt[store]:-}"
-id="${opt[id]:-}"
+store="${opt_store:-}"
+id="${opt_id:-}"
 
 # store_dir: mock:///abs/path -> /abs/path (absolute path embedded in the URL,
 # like file://; keeps tests hermetic with no shared env between parallel cases).
@@ -70,7 +87,7 @@ get-manifest-command)
 	;;
 
 get-push-command)
-	staging_dir="${opt[staging-dir]:?Missing --staging-dir}"
+	staging_dir="${opt_staging_dir:?Missing --staging-dir}"
 	staging_dir="${staging_dir%/}"
 	echo "set -eEuo pipefail;"
 	if test -f "${store_dir}/${manifest_rel}"; then
@@ -90,7 +107,7 @@ get-push-command)
 	;;
 
 get-fetch-files-command)
-	cache_dir="${opt[cache-dir]:?Missing --cache-dir}"
+	cache_dir="${opt_cache_dir:?Missing --cache-dir}"
 	cache_dir="${cache_dir%/}"
 	echo "set -eEuo pipefail;"
 	# manifest arrives on stdin (tolerate a missing final newline)

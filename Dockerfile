@@ -20,7 +20,7 @@
 # `release.yml` feeds with the prebuilt musl artifact.
 
 # ---- stage: build the static musl binary from source ----
-# Pinned to the repo toolchain (rust-toolchain.toml channel 1.96.0).
+# Toolchain is pinned by this base image (rust 1.96).
 # Build on the native platform so the musl target matches the builder arch.
 FROM --platform=$BUILDPLATFORM rust:1.96-slim-bookworm AS builder
 ARG TARGETARCH

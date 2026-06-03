@@ -11,8 +11,9 @@ cd snapdir
 cargo build --workspace
 ```
 
-The toolchain is pinned in `rust-toolchain.toml` (currently 1.96.0); rustup
-will install it automatically. The supported MSRV is 1.85.
+Any toolchain at or above the MSRV works. The supported MSRV is 1.91.1
+(driven by the AWS SDK crates used by the S3 store); CI tests MSRV, stable,
+and beta.
 
 ## Workspace layout
 
