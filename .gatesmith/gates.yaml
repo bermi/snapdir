@@ -1354,7 +1354,9 @@ gates:
     phase: 11
     owner_agent: stores
     depends_on: []
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T02:10:00Z
+    git_sha: 56df3cd
     failure_count: 0
     verification_cmd: "cargo build -p snapdir-stores --locked && ! grep -rIqE 'confirmed against \\./snapdir|the frozen .*oracle|against the live oracle' crates/snapdir-stores/src/"
     pass_criteria:
