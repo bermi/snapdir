@@ -1284,14 +1284,21 @@ gates:
   # ---- Group A: de-bash (retire the frozen oracle) ----
   - id: compat-golden-tests
     phase: 11
-    owner_agent: tests
+    owner_agent: core
     depends_on: []
+    # GATE-OWNER-FIX 2026-06-03: tests -> core. The golden-constant compat tests live in
+    # crates/snapdir-core/tests/ (next to golden_b3sum.rs) and pin core artifacts: manifest
+    # format, snapshot-id, dir-merkle, sharded keys (snapdir-core::store). Catalog JSON shapes
+    # are already pinned by hardcoded constants in crates/snapdir-cli/tests/catalog_commands.rs;
+    # CLI surface by trycmd — so no separate compat gate needed.
     # MUST land first: the backwards-compat anchor BEFORE any oracle deletion. Pure-Rust
     # golden-constant tests pinning the frozen format with embedded recorded values:
     # manifest line format+sort, dir-merkle, snapshot-id = BLAKE3(#-stripped manifest),
     # sharded .objects/.manifests keys, checksum modes (b3/md5/sha256)+keyed BLAKE3,
     # catalog JSON shapes. Reuse + extend crates/snapdir-core/tests/golden_*.rs.
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T01:50:00Z
+    git_sha: ea4dcbc
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked compat"
     pass_criteria:

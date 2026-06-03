@@ -3,9 +3,11 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ Phase 11 — Modernize & de-bash (in progress) — 68/82 gates passed
+## ▶ Phase 11 — Modernize & de-bash (in progress) — 69/82 gates passed
 
-`adr-records` ✅ PASSED (git 9464f77) — `docs/adr/` now holds 26 MADR ADRs + an index (0024 retires the oracle / supersedes 0001; 0025 keep-native-certs; 0026 latest-deps-with-3-day-cooldown).
+`compat-golden-tests` ✅ PASSED (git ea4dcbc, owner GATE-OWNER-FIX'd tests→core) — `crates/snapdir-core/tests/compat_golden.rs` pins the frozen byte-format with 16 embedded-constant Rust tests (manifest format/sort, dir-merkle, snapshot-id, sharded keys, md5/sha256/keyed modes). **This is the contract anchor** — the byte-format is now guarded without the oracle, so `remove-bash-oracle` + `remove-bash-test-harnesses` are unblocked. `adr-records` ✅ (git 9464f77, 26 MADR ADRs in `docs/adr/`).
+
+**Eligible now:** `debash-stores-comments` (stores) · `deps-cooldown-automation` (ci) · `remove-bash-test-harnesses` (tests) · `remove-bash-oracle` (generic, **human_checkpoint** — operator lifts the `Edit(snapdir*)` deny rules).
 
 The Bash→Rust port (Phases 0–10) is **complete & verified, 67/67**. The operator opened **Phase 11** (plan: `~/.claude/plans/can-we-do-the-foamy-pike.md`) — 15 new gates to: **(A)** remove the legacy Bash oracle + all references (full cut; the byte-contract is re-anchored as pure-Rust golden-constant compat tests + `manifest-format.sha.lock`), **(B)** upgrade all deps to latest with a **≥3-day cooldown** (Dependabot/Renovate + a crates.io `created_at` check; unify rustls 0.23 / hyper-rustls 0.27 / hyper 1.x / latest AWS SDK / unpin google-cloud-storage, keep ring + native-certs), **(C)** modernize the Docker image (scratch + musl + CA roots; self-contained root Dockerfile), **(D)** author `docs/adr/` (~25 ADRs), **(E)** finalize README/docs.
 
