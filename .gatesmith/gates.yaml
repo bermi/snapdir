@@ -1438,7 +1438,9 @@ gates:
     # ->0.103.12+) + RUSTSEC-2025-0134 (drops rustls-pemfile 1.0). CDLA-Permissive-2.0 (webpki-root-certs
     # <-rustls-platform-verifier<-reqwest<-google-cloud-auth) needs the google-cloud unpin to drop it OR
     # add CDLA-Permissive-2.0 to deny.toml allow-list (license of a CA-roots data crate; permissive, OK).
-    status: pending
+    status: passed
+    passed_at: 2026-06-03T03:00:00Z
+    git_sha: b2d0676
     failure_count: 0
     verification_cmd: "cargo build -p snapdir-stores --locked && ! grep -iq 'aws-lc' Cargo.lock && ! grep -iq 'openssl-sys' Cargo.lock && cargo test -p snapdir-stores --locked && bash utils/ci/check-crate-age.sh"
     pass_criteria:
