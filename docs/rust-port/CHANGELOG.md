@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0]
+
+### Added
+
+- **Concurrent object transfers.** `push` and `pull`/`fetch` now transfer objects
+  concurrently instead of one at a time — across S3, GCS, and B2 (network) and the
+  local `file://` store. Concurrency defaults to the number of available CPUs (capped
+  at 16) and is tunable with `--jobs/-j N` (`SNAPDIR_JOBS`); `--jobs 1` restores fully
+  sequential transfers.
+- **Aggregate bandwidth limiting.** `--limit-rate RATE` (`SNAPDIR_LIMIT_RATE`) caps the
+  *total* network throughput across all in-flight transfers via a single token bucket,
+  using wget-style suffixes (e.g. `512K`, `10M`, `1G`). It applies to the network stores;
+  local `file://` copies are not rate-limited.
+- **`--verbose` transfer reporting.** Under `--verbose`, the transfer commands print the
+  effective settings to stderr, e.g. `transfers: 8 concurrent, limit 10M`.
+
+### Fixed
+
+- **`--dryrun` is now honored.** The global `--dryrun` flag was declared but never
+  checked, so `push --dryrun` (and other mutating commands) still wrote to the store.
+  `push` (incl. staged `--id`), `stage`, `fetch`, `checkout`, `pull`, and `flush-cache`
+  now perform zero writes under `--dryrun`, and `verify-cache --purge` does not purge.
+- **`pull` no longer re-downloads data that is already local.** `fetch_files` skips any
+  destination file already present whose checksum matches the manifest (no copy, and no
+  network GET), and `fetch`/`pull` skip the store entirely when the snapshot is already
+  cached — so a repeated pull of the same snapshot performs no redundant transfers.
+  Corrupted local files are detected and repaired.
+
+### Changed
+
+- **`--exclude` and `--paths` accept multiple patterns** — repeated (`--exclude a
+  --exclude b`) and/or comma-delimited (`--exclude a,b`) — combined as a logical OR
+  (a path matches if it matches any pattern). The `%system%` / `%common%` macros are
+  expanded per pattern. A single value behaves exactly as before.
+
+The manifest byte-format and content-addressed object/manifest layout are unchanged, so
+snapshots remain fully interoperable with 1.0.x.
+
 ## [1.0.1]
 
 ### Fixed

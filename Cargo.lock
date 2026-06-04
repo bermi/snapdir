@@ -3362,7 +3362,7 @@ dependencies = [
 
 [[package]]
 name = "snapdir-benches"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "criterion",
  "snapdir-core",
@@ -3371,7 +3371,7 @@ dependencies = [
 
 [[package]]
 name = "snapdir-catalog"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "redb",
  "serde",
@@ -3381,7 +3381,7 @@ dependencies = [
 
 [[package]]
 name = "snapdir-cli"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -3398,7 +3398,7 @@ dependencies = [
 
 [[package]]
 name = "snapdir-core"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "blake3",
  "md-5",
@@ -3410,7 +3410,7 @@ dependencies = [
 
 [[package]]
 name = "snapdir-stores"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
