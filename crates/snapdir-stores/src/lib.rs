@@ -22,6 +22,7 @@ pub mod gcs_store;
 pub mod router;
 pub mod s3_store;
 pub mod shim;
+pub(crate) mod util;
 
 pub use b2_store::B2Store;
 pub use file_store::FileStore;

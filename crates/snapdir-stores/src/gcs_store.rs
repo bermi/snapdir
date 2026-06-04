@@ -56,6 +56,8 @@ use google_cloud_storage::client::{Storage, StorageControl};
 use snapdir_core::manifest::{Manifest, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
+
+use crate::util::file_present_and_verified;
 use tokio::runtime::Runtime;
 
 /// Number of times a fetch is retried when the downloaded bytes fail their
@@ -345,6 +347,7 @@ impl Store for GcsStore {
     }
 
     fn fetch_files(&self, manifest: &Manifest, dest: &Path) -> Result<(), StoreError> {
+        let hasher = Blake3Hasher::new();
         self.runtime.block_on(async {
             for entry in manifest.entries() {
                 let rel = strip_leading_dot_slash(&entry.path);
@@ -354,6 +357,13 @@ impl Store for GcsStore {
                         std::fs::create_dir_all(&target)?;
                     }
                     PathType::File => {
+                        // Skip-if-present-and-verified: avoid the network GET
+                        // entirely when the destination file already exists and
+                        // hashes to the manifest's checksum. A corrupt/mismatched
+                        // local file falls through and is repaired below.
+                        if file_present_and_verified(&target, &entry.checksum, &hasher) {
+                            continue;
+                        }
                         if let Some(parent) = target.parent() {
                             std::fs::create_dir_all(parent)?;
                         }

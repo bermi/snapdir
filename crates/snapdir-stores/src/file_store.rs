@@ -37,6 +37,8 @@ use snapdir_core::manifest::{Manifest, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
 
+use crate::util::{file_present_and_verified, hash_file};
+
 /// Number of times the oracle retries a persist whose copied bytes fail their
 /// checksum but whose source still verifies (`_SNAPDIR_FILE_STORE_RETRIES`).
 const MAX_PERSIST_RETRIES: u32 = 5;
@@ -131,6 +133,15 @@ impl Store for FileStore {
                     fs::create_dir_all(&target)?;
                 }
                 PathType::File => {
+                    // Skip-if-present-and-verified: a destination file that
+                    // already exists and whose content hashes to the manifest's
+                    // checksum needs no copy — and critically no object read at
+                    // all (so a populated dest succeeds even if the store object
+                    // is gone). A mismatching/corrupt local file falls through
+                    // and is repaired by the persist below.
+                    if file_present_and_verified(&target, &entry.checksum, &hasher) {
+                        continue;
+                    }
                     if let Some(parent) = target.parent() {
                         fs::create_dir_all(parent)?;
                     }
@@ -277,12 +288,6 @@ fn write_manifest(
 fn copy_file(source: &Path, target: &Path) -> Result<(), StoreError> {
     fs::copy(source, target)?;
     Ok(())
-}
-
-/// Hashes a file's full byte content with `hasher`.
-fn hash_file(path: &Path, hasher: &impl Hasher) -> Result<String, StoreError> {
-    let bytes = fs::read(path)?;
-    Ok(hasher.hash_hex(&bytes))
 }
 
 /// Builds a unique temp sibling path for `target` (same directory, so the
@@ -642,6 +647,117 @@ mod tests {
         }
         // The corrupt object must NOT have been materialized at the dest.
         assert!(!dest_dir.path().join("foo").exists());
+    }
+
+    #[test]
+    fn fetch_skip_present_verified() {
+        // Push a tree, fetch it (populating dest), then DELETE the store's whole
+        // `.objects` tree so any object read would now fail with ObjectNotFound.
+        // A second fetch into the SAME dest must still return Ok — proving every
+        // file was skipped via local checksum match (ZERO object reads).
+        let store_dir = TempDir::new("store");
+        let src_dir = TempDir::new("src");
+        let dest_dir = TempDir::new("dest");
+        let (manifest, id) = make_foo_bar_source(src_dir.path());
+
+        let store = FileStore::from_root(store_dir.path());
+        store.push(&manifest, src_dir.path()).expect("push");
+
+        let fetched = store.get_manifest(&id).expect("get manifest");
+        store
+            .fetch_files(&fetched, dest_dir.path())
+            .expect("first fetch populates dest");
+        assert_eq!(fs::read(dest_dir.path().join("foo")).unwrap(), b"foo\n");
+        assert_eq!(fs::read(dest_dir.path().join("bar")).unwrap(), b"bar\n");
+
+        // Nuke every object in the store. Any read of an object now fails.
+        let objects = store_dir.path().join(".objects");
+        fs::remove_dir_all(&objects).expect("remove .objects tree");
+        assert!(!objects.exists());
+
+        // Second fetch into the populated dest must succeed without reading a
+        // single (now-missing) object.
+        store
+            .fetch_files(&fetched, dest_dir.path())
+            .expect("second fetch skips every present+verified file (no object reads)");
+
+        // Dest contents intact.
+        assert_eq!(fs::read(dest_dir.path().join("foo")).unwrap(), b"foo\n");
+        assert_eq!(fs::read(dest_dir.path().join("bar")).unwrap(), b"bar\n");
+    }
+
+    #[test]
+    fn file_store_fetch_repairs_corrupt_dest_and_skips_intact() {
+        // With store objects present: corrupt one dest file. The corrupted file
+        // is re-fetched (repaired) to match its checksum again, while an
+        // unrelated already-correct dest file is still skipped.
+        let store_dir = TempDir::new("store");
+        let src_dir = TempDir::new("src");
+        let dest_dir = TempDir::new("dest");
+        let (manifest, id) = make_foo_bar_source(src_dir.path());
+
+        let store = FileStore::from_root(store_dir.path());
+        store.push(&manifest, src_dir.path()).expect("push");
+        let fetched = store.get_manifest(&id).expect("get manifest");
+        store
+            .fetch_files(&fetched, dest_dir.path())
+            .expect("first fetch populates dest");
+
+        // Corrupt `foo` in the dest; leave `bar` correct.
+        fs::write(dest_dir.path().join("foo"), b"WRONG\n").unwrap();
+        // Remove `bar`'s store object so it CANNOT be re-fetched; the only way a
+        // second fetch can succeed is if `bar` is skipped (present + verified).
+        let bar_entry = manifest
+            .entries()
+            .iter()
+            .find(|e| e.path == "./bar")
+            .unwrap();
+        let bar_obj = store_dir.path().join(object_path(&bar_entry.checksum));
+        fs::remove_file(&bar_obj).unwrap();
+
+        store
+            .fetch_files(&fetched, dest_dir.path())
+            .expect("repair corrupt foo, skip intact bar");
+
+        // foo repaired back to its checksummed content; bar untouched.
+        assert_eq!(fs::read(dest_dir.path().join("foo")).unwrap(), b"foo\n");
+        assert_eq!(fs::read(dest_dir.path().join("bar")).unwrap(), b"bar\n");
+    }
+
+    #[test]
+    fn file_store_fetch_mismatch_then_missing_object_errors() {
+        // Confirms the skip is checksum-gated, not mere existence: corrupt a
+        // dest file AND remove its store object → fetch cannot repair and errors
+        // ObjectNotFound (it did not blindly skip the present-but-wrong file).
+        let store_dir = TempDir::new("store");
+        let src_dir = TempDir::new("src");
+        let dest_dir = TempDir::new("dest");
+        let (manifest, id) = make_foo_bar_source(src_dir.path());
+
+        let store = FileStore::from_root(store_dir.path());
+        store.push(&manifest, src_dir.path()).expect("push");
+        let fetched = store.get_manifest(&id).expect("get manifest");
+        store
+            .fetch_files(&fetched, dest_dir.path())
+            .expect("first fetch populates dest");
+
+        let foo_entry = manifest
+            .entries()
+            .iter()
+            .find(|e| e.path == "./foo")
+            .unwrap();
+        // Corrupt the dest file so the skip gate fails for it...
+        fs::write(dest_dir.path().join("foo"), b"WRONG\n").unwrap();
+        // ...and remove its store object so it cannot be repaired.
+        let foo_obj = store_dir.path().join(object_path(&foo_entry.checksum));
+        fs::remove_file(&foo_obj).unwrap();
+
+        match store.fetch_files(&fetched, dest_dir.path()) {
+            Err(StoreError::ObjectNotFound { checksum }) => {
+                assert_eq!(checksum, foo_entry.checksum);
+            }
+            other => panic!("expected ObjectNotFound (cannot repair), got {other:?}"),
+        }
     }
 
     #[test]
