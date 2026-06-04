@@ -9,17 +9,18 @@
 >
 > **Decisions:** concurrency **auto on by default** (`available_parallelism` capped at 16; `--jobs` overrides, `--jobs 1` = sequential); `--limit-rate` is **aggregate** (one shared **zero-dep** token bucket); **FileStore parallelized too** (rayon). Invariants preserved: manifest-last, skip-if-present (Phase 12), per-object verify, frozen layout. `TransferConfig` lives in `snapdir-stores` so **core is untouched**.
 
-**Phase 13 ledger: 7 gates — 5 passed, 2 pending.**
+**Phase 13 ledger: 8 gates — 6 passed, 2 pending.**  *(grew 7→8: PM added `transfer-verbose-reports-jobs` after finding the CLI cannot show effective concurrency under --verbose, so the operator could not field-verify concurrent transfers.)*
 
 - `transfer-config` ✅ PASSED (code `7fe2dab`) — `TransferConfig` + zero-dep token-bucket `RateLimiter` + `run_concurrent` (`buffer_unordered`) engine + backward-compat `*_with_config` ctors (old ctors delegate; cli unchanged). Deterministic test proves max-in-flight == min(concurrency, N) and == 1 at concurrency=1. `futures` + tokio time/sync added. No loop change yet.
 - `concurrent-upload` ✅ PASSED (code `3ca5e6c`) — S3/GCS `push` upload concurrently via shared `push.rs` orchestrator; **manifest written only after all uploads succeed (all-or-nothing)**; skip-present + source verify + rate limit preserved. Hermetic test proves write_manifest is never called on a failed upload.
 - `concurrent-download` ✅ PASSED (code `8af1352`) — S3/GCS `fetch_files` download concurrently via a shared `fetch.rs` orchestrator (skip-present short-circuits before any GET; rate-limited by manifest size; per-object verify + atomic write preserved). De-dups S3/GCS. Hermetic tests prove concurrency + skip + error-propagation.
 - `filestore-parallel` ✅ PASSED (code `ea10f76`) — FileStore push/fetch copy objects in parallel via a rayon pool sized to `--jobs` (`parallel_copy`); manifest-last/all-or-nothing + skip-present + persist verify preserved; concurrency=1 stays sequential. Hermetic round-trip + all-or-nothing tests.
 - `cli-transfer-flags` ✅ PASSED (code `94b5f75`) — `--jobs/-j` + `--limit-rate` (aggregate, wget-style) globals + env, `parse_rate`, and `Cli::transfer_config` threaded through `store_for_adapter` + `cache_store` via the `*_with_config` ctors. 15 help snapshots regenerated. Takes effect once the loops adopt the engine.
-- `transfer-concurrency-verification` ⏳ (cli) — e2e: `--jobs` round-trips + `--limit-rate` throttle bound.
+- `transfer-concurrency-verification` ✅ PASSED (code `373cd2d`) — 3 hermetic e2e tests: `--jobs 4`/`--jobs 1` round-trip byte-identical + identical snapshot id; `--limit-rate` accepted + correct. (No file:// throttle assertion — limiter is network-only.)
+- `transfer-verbose-reports-jobs` ⏳ (cli) — **[PM-added]** print effective concurrency (+ limit) under `--verbose` so the operator can field-verify concurrent transfers; the CLI emits none today.
 - `phase13-complete` ⏳ (generic, **human_checkpoint**) — sign-off.
 
-**Next ready:** `transfer-concurrency-verification` (cli e2e), then `phase13-complete` (human sign-off).
+**Next ready:** `transfer-verbose-reports-jobs` (cli), then `phase13-complete` (human sign-off).
 
 ---
 

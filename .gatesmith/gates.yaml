@@ -1813,7 +1813,9 @@ gates:
     phase: 13
     owner_agent: cli
     depends_on: [concurrent-upload, concurrent-download, filestore-parallel, cli-transfer-flags]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T03:00:02Z
+    git_sha: 373cd2d
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked transfer_concurrency -- --nocapture"
     pass_criteria:
@@ -1823,11 +1825,31 @@ gates:
     human_checkpoint: false
     description: "End-to-end verification at the CLI boundary (file:// store, hermetic): a push/pull with --jobs 4 round-trips byte-identical and re-manifests to the same id; --jobs 1 round-trips identically (sequential path still correct); --limit-rate enforces a measurable elapsed-time LOWER bound for a known multi-object payload (generous bound to avoid flake); the verbose path reports the effective concurrency. (The deterministic max-in-flight>1 proof lives in transfer-config's run_concurrent test; this gate proves the flags are wired and correctness/throttle hold through the binary.) Tests named transfer_concurrency*."
 
+  # --- Operator field-observability: surface effective concurrency/limit under --verbose ---
+  # ADDED 2026-06-04 (PM): the transfer-concurrency-verification teammate found the CLI emits
+  # NOTHING about effective concurrency on --verbose, so the operator's "verify concurrent
+  # uploads" goal isn't field-observable (only unit-provable). The --limit-rate throttle also
+  # can't be e2e-asserted via file:// (rate limiter is network-only). Add a small verbose line
+  # so an operator can confirm concurrency/bandwidth in the field.
+  - id: transfer-verbose-reports-jobs
+    phase: 13
+    owner_agent: cli
+    depends_on: [cli-transfer-flags, transfer-concurrency-verification]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked verbose_jobs -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Under --verbose, the transfer commands (push / fetch / pull) print the EFFECTIVE transfer concurrency (and the --limit-rate, if set) to stderr once, e.g. `transfers: 8 concurrent` or `transfers: 8 concurrent, limit 10M/s`, so an operator can VERIFY in the field that concurrent transfers + bandwidth limiting are actually in effect (the deterministic concurrency proof is the unit test; this is operator-facing observability). Resolve the effective concurrency the same way the store does (TransferConfig from --jobs/auto). Keep stdout byte-stable (verbose goes to stderr only); do not change non-verbose behavior. Tests (verbose_jobs*): `push --jobs 3 --verbose` stderr mentions `3 concurrent`; `--limit-rate 1M --verbose` mentions the limit; no --verbose => no such line on stdout."
+
   # --- Phase 13 sign-off ---
   - id: phase13-complete
     phase: 13
     owner_agent: generic
-    depends_on: [transfer-config, concurrent-upload, concurrent-download, filestore-parallel, cli-transfer-flags, transfer-concurrency-verification]
+    depends_on: [transfer-config, concurrent-upload, concurrent-download, filestore-parallel, cli-transfer-flags, transfer-concurrency-verification, transfer-verbose-reports-jobs]
     status: pending
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked"
