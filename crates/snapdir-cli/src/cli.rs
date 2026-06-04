@@ -28,7 +28,8 @@ use snapdir_core::{
     Sha256Hasher, Store, WalkOptions,
 };
 use snapdir_stores::{
-    resolve_adapter, Adapter, B2Store, ExternalStore, FileStore, GcsStore, S3Store, TransferConfig,
+    resolve_adapter, Adapter, B2Store, ExternalStore, FileStore, GcsStore, S3Store, StreamStore,
+    TransferConfig,
 };
 
 /// Content-addressable directory snapshots.
@@ -239,6 +240,17 @@ pub enum Command {
     /// Print default settings and arguments.
     Defaults,
 
+    /// Copy a snapshot (its manifest + objects) directly between two stores,
+    /// streaming through memory — no local staging.
+    Sync {
+        /// Source store URI: `protocol://location/path`.
+        #[arg(long, value_name = "STORE")]
+        from: String,
+        /// Destination store URI: `protocol://location/path`.
+        #[arg(long, value_name = "STORE")]
+        to: String,
+    },
+
     /// Print the version.
     Version,
 
@@ -346,6 +358,7 @@ impl Cli {
                 Ok(())
             }
             Command::Defaults => run_defaults(),
+            Command::Sync { from, to } => self.run_sync(from, to),
             Command::Completions { shell } => {
                 // Build-time hook: emit the requested shell's completion script
                 // to stdout for the release pipeline to bundle. The bin name is
@@ -940,6 +953,57 @@ impl Cli {
         }
     }
 
+    /// `snapdir sync --id <id> --from <store> --to <store>`: copy a snapshot
+    /// (its manifest + every referenced object) directly between two in-process
+    /// stores, streaming through memory with no local staging. Wires
+    /// [`snapdir_stores::sync_snapshot`]; objects already present at the
+    /// destination are skipped (content-addressed). Honors `--dryrun` (no writes)
+    /// and the `--jobs` / `--limit-rate` transfer tuning (applied to the single
+    /// store→store pipe). Both endpoints must be in-process stores
+    /// (file/s3/b2/gcs); external `snapdir-*-store` URLs are rejected.
+    ///
+    /// Output convention (consistent with `push`/`stage`): on a real sync the id
+    /// is printed to STDOUT; a human summary always goes to STDERR.
+    fn run_sync(&self, from_url: &str, to_url: &str) -> Result<()> {
+        let id = self.require_id()?;
+        anyhow::ensure!(
+            from_url != to_url,
+            "sync --from and --to must differ (both are {from_url})"
+        );
+
+        let config = self.transfer_config()?;
+        let from_adapter = resolve_adapter(from_url).context("resolving --from store protocol")?;
+        let to_adapter = resolve_adapter(to_url).context("resolving --to store protocol")?;
+        let from_store = stream_store_for_adapter(&from_adapter, from_url, config.clone())?;
+        let to_store = stream_store_for_adapter(&to_adapter, to_url, config.clone())?;
+
+        self.log_transfer_config();
+
+        let report = snapdir_stores::sync_snapshot(
+            &*from_store,
+            &*to_store,
+            id,
+            &config,
+            self.globals.dryrun,
+        )
+        .with_context(|| format!("syncing snapshot {id} from {from_url} to {to_url}"))?;
+
+        if report.dry_run {
+            eprintln!(
+                "dry-run: would copy {} object(s) for {id}",
+                report.objects_copied
+            );
+        } else {
+            // Scriptable id-on-stdout contract (matches push/stage).
+            println!("{id}");
+            eprintln!(
+                "synced {id}: {} copied, {} skipped ({} bytes)",
+                report.objects_copied, report.objects_skipped, report.bytes_copied
+            );
+        }
+        Ok(())
+    }
+
     /// The local cache as a `file://`-shaped store, rooted at the resolved cache
     /// directory. The cache uses the identical sharded layout as a `FileStore`.
     /// Cache copies honor `--jobs` / `--limit-rate` via the [`TransferConfig`].
@@ -1077,6 +1141,51 @@ fn store_for_adapter(
                 .with_context(|| format!("resolving external store for {store_url}"))?;
             Ok(Box::new(store))
         }
+    }
+}
+
+/// Constructs the concrete [`StreamStore`] for a resolved [`Adapter`] and store
+/// URL, for the store→store [`sync`](snapdir_stores::sync_snapshot) pipe.
+///
+/// Mirrors [`store_for_adapter`]'s endpoint/region environment handling, but is
+/// restricted to the in-process stores (file/s3/b2/gcs) — the only ones that
+/// implement [`StreamStore`]. [`Adapter::External`] (`snapdir-*-store` URLs) has
+/// no in-process streaming surface and is rejected with an actionable error.
+///
+/// The concrete stores are `Sync`, so each is boxed as `Box<dyn StreamStore +
+/// Sync>` (the bound `sync_snapshot` requires).
+fn stream_store_for_adapter(
+    adapter: &Adapter,
+    store_url: &str,
+    config: TransferConfig,
+) -> Result<Box<dyn StreamStore + Sync>> {
+    match adapter {
+        Adapter::File => Ok(Box::new(FileStore::new_with_config(store_url, config))),
+        Adapter::S3 => {
+            let endpoint = std::env::var("SNAPDIR_S3_STORE_ENDPOINT_URL").ok();
+            let store = S3Store::connect_with(store_url, endpoint.as_deref(), config)
+                .with_context(|| format!("connecting to S3 store {store_url}"))?;
+            Ok(Box::new(store))
+        }
+        Adapter::B2 => {
+            let endpoint = std::env::var("SNAPDIR_S3_STORE_ENDPOINT_URL").ok();
+            let region = std::env::var("SNAPDIR_B2_REGION")
+                .or_else(|_| std::env::var("AWS_REGION"))
+                .ok();
+            let store =
+                B2Store::connect_with(store_url, endpoint.as_deref(), region.as_deref(), config)
+                    .with_context(|| format!("connecting to B2 store {store_url}"))?;
+            Ok(Box::new(store))
+        }
+        Adapter::Gcs => {
+            let store = GcsStore::connect_with(store_url, config)
+                .with_context(|| format!("connecting to GCS store {store_url}"))?;
+            Ok(Box::new(store))
+        }
+        Adapter::External { .. } => Err(anyhow::anyhow!(
+            "sync requires in-process stores (file/s3/b2/gcs); \
+             external `snapdir-*-store` URLs are not supported: {store_url}"
+        )),
     }
 }
 

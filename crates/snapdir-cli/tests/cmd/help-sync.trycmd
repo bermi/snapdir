@@ -1,31 +1,14 @@
 ```
-$ snapdir --help
-Content-addressable directory snapshots.
+$ snapdir sync --help
+Copy a snapshot (its manifest + objects) directly between two stores, streaming through memory — no local staging
 
-Usage: snapdir [OPTIONS] <COMMAND>
-
-Commands:
-  manifest      Print the manifest of a directory
-  id            Print the manifest ID of a directory or a manifest piped via stdin
-  stage         Save a snapshot of a directory into the local cache
-  push          Push a snapshot to a store given its path or a staged manifest ID
-  fetch         Fetch a snapshot from a store into the local cache
-  pull          Fetch a snapshot from a store and check it out to the given path
-  checkout      Check out a snapshot to a directory
-  verify        Verify the integrity of a staged snapshot
-  verify-cache  Verify the integrity of the local cache
-  flush-cache   Flush the local cache
-  locations     List directories and stores where snapshots have been recorded
-  ancestors     List ancestor snapshot IDs and their locations
-  revisions     List snapshot IDs created on a location (store or absolute path)
-  defaults      Print default settings and arguments
-  sync          Copy a snapshot (its manifest + objects) directly between two stores, streaming through memory — no local staging
-  version       Print the version
-  help          Print this message or the help of the given subcommand(s)
+Usage: snapdir sync [OPTIONS] --from <STORE> --to <STORE>
 
 Options:
       --cache-dir <DIR>       Directory where the object cache is stored [env: SNAPDIR_CACHE_DIR=]
+      --from <STORE>          Source store URI: `protocol://location/path`
       --catalog <NAME>        Catalog adapter to use [env: SNAPDIR_CATALOG=]
+      --to <STORE>            Destination store URI: `protocol://location/path`
       --store <URI>           Store URI: `protocol://location/path`
       --id <ID>               Snapshot ID to operate on
       --exclude <PATTERN>     Exclude paths matching PATTERN
