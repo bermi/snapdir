@@ -1790,7 +1790,9 @@ gates:
     phase: 13
     owner_agent: cli
     depends_on: [transfer-config]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T02:25:41Z
+    git_sha: 94b5f75
     failure_count: 0
     verification_cmd: "grep -q 'limit.rate\\|limit_rate' crates/snapdir-cli/src/cli.rs && cargo test -p snapdir-cli --locked transfer_flags -- --nocapture"
     pass_criteria:
