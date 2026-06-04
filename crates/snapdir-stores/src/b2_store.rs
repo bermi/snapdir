@@ -55,6 +55,7 @@ use snapdir_core::manifest::Manifest;
 use snapdir_core::store::{Store, StoreError};
 
 use crate::s3_store::{S3Location, S3Store};
+use crate::transfer::TransferConfig;
 
 /// The default Backblaze B2 region used when none is configured. Backblaze
 /// requires a region in the S3-compatible endpoint host; `us-west-004` is a
@@ -97,10 +98,29 @@ impl B2Store {
         endpoint_url: Option<&str>,
         region: Option<&str>,
     ) -> Result<Self, StoreError> {
+        Self::connect_with(store_url, endpoint_url, region, TransferConfig::default())
+    }
+
+    /// Like [`connect`](Self::connect), but carries a [`TransferConfig`] for
+    /// concurrency / bandwidth control. The config lives on the wrapped
+    /// [`S3Store`]; [`connect`](Self::connect) delegates here with
+    /// [`TransferConfig::default`].
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if the tokio runtime cannot be created or the
+    /// AWS configuration cannot be loaded (propagated from
+    /// [`S3Store::connect_with`]).
+    pub fn connect_with(
+        store_url: &str,
+        endpoint_url: Option<&str>,
+        region: Option<&str>,
+        config: TransferConfig,
+    ) -> Result<Self, StoreError> {
         let endpoint = resolve_endpoint(endpoint_url, region);
         // S3Store::connect parses the URL with S3Location::parse, which derives
         // bucket/prefix identically for b2:// and s3:// (oracle cut -f3 / -f4-).
-        let inner = S3Store::connect(store_url, Some(endpoint.as_str()))?;
+        let inner = S3Store::connect_with(store_url, Some(endpoint.as_str()), config)?;
         Ok(Self { inner })
     }
 
@@ -115,6 +135,14 @@ impl B2Store {
     #[must_use]
     pub fn location(&self) -> &S3Location {
         self.inner.location()
+    }
+
+    /// The [`TransferConfig`] (concurrency / bandwidth) this store was built
+    /// with, carried on the wrapped [`S3Store`]. Consumed by the transfer loops
+    /// in later gates.
+    #[must_use]
+    pub fn transfer_config(&self) -> &TransferConfig {
+        self.inner.transfer_config()
     }
 }
 

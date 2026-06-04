@@ -57,6 +57,7 @@ use snapdir_core::manifest::{Manifest, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
 
+use crate::transfer::TransferConfig;
 use crate::util::file_present_and_verified;
 use tokio::runtime::Runtime;
 
@@ -151,6 +152,7 @@ pub struct GcsStore {
     control: StorageControl,
     location: GcsLocation,
     runtime: Arc<Runtime>,
+    config: TransferConfig,
 }
 
 impl GcsStore {
@@ -166,6 +168,18 @@ impl GcsStore {
     /// [`StoreError::Backend`] if the tokio runtime cannot be created or the SDK
     /// clients cannot be built (e.g. credentials cannot be resolved).
     pub fn connect(store_url: &str) -> Result<Self, StoreError> {
+        Self::connect_with(store_url, TransferConfig::default())
+    }
+
+    /// Like [`connect`](Self::connect), but carries a [`TransferConfig`] for
+    /// concurrency / bandwidth control. The existing [`connect`](Self::connect)
+    /// delegates here with [`TransferConfig::default`].
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if the tokio runtime cannot be created or the SDK
+    /// clients cannot be built (e.g. credentials cannot be resolved).
+    pub fn connect_with(store_url: &str, config: TransferConfig) -> Result<Self, StoreError> {
         let location = GcsLocation::parse(store_url);
         let runtime = build_runtime()?;
         install_ring_provider();
@@ -187,6 +201,7 @@ impl GcsStore {
             control,
             location,
             runtime: Arc::new(runtime),
+            config,
         })
     }
 
@@ -206,6 +221,7 @@ impl GcsStore {
             control,
             location,
             runtime: Arc::new(build_runtime()?),
+            config: TransferConfig::default(),
         })
     }
 
@@ -213,6 +229,13 @@ impl GcsStore {
     #[must_use]
     pub fn location(&self) -> &GcsLocation {
         &self.location
+    }
+
+    /// The [`TransferConfig`] (concurrency / bandwidth) this store was built
+    /// with. Consumed by the transfer loops in later gates.
+    #[must_use]
+    pub fn transfer_config(&self) -> &TransferConfig {
+        &self.config
     }
 
     /// Metadata HEAD on an object key; `Ok(true)` if it exists, `Ok(false)` if

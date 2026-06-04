@@ -50,6 +50,8 @@ use snapdir_core::manifest::{Manifest, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
 
+use crate::transfer::TransferConfig;
+
 use crate::util::file_present_and_verified;
 use tokio::runtime::Runtime;
 
@@ -135,6 +137,7 @@ pub struct S3Store {
     client: Client,
     location: S3Location,
     runtime: Arc<Runtime>,
+    config: TransferConfig,
 }
 
 impl S3Store {
@@ -151,6 +154,22 @@ impl S3Store {
     /// [`StoreError::Backend`] if the tokio runtime cannot be created or the
     /// AWS configuration cannot be loaded.
     pub fn connect(store_url: &str, endpoint_url: Option<&str>) -> Result<Self, StoreError> {
+        Self::connect_with(store_url, endpoint_url, TransferConfig::default())
+    }
+
+    /// Like [`connect`](Self::connect), but carries a [`TransferConfig`] for
+    /// concurrency / bandwidth control. The existing [`connect`](Self::connect)
+    /// delegates here with [`TransferConfig::default`].
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Backend`] if the tokio runtime cannot be created or the
+    /// AWS configuration cannot be loaded.
+    pub fn connect_with(
+        store_url: &str,
+        endpoint_url: Option<&str>,
+        config: TransferConfig,
+    ) -> Result<Self, StoreError> {
         let location = S3Location::parse(store_url);
         let runtime = build_runtime()?;
 
@@ -180,6 +199,7 @@ impl S3Store {
             client,
             location,
             runtime: Arc::new(runtime),
+            config,
         })
     }
 
@@ -195,6 +215,7 @@ impl S3Store {
             client,
             location,
             runtime: Arc::new(build_runtime()?),
+            config: TransferConfig::default(),
         })
     }
 
@@ -202,6 +223,13 @@ impl S3Store {
     #[must_use]
     pub fn location(&self) -> &S3Location {
         &self.location
+    }
+
+    /// The [`TransferConfig`] (concurrency / bandwidth) this store was built
+    /// with. Consumed by the transfer loops in later gates.
+    #[must_use]
+    pub fn transfer_config(&self) -> &TransferConfig {
+        &self.config
     }
 
     /// HEAD an object key; `Ok(true)` if it exists, `Ok(false)` if absent.

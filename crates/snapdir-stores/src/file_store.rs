@@ -37,6 +37,7 @@ use snapdir_core::manifest::{Manifest, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
 
+use crate::transfer::TransferConfig;
 use crate::util::{file_present_and_verified, hash_file};
 
 /// Number of times the oracle retries a persist whose copied bytes fail their
@@ -51,6 +52,7 @@ const MAX_PERSIST_RETRIES: u32 = 5;
 #[derive(Debug, Clone)]
 pub struct FileStore {
     root: PathBuf,
+    config: TransferConfig,
 }
 
 impl FileStore {
@@ -66,16 +68,41 @@ impl FileStore {
         Self::from_root(parse_store_dir(store))
     }
 
+    /// Like [`new`](Self::new), but carries a [`TransferConfig`] for
+    /// concurrency / bandwidth control.
+    #[must_use]
+    pub fn new_with_config(store: &str, config: TransferConfig) -> Self {
+        Self::from_root_with_config(parse_store_dir(store), config)
+    }
+
     /// Builds a store rooted at an already-resolved directory.
     #[must_use]
     pub fn from_root(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self::from_root_with_config(root, TransferConfig::default())
+    }
+
+    /// Like [`from_root`](Self::from_root), but carries a [`TransferConfig`] for
+    /// concurrency / bandwidth control. [`from_root`](Self::from_root) and
+    /// [`new`](Self::new) delegate here with [`TransferConfig::default`].
+    #[must_use]
+    pub fn from_root_with_config(root: impl Into<PathBuf>, config: TransferConfig) -> Self {
+        Self {
+            root: root.into(),
+            config,
+        }
     }
 
     /// Returns the store's root directory.
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The [`TransferConfig`] (concurrency / bandwidth) this store was built
+    /// with. Consumed by the transfer loops in later gates.
+    #[must_use]
+    pub fn transfer_config(&self) -> &TransferConfig {
+        &self.config
     }
 
     /// Absolute on-disk path of an object given its checksum.

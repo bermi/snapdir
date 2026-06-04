@@ -15,6 +15,9 @@
 //!   third-party `snapdir-<name>-store` binaries via the documented
 //!   `get-manifest-command` / `get-fetch-files-command` / `get-push-command`
 //!   contract.
+//! - [`transfer`] ([`TransferConfig`], [`RateLimiter`], [`run_concurrent`]) —
+//!   the concurrency + bandwidth-limiting foundation each store carries via a
+//!   [`TransferConfig`] for the (later) concurrent transfer loops.
 
 pub mod b2_store;
 pub mod file_store;
@@ -22,6 +25,7 @@ pub mod gcs_store;
 pub mod router;
 pub mod s3_store;
 pub mod shim;
+pub mod transfer;
 pub(crate) mod util;
 
 pub use b2_store::B2Store;
@@ -30,3 +34,4 @@ pub use gcs_store::{GcsLocation, GcsStore};
 pub use router::{resolve_adapter, Adapter, RouteError};
 pub use s3_store::{S3Location, S3Store};
 pub use shim::ExternalStore;
+pub use transfer::{run_concurrent, RateLimiter, TransferConfig};
