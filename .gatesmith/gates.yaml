@@ -2031,7 +2031,9 @@ gates:
     phase: 15
     owner_agent: cli
     depends_on: [cli-progress-flags-and-wire]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T19:30:54Z
+    git_sha: 87ed0ba
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked progress_e2e -- --nocapture"
     pass_criteria:
