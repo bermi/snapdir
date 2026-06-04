@@ -2015,7 +2015,9 @@ gates:
     phase: 15
     owner_agent: cli
     depends_on: [stores-meter-wire, cli-progress-renderer]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T19:14:46Z
+    git_sha: 83deea1
     failure_count: 0
     verification_cmd: "grep -qE 'no.progress|no_progress' crates/snapdir-cli/src/cli.rs && cargo test -p snapdir-cli --locked progress_wire -- --nocapture"
     pass_criteria:
