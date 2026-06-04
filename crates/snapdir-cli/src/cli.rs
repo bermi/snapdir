@@ -28,7 +28,7 @@ use snapdir_core::{
     Sha256Hasher, Store, WalkOptions,
 };
 use snapdir_stores::{
-    resolve_adapter, Adapter, B2Store, ExternalStore, FileStore, GcsStore, S3Store,
+    resolve_adapter, Adapter, B2Store, ExternalStore, FileStore, GcsStore, S3Store, TransferConfig,
 };
 
 /// Content-addressable directory snapshots.
@@ -136,6 +136,20 @@ pub struct GlobalArgs {
     /// Context (directory or store) for catalog queries.
     #[arg(long, global = true, value_name = "DIR|STORE")]
     pub location: Option<String>,
+
+    /// Max concurrent object transfers (0/auto = number of CPUs, capped).
+    #[arg(
+        long,
+        short = 'j',
+        global = true,
+        value_name = "N",
+        env = "SNAPDIR_JOBS"
+    )]
+    pub jobs: Option<usize>,
+
+    /// Limit total transfer bandwidth, e.g. 10M, 512K, 1G (wget-style; aggregate across all transfers).
+    #[arg(long, global = true, value_name = "RATE", env = "SNAPDIR_LIMIT_RATE")]
+    pub limit_rate: Option<String>,
 }
 
 /// The `snapdir` subcommands, matching the Bash orchestrator one-for-one.
@@ -440,7 +454,7 @@ impl Cli {
         // so `push --id` silently snapshotted the CWD instead of honoring `--id`.
         if path.is_none() && self.globals.id.is_some() {
             let id = self.require_id()?;
-            let cache = self.cache_store();
+            let cache = self.cache_store()?;
             let manifest = cache.get_manifest(id).with_context(|| {
                 format!("manifest {id} not found in the local cache; stage or fetch it first")
             })?;
@@ -520,7 +534,7 @@ impl Cli {
         // id there is nothing to look up, so we fall through and let the
         // original store-resolution path surface the canonical "missing --store
         // option" error first (preserving the frozen CLI error precedence).
-        let cache = self.cache_store();
+        let cache = self.cache_store()?;
         if let Some(id) = self.globals.id.as_deref() {
             if cache.get_manifest(id).is_ok() {
                 if self.globals.verbose {
@@ -580,7 +594,7 @@ impl Cli {
             );
             return Ok(());
         }
-        let cache = self.cache_store();
+        let cache = self.cache_store()?;
         let manifest = cache.get_manifest(id).with_context(|| {
             format!("manifest {id} not found locally; did you forget to fetch it?")
         })?;
@@ -650,7 +664,7 @@ impl Cli {
             eprintln!("dry-run: would stage {id} into the local cache (no writes performed)");
             return Ok(());
         }
-        let cache = self.cache_store();
+        let cache = self.cache_store()?;
         cache
             .push(&manifest, &root)
             .with_context(|| format!("staging snapshot {id} into the local cache"))?;
@@ -858,13 +872,38 @@ impl Cli {
             .as_deref()
             .context("missing --store option")?;
         let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
-        store_for_adapter(&adapter, store_url)
+        let config = self.transfer_config()?;
+        store_for_adapter(&adapter, store_url, config)
+    }
+
+    /// Builds the [`TransferConfig`] from the global `--jobs` / `--limit-rate`
+    /// flags. `--jobs` unset or `0` falls back to the stores' auto-detected
+    /// default concurrency; `--limit-rate` unset means unlimited bandwidth.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `--limit-rate` cannot be parsed as a byte rate.
+    fn transfer_config(&self) -> Result<TransferConfig> {
+        let max_bytes_per_sec = match self.globals.limit_rate.as_deref() {
+            Some(rate) => Some(parse_rate(rate)?),
+            None => None,
+        };
+        let concurrency = match self.globals.jobs {
+            Some(n) if n > 0 => n,
+            // Unset or 0 => auto (the stores' default).
+            _ => TransferConfig::default().concurrency.get(),
+        };
+        Ok(TransferConfig::new(concurrency, max_bytes_per_sec))
     }
 
     /// The local cache as a `file://`-shaped store, rooted at the resolved cache
     /// directory. The cache uses the identical sharded layout as a `FileStore`.
-    fn cache_store(&self) -> FileStore {
-        FileStore::from_root(self.cache_dir())
+    /// Cache copies honor `--jobs` / `--limit-rate` via the [`TransferConfig`].
+    fn cache_store(&self) -> Result<FileStore> {
+        Ok(FileStore::from_root_with_config(
+            self.cache_dir(),
+            self.transfer_config()?,
+        ))
     }
 
     /// Resolves the cache directory: `--cache-dir`, else
@@ -961,12 +1000,16 @@ impl Cli {
 /// Kept as a free function (decoupled from `--store` parsing) so the
 /// scheme→store routing is exercised independently of CLI argument plumbing;
 /// the pure scheme→adapter decision itself lives in [`resolve_adapter`].
-fn store_for_adapter(adapter: &Adapter, store_url: &str) -> Result<Box<dyn Store>> {
+fn store_for_adapter(
+    adapter: &Adapter,
+    store_url: &str,
+    config: TransferConfig,
+) -> Result<Box<dyn Store>> {
     match adapter {
-        Adapter::File => Ok(Box::new(FileStore::new(store_url))),
+        Adapter::File => Ok(Box::new(FileStore::new_with_config(store_url, config))),
         Adapter::S3 => {
             let endpoint = std::env::var("SNAPDIR_S3_STORE_ENDPOINT_URL").ok();
-            let store = S3Store::connect(store_url, endpoint.as_deref())
+            let store = S3Store::connect_with(store_url, endpoint.as_deref(), config)
                 .with_context(|| format!("connecting to S3 store {store_url}"))?;
             Ok(Box::new(store))
         }
@@ -975,12 +1018,13 @@ fn store_for_adapter(adapter: &Adapter, store_url: &str) -> Result<Box<dyn Store
             let region = std::env::var("SNAPDIR_B2_REGION")
                 .or_else(|_| std::env::var("AWS_REGION"))
                 .ok();
-            let store = B2Store::connect(store_url, endpoint.as_deref(), region.as_deref())
-                .with_context(|| format!("connecting to B2 store {store_url}"))?;
+            let store =
+                B2Store::connect_with(store_url, endpoint.as_deref(), region.as_deref(), config)
+                    .with_context(|| format!("connecting to B2 store {store_url}"))?;
             Ok(Box::new(store))
         }
         Adapter::Gcs => {
-            let store = GcsStore::connect(store_url)
+            let store = GcsStore::connect_with(store_url, config)
                 .with_context(|| format!("connecting to GCS store {store_url}"))?;
             Ok(Box::new(store))
         }
@@ -990,6 +1034,59 @@ fn store_for_adapter(adapter: &Adapter, store_url: &str) -> Result<Box<dyn Store
             Ok(Box::new(store))
         }
     }
+}
+
+/// Parses a wget-style byte-rate string into bytes/second.
+///
+/// Accepts a bare integer (bytes), or a number with a binary-multiple suffix.
+/// Suffixes are case-insensitive and the trailing `i`/`B` letters are optional:
+/// `K`/`KB`/`KiB` = 1024, `M`/`MB`/`MiB` = 1024², `G`/`GB`/`GiB` = 1024³.
+/// Fractional values are supported (`1.5M` = 1572864). Surrounding whitespace
+/// is ignored.
+///
+/// # Errors
+///
+/// Returns an error for empty input, an unrecognized suffix, a non-numeric
+/// mantissa, or a negative value.
+fn parse_rate(s: &str) -> Result<u64> {
+    let trimmed = s.trim();
+    anyhow::ensure!(!trimmed.is_empty(), "empty --limit-rate value");
+
+    // Split the numeric mantissa from the (optional) unit suffix.
+    let split = trimmed
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(trimmed.len());
+    let (num, suffix) = trimmed.split_at(split);
+    anyhow::ensure!(
+        !num.is_empty(),
+        "invalid --limit-rate '{s}': expected a number, optionally followed by K/M/G"
+    );
+
+    let value: f64 = num
+        .parse()
+        .with_context(|| format!("invalid --limit-rate '{s}': '{num}' is not a number"))?;
+    anyhow::ensure!(
+        value.is_finite() && value >= 0.0,
+        "invalid --limit-rate '{s}': must be a non-negative number"
+    );
+
+    // Normalize the suffix: strip an optional 'i' and an optional 'b'
+    // (case-insensitive) so K/KB/KiB all collapse to the same multiplier.
+    let unit = suffix.trim().to_ascii_lowercase();
+    let unit = unit.strip_suffix('b').unwrap_or(&unit);
+    let unit = unit.strip_suffix('i').unwrap_or(unit);
+    let multiplier: f64 = match unit {
+        "" => 1.0,
+        "k" => 1024.0,
+        "m" => 1024.0 * 1024.0,
+        "g" => 1024.0 * 1024.0 * 1024.0,
+        other => {
+            anyhow::bail!("invalid --limit-rate '{s}': unknown unit '{other}' (use K, M, or G)")
+        }
+    };
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Ok((value * multiplier) as u64)
 }
 
 /// Reformats a `SNAPDIR*` environment variable into the oracle's `defaults`
@@ -1208,7 +1305,12 @@ mod tests {
         // store is usable behind the trait object (a non-existent id is absent,
         // not an error other than ManifestNotFound semantics surfacing later).
         let adapter = resolve_adapter("file:///tmp/snapdir-routing-test").unwrap();
-        let store = store_for_adapter(&adapter, "file:///tmp/snapdir-routing-test").unwrap();
+        let store = store_for_adapter(
+            &adapter,
+            "file:///tmp/snapdir-routing-test",
+            TransferConfig::default(),
+        )
+        .unwrap();
         // get_manifest on a missing id must not panic; it returns an Err.
         assert!(store.get_manifest("0".repeat(64).as_str()).is_err());
     }
@@ -1222,12 +1324,99 @@ mod tests {
         let store = ExternalStore::new("xyz://bucket/base").unwrap();
         assert_eq!(store.binary(), Path::new("snapdir-xyz-store"));
         // store_for_adapter routes the same scheme through the shim.
-        let routed = store_for_adapter(&adapter, "xyz://bucket/base");
+        let routed = store_for_adapter(&adapter, "xyz://bucket/base", TransferConfig::default());
         assert!(routed.is_ok());
     }
 
     #[test]
     fn remote_store_routing_rejects_invalid_protocol() {
         assert!(resolve_adapter("NotAScheme://x").is_err());
+    }
+
+    /// Builds a `Cli` from args, forcing the transfer-tuning env vars unset so
+    /// the parse reflects ONLY the explicit flags (clap's `env` would otherwise
+    /// let a leaked `SNAPDIR_JOBS` / `SNAPDIR_LIMIT_RATE` perturb the result).
+    fn cli_with(args: &[&str]) -> Cli {
+        // SAFETY: tests in this module that touch these vars run in-process;
+        // we remove them before parsing so the flags alone drive the config.
+        unsafe {
+            std::env::remove_var("SNAPDIR_JOBS");
+            std::env::remove_var("SNAPDIR_LIMIT_RATE");
+        }
+        let mut full = vec!["snapdir"];
+        full.extend_from_slice(args);
+        // `defaults` is a no-arg subcommand, satisfying the required subcommand.
+        full.push("defaults");
+        Cli::try_parse_from(full).expect("parse cli")
+    }
+
+    #[test]
+    fn transfer_flags_parse_rate() {
+        assert_eq!(parse_rate("10M").unwrap(), 10_485_760);
+        assert_eq!(parse_rate("512K").unwrap(), 524_288);
+        assert_eq!(parse_rate("1G").unwrap(), 1_073_741_824);
+        assert_eq!(parse_rate("1GiB").unwrap(), 1_073_741_824);
+        assert_eq!(parse_rate("1GB").unwrap(), 1_073_741_824);
+        assert_eq!(parse_rate("1000").unwrap(), 1000);
+        assert_eq!(parse_rate("1.5M").unwrap(), 1_572_864);
+        assert_eq!(parse_rate("  2k ").unwrap(), 2048);
+        assert_eq!(parse_rate("1kib").unwrap(), 1024);
+
+        for bad in ["10X", "abc", "", "   ", "M", "1.2.3", "-5M"] {
+            assert!(parse_rate(bad).is_err(), "expected {bad:?} to be rejected");
+        }
+    }
+
+    #[test]
+    fn transfer_flags_jobs_explicit() {
+        let cfg = cli_with(&["--jobs", "4"]).transfer_config().unwrap();
+        assert_eq!(cfg.concurrency.get(), 4);
+        assert_eq!(cfg.max_bytes_per_sec, None);
+    }
+
+    #[test]
+    fn transfer_flags_jobs_one_is_sequential() {
+        let cfg = cli_with(&["--jobs", "1"]).transfer_config().unwrap();
+        assert_eq!(cfg.concurrency.get(), 1);
+    }
+
+    #[test]
+    fn transfer_flags_jobs_unset_is_auto() {
+        let cfg = cli_with(&[]).transfer_config().unwrap();
+        assert!(cfg.concurrency.get() >= 1 && cfg.concurrency.get() <= 16);
+        assert_eq!(
+            cfg.concurrency.get(),
+            TransferConfig::default().concurrency.get()
+        );
+    }
+
+    #[test]
+    fn transfer_flags_jobs_zero_is_auto() {
+        let cfg = cli_with(&["--jobs", "0"]).transfer_config().unwrap();
+        assert!(cfg.concurrency.get() >= 1 && cfg.concurrency.get() <= 16);
+        assert_eq!(
+            cfg.concurrency.get(),
+            TransferConfig::default().concurrency.get()
+        );
+    }
+
+    #[test]
+    fn transfer_flags_limit_rate_threads_into_config() {
+        let cfg = cli_with(&["--limit-rate", "1M"]).transfer_config().unwrap();
+        assert_eq!(cfg.max_bytes_per_sec, Some(1_048_576));
+
+        // The short `-j` alias works and pairs with --limit-rate.
+        let cfg = cli_with(&["-j", "2", "--limit-rate", "512K"])
+            .transfer_config()
+            .unwrap();
+        assert_eq!(cfg.concurrency.get(), 2);
+        assert_eq!(cfg.max_bytes_per_sec, Some(524_288));
+    }
+
+    #[test]
+    fn transfer_flags_bad_limit_rate_errors() {
+        assert!(cli_with(&["--limit-rate", "nope"])
+            .transfer_config()
+            .is_err());
     }
 }

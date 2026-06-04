@@ -37,6 +37,8 @@ Options:
       --verbose               Enable verbose output
       --debug                 Enable debug output
       --location <DIR|STORE>  Context (directory or store) for catalog queries
+  -j, --jobs <N>              Max concurrent object transfers (0/auto = number of CPUs, capped) [env: SNAPDIR_JOBS=]
+      --limit-rate <RATE>     Limit total transfer bandwidth, e.g. 10M, 512K, 1G (wget-style; aggregate across all transfers) [env: SNAPDIR_LIMIT_RATE=]
   -h, --help                  Print help
   -V, --version               Print version
 

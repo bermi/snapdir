@@ -193,6 +193,66 @@ fn pull_is_fetch_plus_checkout() {
     assert_eq!(stdout_ok(cache.path(), &["id", &dest_str]), src_id);
 }
 
+/// The transfer-tuning flags (`--jobs` / `--limit-rate`) are accepted on a real
+/// `push` then `pull` round-trip to a `file://` store and do not change the
+/// outcome: the pushed id equals the source id and the pulled tree re-manifests
+/// to it. This exercises the full flag → `TransferConfig` → store threading.
+#[test]
+fn transfer_flags_push_pull_roundtrip() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let dest = TempDir::new().unwrap();
+    build_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let dest_str = dest.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    let src_id = stdout_ok(cache.path(), &["id", &src_str]);
+
+    // push with concurrency + bandwidth caps set explicitly.
+    let pushed = stdout_ok(
+        cache.path(),
+        &[
+            "push",
+            "--store",
+            &store_url,
+            "--jobs",
+            "2",
+            "--limit-rate",
+            "1M",
+            &src_str,
+        ],
+    );
+    assert_eq!(pushed, src_id, "push with transfer flags must print the id");
+
+    // pull with the short `-j` alias and a sequential cap.
+    snapdir(cache.path())
+        .args([
+            "pull",
+            "--store",
+            &store_url,
+            "--id",
+            &src_id,
+            "-j",
+            "1",
+            "--limit-rate",
+            "512K",
+            &dest_str,
+        ])
+        .assert()
+        .success();
+
+    dest.child("a.txt").assert("hello");
+    dest.child("sub/b.txt").assert("world!!");
+    assert_eq!(
+        stdout_ok(cache.path(), &["id", &dest_str]),
+        src_id,
+        "tree pulled with transfer flags must re-manifest to the source id"
+    );
+}
+
 /// A repeat `pull`/`fetch` of an already-cached id must perform ZERO store
 /// object reads: the cache holds the manifest, and the manifest-written-last
 /// invariant means it holds every referenced object too. We prove "no store
