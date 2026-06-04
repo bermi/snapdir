@@ -3,6 +3,14 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
+## 🔧 PHASE 15 — Live transfer & hashing progress dashboard (OPEN, opened 2026-06-04) — 104/110 green, 6 pending
+
+> Operator-requested: a beautiful single-line, self-updating stderr progress indicator (spinner/bar + from->to bps/iops + concurrency + best-effort mem/cpu) for push/fetch/pull/checkout/stage/sync AND the local walk/hash. ON only when stderr is a TTY (off when piped); --no-progress/--quiet/--color to control; honors NO_COLOR/TERM=dumb; stdout stays the scriptable id. HAND-ROLLED minimal-dep (anstyle+anstream already present, std IsTerminal; ONLY new dep is libc, already in the lock graph, for width ioctl + RSS/CPU). A pure Meter (lock-free atomics) lives in snapdir-core (sha-locked files untouched); the CLI renderer reads it.
+>
+> **Gates (6):** `progress-meter` (core) -> `stores-meter-wire` (stores) + `cli-progress-renderer` (cli, parallel) -> `cli-progress-flags-and-wire` (cli) -> `progress-verification` (cli) -> `phase15-complete` (generic, human_checkpoint). **Next ready: `progress-meter`.** Operator reviews the gates, then starts the ralph loop.
+
+---
+
 ## ✅ PHASE 14 COMPLETE — 5/5 gates green (operator sign-off 2026-06-04) — ALL 104 GATES GREEN — PROJECT COMPLETE
 
 > Operator-requested: `snapdir sync --id <id> --from <store> --to <store>` copies ONE snapshot (manifest + raw content-addressed objects) directly source-store -> dest-store, streaming through MEMORY only (no local-FS staging). New `StreamStore: Store` trait in snapdir-stores (get/put/has_object + put_manifest), a `sync_snapshot` orchestrator with NO `&Path` (structural no-disk guarantee) reusing the Phase-13 concurrency + rate limiter (manifest-last, skip-present/incremental), and a 15th `sync` CLI subcommand. **snapdir-core untouched**; frozen sharded keys + manifest format reused verbatim. dev brought to the 1.1.0 baseline (cherry-pick 9596a3d).

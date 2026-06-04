@@ -1952,3 +1952,97 @@ gates:
         - human_confirm: "Phase 14 done: `snapdir sync --id <id> --from <store> --to <store>` copies a snapshot's manifest + raw objects directly store-to-store, streaming through memory with no local-disk staging; concurrency + --limit-rate + skip-present (incremental) + manifest-last preserved; core untouched. Approve?"
     human_checkpoint: true
     description: "PHASE 14 SIGN-OFF: single-command streaming one-snapshot store-to-store sync lands with no local-FS staging, reusing the Phase-13 concurrency/bandwidth engine, with manifest-last + per-object verify intact and the frozen format/sharding unchanged."
+
+  # ======================================================================
+  # PHASE 15 — Live transfer & hashing progress dashboard (operator-requested 2026-06-04)
+  # A single-line, self-updating stderr indicator (spinner/bar + from->to bps/iops +
+  # concurrency + mem/cpu) for push/fetch/pull/checkout/stage/sync AND the local
+  # walk/hash. ON only when stderr is a TTY; off when piped; --no-progress/--quiet to
+  # disable. Hand-rolled (anstyle+anstream already present; std IsTerminal; only NEW
+  # dep is libc, already in the lock graph). A pure Meter (atomics) lives in
+  # snapdir-core; the CLI renderer reads it. Frozen manifest/sharding untouched.
+  # ======================================================================
+
+  - id: progress-meter
+    phase: 15
+    owner_agent: core
+    depends_on: [phase14-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --locked progress_meter -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Add a pure `Meter` to snapdir-core (new src/progress.rs, re-exported): lock-free atomics bytes_in/bytes_out/objects_done/objects_total/objects_skipped/in_flight + a phase (Hashing|Transfer); methods add_in/add_out/object_started/object_finished/set_total/add_skipped/set_phase/snapshot()->MeterSnapshot; Arc+Sync; NO I/O or env (library purity). Thread an Option<&Meter> into walk_with (walk.rs) recording per-file bytes hashed + files done during the manifest build; default None = no-op. Do NOT touch the sha-locked manifest.rs/merkle.rs/excludes.rs (manifest-format.sha.lock must stay green). Tests (progress_meter*): meter counters + snapshot correctness, in_flight gauge inc/dec, and walk_with(meter) records the right file/byte totals while None leaves walk output identical."
+
+  - id: stores-meter-wire
+    phase: 15
+    owner_agent: stores
+    depends_on: [progress-meter]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked meter_records -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Thread an optional snapdir_core::Meter through the transfer orchestrators (no core edits beyond using the Meter type). Add an Option<Arc<Meter>> to each store the same way TransferConfig rides (a with_meter setter / field; B2 delegates to inner S3), and record at the hook points: fetch_files_concurrent (download->add_in, write_atomic->add_out, object_started/finished, set_total, add_skipped), push_objects_concurrent (read_verified->add_in, put_bytes->add_out), FileStore::parallel_copy (persist read/write), sync_snapshot (get_object->add_in, put_object->add_out, has_object->add_skipped, in_flight; add an Option<&Meter> param). Default None = no-op (a few relaxed atomic adds per object when set; zero cost when None). Tests (meter_records*): a FileStore->FileStore sync (and a fetch/push) with a meter records correct bytes_in/out + objects_done/skipped + total; the None path is byte-identical to today."
+
+  - id: cli-progress-renderer
+    phase: 15
+    owner_agent: cli
+    depends_on: [progress-meter]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked progress_render -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "The hand-rolled CLI rendering engine (testable without a TTY). (1) Activation policy: should_render = std::io::stderr().is_terminal() && !no_progress && TERM != 'dumb'; color = --color (auto|always|never) honoring NO_COLOR, styled via the already-present anstyle. (2) A PURE format_line(&MeterSnapshot, &Metrics, width, style) -> String rendering ONE line: spinner + unicode bar + percent + bytes done/total + down/up rates (from->to) + obj/s + concurrency (in_flight/jobs) + mem + cpu% + eta; plus an ASCII/mono fallback variant. (3) Hand-rolled byte+rate humanizer (1.2 GB, 148 MB/s). (4) Terminal width via libc ioctl(TIOCGWINSZ) (libc becomes a direct dep of snapdir-cli; it's already in the lock graph). (5) Best-effort self mem (RSS) + cpu% sampler via libc (getrusage deltas; /proc/self/statm on Linux, mach task_info on macOS) returning Option fields (graceful degrade). (6) A ProgressReporter owning a render thread that reads an Arc<Meter> at ~10fps, EWMA-smooths the rates, draws to stderr (\\r + clear-to-EOL), and on finish() clears the line; no-op + no thread when inactive. Tests (progress_render*): format_line golden for modern + fallback, humanizer units, activation logic (non-TTY / --no-progress / TERM=dumb -> inactive), and the metrics sampler returns plausible (allow None) values. NO production stdout changes."
+
+  - id: cli-progress-flags-and-wire
+    phase: 15
+    owner_agent: cli
+    depends_on: [stores-meter-wire, cli-progress-renderer]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -qE 'no.progress|no_progress' crates/snapdir-cli/src/cli.rs && cargo test -p snapdir-cli --locked progress_wire -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Add global --no-progress (env SNAPDIR_NO_PROGRESS), --quiet, and --color=auto|always|never to GlobalArgs. Wire the Meter + ProgressReporter into every transfer command (run_push/run_fetch/checkout_inner/run_pull/run_stage/run_sync) AND the walk (build_manifest passes the meter to walk_with): when active, build an Arc<Meter>, set it on the resolved store(s) and pass to the walk + sync_snapshot, set_phase(Hashing) during the walk then set_total + set_phase(Transfer), start the reporter around the work, finish() after (clears the line) before the stdout id prints. --quiet suppresses the verbose/banner stderr lines AND the progress; --no-progress suppresses only the live line; stdout stays id-only; coexists with --verbose. Regenerate trycmd help snapshots (3 new global flags). Tests (progress_wire*): a piped (non-TTY) run prints the id on stdout and NO progress/ANSI anywhere; --no-progress and --quiet are silent on the live line; --color=never emits no ANSI; the snapshot id/output is unchanged vs pre-progress."
+
+  - id: progress-verification
+    phase: 15
+    owner_agent: cli
+    depends_on: [cli-progress-flags-and-wire]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked progress_e2e -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "End-to-end (hermetic, non-TTY assert_cmd runs are NOT terminals): assert push/pull/sync produce the SAME stdout (id-only, byte-identical) with and without the feature compiled-in, and emit NO ANSI/spinner bytes when not a TTY (scriptable contract preserved); --no-progress/--quiet stay silent; --color=never is plain. Optional pty-driven smoke (env-gated, skip cleanly when unset): run `snapdir sync` attached to a pseudo-terminal and assert the stderr carries the live line (ANSI/CR redraws) while stdout is still just the id. Tests named progress_e2e*."
+
+  - id: phase15-complete
+    phase: 15
+    owner_agent: generic
+    depends_on: [progress-meter, stores-meter-wire, cli-progress-renderer, cli-progress-flags-and-wire, progress-verification]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 15 done: a single-line live progress dashboard (spinner/bar + from->to bps/iops + concurrency + mem/cpu) shows on an interactive TTY for push/fetch/pull/checkout/stage/sync + the walk; it auto-disables when piped; --no-progress/--quiet/--color work; stdout stays the scriptable id; only new dep is libc. Approve?"
+    human_checkpoint: true
+    description: "PHASE 15 SIGN-OFF: live single-line transfer/hashing progress with from->to bps/iops + concurrency + best-effort mem/cpu, TTY-gated with --no-progress/--quiet/--color, stdout scriptable contract intact, hand-rolled (only new dep libc), frozen format untouched; workspace tests green."
