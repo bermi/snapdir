@@ -51,8 +51,11 @@
 
 use std::path::Path;
 
+use std::sync::Arc;
+
 use snapdir_core::manifest::Manifest;
 use snapdir_core::store::{Store, StoreError};
+use snapdir_core::Meter;
 
 use crate::s3_store::{S3Location, S3Store};
 use crate::stream::StreamStore;
@@ -130,6 +133,16 @@ impl B2Store {
     #[must_use]
     pub fn from_s3_store(inner: S3Store) -> Self {
         Self { inner }
+    }
+
+    /// Attaches (or clears) an optional progress [`Meter`]. B2 has no transfer
+    /// path of its own — it delegates entirely to the wrapped [`S3Store`] — so
+    /// this forwards to [`S3Store::with_meter`]. `None` (the constructor default)
+    /// means zero recording and byte-identical behavior.
+    #[must_use]
+    pub fn with_meter(mut self, meter: Option<Arc<Meter>>) -> Self {
+        self.inner = self.inner.with_meter(meter);
+        self
     }
 
     /// The parsed bucket/prefix this store targets (shared with [`S3Store`]).

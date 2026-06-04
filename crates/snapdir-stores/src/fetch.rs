@@ -30,6 +30,7 @@ use std::path::Path;
 use snapdir_core::manifest::{Manifest, ManifestEntry, PathType};
 use snapdir_core::merkle::Blake3Hasher;
 use snapdir_core::store::StoreError;
+use snapdir_core::Meter;
 
 use crate::transfer::{run_concurrent, RateLimiter, TransferConfig};
 use crate::util::file_present_and_verified;
@@ -87,6 +88,7 @@ pub(crate) async fn fetch_files_concurrent<'a, F, Fut>(
     dest: &Path,
     config: &TransferConfig,
     rate_limiter: &RateLimiter,
+    meter: Option<&Meter>,
     download: F,
 ) -> Result<(), StoreError>
 where
@@ -109,6 +111,10 @@ where
             PathType::File => {
                 // A present, checksum-matching destination needs no download.
                 if file_present_and_verified(&target, &entry.checksum, &hasher) {
+                    // Skip-present: record it as skipped (advisory only).
+                    if let Some(m) = meter {
+                        m.add_skipped(1);
+                    }
                     continue;
                 }
                 if let Some(parent) = target.parent() {
@@ -119,6 +125,13 @@ where
         }
     }
 
+    // Total to download (bytes), recorded so the bar can track bytes. Advisory:
+    // does not affect what is downloaded. No-op when there is no meter.
+    if let Some(m) = meter {
+        let total: u64 = to_download.iter().map(|(entry, _)| entry.size).sum();
+        m.set_total(total);
+    }
+
     // Concurrent pass: download + atomically write each missing object, bounded
     // by `config.concurrency` and throttled by the shared rate limiter.
     run_concurrent(to_download, config.concurrency, |(entry, target)| {
@@ -127,8 +140,20 @@ where
         async move {
             // Throttle by the manifest-declared object size before fetching.
             rate_limiter.acquire(entry.size).await;
+            if let Some(m) = meter {
+                m.object_started();
+            }
             let bytes = download(entry).await?;
+            // The download returned verified bytes (bytes-in).
+            if let Some(m) = meter {
+                m.add_in(bytes.len() as u64);
+            }
             write_atomic(&target, &bytes)?;
+            // Bytes landed on disk (bytes-out), object done.
+            if let Some(m) = meter {
+                m.add_out(bytes.len() as u64);
+                m.object_finished();
+            }
             Ok(())
         }
     })
@@ -275,7 +300,7 @@ mod tests {
             let rt = runtime();
             let fake_ref = Arc::clone(&fake);
             rt.block_on(async {
-                fetch_files_concurrent(&manifest, dest.path(), &cfg, &limiter, |entry| {
+                fetch_files_concurrent(&manifest, dest.path(), &cfg, &limiter, None, |entry| {
                     let fake = Arc::clone(&fake_ref);
                     async move { fake.download(entry).await }
                 })
@@ -321,7 +346,7 @@ mod tests {
         let rt = runtime();
         let fake_ref = Arc::clone(&fake);
         rt.block_on(async {
-            fetch_files_concurrent(&manifest, dest.path(), &cfg, &limiter, |entry| {
+            fetch_files_concurrent(&manifest, dest.path(), &cfg, &limiter, None, |entry| {
                 let fake = Arc::clone(&fake_ref);
                 async move { fake.download(entry).await }
             })
@@ -368,7 +393,7 @@ mod tests {
         let rt = runtime();
         let boom = boom_sum.clone();
         let result = rt.block_on(async {
-            fetch_files_concurrent(&manifest, dest.path(), &cfg, &limiter, |entry| {
+            fetch_files_concurrent(&manifest, dest.path(), &cfg, &limiter, None, |entry| {
                 let boom = boom.clone();
                 async move {
                     if entry.checksum == boom {

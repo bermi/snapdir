@@ -33,9 +33,12 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use std::sync::Arc;
+
 use snapdir_core::manifest::{Manifest, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
+use snapdir_core::Meter;
 
 use crate::stream::StreamStore;
 use crate::transfer::TransferConfig;
@@ -54,6 +57,10 @@ const MAX_PERSIST_RETRIES: u32 = 5;
 pub struct FileStore {
     root: PathBuf,
     config: TransferConfig,
+    /// Optional progress meter; recorded into during transfers. `None` (the
+    /// default from every constructor) means zero recording and byte-identical
+    /// behavior. Set by the CLI via [`FileStore::with_meter`].
+    meter: Option<Arc<Meter>>,
 }
 
 impl FileStore {
@@ -90,7 +97,19 @@ impl FileStore {
         Self {
             root: root.into(),
             config,
+            meter: None,
         }
+    }
+
+    /// Attaches (or clears) an optional progress [`Meter`], rides alongside
+    /// [`config`](Self::transfer_config). The copy paths record bytes-in /
+    /// bytes-out + per-object progress into it; `None` (the constructor default)
+    /// means zero recording and byte-identical behavior. The CLI sets this after
+    /// construction.
+    #[must_use]
+    pub fn with_meter(mut self, meter: Option<Arc<Meter>>) -> Self {
+        self.meter = meter;
+        self
     }
 
     /// Returns the store's root directory.
@@ -132,6 +151,10 @@ impl FileStore {
             return Ok(());
         }
 
+        // `&Meter` is `Sync`, so it is shared across the rayon closures. `None`
+        // means zero recording and byte-identical behavior.
+        let meter = self.meter.as_deref();
+
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(self.config.concurrency.get())
             .build()
@@ -142,7 +165,20 @@ impl FileStore {
 
         pool.install(|| {
             jobs.par_iter().try_for_each(|(source, target, expected)| {
-                persist(source, target, expected, &Blake3Hasher::new())
+                if let Some(m) = meter {
+                    m.object_started();
+                }
+                // `persist` reads `source` and writes `target`. Record the
+                // source size as both bytes-in (read) and bytes-out (written);
+                // a missing source surfaces as the persist error below.
+                let len = std::fs::metadata(source).map_or(0, |md| md.len());
+                persist(source, target, expected, &Blake3Hasher::new())?;
+                if let Some(m) = meter {
+                    m.add_in(len);
+                    m.add_out(len);
+                    m.object_finished();
+                }
+                Ok(())
             })
         })
     }
@@ -208,6 +244,10 @@ impl Store for FileStore {
                     // mismatching/corrupt local file falls through and is
                     // repaired by the persist below.
                     if file_present_and_verified(&target, &entry.checksum, &hasher) {
+                        // Skip-present: record it as skipped (advisory only).
+                        if let Some(m) = self.meter.as_deref() {
+                            m.add_skipped(1);
+                        }
                         continue;
                     }
                     if let Some(parent) = target.parent() {
@@ -222,6 +262,16 @@ impl Store for FileStore {
                     jobs.push((source, target, entry.checksum.clone()));
                 }
             }
+        }
+
+        // Total to copy (bytes over the to-copy set), recorded so the bar can
+        // track bytes. Advisory: no effect on what is copied. No-op w/o meter.
+        if let Some(m) = self.meter.as_deref() {
+            let total: u64 = jobs
+                .iter()
+                .map(|(source, _, _)| fs::metadata(source).map_or(0, |md| md.len()))
+                .sum();
+            m.set_total(total);
         }
 
         // Parallel copy phase, bounded by `config.concurrency`. `try_for_each`
@@ -254,11 +304,25 @@ impl Store for FileStore {
             }
             let object_target = self.object_disk_path(&entry.checksum);
             if object_target.exists() {
+                // Skip-present per object: record it as skipped (advisory only).
+                if let Some(m) = self.meter.as_deref() {
+                    m.add_skipped(1);
+                }
                 continue;
             }
             let rel = strip_leading_dot_slash(&entry.path);
             let object_source = source.join(rel);
             jobs.push((object_source, object_target, entry.checksum.clone()));
+        }
+
+        // Total to push (bytes over the to-push set), recorded so the bar can
+        // track bytes. Advisory: no effect on what is pushed. No-op w/o meter.
+        if let Some(m) = self.meter.as_deref() {
+            let total: u64 = jobs
+                .iter()
+                .map(|(src, _, _)| fs::metadata(src).map_or(0, |md| md.len()))
+                .sum();
+            m.set_total(total);
         }
 
         // Parallel copy phase, bounded by `config.concurrency`. ALL-OR-NOTHING:
@@ -1120,6 +1184,124 @@ mod tests {
                 expected.as_bytes()
             );
         }
+    }
+
+    #[test]
+    fn meter_records_filestore_push_fetch() {
+        // A FileStore wired `with_meter` doing push(manifest, src) then
+        // fetch_files(manifest, dest) records add_in/add_out + objects_done
+        // matching the object set. Push and fetch each touch every object once,
+        // so over the two operations bytes_in/out == 2 * total bytes and
+        // objects_done == 2 * N.
+        let src_dir = TempDir::new("src");
+        let (manifest, id) = make_nested_source(src_dir.path());
+
+        let n = manifest
+            .entries()
+            .iter()
+            .filter(|e| e.path_type == PathType::File)
+            .count() as u64;
+        let total_bytes: u64 = manifest
+            .entries()
+            .iter()
+            .filter(|e| e.path_type == PathType::File)
+            .map(|e| e.size)
+            .sum();
+
+        let store_dir = TempDir::new("store");
+        let dest_dir = TempDir::new("dest");
+        let meter = Arc::new(Meter::new());
+        let store = FileStore::from_root(store_dir.path()).with_meter(Some(Arc::clone(&meter)));
+
+        store.push(&manifest, src_dir.path()).expect("push");
+        let after_push = meter.snapshot();
+        assert_eq!(after_push.bytes_in, total_bytes, "push read every object");
+        assert_eq!(after_push.bytes_out, total_bytes, "push wrote every object");
+        assert_eq!(after_push.objects_done, n, "push finished N objects");
+        assert_eq!(after_push.objects_skipped, 0, "fresh store skips nothing");
+        assert_eq!(after_push.objects_total, total_bytes, "push set byte total");
+        assert_eq!(after_push.in_flight, 0, "nothing left in flight");
+
+        let fetched = store.get_manifest(&id).expect("get manifest");
+        store
+            .fetch_files(&fetched, dest_dir.path())
+            .expect("fetch_files");
+        let after_fetch = meter.snapshot();
+        assert_eq!(
+            after_fetch.bytes_in,
+            2 * total_bytes,
+            "fetch read every object again"
+        );
+        assert_eq!(
+            after_fetch.bytes_out,
+            2 * total_bytes,
+            "fetch wrote every object again"
+        );
+        assert_eq!(after_fetch.objects_done, 2 * n, "push + fetch = 2N objects");
+        assert_eq!(after_fetch.in_flight, 0, "nothing left in flight");
+
+        // Dest materialized correctly.
+        assert_nested_dest(dest_dir.path());
+    }
+
+    #[test]
+    fn meter_records_none_is_identical() {
+        // The same push+fetch with NO meter produces byte-identical store/dest
+        // contents and the same snapshot id as a metered run — recording changes
+        // nothing.
+        let src_dir = TempDir::new("src");
+        let (manifest, id) = make_nested_source(src_dir.path());
+
+        // Metered run.
+        let metered_store_dir = TempDir::new("store-metered");
+        let metered_dest_dir = TempDir::new("dest-metered");
+        let meter = Arc::new(Meter::new());
+        let metered =
+            FileStore::from_root(metered_store_dir.path()).with_meter(Some(Arc::clone(&meter)));
+        metered
+            .push(&manifest, src_dir.path())
+            .expect("metered push");
+        let metered_id = snapdir_core::merkle::snapshot_id(&manifest, &Blake3Hasher::new());
+        let metered_manifest = metered.get_manifest(&id).expect("metered manifest");
+        metered
+            .fetch_files(&metered_manifest, metered_dest_dir.path())
+            .expect("metered fetch");
+
+        // Unmetered run (meter is None — the constructor default).
+        let plain_store_dir = TempDir::new("store-plain");
+        let plain_dest_dir = TempDir::new("dest-plain");
+        let plain = FileStore::from_root(plain_store_dir.path());
+        plain.push(&manifest, src_dir.path()).expect("plain push");
+        let plain_id = snapdir_core::merkle::snapshot_id(&manifest, &Blake3Hasher::new());
+        let plain_manifest = plain.get_manifest(&id).expect("plain manifest");
+        plain
+            .fetch_files(&plain_manifest, plain_dest_dir.path())
+            .expect("plain fetch");
+
+        // Same snapshot id.
+        assert_eq!(metered_id, plain_id, "snapshot id unaffected by the meter");
+        assert_eq!(metered_id, id);
+
+        // Byte-identical objects at identical sharded keys.
+        for entry in manifest.entries() {
+            if entry.path_type != PathType::File {
+                continue;
+            }
+            let key = object_path(&entry.checksum);
+            let metered_obj = metered_store_dir.path().join(&key);
+            let plain_obj = plain_store_dir.path().join(&key);
+            assert!(metered_obj.exists(), "metered object {key} present");
+            assert!(plain_obj.exists(), "plain object {key} present");
+            assert_eq!(
+                fs::read(&metered_obj).unwrap(),
+                fs::read(&plain_obj).unwrap(),
+                "metered and unmetered object bytes identical"
+            );
+        }
+
+        // Byte-identical dest trees.
+        assert_nested_dest(metered_dest_dir.path());
+        assert_nested_dest(plain_dest_dir.path());
     }
 
     #[test]

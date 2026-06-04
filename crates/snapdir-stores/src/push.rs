@@ -36,6 +36,7 @@ use std::path::Path;
 use snapdir_core::manifest::{Manifest, ManifestEntry, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::StoreError;
+use snapdir_core::Meter;
 
 use crate::transfer::{run_concurrent, RateLimiter, TransferConfig};
 
@@ -63,6 +64,7 @@ async fn read_verified(
     entry: &ManifestEntry,
     source: &Path,
     rate_limiter: &RateLimiter,
+    meter: Option<&Meter>,
 ) -> Result<Vec<u8>, StoreError> {
     let rel = strip_leading_dot_slash(&entry.path);
     let object_source = source.join(rel);
@@ -74,6 +76,10 @@ async fn read_verified(
             expected: entry.checksum.clone(),
             actual,
         });
+    }
+    // Source bytes read (bytes-in). Advisory only.
+    if let Some(m) = meter {
+        m.add_in(bytes.len() as u64);
     }
     // Throttle by the (verified) object size before the upload.
     rate_limiter.acquire(bytes.len() as u64).await;
@@ -100,6 +106,7 @@ async fn read_verified(
 pub(crate) async fn push_objects_concurrent<'a, U, UFut, W, WFut>(
     manifest: &'a Manifest,
     config: &TransferConfig,
+    meter: Option<&Meter>,
     upload_one: U,
     write_manifest: W,
 ) -> Result<(), StoreError>
@@ -116,6 +123,13 @@ where
         .iter()
         .filter(|e| e.path_type == PathType::File)
         .collect();
+
+    // Total to push (bytes over the file set), recorded so the bar can track
+    // bytes. Advisory: no effect on what is uploaded. No-op without a meter.
+    if let Some(m) = meter {
+        let total: u64 = files.iter().map(|e| e.size).sum();
+        m.set_total(total);
+    }
 
     // Concurrent object pass: each task runs the injected per-object work
     // (existence check, then read+verify+upload for absent objects). The first
@@ -143,6 +157,7 @@ pub(crate) async fn upload_object<KFut, PFut>(
     object_key: String,
     source: &Path,
     rate_limiter: &RateLimiter,
+    meter: Option<&Meter>,
     key_exists: impl FnOnce(String) -> KFut,
     put_bytes: impl FnOnce(String, Vec<u8>) -> PFut,
 ) -> Result<(), StoreError>
@@ -153,10 +168,24 @@ where
     // Per-object content-addressed skip: a present object is already the right
     // bytes, so no read and no upload.
     if key_exists(object_key.clone()).await? {
+        if let Some(m) = meter {
+            m.add_skipped(1);
+        }
         return Ok(());
     }
-    let bytes = read_verified(entry, source, rate_limiter).await?;
-    put_bytes(object_key, bytes).await
+    if let Some(m) = meter {
+        m.object_started();
+    }
+    // `read_verified` records bytes-in (the verified source bytes).
+    let bytes = read_verified(entry, source, rate_limiter, meter).await?;
+    let len = bytes.len() as u64;
+    put_bytes(object_key, bytes).await?;
+    // Upload succeeded: bytes-out + object done.
+    if let Some(m) = meter {
+        m.add_out(len);
+        m.object_finished();
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -314,6 +343,7 @@ mod tests {
             push_objects_concurrent(
                 manifest,
                 &cfg,
+                None,
                 |entry| {
                     let fake = Arc::clone(fake);
                     let limiter = &limiter;
@@ -325,6 +355,7 @@ mod tests {
                             entry.checksum.clone(),
                             src,
                             limiter,
+                            None,
                             |key| {
                                 let fake = Arc::clone(&fake);
                                 async move { fake.key_exists(key).await }

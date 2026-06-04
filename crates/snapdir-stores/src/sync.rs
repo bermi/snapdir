@@ -40,6 +40,7 @@ use std::sync::Arc;
 
 use snapdir_core::manifest::PathType;
 use snapdir_core::store::StoreError;
+use snapdir_core::{Meter, Phase};
 
 use crate::stream::StreamStore;
 use crate::transfer::{BlockingRateLimiter, TransferConfig};
@@ -86,6 +87,7 @@ pub fn sync_snapshot(
     id: &str,
     config: &TransferConfig,
     dry_run: bool,
+    meter: Option<&Meter>,
 ) -> Result<SyncReport, StoreError> {
     // Fast path: a destination manifest implies all its objects are present, so
     // an already-mirrored snapshot needs no work (and no source reads).
@@ -110,6 +112,20 @@ pub fn sync_snapshot(
         .map(|e| e.checksum.as_str())
         .collect();
 
+    // Advisory progress: we are entering the transfer phase, and the total is
+    // the sum of the to-copy object sizes (the File entries' manifest sizes).
+    // No effect on what is copied; a no-op without a meter.
+    if let Some(m) = meter {
+        m.set_phase(Phase::Transfer);
+        let total: u64 = manifest
+            .entries()
+            .iter()
+            .filter(|e| e.path_type == PathType::File)
+            .map(|e| e.size)
+            .sum();
+        m.set_total(total);
+    }
+
     let copied = AtomicUsize::new(0);
     let skipped = AtomicUsize::new(0);
     let bytes = AtomicU64::new(0);
@@ -132,6 +148,9 @@ pub fn sync_snapshot(
             files.par_iter().try_for_each(|checksum| {
                 if to.has_object(checksum)? {
                     skipped.fetch_add(1, Ordering::Relaxed);
+                    if let Some(m) = meter {
+                        m.add_skipped(1);
+                    }
                     return Ok(());
                 }
                 if dry_run {
@@ -141,10 +160,22 @@ pub fn sync_snapshot(
                 }
                 // Bytes live only in memory: read from source, throttle, write
                 // to dest. Never written to any path.
+                if let Some(m) = meter {
+                    m.object_started();
+                }
                 let blob = from.get_object(checksum)?;
                 let len = blob.len() as u64;
+                // Read from source (bytes-in).
+                if let Some(m) = meter {
+                    m.add_in(len);
+                }
                 limiter.acquire_blocking(len);
                 to.put_object(checksum, blob)?;
+                // Written to dest (bytes-out), object done.
+                if let Some(m) = meter {
+                    m.add_out(len);
+                    m.object_finished();
+                }
                 copied.fetch_add(1, Ordering::Relaxed);
                 bytes.fetch_add(len, Ordering::Relaxed);
                 Ok::<(), StoreError>(())
@@ -274,7 +305,7 @@ mod tests {
         let b = FileStore::from_root(b_dir.path());
         a.push(&manifest, src_dir.path()).expect("stage into A");
 
-        let report = sync_snapshot(&a, &b, &id, &cfg(), false).expect("sync ok");
+        let report = sync_snapshot(&a, &b, &id, &cfg(), false, None).expect("sync ok");
 
         assert_eq!(report.objects_copied, n);
         assert_eq!(report.objects_skipped, 0);
@@ -293,6 +324,73 @@ mod tests {
     }
 
     #[test]
+    fn meter_records_sync() {
+        // A multi-object snapshot synced A -> empty B records bytes-in ==
+        // bytes-out == total object bytes, objects_done == N, skipped == 0; a
+        // second sync into the now-populated B records the fast-path /
+        // skip-everything outcome (no copies).
+        let a_dir = TempDir::new("a");
+        let b_dir = TempDir::new("b");
+        let src_dir = TempDir::new("src");
+        let (manifest, id) = make_source(src_dir.path());
+        let n = object_count(&manifest);
+
+        // Total File-object bytes from the manifest sizes.
+        let total_bytes: u64 = manifest
+            .entries()
+            .iter()
+            .filter(|e| e.path_type == PathType::File)
+            .map(|e| e.size)
+            .sum();
+
+        let a = FileStore::from_root(a_dir.path());
+        let b = FileStore::from_root(b_dir.path());
+        a.push(&manifest, src_dir.path()).expect("stage into A");
+
+        let meter = Arc::new(Meter::new());
+        let report =
+            sync_snapshot(&a, &b, &id, &cfg(), false, Some(&meter)).expect("first meter sync");
+        assert_eq!(report.objects_copied, n);
+
+        let snap = meter.snapshot();
+        assert_eq!(snap.bytes_in, total_bytes, "bytes_in == total object bytes");
+        assert_eq!(
+            snap.bytes_out, total_bytes,
+            "bytes_out == total object bytes"
+        );
+        assert_eq!(snap.objects_done, n as u64, "objects_done == N");
+        assert_eq!(snap.objects_skipped, 0, "nothing skipped on a fresh dest");
+        assert_eq!(snap.objects_total, total_bytes, "total == bytes total");
+        assert_eq!(snap.in_flight, 0, "no objects left in flight");
+        assert_eq!(snap.phase, Phase::Transfer, "phase set to Transfer");
+
+        // Second sync into the now-fully-mirrored B. The fast path (dest has the
+        // manifest) short-circuits, so this records no new copies. Pre-seed every
+        // object into a fresh B' WITHOUT its manifest to exercise the per-object
+        // skip branch and assert objects_skipped == N, objects_done == 0.
+        let seed_dir = TempDir::new("seed");
+        let seeded = FileStore::from_root(seed_dir.path());
+        for entry in manifest.entries() {
+            if entry.path_type == PathType::File {
+                let blob = a.get_object(&entry.checksum).expect("get from A");
+                seeded.put_object(&entry.checksum, blob).expect("seed dest");
+            }
+        }
+        let later = Arc::new(Meter::new());
+        let later_report = sync_snapshot(&a, &seeded, &id, &cfg(), false, Some(&later))
+            .expect("second meter sync");
+        assert_eq!(
+            later_report.objects_skipped, n,
+            "all objects already present"
+        );
+        let later_snap = later.snapshot();
+        assert_eq!(later_snap.objects_skipped, n as u64, "meter skipped == N");
+        assert_eq!(later_snap.objects_done, 0, "no objects copied");
+        assert_eq!(later_snap.bytes_in, 0, "no bytes read");
+        assert_eq!(later_snap.bytes_out, 0, "no bytes written");
+    }
+
+    #[test]
     fn sync_snapshot_skip_present_is_incremental() {
         let a_dir = TempDir::new("a");
         let b_dir = TempDir::new("b");
@@ -304,12 +402,12 @@ mod tests {
         let b = FileStore::from_root(b_dir.path());
         a.push(&manifest, src_dir.path()).expect("stage into A");
 
-        let first = sync_snapshot(&a, &b, &id, &cfg(), false).expect("first sync");
+        let first = sync_snapshot(&a, &b, &id, &cfg(), false, None).expect("first sync");
         assert_eq!(first.objects_copied, n);
 
         // Second run: destination already mirrored → fast path returns a
         // zero-transfer report; B is unchanged.
-        let second = sync_snapshot(&a, &b, &id, &cfg(), false).expect("second sync");
+        let second = sync_snapshot(&a, &b, &id, &cfg(), false, None).expect("second sync");
         assert_eq!(second.objects_copied, 0);
         assert_eq!(second.objects_skipped, 0);
         assert_eq!(second.bytes_copied, 0);
@@ -339,7 +437,7 @@ mod tests {
         let blob = a.get_object(&first_obj.checksum).expect("get from A");
         b.put_object(&first_obj.checksum, blob).expect("seed B");
 
-        let report = sync_snapshot(&a, &b, &id, &cfg(), false).expect("sync ok");
+        let report = sync_snapshot(&a, &b, &id, &cfg(), false, None).expect("sync ok");
         assert_eq!(report.objects_copied, n - 1);
         assert_eq!(report.objects_skipped, 1);
         b.get_manifest(&id).expect("B has manifest after sync");
@@ -415,7 +513,8 @@ mod tests {
 
         // Concurrency 1 keeps the failure deterministic.
         let one = TransferConfig::new(1, None);
-        let err = sync_snapshot(&a, &b, &id, &one, false).expect_err("must surface put error");
+        let err =
+            sync_snapshot(&a, &b, &id, &one, false, None).expect_err("must surface put error");
         assert!(
             matches!(err, StoreError::Backend { ref message, .. } if message.contains("synthetic")),
             "unexpected error: {err:?}"
@@ -439,7 +538,7 @@ mod tests {
         let b = FileStore::from_root(b_dir.path());
         a.push(&manifest, src_dir.path()).expect("stage into A");
 
-        let report = sync_snapshot(&a, &b, &id, &cfg(), true).expect("dry run ok");
+        let report = sync_snapshot(&a, &b, &id, &cfg(), true, None).expect("dry run ok");
         assert!(report.dry_run);
         assert_eq!(report.objects_copied, n, "would-copy count is N");
         assert_eq!(report.objects_skipped, 0);
@@ -482,7 +581,7 @@ mod tests {
             .map(|e| e.unwrap().path())
             .collect();
 
-        sync_snapshot(&a, &b, &id, &cfg(), false).expect("sync ok");
+        sync_snapshot(&a, &b, &id, &cfg(), false, None).expect("sync ok");
 
         let after: std::collections::BTreeSet<PathBuf> = fs::read_dir(parent.path())
             .unwrap()
