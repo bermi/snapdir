@@ -1925,7 +1925,9 @@ gates:
     phase: 14
     owner_agent: cli
     depends_on: [cli-sync-command]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T17:43:14Z
+    git_sha: d175a50
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked sync_e2e -- --nocapture"
     pass_criteria:
