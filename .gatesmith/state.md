@@ -9,15 +9,15 @@
 >
 > **Branch model (operator, 2026-06-04):** `dev` is the gatesmith workspace and the ONLY branch that carries `.gatesmith/`. `main` is the clean canonical 1.0.1 (`upstream/main`) and must **NEVER** contain `.gatesmith/`. Code fixes flow `dev → main → snapdir/snapdir` by **cherry-pick**, so each passing tick now commits the lane **code** first (gatesmith-free message — the recorded `git_sha`) and the `.gatesmith/` **ledger** separately (PM_PROMPT step 6).
 
-**Phase 12 ledger: 5 gates — 1 passed, 4 pending.**
+**Phase 12 ledger: 5 gates — 2 passed, 3 pending.**
 
 - `cli-list-options-multi` ✅ PASSED (code `cd1c5f1`) — `--exclude` (global + manifest) now takes `clap ArgAction::Append` + comma `value_delimiter`: repeated flags, comma lists, or a mix, **OR-combined** (a path is excluded if it matches ANY pattern). Each pattern is expanded individually via core `expand_excludes` (so `%system%`/`%common%` macros survive), wrapped in `(?:…)`, joined with `|` into one ERE → single `ExcludeMatcher`; single pattern is byte-identical, empty list disables filtering. `--paths` got the same arity (still unwired). `tests/list_options.rs` (7 fns) green; lane = cli only; SHA lock intact.
-- `dryrun-honored` ⏳ pending (cli) — guard EVERY mutating command behind `--dryrun` (currently a dead flag, never read); push/stage/pull/checkout/flush-cache must write nothing under `--dryrun`. **[confirmed bug — created objects on GCS]**
+- `dryrun-honored` ✅ PASSED (code `5552c1f`) — `--dryrun` was a dead flag (never read), so `push --dryrun` uploaded objects (operator saw it on GCS). Now guards every persistent-write site on `self.globals.dryrun`: push (normal + staged `--id`), fetch, checkout, pull, stage, flush-cache, plus `verify-cache --purge` forced non-purging (report + non-zero exit kept). Prints `dry-run: would … (no writes)` to stderr; push/stage still print the id to stdout. `tests/dryrun.rs` (5) green.
 - `pull-skip-existing` ⏳ pending (stores) — `fetch_files` must skip dest files already present whose local checksum matches the manifest; only missing/mismatched objects are fetched. **[severe regression vs pre-1.0 Bash — re-downloads everything on re-runs]**
 - `pull-push-correctness-suite` ⏳ pending (cli) — umbrella regression suite (idempotent re-pull, dryrun-no-writes, corrupt-file repair, exclude semantics). depends on the three above.
 - `phase12-complete` ⏳ pending (generic, human_checkpoint) — Phase 12 sign-off.
 
-**Next ready:** `dryrun-honored` and `pull-skip-existing` (both deps satisfied; id-asc picks `dryrun-honored`).
+**Next ready:** `pull-skip-existing` (stores) — the severe re-download regression.
 
 ---
 

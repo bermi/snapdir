@@ -1623,7 +1623,9 @@ gates:
     phase: 12
     owner_agent: cli
     depends_on: [phase11-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T00:46:28Z
+    git_sha: 5552c1f
     failure_count: 0
     verification_cmd: "grep -q 'self.globals.dryrun' crates/snapdir-cli/src/cli.rs && cargo test -p snapdir-cli --locked dryrun -- --nocapture"
     pass_criteria:
