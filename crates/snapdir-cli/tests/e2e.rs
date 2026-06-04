@@ -531,6 +531,196 @@ fn pull_repairs_corrupted_dest_file() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// transfer-concurrency-verification (phase 13): end-to-end proof that
+// `--jobs` / `--limit-rate` are wired through the binary and that concurrency
+// does not change the materialized result. All hermetic via a temp `file://`
+// store (the aggregate `RateLimiter` is network-only; `FileStore` does NOT throttle
+// local copies, so the deterministic throttle proof lives in transfer-config's
+// `RateLimiter` timing unit test, not here). These tests prove flag acceptance,
+// threading, and byte-identical correctness through the concurrent `FileStore`
+// path. Fn names start with `transfer_concurrency` so
+// `cargo test -p snapdir-cli --locked transfer_concurrency` selects them.
+// ---------------------------------------------------------------------------
+
+/// Builds a *multi-file* tree (several files + nested dirs) with deterministic
+/// permissions so a concurrent push/pull has real fan-out to exercise, and a
+/// checked-out copy must restore contents + perms to re-manifest to the same id.
+fn build_multi_tree(dir: &TempDir) {
+    let files = [
+        ("top1.txt", "alpha", 0o644),
+        ("top2.bin", "bravo-bravo", 0o600),
+        ("dir_a/a1.txt", "charlie", 0o644),
+        ("dir_a/a2.txt", "delta-delta-delta", 0o640),
+        ("dir_a/nested/deep.txt", "echo!!", 0o644),
+        ("dir_b/b1.txt", "foxtrot", 0o600),
+        ("dir_b/b2.txt", "golf", 0o644),
+        ("dir_b/sub/c/leaf.dat", "hotel-hotel", 0o644),
+    ];
+    for (rel, body, mode) in files {
+        dir.child(rel).write_str(body).unwrap();
+        std::fs::set_permissions(dir.child(rel).path(), PermissionsExt::from_mode(mode)).unwrap();
+    }
+    // Pin a couple of directory modes so directory perms are part of the id too.
+    for d in ["dir_a", "dir_a/nested", "dir_b", "dir_b/sub", "dir_b/sub/c"] {
+        std::fs::set_permissions(dir.child(d).path(), PermissionsExt::from_mode(0o755)).unwrap();
+    }
+    std::fs::set_permissions(dir.path(), PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+/// `push --jobs 4` a multi-file tree to a `file://` store, then `pull --jobs 4`
+/// into a fresh dest: exit 0, the pushed id equals the source id, and the pulled
+/// tree re-manifests to the same id (byte-identical materialization through the
+/// concurrent `FileStore` path).
+#[test]
+fn transfer_concurrency_jobs4_roundtrip() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let dest = TempDir::new().unwrap();
+    build_multi_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let dest_str = dest.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    let src_id = stdout_ok(cache.path(), &["id", &src_str]);
+
+    let pushed = stdout_ok(
+        cache.path(),
+        &["push", "--store", &store_url, "--jobs", "4", &src_str],
+    );
+    assert_eq!(pushed, src_id, "push --jobs 4 must print the source id");
+
+    snapdir(cache.path())
+        .args([
+            "pull", "--store", &store_url, "--id", &src_id, "--jobs", "4", &dest_str,
+        ])
+        .assert()
+        .success();
+
+    dest.child("dir_a/nested/deep.txt").assert("echo!!");
+    dest.child("dir_b/sub/c/leaf.dat").assert("hotel-hotel");
+    assert_eq!(
+        stdout_ok(cache.path(), &["id", &dest_str]),
+        src_id,
+        "tree pulled with --jobs 4 must re-manifest to the source id"
+    );
+}
+
+/// Same round-trip with `--jobs 1` (the sequential path): identical id/result.
+/// Also asserts the `--jobs 1` and `--jobs 4` runs produce the SAME snapshot id,
+/// proving concurrency does not change the output.
+#[test]
+fn transfer_concurrency_jobs1_roundtrip() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let dest = TempDir::new().unwrap();
+    build_multi_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let dest_str = dest.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    let src_id = stdout_ok(cache.path(), &["id", &src_str]);
+
+    let pushed = stdout_ok(
+        cache.path(),
+        &["push", "--store", &store_url, "--jobs", "1", &src_str],
+    );
+    assert_eq!(pushed, src_id, "push --jobs 1 must print the source id");
+
+    snapdir(cache.path())
+        .args([
+            "pull", "--store", &store_url, "--id", &src_id, "--jobs", "1", &dest_str,
+        ])
+        .assert()
+        .success();
+
+    dest.child("dir_a/a2.txt").assert("delta-delta-delta");
+    dest.child("dir_b/b1.txt").assert("foxtrot");
+    let dest_id = stdout_ok(cache.path(), &["id", &dest_str]);
+    assert_eq!(
+        dest_id, src_id,
+        "tree pulled with --jobs 1 must re-manifest to the source id"
+    );
+
+    // Push the same tree to a SECOND store with --jobs 4; the printed id must
+    // match the --jobs 1 push — concurrency must not change the snapshot id.
+    let parallel_store = TempDir::new().unwrap();
+    let parallel_url = format!("file://{}", parallel_store.path().display());
+    let pushed4 = stdout_ok(
+        cache.path(),
+        &["push", "--store", &parallel_url, "--jobs", "4", &src_str],
+    );
+    assert_eq!(
+        pushed4, pushed,
+        "--jobs 4 and --jobs 1 pushes must yield the same snapshot id"
+    );
+}
+
+/// `push --jobs 2 --limit-rate 1M` + `pull --limit-rate 512K` round-trip to a
+/// `file://` store succeeds and re-manifests to the same id. This proves the
+/// flag parses, threads into `TransferConfig`, and does not break correctness.
+/// There is NO timing assertion: `FileStore` does not throttle local copies (the
+/// `RateLimiter` is network-only; its deterministic timing proof lives in
+/// transfer-config's `RateLimiter` unit test).
+#[test]
+fn transfer_concurrency_limit_rate_accepted() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let dest = TempDir::new().unwrap();
+    build_multi_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let dest_str = dest.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    let src_id = stdout_ok(cache.path(), &["id", &src_str]);
+
+    let pushed = stdout_ok(
+        cache.path(),
+        &[
+            "push",
+            "--store",
+            &store_url,
+            "--jobs",
+            "2",
+            "--limit-rate",
+            "1M",
+            &src_str,
+        ],
+    );
+    assert_eq!(
+        pushed, src_id,
+        "push --jobs 2 --limit-rate 1M must print the source id"
+    );
+
+    snapdir(cache.path())
+        .args([
+            "pull",
+            "--store",
+            &store_url,
+            "--id",
+            &src_id,
+            "--limit-rate",
+            "512K",
+            &dest_str,
+        ])
+        .assert()
+        .success();
+
+    dest.child("top1.txt").assert("alpha");
+    dest.child("dir_b/sub/c/leaf.dat").assert("hotel-hotel");
+    assert_eq!(
+        stdout_ok(cache.path(), &["id", &dest_str]),
+        src_id,
+        "tree pulled with --limit-rate must re-manifest to the source id"
+    );
+}
+
 /// Scenario 4 — **multi/comma --exclude drops paths from the manifest.** Build
 /// a tree with excludable `node_modules/x` and `coverage/y`. The comma form
 /// (`--exclude node_modules,coverage`) and the repeated form (`--exclude
