@@ -53,11 +53,12 @@ use std::sync::Arc;
 use google_cloud_gax::error::rpc::Code;
 use google_cloud_gax::error::Error as GcsError;
 use google_cloud_storage::client::{Storage, StorageControl};
-use snapdir_core::manifest::{Manifest, PathType};
+use snapdir_core::manifest::Manifest;
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
 
 use crate::fetch::fetch_files_concurrent;
+use crate::push::{push_objects_concurrent, upload_object};
 use crate::transfer::{RateLimiter, TransferConfig};
 use tokio::runtime::Runtime;
 
@@ -389,54 +390,51 @@ impl Store for GcsStore {
         let hasher = Blake3Hasher::new();
         let id = snapdir_core::merkle::snapshot_id(manifest, &hasher);
 
+        // Concurrent upload via the shared orchestrator: it owns the bounded
+        // per-object pass and the manifest-last / all-or-nothing ordering. GCS
+        // injects the per-object skip-present + upload (via `upload_object`,
+        // which also owns the shared read+verify) and the manifest-write
+        // closure. A failed push writes NO manifest.
+        let limiter = RateLimiter::new(self.config.max_bytes_per_sec);
         self.runtime.block_on(async {
-            // Skip-if-present: a present manifest implies all its objects are
-            // present (we always write the manifest last).
+            // Skip-if-manifest-present pre-check: a present manifest implies all
+            // its objects are present (we always write the manifest last).
             let manifest_key = self.location.manifest_key(&id);
             if self.key_exists(&manifest_key).await? {
                 return Ok(());
             }
 
-            // Push every referenced object that is absent, BEFORE the manifest.
-            for entry in manifest.entries() {
-                if entry.path_type != PathType::File {
-                    continue;
-                }
-                let object_key = self.location.object_key(&entry.checksum);
-                if self.key_exists(&object_key).await? {
-                    // Skip-if-present per object (content-addressable).
-                    continue;
-                }
-                let rel = strip_leading_dot_slash(&entry.path);
-                let object_source = source.join(rel);
-                let bytes = std::fs::read(&object_source)?;
-                // Verify the source still matches its manifest checksum before
-                // upload (the oracle's invalid-source guard).
-                let actual = hasher.hash_hex(&bytes);
-                if actual != entry.checksum {
-                    return Err(StoreError::Integrity {
-                        address: object_source.display().to_string(),
-                        expected: entry.checksum.clone(),
-                        actual,
-                    });
-                }
-                self.put_bytes(&object_key, bytes).await?;
-            }
-
-            // Write the manifest last (verified to hash back to its id),
-            // exactly as the oracle stores the manifest text.
-            let mut text = manifest.to_string();
-            text.push('\n');
-            let manifest_actual = hasher.hash_hex(text.as_bytes());
-            if manifest_actual != id {
-                return Err(StoreError::Integrity {
-                    address: manifest_key.clone(),
-                    expected: id.clone(),
-                    actual: manifest_actual,
-                });
-            }
-            self.put_bytes(&manifest_key, text.into_bytes()).await?;
-            Ok(())
+            push_objects_concurrent(
+                manifest,
+                &self.config,
+                |entry| {
+                    let object_key = self.location.object_key(&entry.checksum);
+                    upload_object(
+                        entry,
+                        object_key,
+                        source,
+                        &limiter,
+                        |key| async move { self.key_exists(&key).await },
+                        |key, bytes| async move { self.put_bytes(&key, bytes).await },
+                    )
+                },
+                || async {
+                    // Write the manifest last (verified to hash back to its id),
+                    // exactly as the oracle stores the manifest text.
+                    let mut text = manifest.to_string();
+                    text.push('\n');
+                    let manifest_actual = hasher.hash_hex(text.as_bytes());
+                    if manifest_actual != id {
+                        return Err(StoreError::Integrity {
+                            address: manifest_key.clone(),
+                            expected: id.clone(),
+                            actual: manifest_actual,
+                        });
+                    }
+                    self.put_bytes(&manifest_key, text.into_bytes()).await
+                },
+            )
+            .await
         })
     }
 }
@@ -495,16 +493,18 @@ fn is_not_found(err: &GcsError) -> bool {
             .is_some_and(|status| status.code == Code::NotFound)
 }
 
-/// Strips a leading `./` and a trailing `/` from a manifest path so the
-/// remainder can be joined onto a destination root (shared with `FileStore`).
-fn strip_leading_dot_slash(path: &str) -> &str {
-    let trimmed = path.strip_prefix("./").unwrap_or(path);
-    trimmed.strip_suffix('/').unwrap_or(trimmed)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snapdir_core::manifest::PathType;
+
+    /// Strips a leading `./` and a trailing `/` from a manifest path. Kept as a
+    /// test-only assertion of the path normalization the orchestrator
+    /// (`crate::push`) performs.
+    fn strip_leading_dot_slash(path: &str) -> &str {
+        let trimmed = path.strip_prefix("./").unwrap_or(path);
+        trimmed.strip_suffix('/').unwrap_or(trimmed)
+    }
 
     // The canonical content-addressable fixtures (shared across the s3/gcs
     // store test suites).

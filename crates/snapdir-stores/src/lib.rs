@@ -23,6 +23,7 @@ pub mod b2_store;
 pub(crate) mod fetch;
 pub mod file_store;
 pub mod gcs_store;
+pub(crate) mod push;
 pub mod router;
 pub mod s3_store;
 pub mod shim;
