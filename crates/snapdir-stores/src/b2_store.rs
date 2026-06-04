@@ -55,6 +55,7 @@ use snapdir_core::manifest::Manifest;
 use snapdir_core::store::{Store, StoreError};
 
 use crate::s3_store::{S3Location, S3Store};
+use crate::stream::StreamStore;
 use crate::transfer::TransferConfig;
 
 /// The default Backblaze B2 region used when none is configured. Backblaze
@@ -157,6 +158,24 @@ impl Store for B2Store {
 
     fn push(&self, manifest: &Manifest, source: &Path) -> Result<(), StoreError> {
         self.inner.push(manifest, source)
+    }
+}
+
+impl StreamStore for B2Store {
+    fn has_object(&self, checksum: &str) -> Result<bool, StoreError> {
+        self.inner.has_object(checksum)
+    }
+
+    fn get_object(&self, checksum: &str) -> Result<Vec<u8>, StoreError> {
+        self.inner.get_object(checksum)
+    }
+
+    fn put_object(&self, checksum: &str, bytes: Vec<u8>) -> Result<(), StoreError> {
+        self.inner.put_object(checksum, bytes)
+    }
+
+    fn put_manifest(&self, id: &str, manifest: &Manifest) -> Result<(), StoreError> {
+        self.inner.put_manifest(id, manifest)
     }
 }
 

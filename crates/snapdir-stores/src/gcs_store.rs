@@ -59,6 +59,7 @@ use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
 
 use crate::fetch::fetch_files_concurrent;
 use crate::push::{push_objects_concurrent, upload_object};
+use crate::stream::StreamStore;
 use crate::transfer::{RateLimiter, TransferConfig};
 use tokio::runtime::Runtime;
 
@@ -436,6 +437,70 @@ impl Store for GcsStore {
             )
             .await
         })
+    }
+}
+
+impl StreamStore for GcsStore {
+    fn has_object(&self, checksum: &str) -> Result<bool, StoreError> {
+        let key = self.location.object_key(checksum);
+        self.runtime.block_on(async { self.key_exists(&key).await })
+    }
+
+    fn get_object(&self, checksum: &str) -> Result<Vec<u8>, StoreError> {
+        let key = self.location.object_key(checksum);
+        let bytes = self.runtime.block_on(async {
+            self.get_bytes(&key)
+                .await?
+                .ok_or_else(|| StoreError::ObjectNotFound {
+                    checksum: checksum.to_owned(),
+                })
+        })?;
+
+        // Verify the downloaded blob hashes back to its content-address before
+        // returning it (corruption surfaces as `Integrity`, never bad bytes).
+        let actual = Blake3Hasher::new().hash_hex(&bytes);
+        if actual != checksum {
+            return Err(StoreError::Integrity {
+                address: format!("gs://{}/{key}", self.location.bucket),
+                expected: checksum.to_owned(),
+                actual,
+            });
+        }
+        Ok(bytes)
+    }
+
+    fn put_object(&self, checksum: &str, bytes: Vec<u8>) -> Result<(), StoreError> {
+        // Verify BEFORE uploading: a blob whose bytes do not hash to `checksum`
+        // must never land at that content-address (nothing is stored).
+        let actual = Blake3Hasher::new().hash_hex(&bytes);
+        if actual != checksum {
+            return Err(StoreError::Integrity {
+                address: self.location.object_key(checksum),
+                expected: checksum.to_owned(),
+                actual,
+            });
+        }
+        let key = self.location.object_key(checksum);
+        self.runtime
+            .block_on(async { self.put_bytes(&key, bytes).await })
+    }
+
+    fn put_manifest(&self, id: &str, manifest: &Manifest) -> Result<(), StoreError> {
+        let key = self.location.manifest_key(id);
+        // Mirror the manifest-write tail of `push`: render the oracle's
+        // `echo "${manifest}"` bytes, verify they hash back to `id`, then PUT.
+        let mut text = manifest.to_string();
+        text.push('\n');
+        let actual = Blake3Hasher::new().hash_hex(text.as_bytes());
+        if actual != id {
+            return Err(StoreError::Integrity {
+                address: key,
+                expected: id.to_owned(),
+                actual,
+            });
+        }
+        self.runtime
+            .block_on(async { self.put_bytes(&key, text.into_bytes()).await })
     }
 }
 

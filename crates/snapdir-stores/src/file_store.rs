@@ -37,6 +37,7 @@ use snapdir_core::manifest::{Manifest, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
 
+use crate::stream::StreamStore;
 use crate::transfer::TransferConfig;
 use crate::util::{file_present_and_verified, hash_file};
 
@@ -270,6 +271,71 @@ impl Store for FileStore {
         // path, so a present manifest always implies present objects.
         write_manifest(manifest, &manifest_target, &id, &hasher)?;
         Ok(())
+    }
+}
+
+impl StreamStore for FileStore {
+    fn has_object(&self, checksum: &str) -> Result<bool, StoreError> {
+        Ok(self.object_disk_path(checksum).exists())
+    }
+
+    fn get_object(&self, checksum: &str) -> Result<Vec<u8>, StoreError> {
+        let path = self.object_disk_path(checksum);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                return Err(StoreError::ObjectNotFound {
+                    checksum: checksum.to_owned(),
+                });
+            }
+            Err(err) => return Err(StoreError::Io(err)),
+        };
+
+        // Verify the stored blob hashes back to its content-address before
+        // returning it — corruption must surface as `Integrity`, never as bad
+        // bytes handed to a store-to-store copy.
+        let actual = Blake3Hasher::new().hash_hex(&bytes);
+        if actual != checksum {
+            return Err(StoreError::Integrity {
+                address: path.display().to_string(),
+                expected: checksum.to_owned(),
+                actual,
+            });
+        }
+        Ok(bytes)
+    }
+
+    fn put_object(&self, checksum: &str, bytes: Vec<u8>) -> Result<(), StoreError> {
+        // Verify BEFORE writing: a blob whose bytes do not hash to `checksum`
+        // must never land at that content-address (nothing is stored).
+        let actual = Blake3Hasher::new().hash_hex(&bytes);
+        if actual != checksum {
+            return Err(StoreError::Integrity {
+                address: object_path(checksum),
+                expected: checksum.to_owned(),
+                actual,
+            });
+        }
+
+        let target = self.object_disk_path(checksum);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // Temp sibling + atomic rename, the same write discipline `persist`
+        // uses, so a partially-written object is never visible at its address.
+        let tmp = temp_sibling(&target);
+        fs::write(&tmp, &bytes)?;
+        fs::rename(&tmp, &target)?;
+        Ok(())
+    }
+
+    fn put_manifest(&self, id: &str, manifest: &Manifest) -> Result<(), StoreError> {
+        write_manifest(
+            manifest,
+            &self.manifest_disk_path(id),
+            id,
+            &Blake3Hasher::new(),
+        )
     }
 }
 
@@ -1063,5 +1129,95 @@ mod tests {
         assert_eq!(strip_leading_dot_slash("./a/"), "a");
         assert_eq!(strip_leading_dot_slash("./"), "");
         assert_eq!(strip_leading_dot_slash("/abs/path"), "/abs/path");
+    }
+
+    // --- StreamStore (object/manifest-level streaming) -------------------
+    //
+    // Hermetic: FileStore is local, so these exercise the verify discipline
+    // (BLAKE3 round-trip + corruption rejection) without any cloud creds.
+
+    #[test]
+    fn stream_store_filestore_object_roundtrip() {
+        let store_dir = TempDir::new("stream-roundtrip");
+        let store = FileStore::from_root(store_dir.path());
+
+        let bytes = b"hello stream store\n".to_vec();
+        let checksum = Blake3Hasher::new().hash_hex(&bytes);
+
+        // Absent before the write.
+        assert!(!store.has_object(&checksum).unwrap());
+
+        store.put_object(&checksum, bytes.clone()).expect("put ok");
+
+        // Present after, and the round-tripped bytes are identical.
+        assert!(store.has_object(&checksum).unwrap());
+        assert_eq!(store.get_object(&checksum).unwrap(), bytes);
+
+        // It landed at the exact sharded content-address.
+        assert!(store_dir.path().join(object_path(&checksum)).exists());
+    }
+
+    #[test]
+    fn stream_store_get_object_rejects_corruption() {
+        let store_dir = TempDir::new("stream-corrupt");
+        let store = FileStore::from_root(store_dir.path());
+
+        // Address a blob under `checksum` but write DIFFERENT bytes directly
+        // to its on-disk path, simulating a corrupt/tampered object.
+        let good = b"the real object bytes\n".to_vec();
+        let checksum = Blake3Hasher::new().hash_hex(&good);
+        let target = store_dir.path().join(object_path(&checksum));
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, b"TAMPERED bytes that do not hash to the address\n").unwrap();
+
+        match store.get_object(&checksum) {
+            Err(StoreError::Integrity {
+                expected, actual, ..
+            }) => {
+                assert_eq!(expected, checksum);
+                assert_ne!(actual, checksum, "actual must differ from the address");
+            }
+            other => panic!("expected Integrity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_store_put_object_rejects_wrong_checksum() {
+        let store_dir = TempDir::new("stream-wrong-checksum");
+        let store = FileStore::from_root(store_dir.path());
+
+        let bytes = b"some payload\n".to_vec();
+        // A syntactically-valid but WRONG content-address.
+        let wrong = "dead".repeat(16); // 64 hex chars, not the real hash.
+        assert_ne!(wrong, Blake3Hasher::new().hash_hex(&bytes));
+
+        match store.put_object(&wrong, bytes) {
+            Err(StoreError::Integrity { expected, .. }) => assert_eq!(expected, wrong),
+            other => panic!("expected Integrity, got {other:?}"),
+        }
+
+        // Nothing was stored at the bogus address.
+        assert!(!store.has_object(&wrong).unwrap());
+        assert!(!store_dir.path().join(object_path(&wrong)).exists());
+    }
+
+    #[test]
+    fn stream_store_put_manifest_roundtrips() {
+        let store_dir = TempDir::new("stream-manifest");
+        let src_dir = TempDir::new("stream-manifest-src");
+        let store = FileStore::from_root(store_dir.path());
+
+        let (manifest, id) = make_foo_bar_source(src_dir.path());
+
+        store.put_manifest(&id, &manifest).expect("put_manifest ok");
+
+        // get_manifest reads it back, re-verifies the id, and yields an equal
+        // manifest.
+        let back = store.get_manifest(&id).expect("get_manifest ok");
+        assert_eq!(back.entries(), manifest.entries());
+        assert_eq!(
+            snapdir_core::merkle::snapshot_id(&back, &Blake3Hasher::new()),
+            id
+        );
     }
 }
