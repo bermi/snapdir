@@ -3,7 +3,27 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ✅ PHASE 12 COMPLETE — 6/6 gates green (operator sign-off 2026-06-04) — ALL 91 GATES GREEN
+## 🔧 PHASE 13 — Concurrent transfers & bandwidth control (OPEN, opened 2026-06-04) — 91/98 green, 7 pending
+
+> Operator-requested after Phase 12. **Audit:** all stores transfer objects **sequentially** (one-at-a-time `await` loop in a single `block_on`; B2 delegates to S3; FileStore sequential too); no concurrency/rate-limit primitives; no `--jobs`/`--limit-rate`. The `Store` trait is sync + per-manifest and **not frozen**, so concurrency goes *inside* `block_on` (`buffer_unordered`) without touching the trait or the frozen sharding/format.
+>
+> **Decisions:** concurrency **auto on by default** (`available_parallelism` capped at 16; `--jobs` overrides, `--jobs 1` = sequential); `--limit-rate` is **aggregate** (one shared **zero-dep** token bucket); **FileStore parallelized too** (rayon). Invariants preserved: manifest-last, skip-if-present (Phase 12), per-object verify, frozen layout. `TransferConfig` lives in `snapdir-stores` so **core is untouched**.
+
+**Phase 13 ledger: 7 gates — 0 passed, 7 pending.**
+
+- `transfer-config` ⏳ (stores) — `TransferConfig` + zero-dep token-bucket `RateLimiter` + `run_concurrent` bounded-concurrency helper (the deterministic max-in-flight proof) + backward-compat `connect_with` ctors. **[next ready]**
+- `concurrent-upload` ⏳ (stores) — S3/GCS `push` concurrent via `run_concurrent`; manifest-last + skip-if-present preserved.
+- `concurrent-download` ⏳ (stores) — S3/GCS `fetch_files` concurrent; Phase-12 skip-if-present-and-verified preserved.
+- `filestore-parallel` ⏳ (stores) — parallelize local FileStore copies (rayon), bounded by concurrency.
+- `cli-transfer-flags` ⏳ (cli) — `--jobs/-j` + `--limit-rate` (aggregate, wget-style) + env; thread `TransferConfig` through `store_for_adapter`.
+- `transfer-concurrency-verification` ⏳ (cli) — e2e: `--jobs` round-trips + `--limit-rate` throttle bound.
+- `phase13-complete` ⏳ (generic, **human_checkpoint**) — sign-off.
+
+**Next ready:** `transfer-config` (stores). **Deferred:** the `dev→main` cherry-picks happen **after** `phase13-complete` (operator: "it should precede the cherry picking"); the batch will then include the 5 Phase 12 commits + the Phase 13 code commits.
+
+---
+
+## ✅ PHASE 12 COMPLETE — 6/6 gates green (operator sign-off 2026-06-04) — superseded by Phase 13 above
 
 > **PROJECT COMPLETE.** `phase12-complete` ✅ PASSED (operator sign-off + `cargo test --workspace --locked` = 254 passed / 0 failed). The four issues the operator reported while exercising the released 1.0.1 binary are all fixed and regression-tested, as **clean cherry-pickable code commits on `dev`** (gatesmith-free messages; `main` never carries `.gatesmith/`):
 > - `cd1c5f1` `feat(cli)` — `--exclude`/`--paths` accept repeated + comma-delimited values, OR-combined (per-pattern `%system%`/`%common%` macro expansion).

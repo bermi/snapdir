@@ -1711,3 +1711,119 @@ gates:
         - human_confirm: "Phase 12 done: pull skips verified-present files AND does not re-download cached objects on a 2nd run, --dryrun writes nothing across all mutating commands, --exclude/--paths accept multi-arg+comma lists, and the correctness suite covers all of it. Approve?"
     human_checkpoint: true
     description: "PHASE 12 SIGN-OFF: the two confirmed bugs (dryrun-writes, pull-redownload regression) are fixed with regression tests, list-valued CLI options accept multi-arg + comma forms, and the correctness suite locks it in."
+
+  # ======================================================================
+  # PHASE 13 — Concurrent transfers & bandwidth control (operator-requested 2026-06-04)
+  # Audit: all stores transfer objects SEQUENTIALLY (await loop in one block_on); no
+  # concurrency/rate-limit primitives; no --jobs/--limit-rate. Store trait is sync +
+  # per-manifest and NOT frozen -> concurrency goes INSIDE block_on (buffer_unordered),
+  # sharding layout + manifest format untouched. Decisions: concurrency AUTO on by
+  # default (available_parallelism capped at 16; --jobs overrides); --limit-rate is
+  # AGGREGATE (one shared token bucket); zero-dep limiter; FileStore parallelized too.
+  # Must preserve: manifest-last, skip-if-present, per-object verify (Phase 12).
+  # ======================================================================
+
+  # --- Foundation: config + zero-dep limiter + bounded-concurrency engine ---
+  - id: transfer-config
+    phase: 13
+    owner_agent: stores
+    depends_on: [phase12-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked transfer_config -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Add snapdir-stores TransferConfig { concurrency: NonZeroUsize, max_bytes_per_sec: Option<u64> } (default concurrency = available_parallelism capped at 16; rate None = unlimited) + a ZERO-DEP async token-bucket RateLimiter (tokio::time, Arc-shareable; acquire(n) awaits until n bytes of budget; None passes through) + a generic bounded-concurrency helper run_concurrent(items, concurrency, op) over futures::stream::iter(..).buffer_unordered(n) that propagates the first error. Add backward-compatible connect_with/with_config constructor variants to S3Store/GcsStore/B2Store/FileStore taking a TransferConfig (existing connect()/new() delegate with TransferConfig::default() so cli still compiles). NO transfer-loop change yet. Tests (name them transfer_config*): RateLimiter token math (acquire blocks then refills; unlimited = no delay), and run_concurrent max-in-flight == min(concurrency, n) via an instrumented op that bumps an AtomicUsize high-water mark (== 1 when concurrency = 1), error propagation. This is the DETERMINISTIC proof the engine runs transfers concurrently. Adds futures dep (>=3-day cooldown)."
+
+  # --- Concurrent uploads (S3/GCS; B2 inherits) ---
+  - id: concurrent-upload
+    phase: 13
+    owner_agent: stores
+    depends_on: [transfer-config]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked concurrent_upload -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Rewrite S3Store::push and GcsStore::push (B2 inherits via S3) to upload absent objects CONCURRENTLY using the run_concurrent helper at TransferConfig.concurrency, with the shared RateLimiter acquiring object_len bytes before each put_bytes. PRESERVE EXACTLY: per-object skip-if-present (key_exists), per-object read+BLAKE3 verify, and manifest-written-LAST (collect all upload results; write the manifest only if ALL succeeded; on any error write no manifest). Object order is irrelevant (content-addressed). Tests (concurrent_upload*): round-trip correctness vs a sequential baseline (same object set, manifest-last), all-or-nothing on a failing object, and (MinIO-gated behind an env var, hermetic-skip otherwise) a real concurrent push. Memory note: peak ~= concurrency x object_size (whole-object buffered) -- acceptable; streaming/multipart is a documented non-goal."
+
+  # --- Concurrent downloads (S3/GCS; B2 inherits) ---
+  - id: concurrent-download
+    phase: 13
+    owner_agent: stores
+    depends_on: [transfer-config]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked concurrent_download -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Rewrite S3Store::fetch_files and GcsStore::fetch_files to download objects CONCURRENTLY via run_concurrent at TransferConfig.concurrency, shared RateLimiter acquiring object_len before each fetch_verified. PRESERVE: Phase-12 skip-if-present-and-verified (file_present_and_verified short-circuits before any GET), per-object verify + atomic write to distinct target paths (pre-create parent dirs; create_dir_all races are idempotent), retry discipline. Tests (concurrent_download*): concurrent fetch round-trips byte-identical, skip-existing still does zero GETs on a 2nd fetch, corrupt-dest repaired; MinIO-gated real path behind env."
+
+  # --- Parallelize the local FileStore ---
+  - id: filestore-parallel
+    phase: 13
+    owner_agent: stores
+    depends_on: [transfer-config]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked filestore_parallel -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Parallelize FileStore::push and fetch_files object copies across a bounded pool sized by TransferConfig.concurrency (rayon scoped ThreadPool, or std threads + a bounded channel; rayon dep >=3-day cooldown). PRESERVE: persist() copy+verify+atomic-rename, skip-if-present, manifest-last (write manifest only after all copies succeed). The rate limiter does not apply to local copies (bandwidth is a network concern); concurrency cap still honored. Tests (filestore_parallel*): parallel round-trip byte-identical to sequential, --jobs/concurrency=1 stays single-threaded, all-or-nothing on a bad object."
+
+  # --- CLI flags + env + threading the config to every store ---
+  - id: cli-transfer-flags
+    phase: 13
+    owner_agent: cli
+    depends_on: [transfer-config]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -q 'limit.rate\\|limit_rate' crates/snapdir-cli/src/cli.rs && cargo test -p snapdir-cli --locked transfer_flags -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Add global --jobs/-j N (concurrency cap; unset/0 = auto) and --limit-rate RATE (wget-style suffixes: bare bytes, K/KiB, M, G; AGGREGATE total throughput) to GlobalArgs, with env SNAPDIR_JOBS / SNAPDIR_LIMIT_RATE. Add a rate-string parser (cli lane). Build a snapdir_stores::TransferConfig from the flags and thread it through store_for_adapter -> the connect_with/with_config constructors for S3/GCS/B2/FileStore. --jobs 1 forces sequential. Additive, backward-compatible CLI surface (new flags only). Tests (transfer_flags*): rate-string parsing (10M, 512K, 1GiB, bare, invalid -> error), --jobs precedence over env, default = auto."
+
+  # --- Verify concurrency + bandwidth end-to-end ---
+  - id: transfer-concurrency-verification
+    phase: 13
+    owner_agent: cli
+    depends_on: [concurrent-upload, concurrent-download, filestore-parallel, cli-transfer-flags]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked transfer_concurrency -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "End-to-end verification at the CLI boundary (file:// store, hermetic): a push/pull with --jobs 4 round-trips byte-identical and re-manifests to the same id; --jobs 1 round-trips identically (sequential path still correct); --limit-rate enforces a measurable elapsed-time LOWER bound for a known multi-object payload (generous bound to avoid flake); the verbose path reports the effective concurrency. (The deterministic max-in-flight>1 proof lives in transfer-config's run_concurrent test; this gate proves the flags are wired and correctness/throttle hold through the binary.) Tests named transfer_concurrency*."
+
+  # --- Phase 13 sign-off ---
+  - id: phase13-complete
+    phase: 13
+    owner_agent: generic
+    depends_on: [transfer-config, concurrent-upload, concurrent-download, filestore-parallel, cli-transfer-flags, transfer-concurrency-verification]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 13 done: uploads & downloads run concurrently (auto, --jobs to cap), --limit-rate throttles aggregate bandwidth via a zero-dep token bucket, FileStore is parallelized, and manifest-last + skip-if-present + the frozen sharding/format are preserved. Approve?"
+    human_checkpoint: true
+    description: "PHASE 13 SIGN-OFF: concurrent transfers + aggregate bandwidth limiting land with the manifest-last, skip-if-present, per-object-verify, and frozen-layout invariants intact; workspace tests green."
