@@ -1909,7 +1909,9 @@ gates:
     phase: 14
     owner_agent: cli
     depends_on: [sync-orchestrator]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T17:35:31Z
+    git_sha: 327d1eb
     failure_count: 0
     verification_cmd: "grep -q 'Sync' crates/snapdir-cli/src/cli.rs && cargo test -p snapdir-cli --locked sync_cmd -- --nocapture"
     pass_criteria:
