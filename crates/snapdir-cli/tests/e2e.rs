@@ -794,3 +794,159 @@ fn manifest_multi_exclude_drops_paths_e2e() {
         "comma and repeated --exclude forms must produce identical manifests"
     );
 }
+
+/// `--verbose push --jobs N` prints the effective transfer concurrency to
+/// stderr ONCE, while stdout stays exactly the snapshot id (byte-stable).
+#[test]
+fn verbose_jobs_push_reports_concurrency() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    build_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    let src_id = stdout_ok(cache.path(), &["id", &src_str]);
+
+    let out = snapdir(cache.path())
+        .args([
+            "push",
+            "--jobs",
+            "3",
+            "--verbose",
+            "--store",
+            &store_url,
+            &src_str,
+        ])
+        .output()
+        .expect("run snapdir");
+    assert!(out.status.success(), "verbose push must succeed");
+
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        stdout.trim_end(),
+        src_id,
+        "stdout must remain exactly the snapshot id"
+    );
+
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("transfers: 3 concurrent"),
+        "stderr must report effective concurrency:\n{stderr}"
+    );
+    assert_eq!(
+        stderr.matches("transfers:").count(),
+        1,
+        "the transfer-config banner must print exactly once:\n{stderr}"
+    );
+}
+
+/// `--verbose push --jobs N --limit-rate R` reports both the concurrency and the
+/// rate limit on stderr.
+#[test]
+fn verbose_jobs_limit_rate_reported() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    build_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    let out = snapdir(cache.path())
+        .args([
+            "push",
+            "--jobs",
+            "2",
+            "--limit-rate",
+            "1M",
+            "--verbose",
+            "--store",
+            &store_url,
+            &src_str,
+        ])
+        .output()
+        .expect("run snapdir");
+    assert!(out.status.success(), "verbose limited push must succeed");
+
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("2 concurrent") && stderr.contains("limit 1M"),
+        "stderr must report concurrency AND the limit rate:\n{stderr}"
+    );
+}
+
+/// Without `--verbose`, the transfer-config banner is silent and stdout is still
+/// exactly the snapshot id.
+#[test]
+fn verbose_jobs_silent_without_verbose() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    build_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    let src_id = stdout_ok(cache.path(), &["id", &src_str]);
+
+    let out = snapdir(cache.path())
+        .args(["push", "--jobs", "3", "--store", &store_url, &src_str])
+        .output()
+        .expect("run snapdir");
+    assert!(out.status.success(), "non-verbose push must succeed");
+
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(stdout.trim_end(), src_id, "stdout must be the snapshot id");
+
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        !stderr.contains("concurrent") && !stderr.contains("transfers:"),
+        "non-verbose run must not emit the transfer-config banner:\n{stderr}"
+    );
+}
+
+/// `pull --jobs N --verbose` (fetch + checkout) emits the transfer-config banner
+/// exactly ONCE, not once per leg.
+#[test]
+fn verbose_jobs_pull_reports_once() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let dest = TempDir::new().unwrap();
+    build_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let dest_str = dest.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    let src_id = stdout_ok(cache.path(), &["push", "--store", &store_url, &src_str]);
+
+    let out = snapdir(cache.path())
+        .args([
+            "pull",
+            "--jobs",
+            "4",
+            "--verbose",
+            "--store",
+            &store_url,
+            "--id",
+            &src_id,
+            &dest_str,
+        ])
+        .output()
+        .expect("run snapdir");
+    assert!(out.status.success(), "verbose pull must succeed");
+
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("transfers: 4 concurrent"),
+        "pull --verbose must report concurrency:\n{stderr}"
+    );
+    assert_eq!(
+        stderr.matches("transfers:").count(),
+        1,
+        "pull must print the transfer-config banner exactly once:\n{stderr}"
+    );
+}

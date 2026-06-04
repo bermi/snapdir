@@ -440,6 +440,7 @@ impl Cli {
     /// and push its objects (objects-before-manifest, skip-if-present) to the
     /// resolved store. Prints the resulting snapshot id, matching the oracle.
     fn run_push(&self, path: Option<&Path>) -> Result<()> {
+        self.log_transfer_config();
         let store = self.resolve_store()?;
 
         // `snapdir push --store … --id <id>` with no PATH: push a *staged* (or
@@ -520,6 +521,14 @@ impl Cli {
     /// each object's BLAKE3), then file the manifest+objects into the local
     /// cache so a later `checkout` can reconstruct the tree offline.
     fn run_fetch(&self) -> Result<()> {
+        self.log_transfer_config();
+        self.fetch_inner()
+    }
+
+    /// `fetch` body without the verbose transfer-config banner. `run_pull`
+    /// composes `fetch_inner` + `checkout_inner` so the banner prints exactly
+    /// once (from `run_pull`), not once per leg.
+    fn fetch_inner(&self) -> Result<()> {
         // Fast path: if the local cache already holds the manifest, the whole
         // snapshot is cached. By snapdir's manifest-written-last invariant a
         // present manifest implies every object it references is present (the
@@ -579,6 +588,13 @@ impl Cli {
     /// cache, materialize the tree at `<dest>`, and restore each entry's
     /// permissions so the checked-out tree re-manifests to the same snapshot id.
     fn run_checkout(&self, dir: Option<&Path>) -> Result<()> {
+        self.log_transfer_config();
+        self.checkout_inner(dir)
+    }
+
+    /// `checkout` body without the verbose transfer-config banner (see
+    /// [`Self::fetch_inner`]).
+    fn checkout_inner(&self, dir: Option<&Path>) -> Result<()> {
         let id = self.require_id()?;
         let dest = resolve_root(dir).context("resolving checkout destination")?;
         // Under --dryrun: skip materializing the destination tree and restoring
@@ -607,8 +623,12 @@ impl Cli {
 
     /// `snapdir pull` = fetch + checkout.
     fn run_pull(&self, path: Option<&Path>) -> Result<()> {
-        self.run_fetch()?;
-        self.run_checkout(path)
+        // Banner ONCE for the whole pull, then run the two legs without their
+        // own banners (`fetch_inner`/`checkout_inner`) so `pull --verbose`
+        // emits exactly one transfer-config line.
+        self.log_transfer_config();
+        self.fetch_inner()?;
+        self.checkout_inner(path)
     }
 
     /// `snapdir verify --id <id>`: confirm the snapshot in the store is intact —
@@ -652,6 +672,7 @@ impl Cli {
     /// core/stores code. The resulting on-disk keys are exactly what
     /// `verify-cache` later checks (`stage` then `verify-cache` round-trips).
     fn run_stage(&self, path: Option<&Path>) -> Result<()> {
+        self.log_transfer_config();
         // Stage uses the same default checksum surface as `push`/`id`: b3sum
         // (or keyed-b3sum), relative paths, follow symlinks.
         let manifest = self.build_manifest(path, false, false, None, &self.globals.exclude)?;
@@ -894,6 +915,29 @@ impl Cli {
             _ => TransferConfig::default().concurrency.get(),
         };
         Ok(TransferConfig::new(concurrency, max_bytes_per_sec))
+    }
+
+    /// Field observability for the transfer commands: under `--verbose`, print
+    /// the *effective* transfer concurrency (and `--limit-rate`, if set) ONCE to
+    /// stderr so an operator can confirm in the field that concurrent transfers +
+    /// bandwidth limiting are actually in effect. Stdout is untouched (the
+    /// scriptable id-on-stdout contract stays byte-stable); the deterministic
+    /// concurrency proof is the unit test, this is just field observability.
+    fn log_transfer_config(&self) {
+        if !self.globals.verbose {
+            return;
+        }
+        // A bad --limit-rate would already have failed transfer_config() in the
+        // command body; here we only render for humans, so on the off chance the
+        // config can't resolve we simply skip the diagnostic rather than abort.
+        let Ok(config) = self.transfer_config() else {
+            return;
+        };
+        let concurrency = config.concurrency.get();
+        match self.globals.limit_rate.as_deref() {
+            Some(rate) => eprintln!("transfers: {concurrency} concurrent, limit {rate}"),
+            None => eprintln!("transfers: {concurrency} concurrent"),
+        }
     }
 
     /// The local cache as a `file://`-shaped store, rooted at the resolved cache
