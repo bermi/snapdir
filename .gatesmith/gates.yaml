@@ -2058,3 +2058,95 @@ gates:
         - human_confirm: "Phase 15 done: a single-line live progress dashboard (spinner/bar + from->to bps/iops + concurrency + mem/cpu) shows on an interactive TTY for push/fetch/pull/checkout/stage/sync + the walk; it auto-disables when piped; --no-progress/--quiet/--color work; stdout stays the scriptable id; only new dep is libc. Approve?"
     human_checkpoint: true
     description: "PHASE 15 SIGN-OFF: live single-line transfer/hashing progress with from->to bps/iops + concurrency + best-effort mem/cpu, TTY-gated with --no-progress/--quiet/--color, stdout scriptable contract intact, hand-rolled (only new dep libc), frozen format untouched; workspace tests green."
+
+  # ======================================================================
+  # PHASE 16 — Deterministic benchmark & regression-gate suite (operator-requested 2026-06-05)
+  # Local FS, synthetic data, no network. A deterministic scenario generator feeds:
+  # (1) a golden-snapshot-id + full-round-trip + invariants GATE (cargo test, = integration
+  # testing, runs everywhere); (2) criterion wall-clock benches (informed decisions);
+  # (3) iai-callgrind instruction-count benches (deterministic perf gate; runs on macOS via a
+  # pinned Linux Docker image + in Linux CI with the SAME image -> one authoritative baseline).
+  # Frozen manifest/sharding untouched. Builds on the Phase-7 benches crate; the dead
+  # Rust-vs-Bash compare.sh is removed.
+  # ======================================================================
+
+  - id: bench-scenarios
+    phase: 16
+    owner_agent: bench
+    depends_on: [phase15-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-benches --locked scenario -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Turn benches/src/lib.rs into a real (pub) deterministic synthetic-scenario generator + catalog. A Scenario { name, tier } with materialize(&self, dir: &Path) that writes a tree of REGULAR FILES + DIRS only, explicit perms (files 0644 / dirs 0755 via PermissionsExt::from_mode), fixed byte contents (the existing deterministic_bytes ramp; NO rng/time), and an optional exclude pattern carried for the gate. Catalog at two tiers: GATE (tiny, fast) and BENCH (larger). Scenarios: many_small, few_large, deep_nest, wide_fanout, mixed, dedup (duplicate content -> identical checksums so the store object count < file count), with_excludes, edge (empty files + empty dirs). NO symlinks in any golden/gate scenario (lstat perms are platform-dependent). Reused by the determinism gate + both bench suites. Tests (tests/scenarios.rs, names contain `scenario`): materializing a scenario twice yields identical trees (walk both with Blake3 -> equal snapshot id); the generator is byte-deterministic (no rng/clock); dedup scenario produces fewer unique checksums than files. (benches crate gains dev-deps snapdir-core + snapdir-stores; keep the lib light — std + PermissionsExt.)"
+
+  - id: bench-determinism-gate
+    phase: 16
+    owner_agent: bench
+    depends_on: [bench-scenarios]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-benches --locked determinism -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "THE deterministic regression gate + integration test (tests/determinism.rs, runs in cargo test --workspace). For each GATE-tier scenario: materialize -> walk (with the scenario's exclude, if any) -> snapshot_id == a recorded GOLDEN constant; structural invariants (unique-object count, total bytes, manifest entry count, and for dedup: objects < files) == recorded goldens; FULL LOCAL ROUND-TRIP: FileStore A.push(manifest, src); sync_snapshot(A, B, id, &TransferConfig::new(4,None), false, None); B.fetch_files(B.get_manifest(id), dest); re-walk dest -> re-id == the original id (== golden). Golden ids/invariants are pinned as const tables (mirror crates/snapdir-core/tests/compat_golden.rs); the impl computes + records them once (deterministic + cross-platform). A doc comment + the gate journal note the intentional-regeneration process (recompute + journal a bump_reason) for deliberate format changes. This catches ANY walk/hash/manifest-format/store-semantic drift deterministically and proves the local pipeline round-trips byte-identically."
+
+  - id: bench-criterion-suite
+    phase: 16
+    owner_agent: bench
+    depends_on: [bench-scenarios]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test ! -f benches/compare.sh && cargo bench -p snapdir-benches --no-run"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Criterion wall-clock benches over the BENCH-tier scenarios for the full local pipeline (the 'make informed decisions' tool). Extend benches/benches/hot_paths.rs (or add benches/benches/pipeline.rs as a 2nd [[bench]]) with groups for: walk+hash, snapshot_id, FileStore stage (push), checkout (fetch_files), and sync_snapshot (A->B). Use criterion Throughput where meaningful; build the tree ONCE outside the timed loop and use iter_batched with a FRESH empty store per iteration for push/sync (so it measures real work, not skip-if-present). Document criterion's --save-baseline <name> / --baseline <name> before/after workflow in a benches/README.md. DELETE the obsolete benches/compare.sh + benches/last-compare.json (dead Rust-vs-Bash harness). `cargo bench -p snapdir-benches --no-run` must compile green. (benches dev-dep snapdir-stores.)"
+
+  - id: bench-iai-gate
+    phase: 16
+    owner_agent: bench
+    depends_on: [bench-scenarios]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo bench -p snapdir-benches --bench iai_hot --no-run && grep -qiE 'regression|iai_callgrind' benches/benches/iai_hot.rs && test -x benches/run-iai-docker.sh"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "The DETERMINISTIC performance gate via iai-callgrind (instruction counts, not wall-clock). Add iai-callgrind as a benches dev-dep + a new [[bench]] iai_hot (harness=false) using #[library_benchmark] over FIXED tiny deterministic inputs (a GATE-tier scenario / in-memory buffers) for the hot paths: blake3 hash, walk+manifest build, snapshot_id. Configure a RegressionConfig/threshold (fail if EstimatedCycles/Ir regress beyond ~5%) against a committed baseline = the deterministic baseline. Add benches/run-iai-docker.sh: a runner that executes `cargo bench --bench iai_hot` inside a PINNED Linux image (e.g. rust:1.91-slim-bookworm + apt-get install -y valgrind + cargo install iai-callgrind-runner@<pin>) so it runs on macOS via Docker AND is the SAME image CI uses (identical instruction counts -> one authoritative committed baseline). PM verification on macOS = the iai bench COMPILES (cargo bench --bench iai_hot --no-run) + the runner script exists; the actual valgrind run is done via Docker locally (bash benches/run-iai-docker.sh) and in CI (next gate). Keep inputs tiny + fixed so counts are deterministic. Document in benches/README.md how to run it (Docker on macOS, native on Linux) and how to refresh the baseline intentionally."
+
+  - id: bench-ci-wire
+    phase: 16
+    owner_agent: ci
+    depends_on: [bench-criterion-suite, bench-iai-gate, bench-determinism-gate]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -qiE 'valgrind' .github/workflows/ci.yaml && grep -qE 'bench.*--no-run|no-run.*bench' .github/workflows/ci.yaml && grep -qE 'no-run' utils/ci/pre-push.sh && cargo bench --workspace --no-run"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Wire the suite into CI + local gates. ci.yaml: (a) a Linux 'bench-iai' job running the iai instruction-count gate via the SAME pinned image/toolchain as benches/run-iai-docker.sh (valgrind + iai-callgrind-runner@<pin>; either bash benches/run-iai-docker.sh or the equivalent steps on the ubuntu runner) so it fails on instruction-count regression vs the committed baseline — the deterministic PERF gate, with counts matching the operator's macOS Docker run; (b) a `cargo bench --workspace --no-run` compile step so criterion + iai benches can't bit-rot. The determinism gate already runs via the existing cargo test --workspace Test job (confirm the benches crate's tests/ run there). utils/ci/pre-push.sh: add `cargo bench --workspace --no-run` (compile-only; the valgrind run goes through Docker, not the host). actionlint must stay clean. PM verifies the workflow/pre-push edits + that all benches compile; the actual valgrind/iai run is enforced in Linux CI and reproducible on macOS via Docker (operator confirms green at phase16-complete)."
+
+  - id: phase16-complete
+    phase: 16
+    owner_agent: generic
+    depends_on: [bench-scenarios, bench-determinism-gate, bench-criterion-suite, bench-iai-gate, bench-ci-wire]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 16 done: a deterministic synthetic-scenario suite gives golden snapshot-id + full-round-trip + invariants integration gating (runs everywhere), criterion wall-clock benches for decisions, and an iai-callgrind instruction-count perf gate (macOS via Docker + Linux CI, same image); the dead compare.sh is gone; benches are compile-checked in CI + pre-push; frozen format untouched. Approve?"
+    human_checkpoint: true
+    description: "PHASE 16 SIGN-OFF: deterministic benchmark + regression-gate suite (synthetic local-FS data) lands — golden-id/round-trip/invariants determinism gate (integration testing), criterion decision benches, iai-callgrind deterministic perf gate (macOS Docker + Linux CI), bench compile-checks in CI/pre-push, dead compare.sh removed; workspace tests green."

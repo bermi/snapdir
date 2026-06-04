@@ -3,7 +3,17 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ✅ PHASE 15 COMPLETE — 6/6 gates green (operator sign-off 2026-06-04) — ALL 110 GATES GREEN — PROJECT COMPLETE
+## ▶ PHASE 16 OPEN — 0/6 gates green — deterministic benchmark & regression-gate suite (gates added 2026-06-05)
+
+> Operator-requested: a benchmark suite to make informed decisions on changes/refactorings/optimizations AND a deterministic baseline + gate to avoid regressions — local FS only, synthetic data (no network). Because snapdir is content-addressed, deterministic synthetic data -> deterministic manifest -> deterministic snapshot id, so the suite **doubles as integration testing** (assert final snapshot ids over a full local round-trip). macOS runs the valgrind/iai instruction-count gate inside a **pinned Linux Docker image** — the SAME image CI uses — so the committed baseline is authoritative on both.
+>
+> **Design:** a deterministic scenario generator (regular files + dirs only, explicit 0644/0755 perms, fixed bytes, no rng/time, NO symlinks) in the `benches` crate feeds three consumers: (1) a **determinism gate** = golden snapshot-id + structural-invariants + full local round-trip (push -> sync A->B -> fetch -> re-walk -> re-id), a normal `cargo test` that runs everywhere; (2) **criterion** wall-clock benches (decisions); (3) **iai-callgrind** instruction-count benches (the deterministic perf gate, Linux-CI/valgrind + macOS-Docker). The dead Rust-vs-Bash `benches/compare.sh` is removed. Frozen manifest/sharding untouched.
+>
+> **Gates (6):** `bench-scenarios` (bench) -> { `bench-determinism-gate` (bench), `bench-criterion-suite` (bench), `bench-iai-gate` (bench) } -> `bench-ci-wire` (ci) -> `phase16-complete` (generic, human_checkpoint). Ready head: **`bench-scenarios`**. Lanes: bench gates own `benches/`; `bench-ci-wire` owns `.github/workflows/ci.yaml` + `utils/ci/pre-push.sh`. All additive — no frozen-interface mutation.
+
+---
+
+## ✅ PHASE 15 COMPLETE — 6/6 gates green (operator sign-off 2026-06-04) — ALL 110 GATES GREEN
 
 > Operator-requested: a beautiful single-line, self-updating stderr progress indicator (spinner/bar + from->to bps/iops + concurrency + best-effort mem/cpu) for push/fetch/pull/checkout/stage/sync AND the local walk/hash. ON only when stderr is a TTY (off when piped); --no-progress/--quiet/--color to control; honors NO_COLOR/TERM=dumb; stdout stays the scriptable id. HAND-ROLLED minimal-dep (anstyle+anstream already present, std IsTerminal; ONLY new dep is libc, already in the lock graph, for width ioctl + RSS/CPU). A pure Meter (lock-free atomics) lives in snapdir-core (sha-locked files untouched); the CLI renderer reads it.
 >
