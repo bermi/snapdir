@@ -73,7 +73,6 @@ pub(crate) enum ColorChoice {
 impl ColorChoice {
     /// Parses `"auto"`/`"always"`/`"never"` (case-insensitive). Unknown values
     /// fall back to [`ColorChoice::Auto`].
-    #[allow(dead_code)]
     pub(crate) fn parse(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "always" => ColorChoice::Always,

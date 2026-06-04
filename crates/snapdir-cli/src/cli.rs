@@ -14,18 +14,22 @@
 //! prints the effective default settings + environment, mirroring the oracle's
 //! `snapdir_defaults`. All 14 subcommands are now wired — none remain stubs.
 
+use std::io::IsTerminal;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand};
+
+use crate::progress::{should_render, use_color, ColorChoice, ProgressReporter};
 use snapdir_catalog::{
     ancestors_json_line, locations_json_line, revisions_json_line, Catalog, SystemClock,
 };
 use snapdir_core::{
-    cache, expand_excludes, snapshot_id, walk, Blake3Hasher, Blake3KeyedHasher, ExcludeMatcher,
-    ExpandedExclude, FollowMode, Hasher, Manifest, ManifestEntry, Md5Hasher, PathMode, PathType,
-    Sha256Hasher, Store, WalkOptions,
+    cache, expand_excludes, snapshot_id, walk_with_meter, Blake3Hasher, Blake3KeyedHasher,
+    ExcludeMatcher, ExpandedExclude, FollowMode, Hasher, Manifest, ManifestEntry, Md5Hasher, Meter,
+    PathMode, PathType, Phase, Sha256Hasher, Store, WalkOptions,
 };
 use snapdir_stores::{
     resolve_adapter, Adapter, B2Store, ExternalStore, FileStore, GcsStore, S3Store, StreamStore,
@@ -133,6 +137,18 @@ pub struct GlobalArgs {
     /// Enable debug output.
     #[arg(long, global = true)]
     pub debug: bool,
+
+    /// Disable the live progress line (transfers still run).
+    #[arg(long, global = true, env = "SNAPDIR_NO_PROGRESS")]
+    pub no_progress: bool,
+
+    /// Suppress stderr banners and the live progress line.
+    #[arg(long, short = 'q', global = true)]
+    pub quiet: bool,
+
+    /// When to colorize progress output: auto, always, or never.
+    #[arg(long, global = true, value_name = "WHEN", default_value = "auto")]
+    pub color: String,
 
     /// Context (directory or store) for catalog queries.
     #[arg(long, global = true, value_name = "DIR|STORE")]
@@ -308,6 +324,7 @@ impl Cli {
                     *no_follow,
                     checksum_bin.as_deref(),
                     exclude,
+                    None,
                 )?;
                 println!("{manifest}");
                 // Mirror the oracle's `_snapdir_log_event "manifest" "$id"
@@ -337,6 +354,7 @@ impl Cli {
                     false,
                     None,
                     &self.globals.exclude,
+                    None,
                 )?;
                 let id = snapshot_id(&manifest, &Blake3Hasher::new());
                 println!("{id}");
@@ -454,7 +472,8 @@ impl Cli {
     /// resolved store. Prints the resulting snapshot id, matching the oracle.
     fn run_push(&self, path: Option<&Path>) -> Result<()> {
         self.log_transfer_config();
-        let store = self.resolve_store()?;
+        let jobs = self.transfer_config()?.concurrency.get();
+        let (meter, reporter) = self.start_progress(jobs);
 
         // `snapdir push --store … --id <id>` with no PATH: push a *staged* (or
         // already-fetched) snapshot identified by id. Its objects live in the
@@ -482,10 +501,18 @@ impl Cli {
             // scratch materialize (it's discarded), the store push, and the
             // catalog log — those are the only persistent writes.
             if self.globals.dryrun {
+                reporter.finish();
                 println!("{id}");
-                eprintln!("dry-run: would push {id} to {store_url} (no writes performed)");
+                if !self.globals.quiet {
+                    eprintln!("dry-run: would push {id} to {store_url} (no writes performed)");
+                }
                 return Ok(());
             }
+            if let Some(m) = &meter {
+                m.set_total(total_object_bytes(&manifest));
+                m.set_phase(Phase::Transfer);
+            }
+            let store = self.resolve_store(meter.clone())?;
             let scratch = ScratchDir::new("push")?;
             cache
                 .fetch_files(&manifest, scratch.path())
@@ -493,6 +520,7 @@ impl Cli {
             store
                 .push(&manifest, scratch.path())
                 .with_context(|| format!("pushing snapshot {id} to store"))?;
+            reporter.finish();
             println!("{id}");
             self.log_event("push", id, store_url)?;
             return Ok(());
@@ -500,7 +528,17 @@ impl Cli {
 
         // Push always uses the default checksum surface (b3sum / keyed-b3sum),
         // relative paths, follow symlinks — the same wiring `snapdir id` uses.
-        let manifest = self.build_manifest(path, false, false, None, &self.globals.exclude)?;
+        if let Some(m) = &meter {
+            m.set_phase(Phase::Hashing);
+        }
+        let manifest = self.build_manifest(
+            path,
+            false,
+            false,
+            None,
+            &self.globals.exclude,
+            meter.as_deref(),
+        )?;
         let root = resolve_root(path).context("resolving push path")?;
         let id = snapshot_id(&manifest, &Blake3Hasher::new());
         let store_url = self
@@ -512,13 +550,22 @@ impl Cli {
         // still print it to stdout. Skip the store push and the catalog log —
         // the only persistent writes here.
         if self.globals.dryrun {
+            reporter.finish();
             println!("{id}");
-            eprintln!("dry-run: would push {id} to {store_url} (no writes performed)");
+            if !self.globals.quiet {
+                eprintln!("dry-run: would push {id} to {store_url} (no writes performed)");
+            }
             return Ok(());
         }
+        if let Some(m) = &meter {
+            m.set_total(total_object_bytes(&manifest));
+            m.set_phase(Phase::Transfer);
+        }
+        let store = self.resolve_store(meter.clone())?;
         store
             .push(&manifest, &root)
             .with_context(|| format!("pushing snapshot {id} to store"))?;
+        reporter.finish();
         println!("{id}");
         // Mirror the oracle's `_snapdir_log_event "push" "$id" "$store"` (L359):
         // record the snapshot in the catalog at the store URI so `locations`/
@@ -535,13 +582,21 @@ impl Cli {
     /// cache so a later `checkout` can reconstruct the tree offline.
     fn run_fetch(&self) -> Result<()> {
         self.log_transfer_config();
-        self.fetch_inner()
+        let jobs = self.transfer_config()?.concurrency.get();
+        let (meter, reporter) = self.start_progress(jobs);
+        if let Some(m) = &meter {
+            m.set_phase(Phase::Transfer);
+        }
+        let result = self.fetch_inner(meter.as_ref());
+        reporter.finish();
+        result
     }
 
     /// `fetch` body without the verbose transfer-config banner. `run_pull`
     /// composes `fetch_inner` + `checkout_inner` so the banner prints exactly
-    /// once (from `run_pull`), not once per leg.
-    fn fetch_inner(&self) -> Result<()> {
+    /// once (from `run_pull`), not once per leg. The optional `meter` drives the
+    /// live progress line (set on the resolved store + the cache push leg).
+    fn fetch_inner(&self, meter: Option<&Arc<Meter>>) -> Result<()> {
         // Fast path: if the local cache already holds the manifest, the whole
         // snapshot is cached. By snapdir's manifest-written-last invariant a
         // present manifest implies every object it references is present (the
@@ -556,17 +611,17 @@ impl Cli {
         // id there is nothing to look up, so we fall through and let the
         // original store-resolution path surface the canonical "missing --store
         // option" error first (preserving the frozen CLI error precedence).
-        let cache = self.cache_store()?;
+        let cache = self.cache_store_with_meter(meter.cloned())?;
         if let Some(id) = self.globals.id.as_deref() {
             if cache.get_manifest(id).is_ok() {
-                if self.globals.verbose {
+                if self.globals.verbose && !self.globals.quiet {
                     eprintln!("CACHED: {id}");
                 }
                 return Ok(());
             }
         }
 
-        let store = self.resolve_store()?;
+        let store = self.resolve_store(meter.cloned())?;
         let id = self.require_id()?;
         let manifest = store
             .get_manifest(id)
@@ -576,8 +631,14 @@ impl Cli {
         // scratch tree (discarded) and the cache write — the only persistent
         // write in fetch.
         if self.globals.dryrun {
-            eprintln!("dry-run: would fetch {id} into the local cache (no writes performed)");
+            if !self.globals.quiet {
+                eprintln!("dry-run: would fetch {id} into the local cache (no writes performed)");
+            }
             return Ok(());
+        }
+
+        if let Some(m) = meter {
+            m.set_total(total_object_bytes(&manifest));
         }
 
         // Materialize the verified objects into a scratch tree, then push that
@@ -591,7 +652,7 @@ impl Cli {
         cache
             .push(&manifest, scratch.path())
             .with_context(|| format!("saving snapshot {id} to the local cache"))?;
-        if self.globals.verbose {
+        if self.globals.verbose && !self.globals.quiet {
             eprintln!("SAVED: {id}");
         }
         Ok(())
@@ -602,12 +663,20 @@ impl Cli {
     /// permissions so the checked-out tree re-manifests to the same snapshot id.
     fn run_checkout(&self, dir: Option<&Path>) -> Result<()> {
         self.log_transfer_config();
-        self.checkout_inner(dir)
+        let jobs = self.transfer_config()?.concurrency.get();
+        let (meter, reporter) = self.start_progress(jobs);
+        if let Some(m) = &meter {
+            m.set_phase(Phase::Transfer);
+        }
+        let result = self.checkout_inner(dir, meter.as_ref());
+        reporter.finish();
+        result
     }
 
     /// `checkout` body without the verbose transfer-config banner (see
-    /// [`Self::fetch_inner`]).
-    fn checkout_inner(&self, dir: Option<&Path>) -> Result<()> {
+    /// [`Self::fetch_inner`]). The optional `meter` drives the live progress
+    /// line during the cache→dest materialization.
+    fn checkout_inner(&self, dir: Option<&Path>, meter: Option<&Arc<Meter>>) -> Result<()> {
         let id = self.require_id()?;
         let dest = resolve_root(dir).context("resolving checkout destination")?;
         // Under --dryrun: skip materializing the destination tree and restoring
@@ -617,16 +686,21 @@ impl Cli {
         // composes into a clean, write-free no-op rather than failing on a
         // missing cached manifest.
         if self.globals.dryrun {
-            eprintln!(
-                "dry-run: would check out {id} to {} (no writes performed)",
-                dest.display()
-            );
+            if !self.globals.quiet {
+                eprintln!(
+                    "dry-run: would check out {id} to {} (no writes performed)",
+                    dest.display()
+                );
+            }
             return Ok(());
         }
-        let cache = self.cache_store()?;
+        let cache = self.cache_store_with_meter(meter.cloned())?;
         let manifest = cache.get_manifest(id).with_context(|| {
             format!("manifest {id} not found locally; did you forget to fetch it?")
         })?;
+        if let Some(m) = meter {
+            m.set_total(total_object_bytes(&manifest));
+        }
         cache
             .fetch_files(&manifest, &dest)
             .with_context(|| format!("checking out snapshot {id} to {}", dest.display()))?;
@@ -638,10 +712,19 @@ impl Cli {
     fn run_pull(&self, path: Option<&Path>) -> Result<()> {
         // Banner ONCE for the whole pull, then run the two legs without their
         // own banners (`fetch_inner`/`checkout_inner`) so `pull --verbose`
-        // emits exactly one transfer-config line.
+        // emits exactly one transfer-config line. ONE reporter spans the whole
+        // pull (fetch + checkout), not one per leg.
         self.log_transfer_config();
-        self.fetch_inner()?;
-        self.checkout_inner(path)
+        let jobs = self.transfer_config()?.concurrency.get();
+        let (meter, reporter) = self.start_progress(jobs);
+        if let Some(m) = &meter {
+            m.set_phase(Phase::Transfer);
+        }
+        let result = self
+            .fetch_inner(meter.as_ref())
+            .and_then(|()| self.checkout_inner(path, meter.as_ref()));
+        reporter.finish();
+        result
     }
 
     /// `snapdir verify --id <id>`: confirm the snapshot in the store is intact —
@@ -660,7 +743,7 @@ impl Cli {
                 "snapdir: `verify` does not support --purge; use `verify-cache --purge` to remove corrupt objects from the local cache"
             );
         }
-        let store = self.resolve_store()?;
+        let store = self.resolve_store(None)?;
         let id = self.require_id()?;
         let manifest = store
             .get_manifest(id)
@@ -686,22 +769,42 @@ impl Cli {
     /// `verify-cache` later checks (`stage` then `verify-cache` round-trips).
     fn run_stage(&self, path: Option<&Path>) -> Result<()> {
         self.log_transfer_config();
+        let jobs = self.transfer_config()?.concurrency.get();
+        let (meter, reporter) = self.start_progress(jobs);
+        if let Some(m) = &meter {
+            m.set_phase(Phase::Hashing);
+        }
         // Stage uses the same default checksum surface as `push`/`id`: b3sum
         // (or keyed-b3sum), relative paths, follow symlinks.
-        let manifest = self.build_manifest(path, false, false, None, &self.globals.exclude)?;
+        let manifest = self.build_manifest(
+            path,
+            false,
+            false,
+            None,
+            &self.globals.exclude,
+            meter.as_deref(),
+        )?;
         let root = resolve_root(path).context("resolving stage path")?;
         let id = snapshot_id(&manifest, &Blake3Hasher::new());
         // Under --dryrun: the id is a pure read-only computation, so still print
         // it to stdout. Skip the cache write and the catalog log.
         if self.globals.dryrun {
+            reporter.finish();
             println!("{id}");
-            eprintln!("dry-run: would stage {id} into the local cache (no writes performed)");
+            if !self.globals.quiet {
+                eprintln!("dry-run: would stage {id} into the local cache (no writes performed)");
+            }
             return Ok(());
         }
-        let cache = self.cache_store()?;
+        if let Some(m) = &meter {
+            m.set_total(total_object_bytes(&manifest));
+            m.set_phase(Phase::Transfer);
+        }
+        let cache = self.cache_store_with_meter(meter.clone())?;
         cache
             .push(&manifest, &root)
             .with_context(|| format!("staging snapshot {id} into the local cache"))?;
+        reporter.finish();
         println!("{id}");
         // Mirror the oracle's `_snapdir_log_event "stage" "$id" "$base_dir"`
         // (`snapdir` L826): record the staged snapshot in the catalog at the
@@ -899,7 +1002,7 @@ impl Cli {
     /// Returns an error when `--store` is missing, its protocol is invalid, or
     /// the concrete store cannot be constructed (e.g. credentials/region cannot
     /// be resolved for a remote backend).
-    fn resolve_store(&self) -> Result<Box<dyn Store>> {
+    fn resolve_store(&self, meter: Option<Arc<Meter>>) -> Result<Box<dyn Store>> {
         let store_url = self
             .globals
             .store
@@ -907,7 +1010,7 @@ impl Cli {
             .context("missing --store option")?;
         let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
         let config = self.transfer_config()?;
-        store_for_adapter(&adapter, store_url, config)
+        store_for_adapter(&adapter, store_url, config, meter)
     }
 
     /// Builds the [`TransferConfig`] from the global `--jobs` / `--limit-rate`
@@ -937,7 +1040,9 @@ impl Cli {
     /// scriptable id-on-stdout contract stays byte-stable); the deterministic
     /// concurrency proof is the unit test, this is just field observability.
     fn log_transfer_config(&self) {
-        if !self.globals.verbose {
+        // `--quiet` suppresses every stderr banner, including this one (it wins
+        // over `--verbose`).
+        if self.globals.quiet || !self.globals.verbose {
             return;
         }
         // A bad --limit-rate would already have failed transfer_config() in the
@@ -950,6 +1055,46 @@ impl Cli {
         match self.globals.limit_rate.as_deref() {
             Some(rate) => eprintln!("transfers: {concurrency} concurrent, limit {rate}"),
             None => eprintln!("transfers: {concurrency} concurrent"),
+        }
+    }
+
+    /// The effective [`ColorChoice`] from the `--color` flag (`auto`/`always`/
+    /// `never`, case-insensitive; unknown values fall back to `auto`).
+    fn color_choice(&self) -> ColorChoice {
+        ColorChoice::parse(&self.globals.color)
+    }
+
+    /// Builds the live progress dashboard for a transfer command.
+    ///
+    /// Returns a `(meter, reporter)` pair. When the run is interactive (stderr
+    /// is a TTY, not `--no-progress`/`--quiet`, `TERM` is not `dumb`) the meter
+    /// is `Some` and the reporter spawns the render thread; otherwise the meter
+    /// is `None` and the reporter is inert (no thread, no output). The caller
+    /// threads the optional meter into the walk and the store, and ALWAYS calls
+    /// [`ProgressReporter::finish`] before any stdout write so the id stays
+    /// clean.
+    fn start_progress(&self, jobs: usize) -> (Option<Arc<Meter>>, ProgressReporter) {
+        let is_tty = std::io::stderr().is_terminal();
+        let active = should_render(
+            is_tty,
+            self.globals.no_progress || self.globals.quiet,
+            std::env::var("TERM").ok().as_deref(),
+        );
+        if active {
+            let meter = Arc::new(Meter::new());
+            let color = use_color(
+                self.color_choice(),
+                is_tty,
+                std::env::var_os("NO_COLOR").is_some(),
+            );
+            // Modern (unicode) glyphs unless the terminal is explicitly dumb.
+            let ascii = matches!(std::env::var("TERM").as_deref(), Ok("dumb"));
+            let reporter = ProgressReporter::start(Arc::clone(&meter), jobs, true, color, ascii);
+            (Some(meter), reporter)
+        } else {
+            let reporter =
+                ProgressReporter::start(Arc::new(Meter::new()), jobs, false, false, false);
+            (None, reporter)
         }
     }
 
@@ -974,10 +1119,19 @@ impl Cli {
         let config = self.transfer_config()?;
         let from_adapter = resolve_adapter(from_url).context("resolving --from store protocol")?;
         let to_adapter = resolve_adapter(to_url).context("resolving --to store protocol")?;
-        let from_store = stream_store_for_adapter(&from_adapter, from_url, config.clone())?;
-        let to_store = stream_store_for_adapter(&to_adapter, to_url, config.clone())?;
+        let from_store = stream_store_for_adapter(&from_adapter, from_url, config.clone(), None)?;
+        let to_store = stream_store_for_adapter(&to_adapter, to_url, config.clone(), None)?;
 
         self.log_transfer_config();
+
+        // The sync pipe is store→store; the meter is threaded directly into
+        // `sync_snapshot` (it accounts the bytes it copies) rather than onto the
+        // endpoint stores.
+        let jobs = config.concurrency.get();
+        let (meter, reporter) = self.start_progress(jobs);
+        if let Some(m) = &meter {
+            m.set_phase(Phase::Transfer);
+        }
 
         let report = snapdir_stores::sync_snapshot(
             &*from_store,
@@ -985,21 +1139,30 @@ impl Cli {
             id,
             &config,
             self.globals.dryrun,
-        )
-        .with_context(|| format!("syncing snapshot {id} from {from_url} to {to_url}"))?;
+            meter.as_deref(),
+        );
+
+        // Clear the live line before ANY stdout/stderr summary write.
+        reporter.finish();
+        let report =
+            report.with_context(|| format!("syncing snapshot {id} from {from_url} to {to_url}"))?;
 
         if report.dry_run {
-            eprintln!(
-                "dry-run: would copy {} object(s) for {id}",
-                report.objects_copied
-            );
+            if !self.globals.quiet {
+                eprintln!(
+                    "dry-run: would copy {} object(s) for {id}",
+                    report.objects_copied
+                );
+            }
         } else {
             // Scriptable id-on-stdout contract (matches push/stage).
             println!("{id}");
-            eprintln!(
-                "synced {id}: {} copied, {} skipped ({} bytes)",
-                report.objects_copied, report.objects_skipped, report.bytes_copied
-            );
+            if !self.globals.quiet {
+                eprintln!(
+                    "synced {id}: {} copied, {} skipped ({} bytes)",
+                    report.objects_copied, report.objects_skipped, report.bytes_copied
+                );
+            }
         }
         Ok(())
     }
@@ -1012,6 +1175,13 @@ impl Cli {
             self.cache_dir(),
             self.transfer_config()?,
         ))
+    }
+
+    /// Like [`Self::cache_store`] but attaches an optional progress meter, used
+    /// by the cache-write legs of `fetch`/`checkout` so the live dashboard
+    /// reflects the cache copy.
+    fn cache_store_with_meter(&self, meter: Option<Arc<Meter>>) -> Result<FileStore> {
+        Ok(self.cache_store()?.with_meter(meter))
     }
 
     /// Resolves the cache directory: `--cache-dir`, else
@@ -1039,6 +1209,7 @@ impl Cli {
         no_follow: bool,
         checksum_bin: Option<&str>,
         exclude: &[String],
+        meter: Option<&Meter>,
     ) -> Result<Manifest> {
         let root = resolve_root(path).context("resolving manifest path")?;
 
@@ -1083,13 +1254,13 @@ impl Cli {
             None | Some("b3sum") => {
                 let context = std::env::var("SNAPDIR_MANIFEST_CONTEXT").unwrap_or_default();
                 if context.is_empty() {
-                    walk_with(&root, &options, &Blake3Hasher::new())
+                    walk_with(&root, &options, &Blake3Hasher::new(), meter)
                 } else {
-                    walk_with(&root, &options, &Blake3KeyedHasher::new(context))
+                    walk_with(&root, &options, &Blake3KeyedHasher::new(context), meter)
                 }
             }
-            Some("md5sum") => walk_with(&root, &options, &Md5Hasher::new()),
-            Some("sha256sum") => walk_with(&root, &options, &Sha256Hasher::new()),
+            Some("md5sum") => walk_with(&root, &options, &Md5Hasher::new(), meter),
+            Some("sha256sum") => walk_with(&root, &options, &Sha256Hasher::new(), meter),
             Some(other) => {
                 anyhow::bail!("snapdir: unsupported --checksum-bin '{other}'")
             }
@@ -1112,14 +1283,17 @@ fn store_for_adapter(
     adapter: &Adapter,
     store_url: &str,
     config: TransferConfig,
+    meter: Option<Arc<Meter>>,
 ) -> Result<Box<dyn Store>> {
     match adapter {
-        Adapter::File => Ok(Box::new(FileStore::new_with_config(store_url, config))),
+        Adapter::File => Ok(Box::new(
+            FileStore::new_with_config(store_url, config).with_meter(meter),
+        )),
         Adapter::S3 => {
             let endpoint = std::env::var("SNAPDIR_S3_STORE_ENDPOINT_URL").ok();
             let store = S3Store::connect_with(store_url, endpoint.as_deref(), config)
                 .with_context(|| format!("connecting to S3 store {store_url}"))?;
-            Ok(Box::new(store))
+            Ok(Box::new(store.with_meter(meter)))
         }
         Adapter::B2 => {
             let endpoint = std::env::var("SNAPDIR_S3_STORE_ENDPOINT_URL").ok();
@@ -1129,14 +1303,17 @@ fn store_for_adapter(
             let store =
                 B2Store::connect_with(store_url, endpoint.as_deref(), region.as_deref(), config)
                     .with_context(|| format!("connecting to B2 store {store_url}"))?;
-            Ok(Box::new(store))
+            Ok(Box::new(store.with_meter(meter)))
         }
         Adapter::Gcs => {
             let store = GcsStore::connect_with(store_url, config)
                 .with_context(|| format!("connecting to GCS store {store_url}"))?;
-            Ok(Box::new(store))
+            Ok(Box::new(store.with_meter(meter)))
         }
         Adapter::External { .. } => {
+            // The external `snapdir-*-store` shim dispatches to a child process
+            // and exposes no in-process meter hook; progress is best-effort and
+            // simply absent for these stores.
             let store = ExternalStore::new(store_url)
                 .with_context(|| format!("resolving external store for {store_url}"))?;
             Ok(Box::new(store))
@@ -1158,14 +1335,17 @@ fn stream_store_for_adapter(
     adapter: &Adapter,
     store_url: &str,
     config: TransferConfig,
+    meter: Option<Arc<Meter>>,
 ) -> Result<Box<dyn StreamStore + Sync>> {
     match adapter {
-        Adapter::File => Ok(Box::new(FileStore::new_with_config(store_url, config))),
+        Adapter::File => Ok(Box::new(
+            FileStore::new_with_config(store_url, config).with_meter(meter),
+        )),
         Adapter::S3 => {
             let endpoint = std::env::var("SNAPDIR_S3_STORE_ENDPOINT_URL").ok();
             let store = S3Store::connect_with(store_url, endpoint.as_deref(), config)
                 .with_context(|| format!("connecting to S3 store {store_url}"))?;
-            Ok(Box::new(store))
+            Ok(Box::new(store.with_meter(meter)))
         }
         Adapter::B2 => {
             let endpoint = std::env::var("SNAPDIR_S3_STORE_ENDPOINT_URL").ok();
@@ -1175,12 +1355,12 @@ fn stream_store_for_adapter(
             let store =
                 B2Store::connect_with(store_url, endpoint.as_deref(), region.as_deref(), config)
                     .with_context(|| format!("connecting to B2 store {store_url}"))?;
-            Ok(Box::new(store))
+            Ok(Box::new(store.with_meter(meter)))
         }
         Adapter::Gcs => {
             let store = GcsStore::connect_with(store_url, config)
                 .with_context(|| format!("connecting to GCS store {store_url}"))?;
-            Ok(Box::new(store))
+            Ok(Box::new(store.with_meter(meter)))
         }
         Adapter::External { .. } => Err(anyhow::anyhow!(
             "sync requires in-process stores (file/s3/b2/gcs); \
@@ -1272,8 +1452,27 @@ fn reformat_env_default(key: &str, value: &str) -> String {
 /// `anyhow` error with context.
 ///
 /// [`WalkError`]: snapdir_core::WalkError
-fn walk_with<H: Hasher>(root: &Path, options: &WalkOptions, hasher: &H) -> Result<Manifest> {
-    walk(root, options, hasher).with_context(|| format!("walking {}", root.display()))
+fn walk_with<H: Hasher>(
+    root: &Path,
+    options: &WalkOptions,
+    hasher: &H,
+    meter: Option<&Meter>,
+) -> Result<Manifest> {
+    walk_with_meter(root, options, hasher, meter)
+        .with_context(|| format!("walking {}", root.display()))
+}
+
+/// Total content bytes a transfer will move for `manifest`: the sum of every
+/// File entry's size (directory entries carry merkle checksums, not object
+/// bytes). Used to seed the progress meter's `bytes_out` denominator so the
+/// determinate bar/ETA reflect the actual object payload.
+fn total_object_bytes(manifest: &Manifest) -> u64 {
+    manifest
+        .entries()
+        .iter()
+        .filter(|e| e.path_type == PathType::File)
+        .map(|e| e.size)
+        .sum()
 }
 
 /// Restores each manifest entry's octal permissions onto the materialized tree
@@ -1462,6 +1661,7 @@ mod tests {
             &adapter,
             "file:///tmp/snapdir-routing-test",
             TransferConfig::default(),
+            None,
         )
         .unwrap();
         // get_manifest on a missing id must not panic; it returns an Err.
@@ -1477,7 +1677,12 @@ mod tests {
         let store = ExternalStore::new("xyz://bucket/base").unwrap();
         assert_eq!(store.binary(), Path::new("snapdir-xyz-store"));
         // store_for_adapter routes the same scheme through the shim.
-        let routed = store_for_adapter(&adapter, "xyz://bucket/base", TransferConfig::default());
+        let routed = store_for_adapter(
+            &adapter,
+            "xyz://bucket/base",
+            TransferConfig::default(),
+            None,
+        );
         assert!(routed.is_ok());
     }
 

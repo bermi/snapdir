@@ -7,10 +7,8 @@
 //! codes.
 
 mod cli;
-// The progress renderer engine. Built and tested this gate; wired into the
-// commands (and gated by the --no-progress/--quiet/--color flags) in the next
-// gate, so it is intentionally unused by commands for now.
-#[allow(dead_code)]
+// The progress renderer engine, wired into every transfer command and gated by
+// the --no-progress/--quiet/--color flags.
 mod progress;
 
 use std::process::ExitCode;
