@@ -1779,7 +1779,9 @@ gates:
     phase: 13
     owner_agent: stores
     depends_on: [transfer-config]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T02:49:49Z
+    git_sha: ea10f76
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked filestore_parallel -- --nocapture"
     pass_criteria:
