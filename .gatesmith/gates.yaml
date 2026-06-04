@@ -1620,6 +1620,28 @@ gates:
     human_checkpoint: false
     description: "fetch_files in FileStore/S3Store/GcsStore must skip any destination file that already exists AND whose locally-recomputed checksum equals the manifest checksum; only missing or mismatched objects are copied/downloaded. Restores pre-1.0 Bash behavior (severe regression). Tests prove a second fetch to a populated dest does ZERO object reads/network GETs and that a locally-corrupted file is re-fetched/repaired. Manifest format & on-disk layout are unchanged (no frozen-interface mutation)."
 
+  # --- Severe regression (fetch leg): `pull` must not re-download objects already cached ---
+  # ADDED 2026-06-04 (PM): pull-skip-existing fixed the CHECKOUT leg (cache->dest), but
+  # empirical test showed the FETCH leg (store->scratch->cache) in run_fetch still
+  # re-downloads EVERY object from the store on a 2nd pull of the same id, even when the
+  # cache already holds them (run_fetch always materializes into a fresh scratch and never
+  # consults the cache). That is the operator's actual complaint ("pull is very slow on
+  # second runs, downloading all the objects again" — message that opened Phase 12). The
+  # correctness suite below depends on this fix so its idempotent-pull scenario can pass.
+  - id: pull-fetch-skip-cached
+    phase: 12
+    owner_agent: cli
+    depends_on: [pull-skip-existing]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked fetch_cached -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "run_fetch (cli) must not re-download objects already present in the local cache. When the cache already holds the snapshot's manifest (its objects are present by the manifest-written-last invariant), skip the store fetch ENTIRELY; otherwise fetch only the objects missing from the cache. Fixes the operator-reported regression where a 2nd `snapdir pull`/`fetch` of the same id re-downloads every object from the store (network) despite a populated cache. Test (cli lane, file:// store): after a first pull, DELETE the store objects (keep the manifest) with the cache populated, then pull/fetch again -> must succeed with ZERO store object reads. Name the test fn with `fetch_cached`."
+
   # --- Bug: --dryrun must make no writes, anywhere ---
   - id: dryrun-honored
     phase: 12
@@ -1658,7 +1680,7 @@ gates:
   - id: pull-push-correctness-suite
     phase: 12
     owner_agent: cli
-    depends_on: [pull-skip-existing, dryrun-honored, cli-list-options-multi]
+    depends_on: [pull-skip-existing, pull-fetch-skip-cached, dryrun-honored, cli-list-options-multi]
     status: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked --test e2e --test store_roundtrip"
@@ -1673,13 +1695,13 @@ gates:
   - id: phase12-complete
     phase: 12
     owner_agent: generic
-    depends_on: [pull-skip-existing, dryrun-honored, cli-list-options-multi, pull-push-correctness-suite]
+    depends_on: [pull-skip-existing, pull-fetch-skip-cached, dryrun-honored, cli-list-options-multi, pull-push-correctness-suite]
     status: pending
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked"
     pass_criteria:
       and:
         - exit_code: 0
-        - human_confirm: "Phase 12 done: pull skips verified-present files (no redownload), --dryrun writes nothing across all mutating commands, --exclude/--paths accept multi-arg+comma lists, and the correctness suite covers all four. Approve?"
+        - human_confirm: "Phase 12 done: pull skips verified-present files AND does not re-download cached objects on a 2nd run, --dryrun writes nothing across all mutating commands, --exclude/--paths accept multi-arg+comma lists, and the correctness suite covers all of it. Approve?"
     human_checkpoint: true
     description: "PHASE 12 SIGN-OFF: the two confirmed bugs (dryrun-writes, pull-redownload regression) are fixed with regression tests, list-valued CLI options accept multi-arg + comma forms, and the correctness suite locks it in."
