@@ -444,6 +444,20 @@ impl Cli {
             let manifest = cache.get_manifest(id).with_context(|| {
                 format!("manifest {id} not found in the local cache; stage or fetch it first")
             })?;
+            let store_url = self
+                .globals
+                .store
+                .as_deref()
+                .context("missing --store option")?;
+            // Under --dryrun: the id is a pure read-only lookup, so still print
+            // it to stdout (the scriptable id-on-stdout contract). Skip the
+            // scratch materialize (it's discarded), the store push, and the
+            // catalog log — those are the only persistent writes.
+            if self.globals.dryrun {
+                println!("{id}");
+                eprintln!("dry-run: would push {id} to {store_url} (no writes performed)");
+                return Ok(());
+            }
             let scratch = ScratchDir::new("push")?;
             cache
                 .fetch_files(&manifest, scratch.path())
@@ -452,11 +466,6 @@ impl Cli {
                 .push(&manifest, scratch.path())
                 .with_context(|| format!("pushing snapshot {id} to store"))?;
             println!("{id}");
-            let store_url = self
-                .globals
-                .store
-                .as_deref()
-                .context("missing --store option")?;
             self.log_event("push", id, store_url)?;
             return Ok(());
         }
@@ -466,6 +475,19 @@ impl Cli {
         let manifest = self.build_manifest(path, false, false, None, &self.globals.exclude)?;
         let root = resolve_root(path).context("resolving push path")?;
         let id = snapshot_id(&manifest, &Blake3Hasher::new());
+        let store_url = self
+            .globals
+            .store
+            .as_deref()
+            .context("missing --store option")?;
+        // Under --dryrun: the snapshot id is a pure read-only computation, so
+        // still print it to stdout. Skip the store push and the catalog log —
+        // the only persistent writes here.
+        if self.globals.dryrun {
+            println!("{id}");
+            eprintln!("dry-run: would push {id} to {store_url} (no writes performed)");
+            return Ok(());
+        }
         store
             .push(&manifest, &root)
             .with_context(|| format!("pushing snapshot {id} to store"))?;
@@ -475,11 +497,6 @@ impl Cli {
         // `revisions`/`ancestors` see it. Best-effort and only when the catalog
         // is enabled (`--catalog` / `SNAPDIR_CATALOG`), exactly like the oracle's
         // `_snapdir_log_event` no-op when no catalog adapter is configured.
-        let store_url = self
-            .globals
-            .store
-            .as_deref()
-            .context("missing --store option")?;
         self.log_event("push", &id, store_url)?;
         Ok(())
     }
@@ -494,6 +511,14 @@ impl Cli {
         let manifest = store
             .get_manifest(id)
             .with_context(|| format!("fetching manifest {id} from store"))?;
+
+        // Under --dryrun: the manifest read is fine, but skip materializing the
+        // scratch tree (discarded) and the cache write — the only persistent
+        // write in fetch.
+        if self.globals.dryrun {
+            eprintln!("dry-run: would fetch {id} into the local cache (no writes performed)");
+            return Ok(());
+        }
 
         // Materialize the verified objects into a scratch tree, then push that
         // tree into the cache store. This reuses the store's verify/atomic
@@ -518,11 +543,24 @@ impl Cli {
     /// permissions so the checked-out tree re-manifests to the same snapshot id.
     fn run_checkout(&self, dir: Option<&Path>) -> Result<()> {
         let id = self.require_id()?;
+        let dest = resolve_root(dir).context("resolving checkout destination")?;
+        // Under --dryrun: skip materializing the destination tree and restoring
+        // permissions — both write to the destination. The notice is emitted
+        // before the cache manifest read so `pull --dryrun` (whose `fetch` leg
+        // is itself a dry no-op and therefore leaves the cache unpopulated)
+        // composes into a clean, write-free no-op rather than failing on a
+        // missing cached manifest.
+        if self.globals.dryrun {
+            eprintln!(
+                "dry-run: would check out {id} to {} (no writes performed)",
+                dest.display()
+            );
+            return Ok(());
+        }
         let cache = self.cache_store();
         let manifest = cache.get_manifest(id).with_context(|| {
             format!("manifest {id} not found locally; did you forget to fetch it?")
         })?;
-        let dest = resolve_root(dir).context("resolving checkout destination")?;
         cache
             .fetch_files(&manifest, &dest)
             .with_context(|| format!("checking out snapshot {id} to {}", dest.display()))?;
@@ -582,6 +620,13 @@ impl Cli {
         let manifest = self.build_manifest(path, false, false, None, &self.globals.exclude)?;
         let root = resolve_root(path).context("resolving stage path")?;
         let id = snapshot_id(&manifest, &Blake3Hasher::new());
+        // Under --dryrun: the id is a pure read-only computation, so still print
+        // it to stdout. Skip the cache write and the catalog log.
+        if self.globals.dryrun {
+            println!("{id}");
+            eprintln!("dry-run: would stage {id} into the local cache (no writes performed)");
+            return Ok(());
+        }
         let cache = self.cache_store();
         cache
             .push(&manifest, &root)
@@ -606,13 +651,21 @@ impl Cli {
     /// whether or not it was purged.
     fn run_verify_cache(&self) -> Result<()> {
         let cache_dir = self.cache_dir();
-        let report = cache::verify_cache(&cache_dir, self.globals.purge, &Blake3Hasher::new())
+        // `--purge` is FS-mutating (it deletes corrupt objects), so under
+        // --dryrun never purge — pass `false` so the verification is read-only —
+        // while still emitting the corruption report and preserving the
+        // non-zero exit below.
+        let purge = self.globals.purge && !self.globals.dryrun;
+        if self.globals.purge && self.globals.dryrun {
+            eprintln!("dry-run: would purge corrupt objects from the cache (no writes performed)");
+        }
+        let report = cache::verify_cache(&cache_dir, purge, &Blake3Hasher::new())
             .with_context(|| format!("verifying cache at {}", cache_dir.display()))?;
 
         for checksum in &report.corrupt {
             eprintln!("Checksum mismatch for {checksum}");
         }
-        if self.globals.purge && self.globals.verbose {
+        if purge && self.globals.verbose {
             for checksum in &report.purged {
                 eprintln!("purged {checksum}");
             }
@@ -632,6 +685,15 @@ impl Cli {
     /// (objects + manifests). Idempotent on an already-empty / missing cache.
     fn run_flush_cache(&self) -> Result<()> {
         let cache_dir = self.cache_dir();
+        // Under --dryrun: skip the destructive flush (it deletes every cached
+        // object + manifest).
+        if self.globals.dryrun {
+            eprintln!(
+                "dry-run: would flush the cache at {} (no writes performed)",
+                cache_dir.display()
+            );
+            return Ok(());
+        }
         cache::flush_cache(&cache_dir)
             .with_context(|| format!("flushing cache at {}", cache_dir.display()))?;
         Ok(())
