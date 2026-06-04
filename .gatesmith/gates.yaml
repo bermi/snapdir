@@ -1835,7 +1835,9 @@ gates:
     phase: 13
     owner_agent: cli
     depends_on: [cli-transfer-flags, transfer-concurrency-verification]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T03:06:39Z
+    git_sha: 0b4e8e4
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked verbose_jobs -- --nocapture"
     pass_criteria:
