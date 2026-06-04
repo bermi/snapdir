@@ -61,6 +61,14 @@ tokio = { version = "1", default-features = false, features = [
 # dependency-age cooldown (utils/ci/check-crate-age.sh).
 futures = "0.3"
 
+# `rayon` drives the LOCAL `FileStore` object copies (push/fetch_files) across a
+# bounded thread pool sized by `TransferConfig::concurrency`. Local copies have
+# no network bandwidth concern, so the async `run_concurrent`/RateLimiter path
+# (used by the network stores) does not apply here — only the concurrency cap.
+# Ancient/stable 1.x line, already in the lock graph transitively, so it
+# satisfies the dependency-age cooldown (utils/ci/check-crate-age.sh).
+rayon = "1"
+
 # --- GCS store (gs://) ------------------------------------------------------
 # CRITICAL TLS constraint (same as the S3 store): the shipped binary statically
 # links on musl, so the workspace standardizes on the `ring` rustls provider and

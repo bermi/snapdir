@@ -3421,6 +3421,7 @@ dependencies = [
  "google-cloud-gax",
  "google-cloud-storage",
  "http 1.4.1",
+ "rayon",
  "rustls",
  "snapdir-core",
  "thiserror",
