@@ -1608,7 +1608,9 @@ gates:
     phase: 12
     owner_agent: stores
     depends_on: [phase11-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T00:53:37Z
+    git_sha: 1f00981
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked fetch_skip_present_verified -- --nocapture"
     pass_criteria:
