@@ -24,8 +24,8 @@ use snapdir_catalog::{
 };
 use snapdir_core::{
     cache, expand_excludes, snapshot_id, walk, Blake3Hasher, Blake3KeyedHasher, ExcludeMatcher,
-    FollowMode, Hasher, Manifest, ManifestEntry, Md5Hasher, PathMode, PathType, Sha256Hasher,
-    Store, WalkOptions,
+    ExpandedExclude, FollowMode, Hasher, Manifest, ManifestEntry, Md5Hasher, PathMode, PathType,
+    Sha256Hasher, Store, WalkOptions,
 };
 use snapdir_stores::{
     resolve_adapter, Adapter, B2Store, ExternalStore, FileStore, GcsStore, S3Store,
@@ -78,12 +78,32 @@ pub struct GlobalArgs {
     pub id: Option<String>,
 
     /// Exclude paths matching PATTERN.
-    #[arg(long, global = true, value_name = "PATTERN")]
-    pub exclude: Option<String>,
+    // Accepts both repeated occurrences (`--exclude a --exclude b`) and
+    // comma-delimited values (`--exclude a,b`); the collected patterns are
+    // OR-combined (a path is excluded if it matches ANY pattern). The doc
+    // comment is kept to a single line so `--help` output is byte-stable.
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATTERN",
+        action = clap::ArgAction::Append,
+        value_delimiter = ','
+    )]
+    pub exclude: Vec<String>,
 
     /// Only include paths matching PATTERN.
-    #[arg(long, global = true, value_name = "PATTERN")]
-    pub paths: Option<String>,
+    // Accepts both repeated occurrences and comma-delimited values, matching
+    // `--exclude`'s arity. NOTE: this flag is currently UNWIRED — no `--paths`
+    // filtering is performed yet (wiring it is out of scope for this gate).
+    // Single-line doc comment keeps `--help` byte-stable.
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATTERN",
+        action = clap::ArgAction::Append,
+        value_delimiter = ','
+    )]
+    pub paths: Vec<String>,
 
     /// Use symlinks instead of copies.
     #[arg(long, global = true)]
@@ -137,8 +157,15 @@ pub enum Command {
 
         /// Exclude paths matching the extended-regex PATTERN
         /// (supports the `%system%` / `%common%` macros).
-        #[arg(long, value_name = "PATTERN")]
-        exclude: Option<String>,
+        // Accepts both repeated occurrences and comma-delimited values,
+        // OR-combined (a path is excluded if it matches ANY pattern).
+        #[arg(
+            long,
+            value_name = "PATTERN",
+            action = clap::ArgAction::Append,
+            value_delimiter = ','
+        )]
+        exclude: Vec<String>,
 
         /// Directory to describe.
         path: Option<PathBuf>,
@@ -242,7 +269,13 @@ impl Cli {
                 exclude,
                 path,
             } => {
-                let exclude = exclude.as_deref().or(self.globals.exclude.as_deref());
+                // Precedence: the subcommand's `--exclude` list overrides the
+                // global one when non-empty, else fall back to the global list.
+                let exclude: &[String] = if exclude.is_empty() {
+                    &self.globals.exclude
+                } else {
+                    exclude
+                };
                 let manifest = self.build_manifest(
                     path.as_deref(),
                     *absolute,
@@ -272,8 +305,13 @@ impl Cli {
                 // b3sum of the comment-stripped manifest text. The wrapper
                 // walks with the default checksum (b3sum) and default
                 // path/follow modes; the id is checksum-mode independent here.
-                let exclude = self.globals.exclude.as_deref();
-                let manifest = self.build_manifest(path.as_deref(), false, false, None, exclude)?;
+                let manifest = self.build_manifest(
+                    path.as_deref(),
+                    false,
+                    false,
+                    None,
+                    &self.globals.exclude,
+                )?;
                 let id = snapshot_id(&manifest, &Blake3Hasher::new());
                 println!("{id}");
                 Ok(())
@@ -425,8 +463,7 @@ impl Cli {
 
         // Push always uses the default checksum surface (b3sum / keyed-b3sum),
         // relative paths, follow symlinks — the same wiring `snapdir id` uses.
-        let manifest =
-            self.build_manifest(path, false, false, None, self.globals.exclude.as_deref())?;
+        let manifest = self.build_manifest(path, false, false, None, &self.globals.exclude)?;
         let root = resolve_root(path).context("resolving push path")?;
         let id = snapshot_id(&manifest, &Blake3Hasher::new());
         store
@@ -542,8 +579,7 @@ impl Cli {
     fn run_stage(&self, path: Option<&Path>) -> Result<()> {
         // Stage uses the same default checksum surface as `push`/`id`: b3sum
         // (or keyed-b3sum), relative paths, follow symlinks.
-        let manifest =
-            self.build_manifest(path, false, false, None, self.globals.exclude.as_deref())?;
+        let manifest = self.build_manifest(path, false, false, None, &self.globals.exclude)?;
         let root = resolve_root(path).context("resolving stage path")?;
         let id = snapshot_id(&manifest, &Blake3Hasher::new());
         let cache = self.cache_store();
@@ -770,23 +806,29 @@ impl Cli {
         absolute: bool,
         no_follow: bool,
         checksum_bin: Option<&str>,
-        exclude: Option<&str>,
+        exclude: &[String],
     ) -> Result<Manifest> {
         let root = resolve_root(path).context("resolving manifest path")?;
 
-        // Expand the exclude pattern. `%system%` forces no-follow; the runtime
-        // `$HOME/.cache/` + cache-dir values come from the CLI (core is
-        // env-pure). When no `--exclude` is given there is no filtering.
+        // Expand the exclude patterns. Each `--exclude` value is expanded
+        // independently — `%system%` / `%common%` macros must be expanded
+        // per-pattern, never on a raw `|`-joined string (that would split the
+        // macro tokens apart) — then OR-combined into a single ERE so a path is
+        // excluded if it matches ANY pattern. `%system%` forces no-follow; the
+        // runtime `$HOME/.cache/` + cache-dir values come from the CLI (core is
+        // env-pure). An empty list means no filtering. A single pattern is
+        // byte-identical to the previous single-pattern path: one expansion,
+        // wrapped in a `(?:…)` group, with no extra alternation.
         let (home_cache, cache_dir) = exclude_runtime_paths(self.globals.cache_dir.as_deref());
-        let expanded = expand_excludes(exclude.unwrap_or(""), &home_cache, &cache_dir);
-        let matcher = match &expanded.pattern {
+        let combined = combine_excludes(exclude, &home_cache, &cache_dir);
+        let matcher = match &combined.pattern {
             Some(pattern) => {
                 Some(ExcludeMatcher::new(pattern).context("compiling --exclude pattern")?)
             }
             None => None,
         };
 
-        let follow = if no_follow || expanded.forces_no_follow {
+        let follow = if no_follow || combined.forces_no_follow {
             FollowMode::NoFollow
         } else {
             FollowMode::Follow
@@ -986,6 +1028,42 @@ fn resolve_root(path: Option<&Path>) -> Result<PathBuf> {
     }
     let cwd = std::env::current_dir().context("getting current directory")?;
     Ok(cwd.join(raw))
+}
+
+/// OR-combines a list of `--exclude` patterns into a single expanded
+/// extended-regex, expanding the `%system%` / `%common%` macros **per pattern**.
+///
+/// The macros (e.g. `%system%`) expand to parenthesized alternations that
+/// embed `|` and `^` anchors, so the raw patterns must NOT be `|`-joined before
+/// expansion — that would split a macro token across an alternation boundary.
+/// Instead each pattern is run through [`expand_excludes`] on its own, each
+/// expanded result is wrapped in a non-capturing group `(?:…)`, and the groups
+/// are joined with `|`. `forces_no_follow` is the OR of every pattern's flag
+/// (any `%system%` anywhere forces no-follow).
+///
+/// An empty list yields `pattern: None` (no filtering), exactly as before. A
+/// single pattern produces `(?:<expansion>)`, which matches identically to the
+/// bare `<expansion>` the previous single-pattern path compiled — the
+/// non-capturing group changes grouping only, never the matched set.
+fn combine_excludes(patterns: &[String], home_cache: &str, cache_dir: &str) -> ExpandedExclude {
+    let mut groups: Vec<String> = Vec::new();
+    let mut forces_no_follow = false;
+    for pattern in patterns {
+        let expanded = expand_excludes(pattern, home_cache, cache_dir);
+        forces_no_follow |= expanded.forces_no_follow;
+        if let Some(ere) = expanded.pattern {
+            groups.push(format!("(?:{ere})"));
+        }
+    }
+    let pattern = if groups.is_empty() {
+        None
+    } else {
+        Some(groups.join("|"))
+    };
+    ExpandedExclude {
+        pattern,
+        forces_no_follow,
+    }
 }
 
 /// Resolves the runtime values the `%system%` macro interpolates: the
