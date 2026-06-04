@@ -3,6 +3,14 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
+## 🔧 PHASE 14 — Streaming store-to-store snapshot sync (OPEN, opened 2026-06-04) — 99/104 green, 5 pending
+
+> Operator-requested: `snapdir sync --id <id> --from <store> --to <store>` copies ONE snapshot (manifest + raw content-addressed objects) directly source-store -> dest-store, streaming through MEMORY only (no local-FS staging). New `StreamStore: Store` trait in snapdir-stores (get/put/has_object + put_manifest), a `sync_snapshot` orchestrator with NO `&Path` (structural no-disk guarantee) reusing the Phase-13 concurrency + rate limiter (manifest-last, skip-present/incremental), and a 15th `sync` CLI subcommand. **snapdir-core untouched**; frozen sharded keys + manifest format reused verbatim. dev brought to the 1.1.0 baseline (cherry-pick 9596a3d).
+>
+> **Gates (5):** `stream-store-trait` (stores) -> `sync-orchestrator` (stores) -> `cli-sync-command` (cli) -> `sync-verification` (cli) -> `phase14-complete` (generic, human_checkpoint). **Next ready: `stream-store-trait`.** Operator reviews the gates, then starts the ralph loop.
+
+---
+
 ## ✅ PHASE 13 COMPLETE — 8/8 gates green (operator sign-off 2026-06-04) — ALL 99 GATES GREEN — PROJECT COMPLETE
 
 > Operator-requested after Phase 12. **Audit:** all stores transfer objects **sequentially** (one-at-a-time `await` loop in a single `block_on`; B2 delegates to S3; FileStore sequential too); no concurrency/rate-limit primitives; no `--jobs`/`--limit-rate`. The `Store` trait is sync + per-manifest and **not frozen**, so concurrency goes *inside* `block_on` (`buffer_unordered`) without touching the trait or the frozen sharding/format.

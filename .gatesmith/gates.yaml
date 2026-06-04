@@ -1863,3 +1863,82 @@ gates:
         - human_confirm: "Phase 13 done: uploads & downloads run concurrently (auto, --jobs to cap), --limit-rate throttles aggregate bandwidth via a zero-dep token bucket, FileStore is parallelized, and manifest-last + skip-if-present + the frozen sharding/format are preserved. Approve?"
     human_checkpoint: true
     description: "PHASE 13 SIGN-OFF: concurrent transfers + aggregate bandwidth limiting land with the manifest-last, skip-if-present, per-object-verify, and frozen-layout invariants intact; workspace tests green."
+
+  # ======================================================================
+  # PHASE 14 — Streaming store-to-store snapshot sync (operator-requested 2026-06-04)
+  # `snapdir sync --id <id> --from <store> --to <store>`: copy ONE snapshot's
+  # manifest + raw content-addressed objects directly source-store -> dest-store,
+  # streaming through MEMORY ONLY (never the local filesystem). Reuses Phase-13
+  # concurrency + rate limiter. snapdir-core untouched (new StreamStore trait lives
+  # in snapdir-stores); frozen sharded keys + manifest format unchanged.
+  # ======================================================================
+
+  - id: stream-store-trait
+    phase: 14
+    owner_agent: stores
+    depends_on: [phase13-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked stream_store -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Add `pub trait StreamStore: Store` to snapdir-stores: has_object(checksum)->bool, get_object(checksum)->Vec<u8> (verify bytes hash to checksum), put_object(checksum, bytes) (verify), put_manifest(id, &Manifest) (write at manifest_key). Implement for FileStore/S3Store/B2Store(delegate to inner S3)/GcsStore, reusing the existing private get_bytes/put_bytes/key_exists/object_key/manifest_key/write_manifest/persist. NOT ExternalStore. No core edits; sharded keys + manifest format unchanged (sha-lock stays green). Tests (stream_store*): hermetic FileStore round-trip of get/put_object + has_object + put_manifest; get_object rejects a corrupted blob (Integrity); put_object verifies."
+
+  - id: sync-orchestrator
+    phase: 14
+    owner_agent: stores
+    depends_on: [stream-store-trait]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked sync_snapshot -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Add sync_snapshot(from: &dyn StreamStore, to: &dyn StreamStore, id, config: &TransferConfig, dry_run: bool) -> SyncReport. Takes NO &Path (structural no-local-disk guarantee). Fast path: if to.get_manifest(id) ok -> already mirrored, return. Else get+verify manifest from source; for each File entry via run_concurrent at config.concurrency + shared RateLimiter: if to.has_object(checksum) skip (dedup/incremental), else from.get_object -> rate.acquire(len) -> to.put_object (bytes through memory only). MANIFEST-LAST/ALL-OR-NOTHING: to.put_manifest only after every object succeeds. dry_run: report missing objects, transfer nothing, no manifest. Tests (sync_snapshot*, FileStore->FileStore hermetic): byte-identical mirror (dest serves the same id), skip-present (2nd sync transfers ZERO objects), all-or-nothing (a failing put -> no dest manifest), dry_run writes nothing, and a NO-LOCAL-FS assertion (only the two store dirs change; no scratch/cache/other path written)."
+
+  - id: cli-sync-command
+    phase: 14
+    owner_agent: cli
+    depends_on: [sync-orchestrator]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -q 'Sync' crates/snapdir-cli/src/cli.rs && cargo test -p snapdir-cli --locked sync_cmd -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Add the `snapdir sync` subcommand (15th): `sync --id <id> --from <store-url> --to <store-url>` (+ global --jobs/--limit-rate/--dryrun/--verbose). run_sync resolves from/to as Box<dyn StreamStore> via a new stream_store_for_adapter (file/s3/b2/gcs ONLY; clear error for external snapdir-*-store URLs and for --from == --to), builds one shared TransferConfig, and calls sync_snapshot. Honors --dryrun (report, no writes) and --verbose (transfers: N concurrent[, limit X]). Additive 15th subcommand (new capability beyond the 14-command bash surface). Regenerate trycmd help snapshots. Tests (sync_cmd*): arg parsing/validation (rejects external + same from/to), and an e2e file://->file:// sync that mirrors a staged snapshot."
+
+  - id: sync-verification
+    phase: 14
+    owner_agent: cli
+    depends_on: [cli-sync-command]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked sync_e2e -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "End-to-end correctness (hermetic file:// stores): stage a multi-file snapshot into store A; `snapdir sync --id <id> --from file://A --to file://B`; assert B now serves the snapshot (a `pull --store file://B --id <id>` re-materializes byte-identically and re-manifests to the same id); a 2nd sync transfers ZERO objects (skip-present); `--dryrun` leaves B unchanged; and NO local files are created outside A and B (no cache/scratch materialization). Optional env-gated real S3->GCS / MinIO cross-store sync. Tests named sync_e2e*."
+
+  - id: phase14-complete
+    phase: 14
+    owner_agent: generic
+    depends_on: [stream-store-trait, sync-orchestrator, cli-sync-command, sync-verification]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 14 done: `snapdir sync --id <id> --from <store> --to <store>` copies a snapshot's manifest + raw objects directly store-to-store, streaming through memory with no local-disk staging; concurrency + --limit-rate + skip-present (incremental) + manifest-last preserved; core untouched. Approve?"
+    human_checkpoint: true
+    description: "PHASE 14 SIGN-OFF: single-command streaming one-snapshot store-to-store sync lands with no local-FS staging, reusing the Phase-13 concurrency/bandwidth engine, with manifest-last + per-object verify intact and the frozen format/sharding unchanged."
