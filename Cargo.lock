@@ -3389,6 +3389,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
+ "libc",
  "predicates",
  "snapdir-catalog",
  "snapdir-core",

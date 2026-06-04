@@ -19,6 +19,10 @@ snapdir-catalog.workspace = true
 snapdir-stores.workspace = true
 anyhow.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
+# Terminal width (TIOCGWINSZ), self RSS (mach task_info / /proc/self/statm), and
+# CPU sampling (getrusage) for the progress renderer. Already in the lock graph
+# transitively — this just adds a direct edge; no new ANSI/term/sysinfo crates.
+libc = "0.2"
 # Release packaging (gen-assets job) shells out to the hidden `completions`/`man`
 # subcommands; these crates generate those artifacts to stdout. No TLS / aws-lc.
 clap_complete = "4"
