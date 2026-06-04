@@ -57,8 +57,8 @@ use snapdir_core::manifest::{Manifest, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
 
-use crate::transfer::TransferConfig;
-use crate::util::file_present_and_verified;
+use crate::fetch::fetch_files_concurrent;
+use crate::transfer::{RateLimiter, TransferConfig};
 use tokio::runtime::Runtime;
 
 /// Number of times a fetch is retried when the downloaded bytes fail their
@@ -370,36 +370,18 @@ impl Store for GcsStore {
     }
 
     fn fetch_files(&self, manifest: &Manifest, dest: &Path) -> Result<(), StoreError> {
-        let hasher = Blake3Hasher::new();
+        // Concurrent download via the shared orchestrator: it owns the
+        // skip-if-present-and-verified short-circuit, directory creation, the
+        // bounded-concurrency pass, the per-object rate limit, and the atomic
+        // write. GCS only injects the per-object download, preserving the
+        // BLAKE3-verify + retry discipline of `fetch_verified`.
+        let limiter = RateLimiter::new(self.config.max_bytes_per_sec);
         self.runtime.block_on(async {
-            for entry in manifest.entries() {
-                let rel = strip_leading_dot_slash(&entry.path);
-                let target = dest.join(rel);
-                match entry.path_type {
-                    PathType::Directory => {
-                        std::fs::create_dir_all(&target)?;
-                    }
-                    PathType::File => {
-                        // Skip-if-present-and-verified: avoid the network GET
-                        // entirely when the destination file already exists and
-                        // hashes to the manifest's checksum. A corrupt/mismatched
-                        // local file falls through and is repaired below.
-                        if file_present_and_verified(&target, &entry.checksum, &hasher) {
-                            continue;
-                        }
-                        if let Some(parent) = target.parent() {
-                            std::fs::create_dir_all(parent)?;
-                        }
-                        let key = self.location.object_key(&entry.checksum);
-                        let bytes = self.fetch_verified(&key, &entry.checksum).await?;
-                        // The download already gave us verified bytes; write to a
-                        // temp sibling then atomically rename into place (atomic
-                        // on one filesystem), matching the oracle's tmp+mv.
-                        write_atomic(&target, &bytes)?;
-                    }
-                }
-            }
-            Ok(())
+            fetch_files_concurrent(manifest, dest, &self.config, &limiter, |entry| async {
+                let key = self.location.object_key(&entry.checksum);
+                self.fetch_verified(&key, &entry.checksum).await
+            })
+            .await
         })
     }
 
@@ -511,28 +493,6 @@ fn is_not_found(err: &GcsError) -> bool {
         || err
             .status()
             .is_some_and(|status| status.code == Code::NotFound)
-}
-
-/// Writes `bytes` to `target` via a temp sibling + atomic rename (same fs).
-fn write_atomic(target: &Path, bytes: &[u8]) -> Result<(), StoreError> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let file_name = target
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let tmp = match target.parent() {
-        Some(parent) => parent.join(format!("{file_name}.{pid}.{n}.tmp")),
-        None => std::path::PathBuf::from(format!("{file_name}.{pid}.{n}.tmp")),
-    };
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, target)?;
-    Ok(())
 }
 
 /// Strips a leading `./` and a trailing `/` from a manifest path so the

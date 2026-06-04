@@ -20,6 +20,7 @@
 //!   [`TransferConfig`] for the (later) concurrent transfer loops.
 
 pub mod b2_store;
+pub(crate) mod fetch;
 pub mod file_store;
 pub mod gcs_store;
 pub mod router;
