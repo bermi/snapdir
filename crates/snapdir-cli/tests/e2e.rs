@@ -193,6 +193,64 @@ fn pull_is_fetch_plus_checkout() {
     assert_eq!(stdout_ok(cache.path(), &["id", &dest_str]), src_id);
 }
 
+/// A repeat `pull`/`fetch` of an already-cached id must perform ZERO store
+/// object reads: the cache holds the manifest, and the manifest-written-last
+/// invariant means it holds every referenced object too. We prove "no store
+/// reads" the only honest way — by *deleting the store's `.objects` subtree*
+/// (keeping `.manifests`) after the first pull, then pulling the SAME id again.
+/// If the fetch leg still materialized objects from the store, the second pull
+/// would fail with `object not found`; instead it must succeed, and its
+/// destination must re-manifest to the same id (correctness, not a silent skip).
+#[test]
+fn fetch_cached_skips_store_objects() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let dest = TempDir::new().unwrap();
+    let dest2 = TempDir::new().unwrap();
+    build_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let dest_str = dest.path().to_string_lossy().into_owned();
+    let redest_str = dest2.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    // push, then pull #1 — populates BOTH the cache and the first destination.
+    let src_id = stdout_ok(cache.path(), &["push", "--store", &store_url, &src_str]);
+    snapdir(cache.path())
+        .args(["pull", "--store", &store_url, "--id", &src_id, &dest_str])
+        .assert()
+        .success();
+    assert_eq!(stdout_ok(cache.path(), &["id", &dest_str]), src_id);
+
+    // Amputate the store's objects (keep the manifest). Any store object read
+    // now fails — so a fetch that hits the store cannot succeed.
+    let objects = store.path().join(".objects");
+    assert!(objects.exists(), "store must have an .objects subtree");
+    std::fs::remove_dir_all(&objects).expect("remove store .objects subtree");
+    assert!(store.path().join(".manifests").exists(), "manifest kept");
+
+    // pull #2 of the SAME id into a fresh destination must SUCCEED purely from
+    // the cache (zero store object reads), and re-manifest to the same id.
+    snapdir(cache.path())
+        .args(["pull", "--store", &store_url, "--id", &src_id, &redest_str])
+        .assert()
+        .success();
+    dest2.child("a.txt").assert("hello");
+    dest2.child("sub/b.txt").assert("world!!");
+    assert_eq!(
+        stdout_ok(cache.path(), &["id", &redest_str]),
+        src_id,
+        "cache-served pull must reproduce the source id"
+    );
+
+    // A bare `fetch` of the cached id is likewise a no-op success.
+    snapdir(cache.path())
+        .args(["fetch", "--store", &store_url, "--id", &src_id])
+        .assert()
+        .success();
+}
+
 #[test]
 fn fetch_without_store_fails_with_clear_message() {
     let cache = TempDir::new().unwrap();

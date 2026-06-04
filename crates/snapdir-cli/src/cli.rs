@@ -506,6 +506,30 @@ impl Cli {
     /// each object's BLAKE3), then file the manifest+objects into the local
     /// cache so a later `checkout` can reconstruct the tree offline.
     fn run_fetch(&self) -> Result<()> {
+        // Fast path: if the local cache already holds the manifest, the whole
+        // snapshot is cached. By snapdir's manifest-written-last invariant a
+        // present manifest implies every object it references is present (the
+        // same invariant `FileStore::push`'s skip-if-manifest-present relies
+        // on), and `get_manifest` re-verifies the cached manifest hashes back
+        // to `id`, so this is a sound integrity gate. Skipping here means a
+        // repeat `fetch`/`pull` of the same id performs ZERO store reads — no
+        // network round-trip to re-download objects already on disk. The early
+        // return is itself write-free, so it composes cleanly with `--dryrun`.
+        //
+        // We only consult the cache when an `--id` is actually present; with no
+        // id there is nothing to look up, so we fall through and let the
+        // original store-resolution path surface the canonical "missing --store
+        // option" error first (preserving the frozen CLI error precedence).
+        let cache = self.cache_store();
+        if let Some(id) = self.globals.id.as_deref() {
+            if cache.get_manifest(id).is_ok() {
+                if self.globals.verbose {
+                    eprintln!("CACHED: {id}");
+                }
+                return Ok(());
+            }
+        }
+
         let store = self.resolve_store()?;
         let id = self.require_id()?;
         let manifest = store
@@ -528,7 +552,6 @@ impl Cli {
             .fetch_files(&manifest, scratch.path())
             .with_context(|| format!("fetching objects for snapshot {id}"))?;
 
-        let cache = self.cache_store();
         cache
             .push(&manifest, scratch.path())
             .with_context(|| format!("saving snapshot {id} to the local cache"))?;
