@@ -51,6 +51,7 @@ use thiserror::Error;
 use crate::excludes::{ExcludeMatcher, FollowMode};
 use crate::manifest::{Manifest, ManifestEntry, PathType};
 use crate::merkle::Hasher;
+use crate::progress::{Meter, Phase};
 
 /// Whether emitted paths are absolute or rewritten relative to the root.
 ///
@@ -175,6 +176,33 @@ pub fn walk<H: Hasher>(
     options: &WalkOptions,
     hasher: &H,
 ) -> Result<Manifest, WalkError> {
+    walk_with_meter(root, options, hasher, None)
+}
+
+/// Like [`walk`], but records hashing progress into an optional [`Meter`].
+///
+/// When `meter` is `Some`, the phase is set to [`Phase::Hashing`] and, for each
+/// regular file whose bytes are read and hashed, the file's byte length is added
+/// to the meter's bytes-in counter and the file is counted as one finished
+/// object. When `meter` is `None` this behaves exactly like [`walk`].
+///
+/// The recording is purely advisory: the returned [`Manifest`] is
+/// **byte-identical** whether or not a meter is supplied — the meter is updated
+/// with a couple of cheap [`Ordering::Relaxed`](std::sync::atomic::Ordering)
+/// atomic ops per file and never influences traversal or output.
+///
+/// # Errors
+///
+/// Returns [`WalkError`] under the same conditions as [`walk`].
+pub fn walk_with_meter<H: Hasher>(
+    root: &Path,
+    options: &WalkOptions,
+    hasher: &H,
+    meter: Option<&Meter>,
+) -> Result<Manifest, WalkError> {
+    if let Some(meter) = meter {
+        meter.set_phase(Phase::Hashing);
+    }
     if !root.is_absolute() {
         return Err(WalkError::RootNotAbsolute(root.to_path_buf()));
     }
@@ -205,6 +233,7 @@ pub fn walk<H: Hasher>(
         root_permissions,
         options,
         hasher,
+        meter,
         &mut dirs,
     )?;
 
@@ -275,6 +304,7 @@ fn discover_dir<H: Hasher>(
     permissions: String,
     options: &WalkOptions,
     hasher: &H,
+    meter: Option<&Meter>,
     dirs: &mut BTreeMap<String, DirRecord>,
 ) -> Result<(), WalkError> {
     // `permissions` is the directory's own `lstat` octal mode (a symlinked
@@ -350,6 +380,7 @@ fn discover_dir<H: Hasher>(
                 own_permissions,
                 options,
                 hasher,
+                meter,
                 dirs,
             )?;
         } else if file_type.is_file() {
@@ -358,6 +389,12 @@ fn discover_dir<H: Hasher>(
             // matching the oracle's `%z` / `%s` on the un-dereferenced symlink).
             let bytes = std::fs::read(&entry_path).map_err(|e| WalkError::io(&entry_path, e))?;
             let checksum = hasher.hash_hex(&bytes);
+            // Advisory progress: record the bytes hashed and count this file as
+            // one finished object. This never affects the manifest output.
+            if let Some(meter) = meter {
+                meter.add_in(bytes.len() as u64);
+                meter.object_finished();
+            }
             record.files.push(FileRecord {
                 abs_path: entry_abs,
                 permissions: own_permissions,
@@ -450,6 +487,7 @@ mod tests {
     //! subtree) rather than a byte-exact perm column.
     use super::*;
     use crate::merkle::Blake3Hasher;
+    use crate::progress::{Meter, Phase};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
@@ -834,6 +872,55 @@ F 600 2d1ebfa706ba230165250f744796a92accba5e1b6fa357983b65319da33f8e93 13 ./src/
             !manifest.contains("node_modules"),
             "%common% excludes node_modules"
         );
+    }
+
+    #[test]
+    fn progress_meter_walk_records_files_and_bytes() {
+        // A small tree with known file sizes; the meter records the total bytes
+        // hashed and one finished object per file.
+        let scratch = Scratch::new("meter-records");
+        let r = scratch.root();
+        write_file(&r.join("f1"), b"hello"); // 5
+        write_file(&r.join("sub/f2"), b"world!!"); // 7
+        write_file(&r.join("sub/f3"), b"x"); // 1
+        chmod_dirs(r, 0o700);
+
+        let meter = Meter::new();
+        let _ = walk_with_meter(
+            r,
+            &WalkOptions::default(),
+            &Blake3Hasher::new(),
+            Some(&meter),
+        )
+        .expect("walk");
+
+        let snap = meter.snapshot();
+        assert_eq!(snap.bytes_in, 5 + 7 + 1, "sum of file byte lengths");
+        assert_eq!(snap.objects_done, 3, "one finished object per file");
+        assert_eq!(snap.in_flight, 0, "no object left in flight");
+        assert_eq!(snap.phase, Phase::Hashing, "walk sets the Hashing phase");
+    }
+
+    #[test]
+    fn progress_meter_walk_output_unchanged() {
+        // Recording into a meter must not change the manifest: walk(None) and
+        // walk_with_meter(Some) over the same tree are byte-identical.
+        let scratch = Scratch::new("meter-unchanged");
+        let r = scratch.root();
+        build_nested(r);
+        let opts = opts(FollowMode::Follow, PathMode::Relative, None);
+
+        let without = walk(r, &opts, &Blake3Hasher::new()).expect("walk");
+        let meter = Meter::new();
+        let with = walk_with_meter(r, &opts, &Blake3Hasher::new(), Some(&meter)).expect("walk");
+
+        assert_eq!(
+            without.to_string(),
+            with.to_string(),
+            "meter recording must not change the manifest"
+        );
+        // And it really did record (sanity: nine files in build_nested).
+        assert_eq!(meter.snapshot().objects_done, 8);
     }
 
     #[test]
