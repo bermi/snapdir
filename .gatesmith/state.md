@@ -3,11 +3,11 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## 🔧 PHASE 14 — Streaming store-to-store snapshot sync (OPEN, opened 2026-06-04) — 103/104 green, 1 pending
+## ✅ PHASE 14 COMPLETE — 5/5 gates green (operator sign-off 2026-06-04) — ALL 104 GATES GREEN — PROJECT COMPLETE
 
 > Operator-requested: `snapdir sync --id <id> --from <store> --to <store>` copies ONE snapshot (manifest + raw content-addressed objects) directly source-store -> dest-store, streaming through MEMORY only (no local-FS staging). New `StreamStore: Store` trait in snapdir-stores (get/put/has_object + put_manifest), a `sync_snapshot` orchestrator with NO `&Path` (structural no-disk guarantee) reusing the Phase-13 concurrency + rate limiter (manifest-last, skip-present/incremental), and a 15th `sync` CLI subcommand. **snapdir-core untouched**; frozen sharded keys + manifest format reused verbatim. dev brought to the 1.1.0 baseline (cherry-pick 9596a3d).
 >
-> **Gates (5):** `stream-store-trait` ✅ (88e5864) -> `sync-orchestrator` ✅ (5b2a899) -> `cli-sync-command` ✅ (327d1eb) -> `sync-verification` ✅ (d175a50) -> `phase14-complete` (generic, human_checkpoint). **Next ready: `phase14-complete` (human_checkpoint).** Operator reviews the gates, then starts the ralph loop.
+> **Gates (5):** `stream-store-trait` ✅ (88e5864) -> `sync-orchestrator` ✅ (5b2a899) -> `cli-sync-command` ✅ (327d1eb) -> `sync-verification` ✅ (d175a50) -> `phase14-complete` ✅ PASSED (operator sign-off; workspace 305/0). Phase 14 complete. **Project complete.** Next (deferred): cherry-pick the Phase 14 code commits dev->main toward a 1.2.0 release. Operator reviews the gates, then starts the ralph loop.
 
 ---
 

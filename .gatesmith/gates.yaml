@@ -1941,7 +1941,9 @@ gates:
     phase: 14
     owner_agent: generic
     depends_on: [stream-store-trait, sync-orchestrator, cli-sync-command, sync-verification]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T17:50:00Z
+    git_sha: c150ce7
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked"
     pass_criteria:
