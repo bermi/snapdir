@@ -2047,7 +2047,9 @@ gates:
     phase: 15
     owner_agent: generic
     depends_on: [progress-meter, stores-meter-wire, cli-progress-renderer, cli-progress-flags-and-wire, progress-verification]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T19:40:00Z
+    git_sha: 921f3bf
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked"
     pass_criteria:
