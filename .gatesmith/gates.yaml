@@ -1967,7 +1967,9 @@ gates:
     phase: 15
     owner_agent: core
     depends_on: [phase14-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T18:41:55Z
+    git_sha: 69a0133
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --locked progress_meter -- --nocapture"
     pass_criteria:
