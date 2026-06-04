@@ -125,11 +125,23 @@ If any of the following is true, use `AskUserQuestion` with a precise single que
 - On pass: update `gates.yaml` — set `status: passed`, `passed_at: <utc>`, `git_sha: <sha>`.
 - On fail: update `gates.yaml` — set `status: failed`, increment `failure_count`, append `failure_reason`.
 - Re-project `.gatesmith/state.md` from `gates.yaml` (state.md is derived; if regeneration crashes, source of truth is still consistent).
-- If the gate passes and the teammate's diff is in-lane, run:
-  ```
-  git add -A && git commit -m "<phase>:<gate-id> via <agent>"
-  ```
-  so the next tick can `git diff HEAD~1`.
+- If the gate passes and the teammate's diff is in-lane, commit in **TWO separate commits**.
+  `main` NEVER carries `.gatesmith/` (only `dev` does), and the operator cherry-picks code
+  commits from `dev` onto `main` / `snapdir/snapdir` — so the ledger must never be entangled
+  with the code, or the cherry-pick drags gatesmith noise:
+  1. **Code commit (cherry-pickable) — FIRST.** Stage everything EXCEPT the ledger and commit
+     with a clean, gatesmith-free conventional message describing the actual change. This is
+     the SHA recorded as the gate's `git_sha`:
+     ```
+     git add -A -- ':!.gatesmith' && git commit -m "<type>(<scope>): <what changed>"
+     ```
+     Skip this commit entirely if the teammate touched no non-`.gatesmith/` paths.
+  2. **Ledger commit — SECOND.** Stage and commit the gatesmith forensics on their own:
+     ```
+     git add .gatesmith && git commit -m "gatesmith: <phase>:<gate-id> <pass|fail> via <agent>"
+     ```
+  The lane fence still runs on `git diff --stat HEAD` BEFORE either commit, so it is unaffected;
+  the split only governs how the work is recorded.
 - If a `post-commit` hook auto-pushes, you do **not** need to `git push` manually. If you notice repeated push failures, escalate to the human — do not try to fix sync yourself.
 
 ### 7. EXIT
