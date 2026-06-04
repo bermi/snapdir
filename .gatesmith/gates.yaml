@@ -1590,3 +1590,90 @@ gates:
         - human_confirm: "Phase 11 done: rust-port is bash-free, deps are current (>=3-day), the scratch image builds, and the ADRs/docs are accurate. Approve?"
     human_checkpoint: true
     description: "PHASE 11 SIGN-OFF: branch is bash-free, dependencies refreshed to latest (>=3-day cooldown), docker image modernized, ADRs + docs accurate."
+
+  # ======================================================================
+  # PHASE 12 — Post-1.0 correctness & UX (operator-reported 2026-06-04)
+  # ----------------------------------------------------------------------
+  # Four issues surfaced while exercising the released 1.0.1 binary. Two are
+  # confirmed bugs (one a SEVERE regression from pre-1.0 Bash), one is a CLI
+  # ergonomics gap, and the manifest "buffering" item is a documented WON'T-FIX:
+  # the manifest is globally path-sorted (sort -k5) and dir checksums are
+  # computed bottom-up over each whole subtree, so no line is valid until the
+  # full walk completes — incremental streaming would break the frozen format.
+  # No crates.io release for 1.0.1 (GitHub-only, by choice).
+  # ======================================================================
+
+  # --- Severe regression: pull must not re-download verified-present files ---
+  - id: pull-skip-existing
+    phase: 12
+    owner_agent: stores
+    depends_on: [phase11-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked fetch_skip_present_verified -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "fetch_files in FileStore/S3Store/GcsStore must skip any destination file that already exists AND whose locally-recomputed checksum equals the manifest checksum; only missing or mismatched objects are copied/downloaded. Restores pre-1.0 Bash behavior (severe regression). Tests prove a second fetch to a populated dest does ZERO object reads/network GETs and that a locally-corrupted file is re-fetched/repaired. Manifest format & on-disk layout are unchanged (no frozen-interface mutation)."
+
+  # --- Bug: --dryrun must make no writes, anywhere ---
+  - id: dryrun-honored
+    phase: 12
+    owner_agent: cli
+    depends_on: [phase11-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -q 'self.globals.dryrun' crates/snapdir-cli/src/cli.rs && cargo test -p snapdir-cli --locked dryrun -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Audit and guard EVERY store/FS-mutating command behind the global --dryrun flag: push (incl. staged --id path), stage, pull/checkout, flush-cache. Under --dryrun each prints the intended actions and performs zero writes (no objects, no manifests, no local files). Tests assert the store and destination are byte-for-byte unchanged after a --dryrun run of each mutating command (notably push -> empty store). Root cause: the dryrun field in GlobalArgs (cli.rs) is currently never read anywhere."
+
+  # --- UX: list-valued CLI options accept multi-arg AND comma-delimited ---
+  - id: cli-list-options-multi
+    phase: 12
+    owner_agent: cli
+    depends_on: [phase11-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -q 'ArgAction::Append' crates/snapdir-cli/src/cli.rs && cargo test -p snapdir-cli --locked list_options -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "--exclude and --paths (global + manifest subcommand) accept repeated occurrences (ArgAction::Append) AND comma-delimited values within one occurrence; the collected patterns are OR-combined (a path matches if it matches ANY pattern). A single value keeps working unchanged (additive, backward-compatible -- operator-requested superset of the frozen CLI surface). Tests cover: single value, repeated --exclude, comma list, and mixed forms."
+
+  # --- Umbrella: close the correctness-coverage gap the operator flagged ---
+  - id: pull-push-correctness-suite
+    phase: 12
+    owner_agent: cli
+    depends_on: [pull-skip-existing, dryrun-honored, cli-list-options-multi]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked --test e2e --test store_roundtrip"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "End-to-end correctness/regression suite over the under-tested push/pull paths: (1) push -> pull -> pull is idempotent and the 2nd/3rd pull re-downloads nothing; (2) --dryrun push leaves the store empty and --dryrun on each mutating command leaves dest unchanged; (3) a corrupted local file is detected (checksum mismatch) and repaired on pull; (4) multi/comma --exclude actually drops the expected paths from the manifest. Runs against file:// and at least the local/MinIO store path used in existing roundtrip tests."
+
+  # --- Phase 12 sign-off ---
+  - id: phase12-complete
+    phase: 12
+    owner_agent: generic
+    depends_on: [pull-skip-existing, dryrun-honored, cli-list-options-multi, pull-push-correctness-suite]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 12 done: pull skips verified-present files (no redownload), --dryrun writes nothing across all mutating commands, --exclude/--paths accept multi-arg+comma lists, and the correctness suite covers all four. Approve?"
+    human_checkpoint: true
+    description: "PHASE 12 SIGN-OFF: the two confirmed bugs (dryrun-writes, pull-redownload regression) are fixed with regression tests, list-valued CLI options accept multi-arg + comma forms, and the correctness suite locks it in."
