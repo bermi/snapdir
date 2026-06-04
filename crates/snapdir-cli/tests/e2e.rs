@@ -272,3 +272,275 @@ fn checkout_unknown_id_fails() {
         .assert()
         .failure();
 }
+
+// ---------------------------------------------------------------------------
+// pull-push-correctness-suite: binary-level regression tests for the four
+// correctness properties the operator was worried about. These build on top of
+// the existing round-trip tests above; each is hermetic (temp `file://` store +
+// temp cache, both removed on drop).
+// ---------------------------------------------------------------------------
+
+/// Recursively counts the regular files anywhere under `dir` (0 if absent). A
+/// content-addressable store/cache/destination materializes its state as files,
+/// so a count of zero means nothing was written.
+fn count_files(dir: &Path) -> usize {
+    let mut total = 0;
+    if !dir.exists() {
+        return 0;
+    }
+    for entry in std::fs::read_dir(dir).expect("read_dir") {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            total += count_files(&path);
+        } else {
+            total += 1;
+        }
+    }
+    total
+}
+
+/// Scenario 1 — **push → pull → pull idempotency.** Pulling the same id into
+/// the SAME destination twice must be a stable no-op: both pulls exit 0, and
+/// after each the destination re-manifests to the source id (contents +
+/// permissions intact). This complements `fetch_cached_skips_store_objects`
+/// (which proves the 2nd pull needs no store objects); here we focus on the
+/// positive idempotency / destination stability across repeated pulls.
+#[test]
+fn push_pull_pull_is_idempotent() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let dest = TempDir::new().unwrap();
+    build_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let dest_str = dest.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    let src_id = stdout_ok(cache.path(), &["push", "--store", &store_url, &src_str]);
+
+    // Pull #1 into the destination.
+    snapdir(cache.path())
+        .args(["pull", "--store", &store_url, "--id", &src_id, &dest_str])
+        .assert()
+        .success();
+    dest.child("a.txt").assert("hello");
+    dest.child("sub/b.txt").assert("world!!");
+    assert_eq!(
+        stdout_ok(cache.path(), &["id", &dest_str]),
+        src_id,
+        "first pull must reproduce the source id"
+    );
+
+    // Pull #2 into the SAME destination — must be a stable, idempotent no-op.
+    snapdir(cache.path())
+        .args(["pull", "--store", &store_url, "--id", &src_id, &dest_str])
+        .assert()
+        .success();
+    dest.child("a.txt").assert("hello");
+    dest.child("sub/b.txt").assert("world!!");
+    assert_eq!(
+        stdout_ok(cache.path(), &["id", &dest_str]),
+        src_id,
+        "repeated pull must leave the destination re-manifesting to the same id"
+    );
+}
+
+/// Scenario 2 — **--dryrun makes no writes (e2e level).** A `push --dryrun`
+/// against an empty `file://` store must leave the store empty (no `.objects`,
+/// no `.manifests`), and a `pull --dryrun` into a fresh destination must leave
+/// that destination empty. Intentionally overlaps `tests/dryrun.rs` so THIS
+/// gate's verification — which runs only e2e + `store_roundtrip` — exercises the
+/// dry-run invariant.
+#[test]
+fn dryrun_push_leaves_store_empty_e2e() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    build_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    // push --dryrun: still prints the (pure-computation) id, writes nothing.
+    let id = stdout_ok(
+        cache.path(),
+        &["push", "--dryrun", "--store", &store_url, &src_str],
+    );
+    assert_eq!(id.len(), 64, "push --dryrun must still print the id");
+    assert!(
+        !store.path().join(".objects").exists(),
+        "push --dryrun must not create any store objects"
+    );
+    assert!(
+        !store.path().join(".manifests").exists(),
+        "push --dryrun must not create any store manifests"
+    );
+    assert_eq!(
+        count_files(store.path()),
+        0,
+        "store must remain empty after push --dryrun"
+    );
+
+    // A real push so a dryrun pull has something to (not) materialize.
+    let realstore = TempDir::new().unwrap();
+    let real_url = format!("file://{}", realstore.path().display());
+    let pushcache = TempDir::new().unwrap();
+    let real_id = stdout_ok(pushcache.path(), &["push", "--store", &real_url, &src_str]);
+
+    // pull --dryrun into a fresh dest + fresh cache must leave both empty.
+    let dest = TempDir::new().unwrap();
+    let pullcache = TempDir::new().unwrap();
+    let dest_str = dest.path().to_string_lossy().into_owned();
+    snapdir(pullcache.path())
+        .args([
+            "pull", "--dryrun", "--store", &real_url, "--id", &real_id, &dest_str,
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        count_files(dest.path()),
+        0,
+        "pull --dryrun must not materialize any destination files"
+    );
+    assert_eq!(
+        count_files(pullcache.path()),
+        0,
+        "pull --dryrun must not write to the cache"
+    );
+}
+
+/// Scenario 3 — **corrupted local file is detected and repaired on pull.**
+/// After a push + pull populates the cache and the destination, overwrite one
+/// destination file with wrong bytes. A second pull into the SAME destination
+/// must repair it: the destination re-manifests to the source id and the
+/// corrupted file's contents are restored. The 2nd pull's fetch leg is a
+/// cache-hit no-op (manifest already cached); the checkout leg notices the
+/// corrupt file's local checksum no longer matches and rewrites it from the
+/// cache — so the repair works offline. We prove offline by amputating the
+/// store's `.objects` before the repairing pull.
+#[test]
+fn pull_repairs_corrupted_dest_file() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let dest = TempDir::new().unwrap();
+    build_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let dest_str = dest.path().to_string_lossy().into_owned();
+    let store_url = format!("file://{}", store.path().display());
+
+    let src_id = stdout_ok(cache.path(), &["push", "--store", &store_url, &src_str]);
+
+    // Pull #1 populates the cache and the destination.
+    snapdir(cache.path())
+        .args(["pull", "--store", &store_url, "--id", &src_id, &dest_str])
+        .assert()
+        .success();
+    dest.child("a.txt").assert("hello");
+    assert_eq!(stdout_ok(cache.path(), &["id", &dest_str]), src_id);
+
+    // Corrupt a destination file in place (wrong bytes, wrong length).
+    dest.child("a.txt")
+        .write_str("CORRUPTED-WRONG-BYTES")
+        .unwrap();
+    assert_ne!(
+        stdout_ok(cache.path(), &["id", &dest_str]),
+        src_id,
+        "corrupting the file must change the re-manifested id"
+    );
+
+    // Amputate the store's objects to prove the repair is served from the
+    // cache (offline) and not by re-reading the store.
+    let objects = store.path().join(".objects");
+    assert!(objects.exists(), "store must have an .objects subtree");
+    std::fs::remove_dir_all(&objects).expect("remove store .objects subtree");
+
+    // Pull #2 into the SAME destination must repair the corrupted file.
+    snapdir(cache.path())
+        .args(["pull", "--store", &store_url, "--id", &src_id, &dest_str])
+        .assert()
+        .success();
+    dest.child("a.txt").assert("hello");
+    dest.child("sub/b.txt").assert("world!!");
+    assert_eq!(
+        stdout_ok(cache.path(), &["id", &dest_str]),
+        src_id,
+        "repairing pull must restore the destination to the source id"
+    );
+}
+
+/// Scenario 4 — **multi/comma --exclude drops paths from the manifest.** Build
+/// a tree with excludable `node_modules/x` and `coverage/y`. The comma form
+/// (`--exclude node_modules,coverage`) and the repeated form (`--exclude
+/// node_modules --exclude coverage`) must both omit those paths from the
+/// manifest stdout AND produce identical output, while a plain `manifest` (no
+/// exclude) includes them.
+///
+/// (The exclude regex matches against the *absolute* scan path, so the chosen
+/// exclude tokens must not appear in the temp-dir prefix — e.g. `tmp` would
+/// also match `/tmp/...` and nuke the whole walk. `node_modules`/`coverage` are
+/// safe distinctive names.)
+#[test]
+fn manifest_multi_exclude_drops_paths_e2e() {
+    let src = TempDir::new().unwrap();
+    build_tree(&src);
+    // Add excludable subtrees on top of the known tree.
+    src.child("node_modules/x").write_str("dep").unwrap();
+    src.child("coverage/y").write_str("scratch").unwrap();
+    let src_str = src.path().to_string_lossy().into_owned();
+
+    // The cache dir is irrelevant for `manifest` (pure computation) but the
+    // harness pins it; reuse a temp cache so we never touch the real $HOME.
+    let cache = TempDir::new().unwrap();
+
+    // Plain manifest includes both excludable subtrees.
+    let plain = stdout_ok(cache.path(), &["manifest", &src_str]);
+    assert!(
+        plain.contains("node_modules"),
+        "plain manifest should include node_modules:\n{plain}"
+    );
+    assert!(
+        plain.contains("coverage"),
+        "plain manifest should include coverage:\n{plain}"
+    );
+
+    // Comma form and repeated form.
+    let comma = stdout_ok(
+        cache.path(),
+        &["manifest", "--exclude", "node_modules,coverage", &src_str],
+    );
+    let repeated = stdout_ok(
+        cache.path(),
+        &[
+            "manifest",
+            "--exclude",
+            "node_modules",
+            "--exclude",
+            "coverage",
+            &src_str,
+        ],
+    );
+
+    for (label, out) in [("comma", &comma), ("repeated", &repeated)] {
+        assert!(
+            !out.contains("node_modules"),
+            "{label} --exclude must drop node_modules:\n{out}"
+        );
+        assert!(
+            !out.contains("coverage"),
+            "{label} --exclude must drop coverage:\n{out}"
+        );
+        // The non-excluded known tree files must survive.
+        assert!(
+            out.contains("./a.txt") && out.contains("./sub/b.txt"),
+            "{label} --exclude must keep the non-excluded files:\n{out}"
+        );
+    }
+
+    assert_eq!(
+        comma, repeated,
+        "comma and repeated --exclude forms must produce identical manifests"
+    );
+}
