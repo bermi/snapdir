@@ -1700,7 +1700,9 @@ gates:
     phase: 12
     owner_agent: generic
     depends_on: [pull-skip-existing, pull-fetch-skip-cached, dryrun-honored, cli-list-options-multi, pull-push-correctness-suite]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T01:33:00Z
+    git_sha: 3992ec5
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked"
     pass_criteria:

@@ -3,9 +3,16 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## 🔧 PHASE 12 — Post-1.0 correctness & UX (IN PROGRESS, opened 2026-06-04)
+## ✅ PHASE 12 COMPLETE — 6/6 gates green (operator sign-off 2026-06-04) — ALL 91 GATES GREEN
 
-> Phases 0–11 are complete (85 gates green). **Phase 12** was opened by the operator after exercising the released 1.0.1 binary: two confirmed bugs (one a severe regression) + a CLI ergonomics gap. The manifest "buffering" item is a documented **won't-fix** (global path-sort + bottom-up dir-merkle force a full walk before any line is valid — streaming would break the frozen format).
+> **PROJECT COMPLETE.** `phase12-complete` ✅ PASSED (operator sign-off + `cargo test --workspace --locked` = 254 passed / 0 failed). The four issues the operator reported while exercising the released 1.0.1 binary are all fixed and regression-tested, as **clean cherry-pickable code commits on `dev`** (gatesmith-free messages; `main` never carries `.gatesmith/`):
+> - `cd1c5f1` `feat(cli)` — `--exclude`/`--paths` accept repeated + comma-delimited values, OR-combined (per-pattern `%system%`/`%common%` macro expansion).
+> - `5552c1f` `fix(cli)` — `--dryrun` was a dead flag (never read → `push --dryrun` uploaded to GCS); now guards every mutating command (push/stage/fetch/checkout/pull/flush-cache + `verify-cache --purge`), zero writes.
+> - `1f00981` `fix(stores)` — `fetch_files` skips dest files already present + checksum-verified (checkout leg); corrupt files repaired.
+> - `89c3689` `perf(cli)` — `run_fetch` skips the store entirely when the snapshot is already cached (fetch leg) → a 2nd `pull` does **zero** store reads. *(PM-discovered: the checkout-leg fix alone left the network re-download; added `pull-fetch-skip-cached` after an empirical repro.)*
+> - `9e0c85d` `test(cli)` — binary-level e2e correctness suite (idempotency, dryrun-no-writes, offline corrupt-repair, multi/comma exclude).
+>
+> The manifest "buffering" item is a documented **won't-fix** (global path-sort + bottom-up dir-merkle force a full walk before any line is valid — streaming would break the frozen format). Nothing pushed: the operator owns the cherry-pick `dev → main → snapdir/snapdir` and the push. The human owns stopping ralph.
 >
 > **Branch model (operator, 2026-06-04):** `dev` is the gatesmith workspace and the ONLY branch that carries `.gatesmith/`. `main` is the clean canonical 1.0.1 (`upstream/main`) and must **NEVER** contain `.gatesmith/`. Code fixes flow `dev → main → snapdir/snapdir` by **cherry-pick**, so each passing tick now commits the lane **code** first (gatesmith-free message — the recorded `git_sha`) and the `.gatesmith/` **ledger** separately (PM_PROMPT step 6).
 
