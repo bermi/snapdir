@@ -1683,7 +1683,9 @@ gates:
     phase: 12
     owner_agent: cli
     depends_on: [pull-skip-existing, pull-fetch-skip-cached, dryrun-honored, cli-list-options-multi]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T01:26:22Z
+    git_sha: 9e0c85d
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked --test e2e --test store_roundtrip"
     pass_criteria:
