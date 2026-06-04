@@ -1983,7 +1983,9 @@ gates:
     phase: 15
     owner_agent: stores
     depends_on: [progress-meter]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T19:03:59Z
+    git_sha: 50f54b3
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked meter_records -- --nocapture"
     pass_criteria:
