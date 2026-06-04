@@ -167,6 +167,128 @@ impl RateLimiter {
     }
 }
 
+/// Shared token-bucket state for [`BlockingRateLimiter`], guarded by a
+/// **synchronous** [`std::sync::Mutex`] (not tokio's async mutex).
+#[derive(Debug)]
+struct BlockingBucket {
+    /// Currently available tokens (bytes).
+    tokens: f64,
+    /// Last time the bucket was refilled.
+    last_refill: std::time::Instant,
+}
+
+/// Inner state of a [`BlockingRateLimiter`].
+#[derive(Debug)]
+struct BlockingInner {
+    /// Refill rate in bytes per second.
+    rate: f64,
+    /// Maximum burst capacity, in bytes (~1 second's worth of budget).
+    capacity: f64,
+    /// `None` when unlimited; otherwise the live bucket state.
+    bucket: Option<std::sync::Mutex<BlockingBucket>>,
+}
+
+/// A **synchronous** token-bucket rate limiter for the store-to-store sync
+/// path.
+///
+/// This is the blocking sibling of [`RateLimiter`]. The
+/// [`StreamStore`](crate::stream::StreamStore) methods are synchronous and
+/// drive their backends' async SDK calls on an internal runtime via `block_on`,
+/// so the store-to-store sync orchestrator parallelizes them across a **rayon**
+/// thread pool of plain OS threads — it cannot use the async [`RateLimiter`]
+/// (awaiting inside a `block_on`-ing rayon worker would nest tokio runtimes).
+/// [`acquire_blocking`](BlockingRateLimiter::acquire_blocking) therefore parks
+/// the calling OS thread with [`std::thread::sleep`] instead of `.await`.
+///
+/// When `max_bytes_per_sec` is `None` (or `Some(0)`), the limiter is unlimited
+/// and [`acquire_blocking`](BlockingRateLimiter::acquire_blocking) returns
+/// immediately. Otherwise tokens refill at `max_bytes_per_sec` per second,
+/// allowing a burst of up to ~1 second's worth of budget. The token math
+/// mirrors [`RateLimiter::acquire`] exactly.
+///
+/// The limiter is [`Arc`]-shareable and [`Clone`] (cloning shares the same
+/// underlying bucket), so every rayon worker throttles against one aggregate
+/// budget.
+#[derive(Debug, Clone)]
+pub struct BlockingRateLimiter {
+    inner: Arc<BlockingInner>,
+}
+
+impl BlockingRateLimiter {
+    /// Builds a synchronous limiter. `None` (or `Some(0)`) yields an unlimited,
+    /// no-op limiter whose
+    /// [`acquire_blocking`](BlockingRateLimiter::acquire_blocking) never waits.
+    #[must_use]
+    pub fn new(max_bytes_per_sec: Option<u64>) -> Self {
+        let inner = match max_bytes_per_sec {
+            Some(rate) if rate > 0 => {
+                #[allow(clippy::cast_precision_loss)]
+                let rate = rate as f64;
+                BlockingInner {
+                    rate,
+                    capacity: rate,
+                    bucket: Some(std::sync::Mutex::new(BlockingBucket {
+                        tokens: rate,
+                        last_refill: std::time::Instant::now(),
+                    })),
+                }
+            }
+            _ => BlockingInner {
+                rate: 0.0,
+                capacity: 0.0,
+                bucket: None,
+            },
+        };
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+
+    /// Blocks the calling OS thread until `n` bytes of budget are available,
+    /// refilling the bucket at the configured rate. Unlimited limiters return
+    /// immediately.
+    ///
+    /// A single request larger than the bucket capacity is still satisfied: the
+    /// bucket is allowed to go negative and the caller waits out the deficit,
+    /// so throttling is correct even for objects bigger than one second's worth
+    /// of budget. Mirrors [`RateLimiter::acquire`], but parks the thread with
+    /// [`std::thread::sleep`] instead of awaiting.
+    pub fn acquire_blocking(&self, n: u64) {
+        let Some(bucket) = self.inner.bucket.as_ref() else {
+            return; // unlimited fast path
+        };
+        if n == 0 {
+            return;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let need = n as f64;
+
+        loop {
+            let wait = {
+                // A poisoned bucket only means a thread panicked mid-acquire;
+                // the token state is still usable, so recover the guard.
+                let mut state = bucket
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let now = std::time::Instant::now();
+                let elapsed = now.duration_since(state.last_refill).as_secs_f64();
+                state.tokens = (state.tokens + elapsed * self.inner.rate).min(self.inner.capacity);
+                state.last_refill = now;
+
+                if state.tokens >= need {
+                    state.tokens -= need;
+                    return;
+                }
+                // Not enough budget: compute how long until the deficit is
+                // covered, then sleep (releasing the lock first).
+                let deficit = need - state.tokens;
+                deficit / self.inner.rate
+            };
+            std::thread::sleep(Duration::from_secs_f64(wait));
+        }
+    }
+}
+
 /// Runs `op` over `items` with at most `concurrency` operations in flight,
 /// collecting their results in completion-independent order and returning the
 /// first error encountered (remaining in-flight work is cancelled).
@@ -288,6 +410,42 @@ mod tests {
         assert!(
             matches!(err, StoreError::Backend { ref message, .. } if message == "boom"),
             "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn sync_snapshot_blocking_rate_limiter() {
+        use std::time::Instant;
+
+        // Unlimited: acquiring a large amount returns essentially instantly.
+        let unlimited = BlockingRateLimiter::new(None);
+        let start = Instant::now();
+        unlimited.acquire_blocking(1_000_000);
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "unlimited acquire_blocking should not block"
+        );
+        // Some(0) is also unlimited.
+        let zero = BlockingRateLimiter::new(Some(0));
+        let start = Instant::now();
+        zero.acquire_blocking(1_000_000);
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "Some(0) acquire_blocking should not block"
+        );
+
+        // Limited to 1000 bytes/sec. The bucket starts full (1000), so the
+        // first 1000 bytes are free; acquiring another ~1000 bytes (2x the
+        // per-second budget in total) must wait for the deficit to refill —
+        // at least ~1s.
+        let limiter = BlockingRateLimiter::new(Some(1000));
+        let start = Instant::now();
+        limiter.acquire_blocking(1000); // drains the initial burst
+        limiter.acquire_blocking(1000); // must wait ~1s to refill
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(900),
+            "throttled acquire_blocking should take ~1s, took {elapsed:?}"
         );
     }
 

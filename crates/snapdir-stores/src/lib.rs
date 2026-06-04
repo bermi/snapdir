@@ -21,6 +21,12 @@
 //! - [`stream`] ([`StreamStore`]) — object/manifest-level, content-addressed,
 //!   verified read/write primitives (the foundation for store-to-store sync),
 //!   implemented for [`FileStore`], [`S3Store`], [`GcsStore`], and [`B2Store`].
+//! - [`sync`] ([`sync_snapshot`], [`SyncReport`]) — streaming store-to-store
+//!   snapshot copy: walks a source manifest and copies its raw objects
+//!   source → dest through memory only (no local filesystem staging),
+//!   parallelized across a rayon pool and throttled by a
+//!   [`BlockingRateLimiter`](transfer::BlockingRateLimiter); writes the manifest
+//!   last (all-or-nothing).
 
 pub mod b2_store;
 pub(crate) mod fetch;
@@ -31,6 +37,7 @@ pub mod router;
 pub mod s3_store;
 pub mod shim;
 pub mod stream;
+pub mod sync;
 pub mod transfer;
 pub(crate) mod util;
 
@@ -41,4 +48,5 @@ pub use router::{resolve_adapter, Adapter, RouteError};
 pub use s3_store::{S3Location, S3Store};
 pub use shim::ExternalStore;
 pub use stream::StreamStore;
-pub use transfer::{run_concurrent, RateLimiter, TransferConfig};
+pub use sync::{sync_snapshot, SyncReport};
+pub use transfer::{run_concurrent, BlockingRateLimiter, RateLimiter, TransferConfig};
