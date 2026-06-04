@@ -3,11 +3,11 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## 🔧 PHASE 15 — Live transfer & hashing progress dashboard (OPEN, opened 2026-06-04) — 105/110 green, 5 pending
+## 🔧 PHASE 15 — Live transfer & hashing progress dashboard (OPEN, opened 2026-06-04) — 106/110 green, 4 pending
 
 > Operator-requested: a beautiful single-line, self-updating stderr progress indicator (spinner/bar + from->to bps/iops + concurrency + best-effort mem/cpu) for push/fetch/pull/checkout/stage/sync AND the local walk/hash. ON only when stderr is a TTY (off when piped); --no-progress/--quiet/--color to control; honors NO_COLOR/TERM=dumb; stdout stays the scriptable id. HAND-ROLLED minimal-dep (anstyle+anstream already present, std IsTerminal; ONLY new dep is libc, already in the lock graph, for width ioctl + RSS/CPU). A pure Meter (lock-free atomics) lives in snapdir-core (sha-locked files untouched); the CLI renderer reads it.
 >
-> **Gates (6):** `progress-meter` ✅ (69a0133) -> `stores-meter-wire` (stores) + `cli-progress-renderer` (cli, parallel) -> `cli-progress-flags-and-wire` (cli) -> `progress-verification` (cli) -> `phase15-complete` (generic, human_checkpoint). **Next ready: `cli-progress-renderer` + `stores-meter-wire` (parallel).** Operator reviews the gates, then starts the ralph loop.
+> **Gates (6):** `progress-meter` ✅ (69a0133) -> `stores-meter-wire` (stores) + `cli-progress-renderer` ✅ (bca8e21) + `stores-meter-wire` -> `cli-progress-flags-and-wire` (cli) -> `progress-verification` (cli) -> `phase15-complete` (generic, human_checkpoint). **Next ready: `stores-meter-wire` (stores).** Operator reviews the gates, then starts the ralph loop.
 
 ---
 
