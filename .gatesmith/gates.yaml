@@ -1638,7 +1638,9 @@ gates:
     phase: 12
     owner_agent: cli
     depends_on: [phase11-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-04T00:35:01Z
+    git_sha: cd1c5f1
     failure_count: 0
     verification_cmd: "grep -q 'ArgAction::Append' crates/snapdir-cli/src/cli.rs && cargo test -p snapdir-cli --locked list_options -- --nocapture"
     pass_criteria:

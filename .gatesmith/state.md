@@ -3,11 +3,29 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
+## 🔧 PHASE 12 — Post-1.0 correctness & UX (IN PROGRESS, opened 2026-06-04)
+
+> Phases 0–11 are complete (85 gates green). **Phase 12** was opened by the operator after exercising the released 1.0.1 binary: two confirmed bugs (one a severe regression) + a CLI ergonomics gap. The manifest "buffering" item is a documented **won't-fix** (global path-sort + bottom-up dir-merkle force a full walk before any line is valid — streaming would break the frozen format).
+>
+> **Branch model (operator, 2026-06-04):** `dev` is the gatesmith workspace and the ONLY branch that carries `.gatesmith/`. `main` is the clean canonical 1.0.1 (`upstream/main`) and must **NEVER** contain `.gatesmith/`. Code fixes flow `dev → main → snapdir/snapdir` by **cherry-pick**, so each passing tick now commits the lane **code** first (gatesmith-free message — the recorded `git_sha`) and the `.gatesmith/` **ledger** separately (PM_PROMPT step 6).
+
+**Phase 12 ledger: 5 gates — 1 passed, 4 pending.**
+
+- `cli-list-options-multi` ✅ PASSED (code `cd1c5f1`) — `--exclude` (global + manifest) now takes `clap ArgAction::Append` + comma `value_delimiter`: repeated flags, comma lists, or a mix, **OR-combined** (a path is excluded if it matches ANY pattern). Each pattern is expanded individually via core `expand_excludes` (so `%system%`/`%common%` macros survive), wrapped in `(?:…)`, joined with `|` into one ERE → single `ExcludeMatcher`; single pattern is byte-identical, empty list disables filtering. `--paths` got the same arity (still unwired). `tests/list_options.rs` (7 fns) green; lane = cli only; SHA lock intact.
+- `dryrun-honored` ⏳ pending (cli) — guard EVERY mutating command behind `--dryrun` (currently a dead flag, never read); push/stage/pull/checkout/flush-cache must write nothing under `--dryrun`. **[confirmed bug — created objects on GCS]**
+- `pull-skip-existing` ⏳ pending (stores) — `fetch_files` must skip dest files already present whose local checksum matches the manifest; only missing/mismatched objects are fetched. **[severe regression vs pre-1.0 Bash — re-downloads everything on re-runs]**
+- `pull-push-correctness-suite` ⏳ pending (cli) — umbrella regression suite (idempotent re-pull, dryrun-no-writes, corrupt-file repair, exclude semantics). depends on the three above.
+- `phase12-complete` ⏳ pending (generic, human_checkpoint) — Phase 12 sign-off.
+
+**Next ready:** `dryrun-honored` and `pull-skip-existing` (both deps satisfied; id-asc picks `dryrun-honored`).
+
+---
+
 ## ✅ PUSH HOLD LIFTED (2026-06-03) — `ci-green` passed, ci.yaml is GREEN
 
 > The operator's push-hold (*"why push to paid CI before local gates exist?"*) is **cleared**: ci.yaml run 26891142751 @ a79c080 concluded **success — all 12 jobs green**. The local pre-push hook is **installed** (`make install-hooks` → `core.hooksPath=utils/git-hooks`), so every future push runs the full CI-equivalent suite first and blocks on failure. Normal (hook-guarded) pushing resumes; ledger-only pushes may use `git push --no-verify`.
 
-## ✅ PROJECT COMPLETE — 85/85 gates green (Phase 11 signed off 2026-06-03)
+## ✅ PHASE 11 COMPLETE — 85/85 gates green (signed off 2026-06-03; superseded by Phase 12 above)
 
 `phase11-complete` ✅ PASSED (operator sign-off) — verification exit 0 (check-no-bash + check-crate-age "all 429 crates ≥3 days" + ADR index) AND operator approved. **Phase 11 (Modernize & de-bash) is complete; all 85 gates are green.** The `rust-port` branch is bash-free (oracle removed, byte-contract = `compat_golden.rs` + `manifest-format.sha.lock`, guarded by `check-no-bash.sh`), deps are modernized (rustls 0.23/hyper 1.x/ring, latest AWS SDK, unpinned google-cloud, MSRV 1.91.1) with a 3-day supply-chain cooldown, the scratch+musl+CA-certs image builds, **ci.yaml is fully green** with a hook-guarded local pre-push gate, and 27 ADRs + README/CONTRIBUTING/docs (CHANGELOG 0.6.0) are accurate. The human owns stopping ralph.
 
