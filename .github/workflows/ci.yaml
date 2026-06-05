@@ -145,6 +145,53 @@ jobs:
       - name: Test (workspace, locked)
         run: cargo test --workspace --all-features --locked
 
+      # Compile-only gate so the criterion + iai-callgrind benches can't
+      # bit-rot. The real valgrind instruction-count run lives in the
+      # `bench-iai` job; here we only prove every workspace bench still builds.
+      - name: Bench compile check (cargo bench --no-run)
+        run: cargo bench --workspace --no-run --locked
+
+  # --------------------------------------------------------------------------
+  # Bench (iai-callgrind): deterministic CPU instruction-count perf gate.
+  # Runs the real valgrind/callgrind measurement on a native Linux runner using
+  # the SAME toolchain + iai-callgrind-runner pins as benches/run-iai-docker.sh
+  # (image rust:1.91 -> toolchain 1.91.1; runner =0.16.1) so the counts match an
+  # operator's macOS-Docker run. The 5% Ir/EstimatedCycles soft-limit regression
+  # configured in benches/benches/iai_hot.rs fails the job on a regression.
+  # --------------------------------------------------------------------------
+  bench-iai:
+    name: Bench (iai-callgrind)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Pin the toolchain to 1.91.1 (matching run-iai-docker.sh's rust:1.91
+      # image) so instruction counts are stable across runs.
+      - name: Install Rust toolchain (1.91.1)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.1
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # valgrind provides the callgrind backend iai-callgrind measures through.
+      # On a native Linux runner no Docker is needed (unlike the macOS path).
+      - name: Install valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends valgrind
+
+      # The runner version MUST match the `iai-callgrind = "=0.16.1"` dev-dep in
+      # benches/Cargo.toml (see run-iai-docker.sh) or the runner refuses to run.
+      - name: Install iai-callgrind-runner (0.16.1)
+        run: cargo install iai-callgrind-runner --version 0.16.1 --locked
+
+      # The real valgrind run; iai_hot.rs enforces the 5% soft-limit regression.
+      - name: Run iai instruction-count gate
+        run: cargo bench -p snapdir-benches --bench iai_hot
+
   # --------------------------------------------------------------------------
   # Static musl leg: the load-bearing target for distribution. Validates that
   # the ring rustls provider links cleanly in a fully static binary (no

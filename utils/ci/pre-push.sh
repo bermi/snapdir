@@ -362,6 +362,14 @@ run_check "test (workspace, --all-features, locked)" \
   "cargo test --workspace --all-features --locked" \
   -- cargo test --workspace --all-features --locked || true
 
+# Compile-only bench gate (criterion + iai-callgrind), so the benches can't
+# bit-rot. This is a fast compile check (no valgrind here — the real iai
+# instruction-count run goes through CI / benches/run-iai-docker.sh, NOT the
+# host), so it stays in the normal path even under --fast.
+run_check "bench compile (--no-run)" \
+  "cargo bench --workspace --no-run --locked" \
+  -- cargo bench --workspace --no-run --locked || true
+
 if msrv_installed; then
   run_check "MSRV ${MSRV} build" \
     "cargo +${MSRV} build --workspace --all-features --locked" \
