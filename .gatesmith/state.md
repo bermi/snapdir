@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 19 OPEN — 3/6 gates green — Release snapdir 1.3.0 (ship + verify Phase-18) (gates added 2026-06-05; +1 mid-phase ci fix)
+## ▶ PHASE 19 OPEN — 4/6 gates green — Release snapdir 1.3.0 (ship + verify Phase-18) (gates added 2026-06-05; +1 mid-phase ci fix)
 
 > **Progress:**
 > - `release-prep-1.3.0` ✅ PASSED (code `c4e9e08`) — bump 1.2.0→1.3.0 + `[1.3.0]` CHANGELOG + compare links.
@@ -13,7 +13,9 @@
 >
 > - `release-verify-branch-1.3.0` ✅ PASSED (operator confirm 2026-06-05; branch `01b1797`) — `release-verify/1.3.0` (8 gatesmith-free commits, tip 1.3.0, ZERO .gatesmith) pushed to origin; bench-verify run `27032438443` → **success**, artifact consulted: determinism 5+3 pass incl. `determinism_adaptive_round_trip_preserves_snapshot_id`, iai Ok/0-regressed.
 >
-> **Ready next: `release-pr-upstream-1.3.0` (human_checkpoint)** → PM escalates; open the `release: 1.3.0` PR from `release-verify/1.3.0` to snapdir/snapdir and merge at 1.3.0. Then `release-tag-crates-1.3.0` (tag → GH release + idempotent publish; TP already done) → `phase19-complete`.
+> - `release-pr-upstream-1.3.0` ✅ PASSED (operator-authorized merge 2026-06-05; merge `2c50936`) — PR snapdir/snapdir#10 `release: 1.3.0` went 15/15 CI green and was squash-merged; **upstream/main now at 1.3.0 with ZERO .gatesmith tracked**. Canonical repo is on 1.3.0.
+>
+> **Ready next: `release-tag-crates-1.3.0` (human_checkpoint)** → PM escalates; tag `v1.3.0` on `2c50936` → release.yml builds 6-target archives + GitHub release + idempotent crates publish (core→catalog→stores→cli). **No operator prerequisite** (TP already registered for all 4 from 1.2.0). Then `phase19-complete` (sign-off).
 
 > Operator-requested: ship the Phase-18 opt-in `--adaptive` transfer tuner + clearer progress line as **1.3.0**, full verify-branch + artifact path (same as the 1.2.0 release). **Lighter than 1.2.0:** bench-verify.yml, the idempotent `release.yml` publish, and Trusted Publishing for all 4 crates already shipped with 1.2.0 → no new CI/packaging gates, **no operator prerequisite** (just tag and go).
 >
