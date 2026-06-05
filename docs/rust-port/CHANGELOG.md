@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0]
+
+### Added
+
+- **Opt-in adaptive transfer tuning (`--adaptive[=FRACTION]`).** When passed,
+  `push`/`fetch`/`pull`/`checkout`/`stage`/`sync` auto-tune transfer concurrency
+  (and, for the network stores, the aggregate byte-rate) toward a polite
+  **fraction of measured capacity (default 0.8)**: it probes in-band (TCP-style
+  slow-start → AIMD with a latency-gradient guardrail), backs off fast under
+  throttling/timeouts or when CPU/memory are tight so it doesn't overwhelm the
+  host or co-tenants, and re-probes every ~15s to use newly-free capacity. A
+  `--max-jobs` flag (and `SNAPDIR_ADAPTIVE`/`SNAPDIR_MAX_JOBS` env) bound it.
+  **Off by default — default behavior is unchanged (full speed)**; `--jobs`/
+  `--limit-rate` remain hard overrides. Works across the local `file://` store
+  and S3/GCS/B2. Transfers remain byte-identical regardless of the tuner (it
+  changes only scheduling/rate).
+- **Clearer, steadier transfer progress.** The single-line progress display now
+  unambiguously labels counts (`N/M files`) vs sizes (unit-suffixed bytes), uses
+  fixed-width columns so the layout no longer reflows as digits change, and shows
+  a smoothed, throttled ETA that settles instead of flickering. When adaptive is
+  on it surfaces the live `(auto <fraction>)` target.
+
+The manifest byte-format and content-addressed object/manifest layout are unchanged, so
+snapshots remain fully interoperable with 1.x.
+
 ## [1.2.0]
 
 ### Added
@@ -213,7 +238,8 @@ Bash-written caches and remote buckets stay mutually readable.
   `gcloud`) in the shipped binary. External tools are used only by the test/oracle
   harness.
 
-[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/snapdir/snapdir/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/snapdir/snapdir/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/snapdir/snapdir/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/snapdir/snapdir/compare/v1.0.0...v1.0.1
