@@ -287,8 +287,35 @@ jobs:
       - name: Publish in dependency order
         run: |
           set -euo pipefail
+          # The version being published is the workspace.package version (root
+          # Cargo.toml). `-m1` grabs that first `^version = ` line, not the
+          # indented internal-dependency `version = "..."` entries below it.
+          VERSION="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          echo "publishing workspace version ${VERSION}"
+          # This loop is IDEMPOTENT: before each `cargo publish` it queries the
+          # crates.io sparse index and SKIPS any crate@version already published,
+          # so a partial release (e.g. one crate up, others 403'd) re-runs safely
+          # instead of dying on the already-published crate under `pipefail`.
+          #
+          # NOTE: Trusted Publishing must be registered on crates.io for
+          # snapdir-catalog/-stores/-cli too — currently only snapdir-core is
+          # registered, so the other three 403 on their first publish. Register
+          # them (crate Settings -> Trusted Publishing) to fix that; until then
+          # the skip-guard keeps a re-run from dying on the already-published ones.
           for crate in snapdir-core snapdir-catalog snapdir-stores snapdir-cli; do
             echo "::group::publish ${crate}"
+            # Sparse-index shard for a crate name >= 4 chars: <c1c2>/<c3c4>/<name>.
+            # All four snapdir crate names are >= 4 chars, so this is uniform.
+            shard="$(printf %s "${crate}" | cut -c1-2)/$(printf %s "${crate}" | cut -c3-4)"
+            # `curl -sf` returns non-zero for a never-published crate (index 404);
+            # running it inside the `if` condition means that failure does NOT trip
+            # `set -e`, and `grep -q` over empty input is false -> we fall through
+            # and publish. Only an actual matching `"vers":"${VERSION}"` line skips.
+            if curl -sf "https://index.crates.io/${shard}/${crate}" | grep -q "\"vers\":\"${VERSION}\""; then
+              echo "${crate} ${VERSION} already published; skipping"
+              echo "::endgroup::"
+              continue
+            fi
             cargo publish --locked -p "${crate}" --no-verify
             echo "::endgroup::"
           done
