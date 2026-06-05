@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 18 OPEN — 4/7 gates green — Opt-in adaptive transfer tuner (`--adaptive`) + clearer/steadier progress line (gates added 2026-06-05)
+## ▶ PHASE 18 OPEN — 5/7 gates green — Opt-in adaptive transfer tuner (`--adaptive`) + clearer/steadier progress line (gates added 2026-06-05)
 
 > **Progress:**
 > - `adaptive-sys-samplers` ✅ PASSED (code `de3fb7e`) — NEW `snapdir-core/src/resources.rs`: best-effort CPU%-of-capacity (getrusage), RSS (proc/mach), total-RAM (sysconf/hw.memsize) samplers (Option/None-safe) + `libc` edge; Meter += advisory `current_limit`/`target_rate` atoms.
@@ -13,7 +13,9 @@
 >
 > - `adaptive-cli` ✅ PASSED (code `5b05b41`) — global `--adaptive[=FRACTION]` (default 0.8, env SNAPDIR_ADAPTIVE) + `--max-jobs` (ceiling, cap 64); `transfer_config()` builds `AdaptivePolicy::On` only when the flag is present (default path byte-for-byte unchanged, proven by `adaptive_unset_equals_pre_phase18_value`); `--verbose` reports the target+ceiling; fixed the carry-forward MeterSnapshot literal + regenerated --help snapshots. **`cargo test --workspace` compiles again.**
 >
-> **Ready next: `progress-clarity-eta` (cli ← samplers), `adaptive-determinism-recheck` (bench ← wire)** — id-asc picks `adaptive-determinism-recheck` next. Then `phase18-complete` (human_checkpoint).
+> - `adaptive-determinism-recheck` ✅ PASSED (code `e37267b`) — NEW `determinism_adaptive_round_trip_preserves_snapshot_id` (push→sync→fetch under `AdaptivePolicy::On{0.8, ceiling 2}` on all 3 legs) re-ids to the SAME golden as the non-adaptive path → **speed-only/byte-identical invariant proven**; Phase-16 suite still green.
+>
+> **Ready next: `progress-clarity-eta` (cli ← samplers)** — the renderer rework (files-vs-size labels, width-stable columns, smoothed byte-based ETA, live adaptive readout). Then `phase18-complete` (human_checkpoint).
 
 > Operator-requested: an **opt-in** `--adaptive[=FRACTION]` (default **0.8**) in-band congestion-control tuner for transfers, plus a clearer, width-stable status line with a smoothed ETA. **Adaptive is OPT-IN — default behavior is unchanged (full speed, OS schedules);** the polite tuner (which holds at a fraction of capacity to spare the host/neighbours) only engages when asked. The flag's optional arg IS the politeness fraction.
 >
