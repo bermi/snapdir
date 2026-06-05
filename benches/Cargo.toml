@@ -13,18 +13,22 @@ publish = false
 [lints]
 workspace = true
 
-# This crate ships no library code (src/lib.rs is doc-only). Disabling the
-# default lib bench/test harnesses stops the empty libtest binary from
-# intercepting criterion's CLI flags, so `cargo bench -p snapdir-benches`
-# runs the real `hot_paths` benchmark without needing `--bench hot_paths`.
+# The lib is a real, std-only synthetic-scenario generator + catalog (Scenario,
+# tiers, deterministic_bytes) reused by the benches, the determinism gate, and
+# the perf gate. `bench = false` disables the default lib bench harness so the
+# empty libtest binary can't intercept criterion's CLI flags — that lets
+# `cargo bench -p snapdir-benches` run the real `hot_paths` benchmark without
+# needing `--bench hot_paths`. (`test` stays enabled; the determinism tests live
+# in the separate `tests/scenarios.rs` integration binary regardless.)
 [lib]
 bench = false
-test = false
 
 [dev-dependencies]
-# `snapdir-core` is exercised only by the `hot_paths` benchmark (a bench/dev
-# target — `src/lib.rs` is doc-only), so it belongs in dev-dependencies.
+# The lib itself is std-only; `snapdir-core` / `snapdir-stores` are used only by
+# the `tests/` (determinism gate) and `benches/` (hot-path) targets to walk +
+# id the generated trees, so they belong in dev-dependencies.
 snapdir-core.workspace = true
+snapdir-stores.workspace = true
 
 # Pinned criterion; default-features = false keeps it lean (no gnuplot/HTML
 # report deps). It carries no TLS, so the ring / no-aws-lc stance is unaffected.

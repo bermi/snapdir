@@ -21,6 +21,7 @@
 //! `tempfile`'s `Drop`.
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use snapdir_benches::deterministic_bytes;
 use snapdir_core::{walk, Blake3Hasher, Hasher, Manifest, ManifestEntry, PathType, WalkOptions};
 use std::fmt::Write as _;
 use std::fs;
@@ -30,17 +31,6 @@ use tempfile::TempDir;
 
 /// Buffer sizes for the hash hot path (64 B, 4 KiB, 64 KiB, 1 MiB).
 const HASH_SIZES: &[usize] = &[64, 4 * 1024, 64 * 1024, 1024 * 1024];
-
-/// Fills a buffer of `len` bytes with a deterministic, non-trivial pattern (no
-/// RNG, so corpora are reproducible across runs and machines).
-fn deterministic_bytes(len: usize) -> Vec<u8> {
-    // A simple byte ramp; cheap and fully deterministic. Masking to the low 8
-    // bits gives a repeating-but-non-uniform pattern so the hasher can't
-    // shortcut on a constant page; `try_from` after the mask is infallible.
-    (0..len)
-        .map(|i| u8::try_from(i.wrapping_mul(31).wrapping_add(7) & 0xff).expect("masked to u8"))
-        .collect()
-}
 
 /// 1. Hash hot path: `Blake3Hasher::hash_hex` across buffer sizes, reporting
 ///    throughput in bytes so criterion prints MB/s.

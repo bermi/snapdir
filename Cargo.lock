@@ -3366,6 +3366,7 @@ version = "1.1.0"
 dependencies = [
  "criterion",
  "snapdir-core",
+ "snapdir-stores",
  "tempfile",
 ]
 
