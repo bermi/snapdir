@@ -39,6 +39,16 @@ criterion = { version = "0.8", default-features = false }
 # RNG) and cleaned up via tempfile's `Drop`.
 tempfile = "3"
 
+# Deterministic INSTRUCTION-COUNT perf gate. Pinned to an EXACT, well-aged stable
+# release (0.16.1, 2025-07-30) — its MSRV (1.74.1) is comfortably below the
+# workspace MSRV (1.91.1). The `iai_hot` bench measures CPU instruction counts
+# (Ir / EstimatedCycles) under callgrind, which are deterministic (unlike
+# wall-clock), and FAILS on a regression past the configured soft limit. The
+# matching `iai-callgrind-runner` MUST be installed at this SAME version — see
+# `run-iai-docker.sh` (the runner needs valgrind, so macOS runs it via Docker).
+# Carries no TLS, so the ring / no-aws-lc stance is unaffected.
+iai-callgrind = "=0.16.1"
+
 # Real hash / walk / manifest hot-path benchmarks for the three perf-critical
 # paths (gate bench-compile).
 [[bench]]
@@ -50,4 +60,13 @@ harness = false
 # benches/README.md for the save-baseline / --baseline workflow.
 [[bench]]
 name = "pipeline"
+harness = false
+
+# Deterministic INSTRUCTION-COUNT perf gate (iai-callgrind, harness = false).
+# Measures CPU instruction counts over FIXED TINY deterministic inputs so the
+# counts are stable; FAILS on a >5% Ir / EstimatedCycles regression. Compiles on
+# macOS (`--no-run`); the actual run needs valgrind, so use `run-iai-docker.sh`
+# on macOS / Linux without native valgrind. See benches/README.md.
+[[bench]]
+name = "iai_hot"
 harness = false
