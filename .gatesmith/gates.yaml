@@ -2151,7 +2151,9 @@ gates:
     phase: 16
     owner_agent: generic
     depends_on: [bench-scenarios, bench-determinism-gate, bench-criterion-suite, bench-iai-gate, bench-ci-wire]
-    status: pending
+    status: passed
+    passed_at: 2026-06-05T01:32:00Z
+    git_sha: e33fccb
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked"
     pass_criteria:

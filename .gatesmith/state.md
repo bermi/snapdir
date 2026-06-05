@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 16 OPEN — 5/6 gates green — deterministic benchmark & regression-gate suite (gates added 2026-06-05)
+## ✅ PHASE 16 COMPLETE — 6/6 gates green (operator sign-off 2026-06-05) — ALL 116 GATES GREEN — PROJECT COMPLETE
 
 > **Progress:**
 > - `bench-scenarios` ✅ PASSED (code `9870162`) — benches/src/lib.rs is now a real std-only deterministic synthetic-scenario generator + catalog (Scenario{name,tier,exclude}, materialize -> regular files+dirs only, 0644/0755, deterministic bytes, no rng/time; gate_scenarios() x8 + bench_scenarios() x5) with tests/scenarios.rs proving twice-stable snapshot ids + byte-determinism + dedup(unique<files).
@@ -13,7 +13,9 @@
 >
 > - `bench-ci-wire` ✅ PASSED (code `f1ae236`) — ci.yaml += Linux `bench-iai` job (toolchain 1.91.1, apt valgrind, iai-callgrind-runner 0.16.1, runs `cargo bench --bench iai_hot` → 5% regression gate in CI) + `cargo bench --workspace --no-run` compile step; utils/ci/pre-push.sh += the same compile-only check; deny.toml += `RUSTSEC-2025-0141` advisories-ignore (resolves the iai bincode-1.3.3 carry-forward blocker). actionlint clean, `cargo deny … advisories ok`.
 >
-> **Ready next: `phase16-complete` (human_checkpoint)** → PM ESCALATES to operator for sign-off. The deterministic-suite story is fully wired; the real valgrind/iai instruction-count run is enforced in CI (`bench-iai` job) and reproducible on macOS via `bash benches/run-iai-docker.sh`.
+> - `phase16-complete` ✅ PASSED (operator sign-off 2026-06-05; `cargo test --workspace --locked` exit 0, 0 failures). **Phase 16 complete. Project complete — all 116 gates green.**
+>
+> **DEFERRED (operator-driven, NOT part of the loop):** cherry-pick the Phase 14 (sync), 15 (progress), and 16 (benches) code commits `dev → main` toward a 1.2.0 release. crates.io still needs Trusted Publishing for catalog/stores/cli (only core has it) or a manual-token publish — see the `release-crates-io-state` memory. `dev` carries `.gatesmith/`; `main` never does.
 
 
 > Operator-requested: a benchmark suite to make informed decisions on changes/refactorings/optimizations AND a deterministic baseline + gate to avoid regressions — local FS only, synthetic data (no network). Because snapdir is content-addressed, deterministic synthetic data -> deterministic manifest -> deterministic snapshot id, so the suite **doubles as integration testing** (assert final snapshot ids over a full local round-trip). macOS runs the valgrind/iai instruction-count gate inside a **pinned Linux Docker image** — the SAME image CI uses — so the committed baseline is authoritative on both.
