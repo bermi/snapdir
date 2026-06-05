@@ -3,6 +3,25 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
+## ▶ PHASE 18 OPEN — 0/7 gates green — Opt-in adaptive transfer tuner (`--adaptive`) + clearer/steadier progress line (gates added 2026-06-05)
+
+> Operator-requested: an **opt-in** `--adaptive[=FRACTION]` (default **0.8**) in-band congestion-control tuner for transfers, plus a clearer, width-stable status line with a smoothed ETA. **Adaptive is OPT-IN — default behavior is unchanged (full speed, OS schedules);** the polite tuner (which holds at a fraction of capacity to spare the host/neighbours) only engages when asked. The flag's optional arg IS the politeness fraction.
+>
+> **Design (proven congestion control):** TCP slow-start → AIMD + latency-gradient (TCP Vegas / Netflix concurrency-limits) + Little's Law; in-band measurement (the real get/put ops are the probe — no separate partial-file probe); guardrails = throttle/timeout backoff + CPU ~85% + memory-budget cap + ceiling, ~15s re-probe, operate at FRACTION×knee. One resizable `AdaptiveGate` (tokio Semaphore for async S3/GCS/B2 + hand-rolled zero-dep counting semaphore for the rayon local/sync path) makes one controller work across all stores. Correctness invariant: **speed-only, byte-identical output** (guarded 3×). Plus a renderer rework: byte-based smoothed/≤2s-throttled/damped ETA + `…/… files` vs `…/… <unit>` labels + fixed-width fields so moving digits don't reflow.
+>
+> **Gates (7), single ready head = `adaptive-sys-samplers`:**
+> - `adaptive-sys-samplers` (core) — zero-dep CPU%/RSS/total-RAM samplers + Meter `current_limit`/`target_rate` atoms → fans out to:
+> - `adaptive-controller` (stores) — AdaptiveGate + `set_rate` + the deterministic controller (slow-start→AIMD + gradient + guardrails)
+> - `progress-clarity-eta` (cli) — the renderer rework (parallel with adaptive-controller)
+> - `adaptive-wire` (stores ← controller) — wire both backends + error classification; byte-identical invariant
+> - `adaptive-cli` (cli ← wire) — `--adaptive[=FRACTION]` + `--max-jobs`; default path unchanged
+> - `adaptive-determinism-recheck` (bench ← wire) — proves `--adaptive` doesn't change snapshot ids
+> - `phase18-complete` (generic, human_checkpoint) — sign-off
+>
+> No frozen-interface mutation (adaptive changes scheduling/rate only; manifest locks untouched); zero new deps. **DEFERRED (noted, not gated now):** docs prose for the new flags (rides next release-prep) + **Phase 19 `snapdir export`** (sync sibling materializing the expanded file tree via a new `ExpandedSink`; designed in the plan). All gatesmith-free code lands on `dev`, cherry-pickable toward a future 1.3.0.
+
+---
+
 ## ✅ PHASE 17 COMPLETE — 7/7 gates green (operator sign-off 2026-06-05) — snapdir 1.2.0 RELEASED — ALL 123 GATES GREEN
 
 > **Progress:**

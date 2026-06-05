@@ -2280,3 +2280,111 @@ gates:
         - human_confirm: "Phase 17 done: 1.2.0 was bench-verified on a branch via the uploaded GH artifact, PR-merged to snapdir/snapdir, tagged v1.2.0 with a live GitHub release, and all 4 crates published to crates.io via the hardened idempotent loop; frozen format untouched. Approve?"
     human_checkpoint: true
     description: "PHASE 17 SIGN-OFF: snapdir 1.2.0 released — Phase 14 sync + 15 progress dashboard + 16 benchmark suite shipped; bench-verify GH workflow uploads a consultable artifact; release.yml crates publish is idempotent; canonical snapdir/snapdir at 1.2.0 + GitHub release + crates.io. Project complete."
+
+  # ======================================================================
+  # PHASE 18 — Opt-in adaptive transfer tuner (--adaptive) + clearer/steadier progress line
+  # (operator-requested 2026-06-05). Adaptive is OPT-IN (default behavior unchanged, full speed);
+  # --adaptive[=FRACTION] (default 0.8) engages an in-band congestion-control tuner (slow-start ->
+  # AIMD + latency-gradient + throttle/CPU/memory/ceiling guardrails, ~15s re-probe) across local
+  # (rayon) and remote (async) stores via a resizable AdaptiveGate. Plus a width-stable, files-vs-size
+  # unambiguous status line with a smoothed/throttled byte-based ETA. Frozen manifest format untouched;
+  # adaptive changes SPEED ONLY (byte-identical output, guarded by the Phase-16 determinism gate).
+  # ======================================================================
+
+  - id: adaptive-sys-samplers
+    phase: 18
+    owner_agent: core
+    depends_on: [phase17-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --locked resources -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Add a zero-dep `resources` module to snapdir-core (libc already a dep): best-effort CPU%-of-capacity (getrusage RUSAGE_SELF delta / wall / cores), resident-set bytes (Linux /proc/self/statm, macOS mach task_info), and total physical RAM (sysconf/sysctl); each returns Option and degrades to None on failure. These feed the stores AdaptiveController (CPU + memory-budget guardrails) AND are available to the CLI renderer. Also add two atomics to Meter (`current_limit`, `target_rate`) + setters so the renderer can DISPLAY the live adaptive values (advisory; default 0 = not adaptive). Unit tests (names contain `resources`): samplers are bounded + None-safe (no panic when /proc absent), total-RAM > 0 on this platform, Meter limit/rate round-trip. NO changes to the SHA-locked manifest.rs/merkle.rs/excludes.rs."
+
+  - id: adaptive-controller
+    phase: 18
+    owner_agent: stores
+    depends_on: [adaptive-sys-samplers]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked adaptive -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "The pure adaptive-control core in snapdir-stores (no network, deterministic, in-band). (1) AdaptiveGate: a resizable concurrency permit pool with one set_limit(n) API and two backends — async `tokio::sync::Semaphore` (grow=add_permits, shrink=acquire+forget) and a hand-rolled zero-dep rayon counting semaphore (Mutex<usize>+Condvar, acquire_blocking/release), matching the existing zero-dep token-bucket style. (2) set_rate(bytes_per_sec) added to RateLimiter + BlockingRateLimiter via interior mutability (the controller retunes the bucket live). (3) AdaptiveController: feed it per-op {bytes, latency, result: Ok|Throttle|HardErr} + periodic CPU%/RSS/total-RAM; it runs slow-start (x~1.5 while goodput rises) -> AIMD (additive +1 up when healthy, x0.5 down on congestion); latency-gradient g=rtt_min/rtt below threshold holds/decreases; HARD guardrails: throttle/timeout -> x0.5 + 15s cooldown, CPU>~85% no-increase (>95% decrease), memory-budget `limit*p95_obj_size <= fraction*total_RAM`, ceiling `[1, min(64,8*cores)]`; ~15s re-probe upward keep-if-goodput-improved; operate at FRACTION x knee (default 0.8). Deterministic unit tests (names contain `adaptive`) injecting synthetic op streams + a fake clock/CPU: ramps up under healthy goodput, multiplicative backoff on injected throttle, holds on injected latency-gradient, NEVER exceeds ceiling or the memory-budget cap, FRACTION respected, converges (no oscillation) given hysteresis. Pure logic — no I/O."
+
+  - id: adaptive-wire
+    phase: 18
+    owner_agent: stores
+    depends_on: [adaptive-controller]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Wire the gate/controller into BOTH transfer backends. TransferConfig gains an `AdaptivePolicy` (Off = default, today's fixed behavior; On { fraction, ceiling }). Async path (run_concurrent / push.rs / fetch.rs): size buffer_unordered to the ceiling, acquire an AdaptiveGate permit per object op, report {bytes,latency,result} to the controller, drive the RateLimiter rate from the controller. Rayon path (file_store.rs parallel_copy + sync.rs sync_snapshot): pool sized to ceiling, acquire_blocking a gate permit per copy, same reporting (local = concurrency-only, no rate limiting). Classify StoreError::Backend into Throttle (S3 503/SlowDown, GCS 429, timeouts, connection reset) vs HardErr; local EMFILE/ENOSPC -> Throttle. INVARIANT: manifest-last/all-or-nothing, skip-if-present, per-object verify, BYTE-IDENTICAL output preserved regardless of policy. Deterministic e2e/integration tests (local FileStore + an in-memory/synthetic StreamStore): an adaptive push/fetch/sync completes, re-walks to the SAME snapshot id as the non-adaptive path, never exceeds the ceiling, and an injected throttle drives a visible backoff. cargo test -p snapdir-stores (whole suite incl. existing transfer tests) stays green."
+
+  - id: adaptive-cli
+    phase: 18
+    owner_agent: cli
+    depends_on: [adaptive-wire]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked adaptive -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "CLI surface for the opt-in tuner. Add a global `--adaptive[=FRACTION]` (clap, optional value, default 0.8; env SNAPDIR_ADAPTIVE) that sets AdaptivePolicy::On{fraction, ceiling}; add `--max-jobs N` (the adaptive ceiling; env SNAPDIR_MAX_JOBS). DEFAULT PATH UNCHANGED: with no --adaptive, transfer_config() produces today's fixed behavior; `--jobs N` / `--limit-rate R` remain HARD overrides and, under --adaptive, act as the ceiling/rate-cap. Plumb AdaptivePolicy through transfer_config() into all 6 transfer commands (push/fetch/pull/checkout/stage/sync). --verbose reports adaptive decisions to stderr (e.g. `adaptive: target 80%, concurrency 2->6 (ceiling 16), ~45 MB/s, backed off x1`). e2e (names contain `adaptive`): --adaptive engages AdaptivePolicy::On with fraction 0.8 (and a parsed `--adaptive=0.5` => 0.5); WITHOUT the flag the constructed TransferConfig is byte-for-byte the pre-Phase-18 value (no behavior change); stdout stays the scriptable snapshot id throughout."
+
+  - id: progress-clarity-eta
+    phase: 18
+    owner_agent: cli
+    depends_on: [adaptive-sys-samplers]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked progress -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Rework the Phase-15 single-line renderer (snapdir-cli/src/progress.rs) for clarity + stability + a usable ETA. (1) ETA: compute from a heavily-smoothed BYTE rate (remaining_bytes / smoothed_Bps), refresh the DISPLAYED eta at most ~every 2s (hold between updates), and damp per-update change so it settles/counts-down instead of flickering. The bps/iops fields keep their 100ms cadence. (2) Disambiguate: counts are labeled `<done>/<total> files`; sizes always carry a unit `<xfer>/<total> <UNIT>` — no bare numbers. (3) Width-stability: right-align numeric fields to fixed widths, pad `done` to the width of `total`, pick the size UNIT once from the known total and hold it for the whole transfer (no MB<->GB flip mid-stream), eta in a fixed-width slot — changing digits NEVER reflow later fields; keep the existing narrow-terminal drop order (eta->cpu->mem->obj/s). (4) When adaptive, show the live limit/target (e.g. `jobs 6/16 (auto 0.8)`) from Meter.current_limit/target_rate. Deterministic tests (names contain `progress`): formatting a sequence of MeterSnapshots at a FIXED width yields constant-width lines (column positions stable as digits change), files vs size labels present, eta updates throttled (unchanged within a 2s window), --no-progress/--quiet/--color still gate; stdout id contract intact. Renderer-only; no transfer-semantics change."
+
+  - id: adaptive-determinism-recheck
+    phase: 18
+    owner_agent: bench
+    depends_on: [adaptive-wire]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-benches --locked determinism -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Guard the correctness invariant: the adaptive tuner + renderer changes change SPEED ONLY, never bytes. Confirm the Phase-16 deterministic golden-id + full-round-trip suite is still green, and add a determinism-tier assertion that a local round-trip executed under AdaptivePolicy::On (fraction 0.8, low ceiling) re-ids to the SAME pinned golden snapshot id as the non-adaptive path (push -> sync A->B adaptive -> fetch -> re-walk -> re-id == golden). Bench lane (benches/); reuses the Phase-16 scenario generator + GOLDENS. No frozen-format change (the goldens are unchanged)."
+
+  - id: phase18-complete
+    phase: 18
+    owner_agent: generic
+    depends_on: [adaptive-sys-samplers, adaptive-controller, adaptive-wire, adaptive-cli, progress-clarity-eta, adaptive-determinism-recheck]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 18 done: an OPT-IN `--adaptive[=FRACTION]` (default 0.8) in-band congestion-control tuner (slow-start->AIMD + latency-gradient + throttle/CPU/memory/ceiling guardrails, ~15s re-probe) works across local + remote stores via a resizable AdaptiveGate; default behavior is unchanged (full speed); the status line is width-stable + unambiguous (files vs size) with a smoothed/throttled byte-based ETA; output stays byte-identical (determinism gate green); frozen format untouched. Approve?"
+    human_checkpoint: true
+    description: "PHASE 18 SIGN-OFF: opt-in adaptive transfer tuner + clearer/steadier progress line. --adaptive auto-probes CPU/network in-band and holds at a polite fraction (default 0.8) with AIMD + gradient + CPU/memory/throttle guardrails across all stores; default unchanged; width-stable files-vs-size status line + smoothed byte-based ETA; speed-only (byte-identical output); workspace tests green."
