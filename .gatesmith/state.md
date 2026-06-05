@@ -3,7 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 16 OPEN — 0/6 gates green — deterministic benchmark & regression-gate suite (gates added 2026-06-05)
+## ▶ PHASE 16 OPEN — 1/6 gates green — deterministic benchmark & regression-gate suite (gates added 2026-06-05)
+
+> **Progress:** `bench-scenarios` ✅ PASSED (code `9870162`) — benches/src/lib.rs is now a real std-only deterministic synthetic-scenario generator + catalog (Scenario{name,tier,exclude}, materialize -> regular files+dirs only, 0644/0755, deterministic bytes, no rng/time; gate_scenarios() x8 + bench_scenarios() x5) with tests/scenarios.rs proving twice-stable snapshot ids + byte-determinism + dedup(unique<files). **Ready next (parallelizable, all dep only bench-scenarios): `bench-determinism-gate`, `bench-criterion-suite`, `bench-iai-gate`** — PM picks one per tick (priority: phase asc, failure desc, id asc -> `bench-criterion-suite` is id-first, then `bench-determinism-gate`, then `bench-iai-gate`).
+
 
 > Operator-requested: a benchmark suite to make informed decisions on changes/refactorings/optimizations AND a deterministic baseline + gate to avoid regressions — local FS only, synthetic data (no network). Because snapdir is content-addressed, deterministic synthetic data -> deterministic manifest -> deterministic snapshot id, so the suite **doubles as integration testing** (assert final snapshot ids over a full local round-trip). macOS runs the valgrind/iai instruction-count gate inside a **pinned Linux Docker image** — the SAME image CI uses — so the committed baseline is authoritative on both.
 >

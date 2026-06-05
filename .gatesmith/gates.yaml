@@ -2074,7 +2074,9 @@ gates:
     phase: 16
     owner_agent: bench
     depends_on: [phase15-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-05T00:15:00Z
+    git_sha: 9870162
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-benches --locked scenario -- --nocapture"
     pass_criteria:
