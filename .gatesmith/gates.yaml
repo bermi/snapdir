@@ -2191,7 +2191,9 @@ gates:
     phase: 17
     owner_agent: packaging
     depends_on: [phase16-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-05T03:02:00Z
+    git_sha: a72ddd3
     failure_count: 0
     verification_cmd: "grep -qE 'index\\.crates\\.io|already published' .github/workflows/release.yml && grep -qE 'cargo publish' .github/workflows/release.yml && actionlint .github/workflows/release.yml"
     pass_criteria:

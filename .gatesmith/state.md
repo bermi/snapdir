@@ -3,9 +3,13 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 17 OPEN — 1/7 gates green — Release pipeline: dev → bench-verify branch → snapdir/snapdir → crates.io (1.2.0) (gates added 2026-06-05)
+## ▶ PHASE 17 OPEN — 2/7 gates green — Release pipeline: dev → bench-verify branch → snapdir/snapdir → crates.io (1.2.0) (gates added 2026-06-05)
 
-> **Progress:** `release-bench-verify-workflow` ✅ PASSED (code `5ed8851`) — NEW `.github/workflows/bench-verify.yml`: on `release-verify/**` push + dispatch, runs the determinism test + iai_hot 5%-gate (both fail the job) + criterion pipeline/hot_paths (informational), uploads `bench-verify-1.2.0` (target/criterion + target/iai + bench-output.log) `if:always()`. **Ready next (parallelizable, both dep only phase16-complete): `release-crates-idempotent` (packaging), `release-prep-1.2.0` (generic)** — id-asc picks `release-crates-idempotent` next.
+> **Progress:**
+> - `release-bench-verify-workflow` ✅ PASSED (code `5ed8851`) — NEW `.github/workflows/bench-verify.yml`: on `release-verify/**` push + dispatch, runs the determinism test + iai_hot 5%-gate (both fail the job) + criterion pipeline/hot_paths (informational), uploads `bench-verify-1.2.0` (target/criterion + target/iai + bench-output.log) `if:always()`.
+> - `release-crates-idempotent` ✅ PASSED (code `a72ddd3`) — `release.yml` crates publish now queries the crates.io sparse index and SKIPS any already-published `crate@version` (safe partial-release re-runs; fixes the 1.1.0 death); first-publish 404-safe; order/auth/`--locked` unchanged; comment flags the TP-registration gap for catalog/stores/cli.
+>
+> **Ready next: `release-prep-1.2.0` (generic)** — bump 1.1.0→1.2.0 + internal deps + lock + `[1.2.0]` CHANGELOG. Last engineering gate; once it passes, **`release-verify-branch` (human_checkpoint)** unblocks → I escalate to the operator and run the cherry-pick/push/consult-artifact between ticks.
 
 > Operator-requested: ship the unreleased Phase 14 (sync) + 15 (progress dashboard) + 16 (benchmark suite) as **1.2.0**. Cherry-pick dev's gatesmith-free code onto a **bench-verification branch off `upstream/main`**, push to **origin (bermi)** so its Actions **run the bench suite + upload a consultable artifact**; once verified, **PR to snapdir/snapdir**, **tag v1.2.0**, **publish all 4 crates**. The 1.1.0 publish loop wasn't idempotent (failed mid-way) + TP only covers snapdir-core — Phase 17 hardens both. AMA: version 1.2.0 (minor; format unchanged → interop); verify branch carries **ZERO `.gatesmith`**; promote via PR; idempotent publish loop + operator registers TP for the 3 crates.
 >
