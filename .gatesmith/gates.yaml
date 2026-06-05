@@ -2162,3 +2162,107 @@ gates:
         - human_confirm: "Phase 16 done: a deterministic synthetic-scenario suite gives golden snapshot-id + full-round-trip + invariants integration gating (runs everywhere), criterion wall-clock benches for decisions, and an iai-callgrind instruction-count perf gate (macOS via Docker + Linux CI, same image); the dead compare.sh is gone; benches are compile-checked in CI + pre-push; frozen format untouched. Approve?"
     human_checkpoint: true
     description: "PHASE 16 SIGN-OFF: deterministic benchmark + regression-gate suite (synthetic local-FS data) lands — golden-id/round-trip/invariants determinism gate (integration testing), criterion decision benches, iai-callgrind deterministic perf gate (macOS Docker + Linux CI), bench compile-checks in CI/pre-push, dead compare.sh removed; workspace tests green."
+
+  # ======================================================================
+  # PHASE 17 — Release pipeline: dev -> bench-verify branch -> snapdir/snapdir -> crates.io (1.2.0)
+  # (operator-requested 2026-06-05). Ships unreleased Phase 14 (sync) + 15 (progress) + 16 (benches)
+  # as 1.2.0. Engineering gates land code on dev (gatesmith-free, cherry-pickable); orchestration
+  # gates (human_checkpoint) cherry-pick onto release-verify/1.2.0 off upstream/main (ZERO .gatesmith),
+  # push to origin (bermi) to run the bench-verify Action + upload a consultable artifact, then PR to
+  # snapdir/snapdir, tag v1.2.0, and publish all 4 crates. Frozen format untouched.
+  # ======================================================================
+
+  - id: release-bench-verify-workflow
+    phase: 17
+    owner_agent: ci
+    depends_on: [phase16-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .github/workflows/bench-verify.yml && grep -qE 'actions/upload-artifact' .github/workflows/bench-verify.yml && grep -qE 'iai_hot' .github/workflows/bench-verify.yml && grep -qiE 'criterion|pipeline' .github/workflows/bench-verify.yml && grep -qiE 'valgrind' .github/workflows/bench-verify.yml && grep -qE 'release-verify' .github/workflows/bench-verify.yml && actionlint .github/workflows/bench-verify.yml && cargo bench --workspace --no-run"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "NEW .github/workflows/bench-verify.yml — runs the full benchmark suite on the release-verify branch and uploads the results as a consultable GH artifact. Triggers: workflow_dispatch + push to 'release-verify/**'. One ubuntu-latest job mirroring bench-iai pins (checkout@v4, rust-toolchain 1.91.1, rust-cache@v2, apt valgrind, cargo install iai-callgrind-runner --version 0.16.1 --locked): (1) cargo test -p snapdir-benches --locked (determinism golden-id + round-trip integration gate; tee to bench-output.log), (2) cargo bench -p snapdir-benches --bench iai_hot (instruction-count, 5% Ir/EstimatedCycles soft-limit -> job FAILS on regression; writes target/iai), (3) cargo bench -p snapdir-benches --bench pipeline and --bench hot_paths (criterion wall-clock; writes target/criterion; tee to bench-output.log). Final step: actions/upload-artifact@v4 name 'bench-verify-1.2.0' path target/criterion/ + target/iai/ + bench-output.log (if-no-files-found: warn). actionlint clean. PM verifies the file exists, greps (upload-artifact, iai_hot, criterion/pipeline, valgrind, release-verify), actionlint passes, and cargo bench --workspace --no-run compiles. Rides the cherry-pick to the verify branch so origin's Actions produce the artifact."
+
+  - id: release-crates-idempotent
+    phase: 17
+    owner_agent: packaging
+    depends_on: [phase16-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -qE 'index\\.crates\\.io|already published' .github/workflows/release.yml && grep -qE 'cargo publish' .github/workflows/release.yml && actionlint .github/workflows/release.yml"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Make the release.yml crates-io publish loop IDEMPOTENT so a partial release re-runs safely (the 1.1.0 failure mode). Before each `cargo publish -p $crate`, query the sparse index (curl -sf https://index.crates.io/<shard>/$crate) for the target version and, if already published, echo 'already published; skipping' + continue instead of erroring; only publish missing crates; keep core->catalog->stores->cli order + Trusted Publishing auth (rust-lang/crates-io-auth-action@v1) untouched. NOTE in a comment that TP must be registered for snapdir-catalog/-stores/-cli (operator action; only -core has it) — the loop no longer dies if some are already up, but unregistered crates still 403 until TP is added. PM verifies release.yml contains the skip-if-published guard (index.crates.io / 'already published') + cargo publish + actionlint clean."
+
+  - id: release-prep-1.2.0
+    phase: 17
+    owner_agent: generic
+    depends_on: [phase16-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -qE '^version = \"1.2.0\"' Cargo.toml && ! grep -qE '1\\.1\\.0' Cargo.toml && grep -qE '^## \\[1\\.2\\.0\\]' docs/rust-port/CHANGELOG.md && cargo build --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Release prep for 1.2.0 (generic gate scoped to EXACTLY: Cargo.toml, Cargo.lock, docs/rust-port/CHANGELOG.md). Bump [workspace.package] version 1.1.0 -> 1.2.0 AND the three internal dep requirements (snapdir-core/-catalog/-stores = \"1.2.0\") in root Cargo.toml; regenerate Cargo.lock (cargo update -w / build). Write the docs/rust-port/CHANGELOG.md `## [1.2.0]` section: Added — `snapdir sync` streaming store-to-store snapshot copy (StreamStore trait, sync_snapshot, 15th subcommand); the live single-line transfer/hash progress dashboard (TTY-gated, --no-progress/--quiet/--color); the deterministic benchmark + regression-gate suite (synthetic scenarios, golden-id/round-trip determinism gate, criterion decision benches, iai-callgrind instruction-count perf gate, CI/pre-push compile checks). State the manifest byte-format + content-addressed layout are unchanged so snapshots stay interoperable with 1.1.x. Update the bottom compare links ([Unreleased]/[1.2.0]). PM verifies Cargo.toml at 1.2.0 with no lingering 1.1.0, CHANGELOG has [1.2.0], and cargo build --workspace --locked is green."
+
+  - id: release-verify-branch
+    phase: 17
+    owner_agent: generic
+    depends_on: [release-bench-verify-workflow, release-crates-idempotent, release-prep-1.2.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git rev-parse --verify --quiet release-verify/1.2.0 && test -z \"$(git log upstream/main..release-verify/1.2.0 --name-only --format= -- .gatesmith)\" && git log --oneline upstream/main..release-verify/1.2.0"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "release-verify/1.2.0 (off upstream/main; the Phase 14/15/16 code commits + bench-verify.yml + idempotent-release + the 1.2.0 prep, gatesmith-free, ZERO .gatesmith) is pushed to origin (bermi) and the bench-verify GitHub Action's 'bench-verify-1.2.0' artifact is GREEN and consulted (iai within the 5% gate, determinism golden ids match, criterion numbers sane). Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (operator / me at operator go-ahead, between ticks — the PM never leaves dev mid-tick). Create branch release-verify/1.2.0 off upstream/main; cherry-pick IN ORDER the 14 Phase 14/15/16 code SHAs (88e5864 5b2a899 327d1eb d175a50 69a0133 bca8e21 50f54b3 83deea1 87ed0ba 9870162 14fcffe 85bd874 e024218 f1ae236) then the three Phase-17 code commits (release-bench-verify-workflow, release-crates-idempotent, release-prep-1.2.0 git_shas from the ledger) — ALL gatesmith-free, ZERO .gatesmith. Push to origin (bermi/snapdir); the push triggers bench-verify.yml -> uploads the bench-verify-1.2.0 artifact. PM machine-check: the branch exists locally AND carries zero .gatesmith files in upstream/main..release-verify/1.2.0; human_confirm: operator consulted the artifact and it's green. (Cherry-pick helper if the explicit list drifts: git log --reverse --format='%H %s' <1.1.0-baseline-on-dev ~9596a3d>..dev | grep -v ' gatesmith:'.)"
+
+  - id: release-pr-upstream
+    phase: 17
+    owner_agent: generic
+    depends_on: [release-verify-branch]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.2.0\"' && test -z \"$(git ls-tree -r --name-only upstream/main | grep '^\\.gatesmith')\""
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "The 'release: 1.2.0 — sync, progress dashboard, benchmark suite' PR (head release-verify/1.2.0) to snapdir/snapdir is merged to upstream/main; the merged tree is at 1.2.0 with ZERO .gatesmith files. Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION. Open a PR from release-verify/1.2.0 to snapdir/snapdir titled 'release: 1.2.0 — sync, progress dashboard, benchmark suite' (mirrors the #7/#8 'release: X.Y.Z — … (#N)' pattern); review + squash-merge to upstream/main. PM machine-check after merge: upstream/main Cargo.toml at 1.2.0 AND no .gatesmith tracked anywhere on upstream/main; human_confirm the PR is merged. (gh pr create --repo snapdir/snapdir --base main --head bermi:release-verify/1.2.0 …)"
+
+  - id: release-tag-crates-1.2.0
+    phase: 17
+    owner_agent: packaging
+    depends_on: [release-pr-upstream]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git ls-remote --tags upstream refs/tags/v1.2.0 | grep -q v1.2.0 && for c in snapdir-core snapdir-catalog snapdir-stores snapdir-cli; do curl -sf \"https://index.crates.io/$(printf %s \"$c\" | cut -c1-2)/$(printf %s \"$c\" | cut -c3-4)/$c\" | grep -q '\"vers\":\"1.2.0\"' || exit 1; done"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "v1.2.0 is tagged on snapdir/snapdir, the GitHub release is live (signed archives + SHA256SUMS), and all 4 crates are at 1.2.0 on crates.io (TP registered for -catalog/-stores/-cli; idempotent loop re-runnable). Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION. Operator FIRST registers Trusted Publishing for snapdir-catalog/-stores/-cli on crates.io (web UI: each crate -> Settings -> Trusted Publishing -> owner snapdir, repo snapdir, workflow release.yml, environment BLANK). Then tag v1.2.0 on the merged upstream/main commit and push the tag -> release.yml builds the 6-target archives + GitHub release + the now-idempotent crates publish (core->catalog->stores->cli). PM machine-check: upstream has tag v1.2.0 AND the crates.io sparse index shows 1.2.0 for all four crates; human_confirm the GH release + crates are live. (If TP still lags, the idempotent loop makes a manual-token publish of the stragglers safe — see release-crates-io-state.)"
+
+  - id: phase17-complete
+    phase: 17
+    owner_agent: generic
+    depends_on: [release-tag-crates-1.2.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.2.0\"'"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 17 done: 1.2.0 was bench-verified on a branch via the uploaded GH artifact, PR-merged to snapdir/snapdir, tagged v1.2.0 with a live GitHub release, and all 4 crates published to crates.io via the hardened idempotent loop; frozen format untouched. Approve?"
+    human_checkpoint: true
+    description: "PHASE 17 SIGN-OFF: snapdir 1.2.0 released — Phase 14 sync + 15 progress dashboard + 16 benchmark suite shipped; bench-verify GH workflow uploads a consultable artifact; release.yml crates publish is idempotent; canonical snapdir/snapdir at 1.2.0 + GitHub release + crates.io. Project complete."

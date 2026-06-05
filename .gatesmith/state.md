@@ -3,7 +3,19 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ✅ PHASE 16 COMPLETE — 6/6 gates green (operator sign-off 2026-06-05) — ALL 116 GATES GREEN — PROJECT COMPLETE
+## ▶ PHASE 17 OPEN — 0/7 gates green — Release pipeline: dev → bench-verify branch → snapdir/snapdir → crates.io (1.2.0) (gates added 2026-06-05)
+
+> Operator-requested: ship the unreleased Phase 14 (sync) + 15 (progress dashboard) + 16 (benchmark suite) as **1.2.0**. Cherry-pick dev's gatesmith-free code onto a **bench-verification branch off `upstream/main`**, push to **origin (bermi)** so its Actions **run the bench suite + upload a consultable artifact**; once verified, **PR to snapdir/snapdir**, **tag v1.2.0**, **publish all 4 crates**. The 1.1.0 publish loop wasn't idempotent (failed mid-way) + TP only covers snapdir-core — Phase 17 hardens both. AMA: version 1.2.0 (minor; format unchanged → interop); verify branch carries **ZERO `.gatesmith`**; promote via PR; idempotent publish loop + operator registers TP for the 3 crates.
+>
+> **Gates (7):**
+> - **Engineering (parallelizable, dep only `phase16-complete`):** `release-bench-verify-workflow` (ci — NEW `.github/workflows/bench-verify.yml`, runs determinism+iai+criterion, uploads `bench-verify-1.2.0` artifact) · `release-crates-idempotent` (packaging — `release.yml` skip-if-published guard) · `release-prep-1.2.0` (generic — bump 1.1.0→1.2.0 + `[1.2.0]` CHANGELOG).
+> - **Orchestration (human_checkpoint; cross-branch/remote, done between ticks with real machine checks):** `release-verify-branch` (cherry-pick 14+3 onto `release-verify/1.2.0` off `upstream/main`, push to origin, consult artifact) → `release-pr-upstream` (PR → snapdir/snapdir, merge at 1.2.0) → `release-tag-crates-1.2.0` (register TP for the 3 → tag `v1.2.0` → GH release + idempotent crates publish) → `phase17-complete` (sign-off).
+>
+> **Ready head: the 3 engineering gates** (id-asc → `release-bench-verify-workflow` first). No frozen-interface mutation (workflow YAML + version bump + CHANGELOG only). crates.io PREREQ: operator registers Trusted Publishing for snapdir-catalog/-stores/-cli before the tag gate (see `release-crates-io-state` memory). dev carries `.gatesmith`; the verify branch + everything downstream do NOT.
+
+---
+
+## ✅ PHASE 16 COMPLETE — 6/6 gates green (operator sign-off 2026-06-05) — ALL 116 GATES GREEN
 
 > **Progress:**
 > - `bench-scenarios` ✅ PASSED (code `9870162`) — benches/src/lib.rs is now a real std-only deterministic synthetic-scenario generator + catalog (Scenario{name,tier,exclude}, materialize -> regular files+dirs only, 0644/0755, deterministic bytes, no rng/time; gate_scenarios() x8 + bench_scenarios() x5) with tests/scenarios.rs proving twice-stable snapshot ids + byte-determinism + dedup(unique<files).
