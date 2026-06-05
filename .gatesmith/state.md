@@ -3,7 +3,9 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 18 OPEN — 0/7 gates green — Opt-in adaptive transfer tuner (`--adaptive`) + clearer/steadier progress line (gates added 2026-06-05)
+## ▶ PHASE 18 OPEN — 1/7 gates green — Opt-in adaptive transfer tuner (`--adaptive`) + clearer/steadier progress line (gates added 2026-06-05)
+
+> **Progress:** `adaptive-sys-samplers` ✅ PASSED (code `de3fb7e`) — NEW `snapdir-core/src/resources.rs`: best-effort CPU%-of-capacity (getrusage), RSS (proc/mach), total-RAM (sysconf/hw.memsize) samplers (Option/None-safe) + `libc` edge; Meter += advisory `current_limit`/`target_rate` atoms for the renderer. Frozen format untouched. **Ready next (parallelizable, both dep only adaptive-sys-samplers): `adaptive-controller` (stores), `progress-clarity-eta` (cli)** — id-asc picks `adaptive-controller` next.
 
 > Operator-requested: an **opt-in** `--adaptive[=FRACTION]` (default **0.8**) in-band congestion-control tuner for transfers, plus a clearer, width-stable status line with a smoothed ETA. **Adaptive is OPT-IN — default behavior is unchanged (full speed, OS schedules);** the polite tuner (which holds at a fraction of capacity to spare the host/neighbours) only engages when asked. The flag's optional arg IS the politeness fraction.
 >
