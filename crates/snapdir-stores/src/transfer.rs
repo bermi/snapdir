@@ -64,8 +64,17 @@ impl Default for TransferConfig {
 }
 
 /// Shared token-bucket state, guarded by an async mutex.
+///
+/// The refill `rate`/`capacity` live **inside** the bucket (behind the same
+/// mutex as the running `tokens`) so [`RateLimiter::set_rate`] can retune the
+/// limiter live by relocking and updating them. A `rate` of `0.0` means
+/// "unlimited" — [`acquire`](RateLimiter::acquire) returns immediately.
 #[derive(Debug)]
 struct Bucket {
+    /// Refill rate in bytes per second. `0.0` means unlimited (no throttling).
+    rate: f64,
+    /// Maximum burst capacity, in bytes (~1 second's worth of budget).
+    capacity: f64,
     /// Currently available tokens (bytes).
     tokens: f64,
     /// Last time the bucket was refilled.
@@ -75,13 +84,9 @@ struct Bucket {
 /// Inner state of a [`RateLimiter`].
 #[derive(Debug)]
 struct Inner {
-    /// Refill rate in bytes per second. `0` is impossible here (unlimited is
-    /// modelled by `bucket = None`).
-    rate: f64,
-    /// Maximum burst capacity, in bytes (~1 second's worth of budget).
-    capacity: f64,
-    /// `None` when unlimited; otherwise the live bucket state.
-    bucket: Option<Mutex<Bucket>>,
+    /// The live bucket state (rate/capacity/tokens). A `rate` of `0.0` models
+    /// the unlimited case.
+    bucket: Mutex<Bucket>,
 }
 
 /// An async token-bucket rate limiter that throttles aggregate transfer
@@ -104,27 +109,64 @@ impl RateLimiter {
     /// limiter whose [`acquire`](RateLimiter::acquire) never waits.
     #[must_use]
     pub fn new(max_bytes_per_sec: Option<u64>) -> Self {
-        let inner = match max_bytes_per_sec {
-            Some(rate) if rate > 0 => {
-                #[allow(clippy::cast_precision_loss)]
-                let rate = rate as f64;
-                Inner {
-                    rate,
-                    capacity: rate,
-                    bucket: Some(Mutex::new(Bucket {
-                        tokens: rate,
-                        last_refill: tokio::time::Instant::now(),
-                    })),
-                }
+        #[allow(clippy::cast_precision_loss)]
+        let (rate, capacity, tokens) = match max_bytes_per_sec {
+            Some(r) if r > 0 => {
+                let r = r as f64;
+                (r, r, r)
             }
-            _ => Inner {
-                rate: 0.0,
-                capacity: 0.0,
-                bucket: None,
-            },
+            _ => (0.0, 0.0, 0.0),
         };
         Self {
-            inner: Arc::new(inner),
+            inner: Arc::new(Inner {
+                bucket: Mutex::new(Bucket {
+                    rate,
+                    capacity,
+                    tokens,
+                    last_refill: tokio::time::Instant::now(),
+                }),
+            }),
+        }
+    }
+
+    /// Retunes the limiter's aggregate byte-rate cap **live**, so an adaptive
+    /// controller can raise or lower throttling between operations.
+    ///
+    /// - `None` (or `Some(0)`) switches the limiter to **unlimited**: the rate
+    ///   and capacity drop to `0` and the bucket is emptied, so the next
+    ///   [`acquire`](RateLimiter::acquire) is a no-op.
+    /// - `Some(r > 0)` installs (or replaces) a bucket refilling at `r`
+    ///   bytes/sec with ~1 second of burst capacity. Switching from unlimited
+    ///   to limited primes the bucket full (`tokens = capacity`) so a freshly
+    ///   throttled limiter still allows one immediate burst.
+    ///
+    /// Calling `set_rate` is the only way the rate changes after [`new`];
+    /// limiters that never call it behave exactly as before.
+    pub async fn set_rate(&self, bytes_per_sec: Option<u64>) {
+        let mut state = self.inner.bucket.lock().await;
+        let was_unlimited = state.rate <= 0.0;
+        #[allow(clippy::cast_precision_loss)]
+        match bytes_per_sec {
+            Some(r) if r > 0 => {
+                let r = r as f64;
+                state.rate = r;
+                state.capacity = r;
+                // Switching unlimited -> limited: prime a full burst. When
+                // already limited, keep the running token count but clamp it to
+                // the new capacity so a rate drop takes effect promptly.
+                if was_unlimited {
+                    state.tokens = r;
+                } else {
+                    state.tokens = state.tokens.min(r);
+                }
+                state.last_refill = tokio::time::Instant::now();
+            }
+            _ => {
+                // Unlimited: empty the bucket; `acquire` short-circuits on rate==0.
+                state.rate = 0.0;
+                state.capacity = 0.0;
+                state.tokens = 0.0;
+            }
         }
     }
 
@@ -136,9 +178,6 @@ impl RateLimiter {
     /// so throttling is correct even for objects bigger than one second's
     /// worth of budget.
     pub async fn acquire(&self, n: u64) {
-        let Some(bucket) = self.inner.bucket.as_ref() else {
-            return; // unlimited fast path
-        };
         if n == 0 {
             return;
         }
@@ -147,10 +186,13 @@ impl RateLimiter {
 
         loop {
             let wait = {
-                let mut state = bucket.lock().await;
+                let mut state = self.inner.bucket.lock().await;
+                if state.rate <= 0.0 {
+                    return; // unlimited fast path (also covers live set_rate(None))
+                }
                 let now = tokio::time::Instant::now();
                 let elapsed = now.duration_since(state.last_refill).as_secs_f64();
-                state.tokens = (state.tokens + elapsed * self.inner.rate).min(self.inner.capacity);
+                state.tokens = (state.tokens + elapsed * state.rate).min(state.capacity);
                 state.last_refill = now;
 
                 if state.tokens >= need {
@@ -160,7 +202,7 @@ impl RateLimiter {
                 // Not enough budget: compute how long until the deficit is
                 // covered, then sleep (releasing the lock first).
                 let deficit = need - state.tokens;
-                deficit / self.inner.rate
+                deficit / state.rate
             };
             tokio::time::sleep(Duration::from_secs_f64(wait)).await;
         }
@@ -169,8 +211,16 @@ impl RateLimiter {
 
 /// Shared token-bucket state for [`BlockingRateLimiter`], guarded by a
 /// **synchronous** [`std::sync::Mutex`] (not tokio's async mutex).
+///
+/// As with [`Bucket`], the refill `rate`/`capacity` live inside the bucket so
+/// [`BlockingRateLimiter::set_rate`] can retune live. `rate == 0.0` means
+/// unlimited.
 #[derive(Debug)]
 struct BlockingBucket {
+    /// Refill rate in bytes per second. `0.0` means unlimited (no throttling).
+    rate: f64,
+    /// Maximum burst capacity, in bytes (~1 second's worth of budget).
+    capacity: f64,
     /// Currently available tokens (bytes).
     tokens: f64,
     /// Last time the bucket was refilled.
@@ -180,12 +230,9 @@ struct BlockingBucket {
 /// Inner state of a [`BlockingRateLimiter`].
 #[derive(Debug)]
 struct BlockingInner {
-    /// Refill rate in bytes per second.
-    rate: f64,
-    /// Maximum burst capacity, in bytes (~1 second's worth of budget).
-    capacity: f64,
-    /// `None` when unlimited; otherwise the live bucket state.
-    bucket: Option<std::sync::Mutex<BlockingBucket>>,
+    /// The live bucket state (rate/capacity/tokens). A `rate` of `0.0` models
+    /// the unlimited case.
+    bucket: std::sync::Mutex<BlockingBucket>,
 }
 
 /// A **synchronous** token-bucket rate limiter for the store-to-store sync
@@ -220,27 +267,56 @@ impl BlockingRateLimiter {
     /// [`acquire_blocking`](BlockingRateLimiter::acquire_blocking) never waits.
     #[must_use]
     pub fn new(max_bytes_per_sec: Option<u64>) -> Self {
-        let inner = match max_bytes_per_sec {
-            Some(rate) if rate > 0 => {
-                #[allow(clippy::cast_precision_loss)]
-                let rate = rate as f64;
-                BlockingInner {
-                    rate,
-                    capacity: rate,
-                    bucket: Some(std::sync::Mutex::new(BlockingBucket {
-                        tokens: rate,
-                        last_refill: std::time::Instant::now(),
-                    })),
-                }
+        #[allow(clippy::cast_precision_loss)]
+        let (rate, capacity, tokens) = match max_bytes_per_sec {
+            Some(r) if r > 0 => {
+                let r = r as f64;
+                (r, r, r)
             }
-            _ => BlockingInner {
-                rate: 0.0,
-                capacity: 0.0,
-                bucket: None,
-            },
+            _ => (0.0, 0.0, 0.0),
         };
         Self {
-            inner: Arc::new(inner),
+            inner: Arc::new(BlockingInner {
+                bucket: std::sync::Mutex::new(BlockingBucket {
+                    rate,
+                    capacity,
+                    tokens,
+                    last_refill: std::time::Instant::now(),
+                }),
+            }),
+        }
+    }
+
+    /// Retunes the limiter's aggregate byte-rate cap **live** (the synchronous
+    /// sibling of [`RateLimiter::set_rate`]). Same semantics: `None`/`Some(0)`
+    /// switches to unlimited and empties the bucket; `Some(r > 0)` installs a
+    /// bucket refilling at `r` bytes/sec (priming a full burst when switching
+    /// from unlimited).
+    pub fn set_rate(&self, bytes_per_sec: Option<u64>) {
+        let mut state = self
+            .inner
+            .bucket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let was_unlimited = state.rate <= 0.0;
+        #[allow(clippy::cast_precision_loss)]
+        match bytes_per_sec {
+            Some(r) if r > 0 => {
+                let r = r as f64;
+                state.rate = r;
+                state.capacity = r;
+                if was_unlimited {
+                    state.tokens = r;
+                } else {
+                    state.tokens = state.tokens.min(r);
+                }
+                state.last_refill = std::time::Instant::now();
+            }
+            _ => {
+                state.rate = 0.0;
+                state.capacity = 0.0;
+                state.tokens = 0.0;
+            }
         }
     }
 
@@ -254,9 +330,6 @@ impl BlockingRateLimiter {
     /// of budget. Mirrors [`RateLimiter::acquire`], but parks the thread with
     /// [`std::thread::sleep`] instead of awaiting.
     pub fn acquire_blocking(&self, n: u64) {
-        let Some(bucket) = self.inner.bucket.as_ref() else {
-            return; // unlimited fast path
-        };
         if n == 0 {
             return;
         }
@@ -267,12 +340,17 @@ impl BlockingRateLimiter {
             let wait = {
                 // A poisoned bucket only means a thread panicked mid-acquire;
                 // the token state is still usable, so recover the guard.
-                let mut state = bucket
+                let mut state = self
+                    .inner
+                    .bucket
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.rate <= 0.0 {
+                    return; // unlimited fast path (also covers live set_rate(None))
+                }
                 let now = std::time::Instant::now();
                 let elapsed = now.duration_since(state.last_refill).as_secs_f64();
-                state.tokens = (state.tokens + elapsed * self.inner.rate).min(self.inner.capacity);
+                state.tokens = (state.tokens + elapsed * state.rate).min(state.capacity);
                 state.last_refill = now;
 
                 if state.tokens >= need {
@@ -282,7 +360,7 @@ impl BlockingRateLimiter {
                 // Not enough budget: compute how long until the deficit is
                 // covered, then sleep (releasing the lock first).
                 let deficit = need - state.tokens;
-                deficit / self.inner.rate
+                deficit / state.rate
             };
             std::thread::sleep(Duration::from_secs_f64(wait));
         }
@@ -446,6 +524,76 @@ mod tests {
         assert!(
             elapsed >= Duration::from_millis(900),
             "throttled acquire_blocking should take ~1s, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn transfer_config_rate_limiter_set_rate_live() {
+        let rt = runtime();
+        rt.block_on(async {
+            // Start unlimited: a huge acquire returns instantly.
+            let limiter = RateLimiter::new(None);
+            let start = tokio::time::Instant::now();
+            limiter.acquire(1_000_000).await;
+            assert!(
+                start.elapsed() < Duration::from_millis(200),
+                "unlimited acquire should not block before set_rate"
+            );
+
+            // Tighten to 1000 B/s live. The bucket is primed full (1000), so the
+            // first 1000 bytes are free; the next 1000 must wait ~1s to refill.
+            limiter.set_rate(Some(1000)).await;
+            let start = tokio::time::Instant::now();
+            limiter.acquire(1000).await; // drains the freshly-primed burst
+            limiter.acquire(1000).await; // must wait ~1s
+            let elapsed = start.elapsed();
+            assert!(
+                elapsed >= Duration::from_millis(900),
+                "after set_rate(Some(1000)) a 2x-budget acquire should take ~1s, took {elapsed:?}"
+            );
+
+            // Raise the cap back to unlimited live: acquires stop waiting again.
+            limiter.set_rate(None).await;
+            let start = tokio::time::Instant::now();
+            limiter.acquire(1_000_000).await;
+            assert!(
+                start.elapsed() < Duration::from_millis(200),
+                "after set_rate(None) acquire should no longer block"
+            );
+        });
+    }
+
+    #[test]
+    fn sync_snapshot_blocking_rate_limiter_set_rate_live() {
+        use std::time::Instant;
+
+        // Start unlimited.
+        let limiter = BlockingRateLimiter::new(None);
+        let start = Instant::now();
+        limiter.acquire_blocking(1_000_000);
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "unlimited acquire_blocking should not block before set_rate"
+        );
+
+        // Tighten live to 1000 B/s.
+        limiter.set_rate(Some(1000));
+        let start = Instant::now();
+        limiter.acquire_blocking(1000); // primed burst
+        limiter.acquire_blocking(1000); // waits ~1s
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(900),
+            "after set_rate(Some(1000)) a 2x-budget acquire should take ~1s, took {elapsed:?}"
+        );
+
+        // Back to unlimited live.
+        limiter.set_rate(Some(0));
+        let start = Instant::now();
+        limiter.acquire_blocking(1_000_000);
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "after set_rate(Some(0)) acquire_blocking should no longer block"
         );
     }
 
