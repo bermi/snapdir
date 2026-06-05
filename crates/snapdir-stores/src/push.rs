@@ -32,13 +32,21 @@
 //! (a cheap pre-check) *before* this orchestrator is called.
 
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
 
 use snapdir_core::manifest::{Manifest, ManifestEntry, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::StoreError;
 use snapdir_core::Meter;
 
-use crate::transfer::{run_concurrent, RateLimiter, TransferConfig};
+use crate::adaptive::{
+    p95_object_size, AdaptiveGate, AdaptivePolicy as ControllerPolicy, ControllerDriver, OpResult,
+    OpSample,
+};
+use crate::transfer::{
+    classify_error, run_adaptive, run_concurrent, AdaptivePolicy, RateLimiter, TransferConfig,
+};
 
 /// Strips a leading `./` and a trailing `/` from a manifest path so the
 /// remainder can be joined onto a source root (shared with the backends).
@@ -106,7 +114,9 @@ async fn read_verified(
 pub(crate) async fn push_objects_concurrent<'a, U, UFut, W, WFut>(
     manifest: &'a Manifest,
     config: &TransferConfig,
+    rate_limiter: &RateLimiter,
     meter: Option<&Meter>,
+    meter_arc: Option<Arc<Meter>>,
     upload_one: U,
     write_manifest: W,
 ) -> Result<(), StoreError>
@@ -131,15 +141,131 @@ where
         m.set_total(total);
     }
 
-    // Concurrent object pass: each task runs the injected per-object work
-    // (existence check, then read+verify+upload for absent objects). The first
-    // error is propagated and the rest cancelled.
-    run_concurrent(files, config.concurrency, upload_one).await?;
+    match config.adaptive {
+        AdaptivePolicy::Off => {
+            // Concurrent object pass: each task runs the injected per-object work
+            // (existence check, then read+verify+upload for absent objects). The
+            // first error is propagated and the rest cancelled.
+            run_concurrent(files, config.concurrency, upload_one).await?;
+        }
+        AdaptivePolicy::On { fraction, ceiling } => {
+            run_adaptive_objects(
+                &files,
+                config,
+                rate_limiter,
+                meter_arc,
+                fraction,
+                ceiling,
+                upload_one,
+            )
+            .await?;
+        }
+    }
 
     // Manifest-last / all-or-nothing: only after every object upload returned
     // Ok do we write the manifest. A failed push (an error above) returns
     // early and leaves no manifest.
     write_manifest().await
+}
+
+/// The adaptive sibling of the fixed-concurrency object pass: sizes the in-flight
+/// window to the policy ceiling, gates each upload to the controller's live
+/// limit, times + classifies + records every op, and runs a background tick
+/// driver that resizes the gate and retunes the shared rate limiter. The exact
+/// objects uploaded and the first-error-wins semantics are identical to the
+/// `Off` path — only scheduling/rate differ.
+#[allow(clippy::too_many_arguments)]
+async fn run_adaptive_objects<'a, U, UFut>(
+    files: &[&'a ManifestEntry],
+    config: &TransferConfig,
+    rate_limiter: &RateLimiter,
+    meter_arc: Option<Arc<Meter>>,
+    fraction: f64,
+    ceiling: usize,
+    upload_one: U,
+) -> Result<(), StoreError>
+where
+    U: Fn(&'a ManifestEntry) -> UFut,
+    UFut: std::future::Future<Output = Result<(), StoreError>>,
+{
+    let gate = AdaptiveGate::new(config.concurrency.get(), ceiling);
+    let driver = build_push_driver(
+        files,
+        config,
+        rate_limiter,
+        meter_arc,
+        fraction,
+        ceiling,
+        &gate,
+    );
+
+    // Background tick driver: ~250ms cadence (well below the controller's 15s
+    // cooldown/re-probe constants) so the gate/limiter track the controller live.
+    let tick_driver = driver.clone();
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let tick_handle = tokio::spawn(async move {
+        loop {
+            ticker.tick().await;
+            tick_driver.tick();
+        }
+    });
+
+    let result = run_adaptive(files.iter().copied(), &gate, |entry| {
+        let upload_one = &upload_one;
+        let driver = &driver;
+        async move {
+            let started = Instant::now();
+            let outcome = upload_one(entry).await;
+            let latency = started.elapsed();
+            let (bytes, op_result) = match &outcome {
+                Ok(()) => (entry.size, OpResult::Ok),
+                Err(err) => (0, classify_error(err)),
+            };
+            driver.record_op(OpSample {
+                bytes,
+                latency,
+                result: op_result,
+            });
+            outcome
+        }
+    })
+    .await;
+
+    tick_handle.abort();
+    result.map(|_| ())
+}
+
+/// Builds the [`ControllerDriver`] for the async push path: a controller policy
+/// derived from the config (ceiling + fraction, machine RAM for the memory
+/// budget, `max_bytes_per_sec` as the rate cap), wired to retune the async
+/// [`RateLimiter`] and mirror the limit/rate into the display meter.
+fn build_push_driver(
+    files: &[&ManifestEntry],
+    config: &TransferConfig,
+    rate_limiter: &RateLimiter,
+    meter_arc: Option<Arc<Meter>>,
+    fraction: f64,
+    ceiling: usize,
+    gate: &AdaptiveGate,
+) -> ControllerDriver {
+    let sizes: Vec<u64> = files.iter().map(|e| e.size).collect();
+    let p95 = p95_object_size(&sizes);
+    let total_ram = snapdir_core::resources::total_ram_bytes().unwrap_or(0);
+    let policy = ControllerPolicy::new(fraction, ceiling, total_ram, config.max_bytes_per_sec);
+
+    // The async limiter's `set_rate` is async; bridge it to the driver's sync
+    // applier by spawning the retune on the current runtime (best-effort,
+    // advisory). Cloning shares the same bucket.
+    let limiter = rate_limiter.clone();
+    let rate_applier: Arc<dyn Fn(Option<u64>) + Send + Sync> = Arc::new(move |rate| {
+        let limiter = limiter.clone();
+        tokio::spawn(async move {
+            limiter.set_rate(rate).await;
+        });
+    });
+
+    ControllerDriver::new(policy, gate.clone(), p95, Some(rate_applier), meter_arc)
 }
 
 /// The shared per-object upload step S3/GCS inject into
@@ -343,6 +469,8 @@ mod tests {
             push_objects_concurrent(
                 manifest,
                 &cfg,
+                &limiter,
+                None,
                 None,
                 |entry| {
                     let fake = Arc::clone(fake);
@@ -420,6 +548,93 @@ mod tests {
                 "manifest must be written only after every object upload completed"
             );
         }
+    }
+
+    #[test]
+    fn adaptive_upload_all_objects_then_manifest_within_ceiling() {
+        // An adaptive push (policy On, ceiling 2) uploads every absent object,
+        // writes the manifest last, and caps effective concurrency at the ceiling.
+        use crate::transfer::AdaptivePolicy;
+
+        let files: &[(&str, &[u8])] = &[
+            ("a.txt", b"alpha" as &[u8]),
+            ("nested/b.txt", b"bravo"),
+            ("nested/deep/c.txt", b"charlie"),
+            ("d.txt", b"delta"),
+            ("e.txt", b"echo"),
+        ];
+        let src = TempDir::new();
+        let manifest = manifest_and_source(files, src.path());
+        let src_path = src.path().to_path_buf();
+        let fake = FakeStore::new(&[], "");
+
+        let cfg = TransferConfig::new(4, None).with_adaptive(AdaptivePolicy::On {
+            fraction: 0.8,
+            ceiling: 2,
+        });
+        let limiter = RateLimiter::new(None);
+        let rt = runtime();
+        let fake_ref = Arc::clone(&fake);
+        rt.block_on(async {
+            push_objects_concurrent(
+                &manifest,
+                &cfg,
+                &limiter,
+                None,
+                None,
+                |entry| {
+                    let fake = Arc::clone(&fake_ref);
+                    let limiter = &limiter;
+                    let src_path = &src_path;
+                    async move {
+                        upload_object(
+                            entry,
+                            entry.checksum.clone(),
+                            src_path,
+                            limiter,
+                            None,
+                            |key| {
+                                let fake = Arc::clone(&fake);
+                                async move { fake.key_exists(key).await }
+                            },
+                            |key, bytes| {
+                                let fake = Arc::clone(&fake);
+                                async move { fake.put_bytes(key, bytes).await }
+                            },
+                        )
+                        .await
+                    }
+                },
+                || {
+                    let fake = Arc::clone(&fake_ref);
+                    async move { fake.write_manifest().await }
+                },
+            )
+            .await
+        })
+        .expect("adaptive push must succeed");
+
+        // All objects uploaded exactly once.
+        let mut uploaded = fake.uploaded.lock().unwrap().clone();
+        uploaded.sort();
+        let mut expected: Vec<String> = files.iter().map(|(_, c)| checksum_of(c)).collect();
+        expected.sort();
+        assert_eq!(uploaded, expected, "all objects uploaded under adaptive");
+
+        // Effective concurrency capped at the ceiling (2).
+        let hw = fake.high_water.load(Ordering::SeqCst);
+        assert!(
+            hw <= 2,
+            "effective concurrency must not exceed ceiling 2, got {hw}"
+        );
+
+        // Manifest written exactly once, after every upload.
+        assert!(fake.manifest_written.load(Ordering::SeqCst));
+        assert_eq!(
+            fake.uploads_done_at_manifest.load(Ordering::SeqCst),
+            files.len(),
+            "manifest written only after every object upload"
+        );
     }
 
     #[test]

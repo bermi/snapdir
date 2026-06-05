@@ -48,7 +48,8 @@ pub mod transfer;
 pub(crate) mod util;
 
 pub use adaptive::{
-    AdaptiveController, AdaptiveGate, AdaptivePolicy, Decision, OpResult, OpSample,
+    p95_object_size, AdaptiveController, AdaptiveGate, AdaptivePolicy, ControllerDriver, Decision,
+    OpResult, OpSample,
 };
 pub use b2_store::B2Store;
 pub use file_store::FileStore;
@@ -58,4 +59,7 @@ pub use s3_store::{S3Location, S3Store};
 pub use shim::ExternalStore;
 pub use stream::StreamStore;
 pub use sync::{sync_snapshot, SyncReport};
-pub use transfer::{run_concurrent, BlockingRateLimiter, RateLimiter, TransferConfig};
+pub use transfer::{
+    classify_error, run_adaptive, run_concurrent, AdaptivePolicy as TransferAdaptivePolicy,
+    BlockingRateLimiter, RateLimiter, TransferConfig,
+};

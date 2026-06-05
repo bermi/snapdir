@@ -388,6 +388,7 @@ impl Store for S3Store {
         // BLAKE3-verify + retry discipline of `fetch_verified`.
         let limiter = RateLimiter::new(self.config.max_bytes_per_sec);
         let meter = self.meter.as_deref();
+        let meter_arc = self.meter.clone();
         self.runtime.block_on(async {
             fetch_files_concurrent(
                 manifest,
@@ -395,6 +396,7 @@ impl Store for S3Store {
                 &self.config,
                 &limiter,
                 meter,
+                meter_arc,
                 |entry| async {
                     let key = self.location.object_key(&entry.checksum);
                     self.fetch_verified(&key, &entry.checksum).await
@@ -415,6 +417,7 @@ impl Store for S3Store {
         // closure. A failed push writes NO manifest.
         let limiter = RateLimiter::new(self.config.max_bytes_per_sec);
         let meter = self.meter.as_deref();
+        let meter_arc = self.meter.clone();
         self.runtime.block_on(async {
             // Skip-if-manifest-present pre-check: a present manifest implies all
             // its objects are present (we always write the manifest last).
@@ -426,7 +429,9 @@ impl Store for S3Store {
             push_objects_concurrent(
                 manifest,
                 &self.config,
+                &limiter,
                 meter,
+                meter_arc,
                 |entry| {
                     let object_key = self.location.object_key(&entry.checksum);
                     upload_object(

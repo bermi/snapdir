@@ -22,31 +22,80 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use snapdir_core::store::StoreError;
 use tokio::sync::Mutex;
 
+use crate::adaptive::{AdaptiveGate, OpResult};
+
 /// Upper bound on the auto-detected default concurrency.
 const DEFAULT_CONCURRENCY_CAP: usize = 16;
 
-/// Configuration for object transfers: how many to run in parallel and an
-/// optional aggregate byte-rate cap.
+/// Whether (and how) a transfer adaptively tunes its concurrency / byte-rate.
+///
+/// This is the **config-level** policy carried by [`TransferConfig`] (distinct
+/// from [`crate::adaptive::AdaptivePolicy`], which is the controller's
+/// always-on tuning view). `Off` — the default — selects the historical fixed
+/// `concurrency` + fixed `max_bytes_per_sec` path, byte-for-byte unchanged.
+/// `On` selects the adaptive path, which sizes the in-flight window to
+/// `ceiling` and lets a live controller drive the effective concurrency in
+/// `[1, ceiling]` and the byte-rate from in-band per-op feedback. Adaptive
+/// **only** changes scheduling/rate: the exact bytes/objects transferred and
+/// the resulting snapshot are identical to the `Off` path.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum AdaptivePolicy {
+    /// Fixed concurrency + fixed rate (the default; historical behavior).
+    #[default]
+    Off,
+    /// Adaptive concurrency + rate, bounded by `ceiling`, aiming for
+    /// `fraction × discovered-knee`.
+    On {
+        /// Target operating fraction of the discovered knee (clamped to
+        /// `(0, 1]`; `0.8` is the usual default).
+        fraction: f64,
+        /// Absolute concurrency ceiling; the effective limit never exceeds it.
+        ceiling: usize,
+    },
+}
+
+/// Configuration for object transfers: how many to run in parallel, an optional
+/// aggregate byte-rate cap, and whether to tune those adaptively.
 ///
 /// `Default` auto-detects the available parallelism (capped at
-/// [`DEFAULT_CONCURRENCY_CAP`]) and leaves bandwidth unlimited.
+/// [`DEFAULT_CONCURRENCY_CAP`]), leaves bandwidth unlimited, and disables
+/// adaptive tuning ([`AdaptivePolicy::Off`]).
 #[derive(Debug, Clone)]
 pub struct TransferConfig {
-    /// Maximum number of object transfers to run concurrently.
+    /// Maximum number of object transfers to run concurrently. In the adaptive
+    /// (`On`) path this is the slow-start *seed*; the effective in-flight
+    /// window is sized to the policy ceiling and gated to the live limit.
     pub concurrency: NonZeroUsize,
     /// Optional aggregate bandwidth cap, in bytes per second. `None` means
-    /// unlimited.
+    /// unlimited. In the adaptive path this is the rate *cap* (`max_rate`); the
+    /// controller may target a lower live rate.
     pub max_bytes_per_sec: Option<u64>,
+    /// Whether to tune concurrency / rate adaptively. [`AdaptivePolicy::Off`]
+    /// (the default) keeps the historical fixed-concurrency path byte-for-byte.
+    pub adaptive: AdaptivePolicy,
 }
 
 impl TransferConfig {
-    /// Builds a config, clamping `concurrency` to at least 1.
+    /// Builds a non-adaptive config, clamping `concurrency` to at least 1.
+    ///
+    /// The adaptive policy defaults to [`AdaptivePolicy::Off`], so existing
+    /// callers behave exactly as before. Use
+    /// [`with_adaptive`](Self::with_adaptive) to opt in.
     #[must_use]
     pub fn new(concurrency: usize, max_bytes_per_sec: Option<u64>) -> Self {
         Self {
             concurrency: NonZeroUsize::new(concurrency.max(1)).unwrap_or(NonZeroUsize::MIN),
             max_bytes_per_sec,
+            adaptive: AdaptivePolicy::Off,
         }
+    }
+
+    /// Returns this config with its adaptive policy set to `policy` (builder
+    /// style). `Off` is byte-identical to a plain [`new`](Self::new) config.
+    #[must_use]
+    pub fn with_adaptive(mut self, policy: AdaptivePolicy) -> Self {
+        self.adaptive = policy;
+        self
     }
 }
 
@@ -59,8 +108,136 @@ impl Default for TransferConfig {
             // `detected` is >= 1, so the NonZeroUsize is always Some.
             concurrency: NonZeroUsize::new(detected).unwrap_or(NonZeroUsize::MIN),
             max_bytes_per_sec: None,
+            adaptive: AdaptivePolicy::Off,
         }
     }
+}
+
+/// Classifies a [`StoreError`] for the adaptive controller's congestion signal.
+///
+/// Returns [`OpResult::Throttle`] for clearly *transient / backpressure*
+/// failures the controller should back off on (HTTP 429 / `SlowDown` / 503 /
+/// `RESOURCE_EXHAUSTED`, request timeouts, connection reset/closed, and the
+/// local-FS backpressure errno class — `WouldBlock`, EMFILE "too many open
+/// files", and a full disk). Everything else — `NotFound`, `Integrity`,
+/// `Parse`, and ordinary I/O / backend errors — is [`OpResult::HardErr`].
+///
+/// This is **conservative**: anything not clearly transient defaults to
+/// `HardErr`, so a real failure never masquerades as throttling. It inspects
+/// `StoreError::Backend`'s message + wrapped source string (the SDKs surface
+/// their status that way) and `StoreError::Io`'s [`std::io::ErrorKind`].
+#[must_use]
+pub fn classify_error(err: &StoreError) -> OpResult {
+    match err {
+        StoreError::Io(io_err) => classify_io_kind(io_err),
+        StoreError::Backend { message, source } => {
+            let mut text = message.to_ascii_lowercase();
+            if let Some(src) = source {
+                text.push(' ');
+                text.push_str(&src.to_string().to_ascii_lowercase());
+            }
+            if text_is_transient(&text) {
+                OpResult::Throttle
+            } else {
+                OpResult::HardErr
+            }
+        }
+        // NotFound / Integrity / Parse are never transient backpressure, and
+        // `StoreError` is `#[non_exhaustive]` so any future variant is — by the
+        // conservative rule — a hard error until proven transient.
+        _ => OpResult::HardErr,
+    }
+}
+
+/// Classifies a local-filesystem [`std::io::Error`] as transient backpressure
+/// vs a hard error. Only the clear backpressure errno classes
+/// (`WouldBlock`, a full filesystem, and EMFILE "too many open files", which
+/// stable Rust still surfaces as `Uncategorized` with that message) are
+/// treated as [`OpResult::Throttle`].
+fn classify_io_kind(err: &std::io::Error) -> OpResult {
+    use std::io::ErrorKind;
+    match err.kind() {
+        ErrorKind::WouldBlock | ErrorKind::StorageFull => OpResult::Throttle,
+        // EMFILE / ENFILE land in the catch-all `Other`/`Uncategorized` kind on
+        // stable Rust; sniff the message for "too many open files".
+        _ => {
+            if err
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("too many open files")
+            {
+                OpResult::Throttle
+            } else {
+                OpResult::HardErr
+            }
+        }
+    }
+}
+
+/// Substring test for transient/backpressure SDK error text (case-folded).
+fn text_is_transient(text: &str) -> bool {
+    const TRANSIENT: &[&str] = &[
+        "slowdown",
+        "slow down",
+        "429",
+        "too many requests",
+        "503",
+        "service unavailable",
+        "serviceunavailable",
+        "resource_exhausted",
+        "resource exhausted",
+        "throttl",
+        "request timeout",
+        "requesttimeout",
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection closed",
+        "connection refused",
+        "broken pipe",
+        "too many open files",
+    ];
+    TRANSIENT.iter().any(|needle| text.contains(needle))
+}
+
+/// Runs `op` over `items` with the in-flight window sized to `gate.ceiling()`
+/// but the *effective* concurrency gated to the gate's live limit: each item
+/// acquires a [`GatePermit`](crate::adaptive::GatePermit) before `op` runs and
+/// holds it until `op` completes. This is the adaptive sibling of
+/// [`run_concurrent`]: a background tick driver resizes the gate live, so the
+/// number of simultaneously-running ops tracks the controller's limit while the
+/// buffer window stays at the ceiling.
+///
+/// Semantics match [`run_concurrent`] otherwise: completion-independent order,
+/// first-error-wins (remaining in-flight work is cancelled).
+///
+/// # Errors
+///
+/// Returns the first [`StoreError`] produced by any operation.
+pub async fn run_adaptive<I, T, F, Fut>(
+    items: I,
+    gate: &AdaptiveGate,
+    op: F,
+) -> Result<Vec<T>, StoreError>
+where
+    I: IntoIterator,
+    F: Fn(I::Item) -> Fut,
+    Fut: std::future::Future<Output = Result<T, StoreError>>,
+{
+    let window = gate.ceiling().max(1);
+    stream::iter(items)
+        .map(|item| {
+            let op = &op;
+            async move {
+                // Effective concurrency = the gate's current limit (<= ceiling),
+                // even though up to `window` futures are buffered.
+                let _permit = gate.acquire().await;
+                op(item).await
+            }
+        })
+        .buffer_unordered(window)
+        .try_collect()
+        .await
 }
 
 /// Shared token-bucket state, guarded by an async mutex.
@@ -594,6 +771,94 @@ mod tests {
         assert!(
             start.elapsed() < Duration::from_millis(200),
             "after set_rate(Some(0)) acquire_blocking should no longer block"
+        );
+    }
+
+    #[test]
+    fn classify_error_throttle_vs_hard() {
+        use crate::adaptive::OpResult;
+
+        // Backend errors whose message/source look like backpressure -> Throttle.
+        let transient_msgs = [
+            "S3 PUT object failed: SlowDown",
+            "got HTTP 503 Service Unavailable",
+            "rate limited: 429 Too Many Requests",
+            "RESOURCE_EXHAUSTED quota",
+            "request timeout while uploading",
+            "connection reset by peer",
+            "os error: too many open files",
+        ];
+        for msg in transient_msgs {
+            let err = StoreError::Backend {
+                message: msg.to_owned(),
+                source: None,
+            };
+            assert_eq!(
+                classify_error(&err),
+                OpResult::Throttle,
+                "expected Throttle for {msg:?}"
+            );
+        }
+
+        // Hard errors: NotFound / Integrity / Parse / ordinary backend failures.
+        let not_found = StoreError::ObjectNotFound {
+            checksum: "abc".to_owned(),
+        };
+        assert_eq!(classify_error(&not_found), OpResult::HardErr);
+        let integrity = StoreError::Integrity {
+            address: "x".to_owned(),
+            expected: "a".to_owned(),
+            actual: "b".to_owned(),
+        };
+        assert_eq!(classify_error(&integrity), OpResult::HardErr);
+        let other = StoreError::Backend {
+            message: "permission denied".to_owned(),
+            source: None,
+        };
+        assert_eq!(classify_error(&other), OpResult::HardErr);
+
+        // Local-FS backpressure errnos -> Throttle; a plain NotFound IO -> Hard.
+        let emfile = StoreError::Io(std::io::Error::other("too many open files (os error 24)"));
+        assert_eq!(classify_error(&emfile), OpResult::Throttle);
+        let would_block = StoreError::Io(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+        assert_eq!(classify_error(&would_block), OpResult::Throttle);
+        let io_notfound = StoreError::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert_eq!(classify_error(&io_notfound), OpResult::HardErr);
+    }
+
+    #[test]
+    fn run_adaptive_respects_gate_limit() {
+        use crate::adaptive::AdaptiveGate;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let rt = runtime();
+        let gate = AdaptiveGate::new(2, 8);
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let high = Arc::new(AtomicUsize::new(0));
+        let in_flight2 = Arc::clone(&in_flight);
+        let high2 = Arc::clone(&high);
+
+        let result: Result<Vec<()>, StoreError> = rt.block_on(async move {
+            run_adaptive(0..20, &gate, move |_item| {
+                let in_flight = Arc::clone(&in_flight2);
+                let high = Arc::clone(&high2);
+                async move {
+                    let cur = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    high.fetch_max(cur, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(15)).await;
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            })
+            .await
+        });
+        assert!(result.is_ok());
+        // Window is the ceiling (8) but the gate's live limit is 2, so peak
+        // effective concurrency never exceeds 2.
+        assert!(
+            high.load(Ordering::SeqCst) <= 2,
+            "effective concurrency must be gated to the limit, got {}",
+            high.load(Ordering::SeqCst)
         );
     }
 

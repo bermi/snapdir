@@ -34,8 +34,10 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use snapdir_core::resources::{resident_set_bytes, CpuSampler};
+use snapdir_core::Meter;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 // ---------------------------------------------------------------------------
@@ -781,6 +783,149 @@ impl AdaptiveController {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ControllerDriver — bridges the pure controller to the live transfer loops.
+// ---------------------------------------------------------------------------
+
+/// Computes the 95th-percentile of a set of object sizes (the memory-budget
+/// denominator the controller's `tick` expects). An empty set yields `0`
+/// (memory guardrail disabled). The slice is cloned + sorted locally so the
+/// caller's data is untouched.
+#[must_use]
+pub fn p95_object_size(sizes: &[u64]) -> u64 {
+    if sizes.is_empty() {
+        return 0;
+    }
+    let mut sorted = sizes.to_vec();
+    sorted.sort_unstable();
+    // Nearest-rank p95: index = ceil(0.95 * n) - 1, clamped into range.
+    let n = sorted.len();
+    let rank = ((0.95 * n as f64).ceil() as usize).max(1);
+    sorted[rank.min(n) - 1]
+}
+
+/// Shared, live bridge between a pure [`AdaptiveController`] and the running
+/// transfer backends.
+///
+/// The controller is `&mut` and deterministic; this wrapper owns it behind a
+/// [`Mutex`] (tick is infrequent, so contention is negligible) and adds the
+/// *impure* parts the controller deliberately omits: a real monotonic clock, a
+/// live [`CpuSampler`] + RSS sampler, the manifest's p95 object size, and the
+/// application of each [`Decision`] to the shared [`AdaptiveGate`] (concurrency)
+/// and — for the network backends — a rate-limiter setter + display [`Meter`].
+///
+/// Both transfer paths use it identically:
+///
+/// - every completed/failed op calls [`record_op`](ControllerDriver::record_op)
+///   with its measured `OpSample`;
+/// - a lightweight driver (a tokio `interval` task for the async path, a
+///   `std::thread` for the rayon path) periodically calls
+///   [`tick`](ControllerDriver::tick), which samples CPU/RSS, advances the
+///   controller, resizes the gate, and reports the new limit/rate.
+///
+/// The driver is [`Clone`] (the controller, gate, sampler and the
+/// rate/limit appliers are all shared via [`Arc`]).
+#[derive(Clone)]
+pub struct ControllerDriver {
+    controller: Arc<Mutex<AdaptiveController>>,
+    gate: AdaptiveGate,
+    cpu: Arc<Mutex<CpuSampler>>,
+    p95_obj_size: u64,
+    /// Wall-clock origin: `tick` injects `now = epoch.elapsed()` so the
+    /// controller sees a monotonic [`MonoTime`].
+    epoch: Instant,
+    /// Applies a target byte-rate to the backend's live rate limiter (async or
+    /// blocking). Local `FileStore` has no rate limit, so this is `None`.
+    rate_applier: Option<Arc<dyn Fn(Option<u64>) + Send + Sync>>,
+    /// Optional display meter: the new limit / target rate are mirrored into it
+    /// for the progress bar (advisory only).
+    meter: Option<Arc<Meter>>,
+}
+
+// The closure / mutex-wrapped controller fields are intentionally omitted from
+// the human-facing debug view (a `dyn Fn` is not `Debug`, and the controller's
+// internals are large + uninteresting here); the load-bearing live state
+// (limits, p95, wiring presence) is shown instead.
+#[allow(clippy::missing_fields_in_debug)]
+impl std::fmt::Debug for ControllerDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ControllerDriver")
+            .field("gate_limit", &self.gate.limit())
+            .field("ceiling", &self.gate.ceiling())
+            .field("p95_obj_size", &self.p95_obj_size)
+            .field("has_rate_applier", &self.rate_applier.is_some())
+            .field("has_meter", &self.meter.is_some())
+            .finish()
+    }
+}
+
+impl ControllerDriver {
+    /// Builds a driver around a fresh controller for `policy`, the shared
+    /// `gate`, the manifest's `p95_obj_size`, an optional `rate_applier` (the
+    /// backend's live rate-limit setter; `None` for the rate-less local store),
+    /// and an optional display `meter`.
+    #[must_use]
+    pub fn new(
+        policy: AdaptivePolicy,
+        gate: AdaptiveGate,
+        p95_obj_size: u64,
+        rate_applier: Option<Arc<dyn Fn(Option<u64>) + Send + Sync>>,
+        meter: Option<Arc<Meter>>,
+    ) -> Self {
+        Self {
+            controller: Arc::new(Mutex::new(AdaptiveController::new(policy))),
+            gate,
+            cpu: Arc::new(Mutex::new(CpuSampler::new())),
+            p95_obj_size,
+            epoch: Instant::now(),
+            rate_applier,
+            meter,
+        }
+    }
+
+    /// Records one completed/failed op into the shared controller.
+    pub fn record_op(&self, sample: OpSample) {
+        self.controller
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .record_op(sample);
+    }
+
+    /// Advances the controller one interval: samples CPU/RSS, ticks with the
+    /// injected monotonic clock + p95 object size, then applies the resulting
+    /// [`Decision`] to the gate (concurrency), the rate applier (byte-rate), and
+    /// the display meter. Returns the decision for tests/inspection.
+    pub fn tick(&self) -> Decision {
+        let cpu_pct = self
+            .cpu
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .poll();
+        let rss = resident_set_bytes();
+        let now = self.epoch.elapsed();
+
+        let decision = {
+            let mut controller = self
+                .controller
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            controller.tick(now, cpu_pct, rss, self.p95_obj_size)
+        };
+
+        // Apply: resize the shared gate, retune the rate limiter, mirror both
+        // into the display meter (all advisory; never change what is transferred).
+        self.gate.set_limit(decision.limit);
+        if let Some(apply) = &self.rate_applier {
+            apply(decision.target_rate);
+        }
+        if let Some(meter) = &self.meter {
+            meter.set_current_limit(decision.limit as u64);
+            meter.set_target_rate(decision.target_rate.unwrap_or(0));
+        }
+        decision
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1170,6 +1315,74 @@ mod tests {
         assert!(
             max - min <= 3,
             "steady stream should converge (small tail spread), got min {min} max {max} tail {tail:?}"
+        );
+    }
+
+    // ----- ControllerDriver -------------------------------------------------
+
+    #[test]
+    fn p95_object_size_nearest_rank() {
+        assert_eq!(p95_object_size(&[]), 0, "empty -> 0 (memory cap disabled)");
+        assert_eq!(p95_object_size(&[42]), 42, "single element");
+        // 1..=100: nearest-rank p95 = the 95th value = 95.
+        let sizes: Vec<u64> = (1..=100).collect();
+        assert_eq!(p95_object_size(&sizes), 95);
+        // p95 is robust to one huge outlier in a small set (returns the max here).
+        assert_eq!(p95_object_size(&[1, 1, 1, 1_000_000]), 1_000_000);
+    }
+
+    #[test]
+    fn controller_driver_throttle_drives_gate_decrease() {
+        // A driver wired to a gate: record several healthy ops + tick to grow the
+        // gate, then inject a Throttle + tick and assert the gate's live limit
+        // dropped (the controller's backoff was applied to the real gate).
+        let gate = AdaptiveGate::new(2, 32);
+        let applied_rate = Arc::new(Mutex::new(None::<Option<u64>>));
+        let rate_sink = Arc::clone(&applied_rate);
+        let rate_applier: Arc<dyn Fn(Option<u64>) + Send + Sync> = Arc::new(move |r| {
+            *rate_sink.lock().unwrap() = Some(r);
+        });
+        let policy = AdaptivePolicy::new(0.8, 32, u64::MAX, None);
+        let driver = ControllerDriver::new(policy, gate.clone(), 4096, Some(rate_applier), None);
+
+        // Grow: healthy ops over several ticks should raise the gate above 2.
+        for _ in 0..8 {
+            for _ in 0..4 {
+                driver.record_op(OpSample {
+                    bytes: 2_000_000,
+                    latency: Duration::from_millis(40),
+                    result: OpResult::Ok,
+                });
+            }
+            driver.tick();
+        }
+        let grown = gate.limit();
+        assert!(
+            grown > 2,
+            "healthy stream should grow the gate, got {grown}"
+        );
+
+        // Inject a Throttle, then tick: the gate's limit must drop (backoff).
+        driver.record_op(OpSample {
+            bytes: 1000,
+            latency: Duration::from_millis(40),
+            result: OpResult::Throttle,
+        });
+        let decision = driver.tick();
+        assert!(
+            gate.limit() < grown,
+            "throttle must shrink the gate: {} >= {grown}",
+            gate.limit()
+        );
+        assert_eq!(
+            gate.limit(),
+            decision.limit,
+            "the gate reflects the decision's limit"
+        );
+        // A rate was applied to the limiter at least once (target_rate flows out).
+        assert!(
+            applied_rate.lock().unwrap().is_some(),
+            "the rate applier must have been invoked"
         );
     }
 

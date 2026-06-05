@@ -40,8 +40,12 @@ use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
 use snapdir_core::Meter;
 
+use crate::adaptive::{
+    p95_object_size, AdaptiveGate, AdaptivePolicy as ControllerPolicy, ControllerDriver, OpResult,
+    OpSample,
+};
 use crate::stream::StreamStore;
-use crate::transfer::TransferConfig;
+use crate::transfer::{classify_error, AdaptivePolicy, TransferConfig};
 use crate::util::{file_present_and_verified, hash_file};
 
 /// Number of times the oracle retries a persist whose copied bytes fail their
@@ -145,11 +149,21 @@ impl FileStore {
     /// sequential copy. Each task uses a fresh, cheap, stateless
     /// [`Blake3Hasher`] to sidestep any `Sync` concern.
     fn parallel_copy(&self, jobs: &[(PathBuf, PathBuf, String)]) -> Result<(), StoreError> {
-        use rayon::prelude::*;
-
         if jobs.is_empty() {
             return Ok(());
         }
+        match self.config.adaptive {
+            AdaptivePolicy::Off => self.parallel_copy_fixed(jobs),
+            AdaptivePolicy::On { fraction, ceiling } => {
+                self.parallel_copy_adaptive(jobs, fraction, ceiling)
+            }
+        }
+    }
+
+    /// Fixed-concurrency rayon copy: pool sized to `config.concurrency`, no gate
+    /// or driver. The historical (byte-identical) local-copy path.
+    fn parallel_copy_fixed(&self, jobs: &[(PathBuf, PathBuf, String)]) -> Result<(), StoreError> {
+        use rayon::prelude::*;
 
         // `&Meter` is `Sync`, so it is shared across the rayon closures. `None`
         // means zero recording and byte-identical behavior.
@@ -181,6 +195,95 @@ impl FileStore {
                 Ok(())
             })
         })
+    }
+
+    /// Adaptive rayon copy: pool sized to the policy `ceiling`, each job gated to
+    /// the controller's live limit (effective concurrency ≤ ceiling), every copy
+    /// timed + classified + recorded, with a background `std::thread` ticking the
+    /// controller (~250ms) to resize the gate. Local FS has no network rate, so
+    /// the controller drives concurrency only (no rate applier).
+    ///
+    /// The exact objects copied and the first-error-wins (`try_for_each`)
+    /// semantics are identical to [`parallel_copy_fixed`]; only scheduling
+    /// differs.
+    fn parallel_copy_adaptive(
+        &self,
+        jobs: &[(PathBuf, PathBuf, String)],
+        fraction: f64,
+        ceiling: usize,
+    ) -> Result<(), StoreError> {
+        use rayon::prelude::*;
+
+        let meter = self.meter.as_deref();
+
+        let sizes: Vec<u64> = jobs
+            .iter()
+            .map(|(source, _, _)| std::fs::metadata(source).map_or(0, |md| md.len()))
+            .collect();
+        let p95 = p95_object_size(&sizes);
+        let total_ram = snapdir_core::resources::total_ram_bytes().unwrap_or(0);
+        let policy = ControllerPolicy::new(fraction, ceiling, total_ram, None);
+
+        let gate = AdaptiveGate::new(self.config.concurrency.get(), ceiling);
+        // No rate limiter for local copies (concurrency-only control).
+        let driver = ControllerDriver::new(policy, gate.clone(), p95, None, self.meter.clone());
+
+        // Background tick thread: stop it on the shared flag once the copy ends.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let tick_driver = driver.clone();
+        let tick_stop = Arc::clone(&stop);
+        let ticker = std::thread::spawn(move || {
+            while !tick_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                if tick_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                tick_driver.tick();
+            }
+        });
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(ceiling.max(1))
+            .build()
+            .map_err(|err| StoreError::Backend {
+                message: "failed to build copy thread pool".to_owned(),
+                source: Some(Box::new(err)),
+            })?;
+
+        let result = pool.install(|| {
+            jobs.par_iter().try_for_each(|(source, target, expected)| {
+                // Gate to the controller's live limit (effective concurrency).
+                let _permit = gate.acquire_blocking();
+                if let Some(m) = meter {
+                    m.object_started();
+                }
+                let len = std::fs::metadata(source).map_or(0, |md| md.len());
+                let started = std::time::Instant::now();
+                let outcome = persist(source, target, expected, &Blake3Hasher::new());
+                let latency = started.elapsed();
+                let (bytes, op_result) = match &outcome {
+                    Ok(()) => (len, OpResult::Ok),
+                    Err(err) => (0, classify_error(err)),
+                };
+                driver.record_op(OpSample {
+                    bytes,
+                    latency,
+                    result: op_result,
+                });
+                outcome?;
+                if let Some(m) = meter {
+                    m.add_in(len);
+                    m.add_out(len);
+                    m.object_finished();
+                }
+                Ok(())
+            })
+        });
+
+        // Stop the tick thread and join it before returning.
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = ticker.join();
+        result
     }
 }
 
@@ -1093,6 +1196,66 @@ mod tests {
                 "par and seq object bytes identical"
             );
         }
+    }
+
+    #[test]
+    fn filestore_adaptive_push_fetch_same_snapshot_id_and_bytes() {
+        // INVARIANT: an adaptive (policy On, low ceiling) push+fetch produces a
+        // byte-identical store + dest and re-ids to the SAME snapshot id as the
+        // non-adaptive (Off) path over the same input. Adaptive only changes
+        // scheduling, never what is transferred.
+        use crate::transfer::AdaptivePolicy;
+
+        let src_dir = TempDir::new("src");
+        let (manifest, id) = make_nested_source(src_dir.path());
+
+        // Off path.
+        let off_store_dir = TempDir::new("store-off");
+        let off_dest_dir = TempDir::new("dest-off");
+        let off =
+            FileStore::from_root_with_config(off_store_dir.path(), TransferConfig::new(4, None));
+        off.push(&manifest, src_dir.path()).expect("off push");
+        let off_manifest = off.get_manifest(&id).expect("off manifest");
+        off.fetch_files(&off_manifest, off_dest_dir.path())
+            .expect("off fetch");
+
+        // Adaptive path (low ceiling = 2).
+        let on_store_dir = TempDir::new("store-on");
+        let on_dest_dir = TempDir::new("dest-on");
+        let on_cfg = TransferConfig::new(4, None).with_adaptive(AdaptivePolicy::On {
+            fraction: 0.8,
+            ceiling: 2,
+        });
+        let on = FileStore::from_root_with_config(on_store_dir.path(), on_cfg);
+        on.push(&manifest, src_dir.path()).expect("adaptive push");
+        let on_manifest = on.get_manifest(&id).expect("adaptive manifest");
+        on.fetch_files(&on_manifest, on_dest_dir.path())
+            .expect("adaptive fetch");
+
+        // Same snapshot id, re-derived from the round-tripped manifest.
+        let off_id = snapdir_core::merkle::snapshot_id(&off_manifest, &Blake3Hasher::new());
+        let on_id = snapdir_core::merkle::snapshot_id(&on_manifest, &Blake3Hasher::new());
+        assert_eq!(off_id, on_id, "adaptive must re-id to the same snapshot");
+        assert_eq!(on_id, id, "and it matches the original id");
+        assert_eq!(off_manifest, on_manifest, "round-tripped manifests equal");
+
+        // Byte-identical objects at identical sharded keys + identical dest trees.
+        for entry in manifest.entries() {
+            if entry.path_type != PathType::File {
+                continue;
+            }
+            let key = object_path(&entry.checksum);
+            let off_obj = off_store_dir.path().join(&key);
+            let on_obj = on_store_dir.path().join(&key);
+            assert!(on_obj.exists(), "adaptive object {key} present");
+            assert_eq!(
+                fs::read(&off_obj).unwrap(),
+                fs::read(&on_obj).unwrap(),
+                "Off vs On object bytes identical for {key}"
+            );
+        }
+        assert_nested_dest(off_dest_dir.path());
+        assert_nested_dest(on_dest_dir.path());
     }
 
     #[test]

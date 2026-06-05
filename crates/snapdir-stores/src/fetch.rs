@@ -26,13 +26,21 @@
 //!   write error and cancels the rest.
 
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
 
 use snapdir_core::manifest::{Manifest, ManifestEntry, PathType};
 use snapdir_core::merkle::Blake3Hasher;
 use snapdir_core::store::StoreError;
 use snapdir_core::Meter;
 
-use crate::transfer::{run_concurrent, RateLimiter, TransferConfig};
+use crate::adaptive::{
+    p95_object_size, AdaptiveGate, AdaptivePolicy as ControllerPolicy, ControllerDriver, OpResult,
+    OpSample,
+};
+use crate::transfer::{
+    classify_error, run_adaptive, run_concurrent, AdaptivePolicy, RateLimiter, TransferConfig,
+};
 use crate::util::file_present_and_verified;
 
 /// Strips a leading `./` and a trailing `/` from a manifest path so the
@@ -89,6 +97,7 @@ pub(crate) async fn fetch_files_concurrent<'a, F, Fut>(
     config: &TransferConfig,
     rate_limiter: &RateLimiter,
     meter: Option<&Meter>,
+    meter_arc: Option<Arc<Meter>>,
     download: F,
 ) -> Result<(), StoreError>
 where
@@ -132,9 +141,9 @@ where
         m.set_total(total);
     }
 
-    // Concurrent pass: download + atomically write each missing object, bounded
-    // by `config.concurrency` and throttled by the shared rate limiter.
-    run_concurrent(to_download, config.concurrency, |(entry, target)| {
+    // The per-object download+write step, shared by the fixed and adaptive
+    // passes (so they transfer byte-identically; only scheduling/rate differ).
+    let download_one = |entry: &'a ManifestEntry, target: std::path::PathBuf| {
         let download = &download;
         let rate_limiter = &rate_limiter;
         async move {
@@ -154,12 +163,103 @@ where
                 m.add_out(bytes.len() as u64);
                 m.object_finished();
             }
-            Ok(())
+            Ok::<(), StoreError>(())
         }
-    })
-    .await?;
+    };
+
+    match config.adaptive {
+        AdaptivePolicy::Off => {
+            // Concurrent pass: download + atomically write each missing object,
+            // bounded by `config.concurrency`, throttled by the rate limiter.
+            run_concurrent(to_download, config.concurrency, |(entry, target)| {
+                download_one(entry, target)
+            })
+            .await?;
+        }
+        AdaptivePolicy::On { fraction, ceiling } => {
+            run_adaptive_downloads(
+                to_download,
+                config,
+                rate_limiter,
+                meter_arc,
+                fraction,
+                ceiling,
+                download_one,
+            )
+            .await?;
+        }
+    }
 
     Ok(())
+}
+
+/// Adaptive sibling of the fixed-concurrency download pass: window = ceiling,
+/// effective concurrency gated to the controller's live limit, every op timed +
+/// classified + recorded, with a background tick driver resizing the gate and
+/// retuning the rate limiter. Byte-identical to the `Off` path otherwise.
+#[allow(clippy::too_many_arguments)]
+async fn run_adaptive_downloads<'a, D, DFut>(
+    to_download: Vec<(&'a ManifestEntry, std::path::PathBuf)>,
+    config: &TransferConfig,
+    rate_limiter: &RateLimiter,
+    meter_arc: Option<Arc<Meter>>,
+    fraction: f64,
+    ceiling: usize,
+    download_one: D,
+) -> Result<(), StoreError>
+where
+    D: Fn(&'a ManifestEntry, std::path::PathBuf) -> DFut,
+    DFut: std::future::Future<Output = Result<(), StoreError>>,
+{
+    let sizes: Vec<u64> = to_download.iter().map(|(e, _)| e.size).collect();
+    let p95 = p95_object_size(&sizes);
+    let total_ram = snapdir_core::resources::total_ram_bytes().unwrap_or(0);
+    let policy = ControllerPolicy::new(fraction, ceiling, total_ram, config.max_bytes_per_sec);
+
+    let gate = AdaptiveGate::new(config.concurrency.get(), ceiling);
+
+    let limiter = rate_limiter.clone();
+    let rate_applier: Arc<dyn Fn(Option<u64>) + Send + Sync> = Arc::new(move |rate| {
+        let limiter = limiter.clone();
+        tokio::spawn(async move {
+            limiter.set_rate(rate).await;
+        });
+    });
+    let driver = ControllerDriver::new(policy, gate.clone(), p95, Some(rate_applier), meter_arc);
+
+    let tick_driver = driver.clone();
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let tick_handle = tokio::spawn(async move {
+        loop {
+            ticker.tick().await;
+            tick_driver.tick();
+        }
+    });
+
+    let result = run_adaptive(to_download, &gate, |(entry, target)| {
+        let download_one = &download_one;
+        let driver = &driver;
+        async move {
+            let started = Instant::now();
+            let outcome = download_one(entry, target).await;
+            let latency = started.elapsed();
+            let (bytes, op_result) = match &outcome {
+                Ok(()) => (entry.size, OpResult::Ok),
+                Err(err) => (0, classify_error(err)),
+            };
+            driver.record_op(OpSample {
+                bytes,
+                latency,
+                result: op_result,
+            });
+            outcome
+        }
+    })
+    .await;
+
+    tick_handle.abort();
+    result.map(|_| ())
 }
 
 #[cfg(test)]
@@ -300,10 +400,18 @@ mod tests {
             let rt = runtime();
             let fake_ref = Arc::clone(&fake);
             rt.block_on(async {
-                fetch_files_concurrent(&manifest, dest.path(), &cfg, &limiter, None, |entry| {
-                    let fake = Arc::clone(&fake_ref);
-                    async move { fake.download(entry).await }
-                })
+                fetch_files_concurrent(
+                    &manifest,
+                    dest.path(),
+                    &cfg,
+                    &limiter,
+                    None,
+                    None,
+                    |entry| {
+                        let fake = Arc::clone(&fake_ref);
+                        async move { fake.download(entry).await }
+                    },
+                )
                 .await
             })
             .expect("orchestrator must succeed");
@@ -346,10 +454,18 @@ mod tests {
         let rt = runtime();
         let fake_ref = Arc::clone(&fake);
         rt.block_on(async {
-            fetch_files_concurrent(&manifest, dest.path(), &cfg, &limiter, None, |entry| {
-                let fake = Arc::clone(&fake_ref);
-                async move { fake.download(entry).await }
-            })
+            fetch_files_concurrent(
+                &manifest,
+                dest.path(),
+                &cfg,
+                &limiter,
+                None,
+                None,
+                |entry| {
+                    let fake = Arc::clone(&fake_ref);
+                    async move { fake.download(entry).await }
+                },
+            )
             .await
         })
         .expect("orchestrator must succeed");
@@ -377,6 +493,65 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_download_materializes_all_within_ceiling() {
+        // An adaptive fetch (policy On, ceiling 2) downloads every object,
+        // materializes the dest correctly, and never exceeds the ceiling for
+        // effective concurrency.
+        use crate::transfer::AdaptivePolicy;
+
+        let files: &[(&str, &[u8])] = &[
+            ("a.txt", b"alpha" as &[u8]),
+            ("nested/b.txt", b"bravo"),
+            ("nested/deep/c.txt", b"charlie"),
+            ("d.txt", b"delta"),
+            ("e.txt", b"echo"),
+        ];
+        let manifest = manifest_for(files);
+
+        let dest = TempDir::new();
+        let fake = FakeDownloader::new(files);
+        let cfg = TransferConfig::new(4, None).with_adaptive(AdaptivePolicy::On {
+            fraction: 0.8,
+            ceiling: 2,
+        });
+        let limiter = RateLimiter::new(None);
+
+        let rt = runtime();
+        let fake_ref = Arc::clone(&fake);
+        rt.block_on(async {
+            fetch_files_concurrent(
+                &manifest,
+                dest.path(),
+                &cfg,
+                &limiter,
+                None,
+                None,
+                |entry| {
+                    let fake = Arc::clone(&fake_ref);
+                    async move { fake.download(entry).await }
+                },
+            )
+            .await
+        })
+        .expect("adaptive orchestrator must succeed");
+
+        for (path, contents) in files {
+            let got = std::fs::read(dest.path().join(path))
+                .unwrap_or_else(|e| panic!("missing {path}: {e}"));
+            assert_eq!(&got, contents, "wrong bytes for {path}");
+        }
+        // The gate caps effective concurrency at the ceiling (2) regardless of
+        // the larger buffer window.
+        let hw = fake.high_water.load(Ordering::SeqCst);
+        assert!(
+            hw <= 2,
+            "effective concurrency must not exceed the ceiling 2, got {hw}"
+        );
+        // Every object was downloaded exactly once.
+        assert_eq!(fake.called.lock().unwrap().len(), files.len());
+    }
+
+    #[test]
     fn concurrent_download_propagates_error() {
         let files: &[(&str, &[u8])] = &[
             ("ok1.txt", b"one" as &[u8]),
@@ -393,18 +568,26 @@ mod tests {
         let rt = runtime();
         let boom = boom_sum.clone();
         let result = rt.block_on(async {
-            fetch_files_concurrent(&manifest, dest.path(), &cfg, &limiter, None, |entry| {
-                let boom = boom.clone();
-                async move {
-                    if entry.checksum == boom {
-                        return Err(StoreError::Backend {
-                            message: "download blew up".to_owned(),
-                            source: None,
-                        });
+            fetch_files_concurrent(
+                &manifest,
+                dest.path(),
+                &cfg,
+                &limiter,
+                None,
+                None,
+                |entry| {
+                    let boom = boom.clone();
+                    async move {
+                        if entry.checksum == boom {
+                            return Err(StoreError::Backend {
+                                message: "download blew up".to_owned(),
+                                source: None,
+                            });
+                        }
+                        Ok(b"unused".to_vec())
                     }
-                    Ok(b"unused".to_vec())
-                }
-            })
+                },
+            )
             .await
         });
 

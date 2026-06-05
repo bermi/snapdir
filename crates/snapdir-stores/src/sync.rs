@@ -35,15 +35,19 @@
 //!   [`StreamStore`] on both read and write, and the source manifest is verified
 //!   to hash to `id` by [`get_manifest`](snapdir_core::store::Store::get_manifest).
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use snapdir_core::manifest::PathType;
 use snapdir_core::store::StoreError;
 use snapdir_core::{Meter, Phase};
 
+use crate::adaptive::{
+    p95_object_size, AdaptiveGate, AdaptivePolicy as ControllerPolicy, ControllerDriver, OpResult,
+    OpSample,
+};
 use crate::stream::StreamStore;
-use crate::transfer::{BlockingRateLimiter, TransferConfig};
+use crate::transfer::{classify_error, AdaptivePolicy, BlockingRateLimiter, TransferConfig};
 
 /// Outcome of a [`sync_snapshot`] call.
 ///
@@ -81,6 +85,7 @@ pub struct SyncReport {
 ///
 /// Returns the first [`StoreError`] from any manifest/object operation. On an
 /// object error NO destination manifest is written.
+#[allow(clippy::too_many_lines)]
 pub fn sync_snapshot(
     from: &(dyn StreamStore + Sync),
     to: &(dyn StreamStore + Sync),
@@ -111,6 +116,14 @@ pub fn sync_snapshot(
         .filter(|e| e.path_type == PathType::File)
         .map(|e| e.checksum.as_str())
         .collect();
+    // Manifest-declared object sizes (for the adaptive controller's memory
+    // guardrail p95). Advisory only; never gates what is copied.
+    let object_sizes: Vec<u64> = manifest
+        .entries()
+        .iter()
+        .filter(|e| e.path_type == PathType::File)
+        .map(|e| e.size)
+        .collect();
 
     // Advisory progress: we are entering the transfer phase, and the total is
     // the sum of the to-copy object sizes (the File entries' manifest sizes).
@@ -135,34 +148,30 @@ pub fn sync_snapshot(
     let limiter = Arc::new(BlockingRateLimiter::new(config.max_bytes_per_sec));
 
     if !files.is_empty() {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(config.concurrency.get())
-            .build()
-            .map_err(|err| StoreError::Backend {
-                message: "failed to build sync thread pool".to_owned(),
-                source: Some(Box::new(err)),
-            })?;
-
-        pool.install(|| {
-            use rayon::prelude::*;
-            files.par_iter().try_for_each(|checksum| {
-                if to.has_object(checksum)? {
-                    skipped.fetch_add(1, Ordering::Relaxed);
-                    if let Some(m) = meter {
-                        m.add_skipped(1);
-                    }
-                    return Ok(());
-                }
-                if dry_run {
-                    // Count as "would copy"; never read or write anything.
-                    copied.fetch_add(1, Ordering::Relaxed);
-                    return Ok(());
-                }
-                // Bytes live only in memory: read from source, throttle, write
-                // to dest. Never written to any path.
+        // The per-object copy step, shared by the fixed and adaptive passes so
+        // they copy byte-identically (only scheduling/rate differ). `report` is
+        // called with the measured `OpSample` after each copy (a no-op for the
+        // fixed path; feeds the controller in the adaptive path).
+        let copy_one = |checksum: &str, report: &dyn Fn(OpSample)| -> Result<(), StoreError> {
+            if to.has_object(checksum)? {
+                skipped.fetch_add(1, Ordering::Relaxed);
                 if let Some(m) = meter {
-                    m.object_started();
+                    m.add_skipped(1);
                 }
+                return Ok(());
+            }
+            if dry_run {
+                // Count as "would copy"; never read or write anything.
+                copied.fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+            // Bytes live only in memory: read from source, throttle, write to
+            // dest. Never written to any path.
+            if let Some(m) = meter {
+                m.object_started();
+            }
+            let started = std::time::Instant::now();
+            let outcome = (|| {
                 let blob = from.get_object(checksum)?;
                 let len = blob.len() as u64;
                 // Read from source (bytes-in).
@@ -171,16 +180,62 @@ pub fn sync_snapshot(
                 }
                 limiter.acquire_blocking(len);
                 to.put_object(checksum, blob)?;
-                // Written to dest (bytes-out), object done.
-                if let Some(m) = meter {
-                    m.add_out(len);
-                    m.object_finished();
-                }
-                copied.fetch_add(1, Ordering::Relaxed);
-                bytes.fetch_add(len, Ordering::Relaxed);
-                Ok::<(), StoreError>(())
-            })
-        })?;
+                Ok::<u64, StoreError>(len)
+            })();
+            let latency = started.elapsed();
+            match &outcome {
+                Ok(len) => report(OpSample {
+                    bytes: *len,
+                    latency,
+                    result: OpResult::Ok,
+                }),
+                Err(err) => report(OpSample {
+                    bytes: 0,
+                    latency,
+                    result: classify_error(err),
+                }),
+            }
+            let len = outcome?;
+            // Written to dest (bytes-out), object done.
+            if let Some(m) = meter {
+                m.add_out(len);
+                m.object_finished();
+            }
+            copied.fetch_add(1, Ordering::Relaxed);
+            bytes.fetch_add(len, Ordering::Relaxed);
+            Ok(())
+        };
+
+        match config.adaptive {
+            AdaptivePolicy::Off => {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(config.concurrency.get())
+                    .build()
+                    .map_err(|err| StoreError::Backend {
+                        message: "failed to build sync thread pool".to_owned(),
+                        source: Some(Box::new(err)),
+                    })?;
+                let noop = |_: OpSample| {};
+                pool.install(|| {
+                    use rayon::prelude::*;
+                    files
+                        .par_iter()
+                        .try_for_each(|checksum| copy_one(checksum, &noop))
+                })?;
+            }
+            AdaptivePolicy::On { fraction, ceiling } => {
+                sync_objects_adaptive(
+                    &files,
+                    &object_sizes,
+                    config,
+                    &limiter,
+                    meter,
+                    fraction,
+                    ceiling,
+                    &copy_one,
+                )?;
+            }
+        }
     }
 
     // Manifest-last / all-or-nothing: only after every object copy succeeded
@@ -196,6 +251,82 @@ pub fn sync_snapshot(
         bytes_copied: bytes.into_inner(),
         dry_run,
     })
+}
+
+/// Adaptive store-to-store copy pass: pool sized to the policy `ceiling`, each
+/// object gated to the controller's live limit (effective concurrency ≤
+/// ceiling), every copy timed + classified + recorded via `copy_one`'s report
+/// hook, with a background `std::thread` ticking the controller (~250ms) to
+/// resize the gate and retune the shared [`BlockingRateLimiter`]. The exact
+/// objects copied and first-error-wins semantics are identical to the fixed
+/// pass; only scheduling/rate differ.
+#[allow(clippy::too_many_arguments)]
+fn sync_objects_adaptive<C>(
+    files: &[&str],
+    object_sizes: &[u64],
+    config: &TransferConfig,
+    limiter: &Arc<BlockingRateLimiter>,
+    meter: Option<&Meter>,
+    fraction: f64,
+    ceiling: usize,
+    copy_one: &C,
+) -> Result<(), StoreError>
+where
+    C: Fn(&str, &dyn Fn(OpSample)) -> Result<(), StoreError> + Sync,
+{
+    use rayon::prelude::*;
+
+    let p95 = p95_object_size(object_sizes);
+    let total_ram = snapdir_core::resources::total_ram_bytes().unwrap_or(0);
+    let policy = ControllerPolicy::new(fraction, ceiling, total_ram, config.max_bytes_per_sec);
+
+    let gate = AdaptiveGate::new(config.concurrency.get(), ceiling);
+
+    // Retune the shared synchronous limiter live (its `set_rate` is sync).
+    let blocking_limiter = Arc::clone(limiter);
+    let rate_applier: Arc<dyn Fn(Option<u64>) + Send + Sync> =
+        Arc::new(move |rate| blocking_limiter.set_rate(rate));
+    // The orchestrator only has a borrowed `&Meter`; the driver's optional
+    // display-meter mirror needs an owned `Arc<Meter>`, so the live limit/rate
+    // display is left to the meter recording in `copy_one` (None here). The
+    // controller still drives concurrency + rate correctly.
+    let _ = meter;
+    let driver = ControllerDriver::new(policy, gate.clone(), p95, Some(rate_applier), None);
+
+    // Background tick thread, stopped on the shared flag once the copy ends.
+    let stop = Arc::new(AtomicBool::new(false));
+    let tick_driver = driver.clone();
+    let tick_stop = Arc::clone(&stop);
+    let ticker = std::thread::spawn(move || {
+        while !tick_stop.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if tick_stop.load(Ordering::Relaxed) {
+                break;
+            }
+            tick_driver.tick();
+        }
+    });
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(ceiling.max(1))
+        .build()
+        .map_err(|err| StoreError::Backend {
+            message: "failed to build sync thread pool".to_owned(),
+            source: Some(Box::new(err)),
+        })?;
+
+    let result = pool.install(|| {
+        files.par_iter().try_for_each(|checksum| {
+            // Gate to the controller's live limit (effective concurrency).
+            let _permit = gate.acquire_blocking();
+            let report = |sample: OpSample| driver.record_op(sample);
+            copy_one(checksum, &report)
+        })
+    });
+
+    stop.store(true, Ordering::Relaxed);
+    let _ = ticker.join();
+    result
 }
 
 #[cfg(test)]
@@ -524,6 +655,49 @@ mod tests {
             b.get_manifest(&id).is_err(),
             "dest must have no manifest after a failed sync"
         );
+    }
+
+    #[test]
+    fn sync_snapshot_adaptive_mirrors_same_snapshot() {
+        // INVARIANT: an adaptive (policy On, low ceiling) sync mirrors the SAME
+        // snapshot id + the same objects as the non-adaptive (Off) sync over the
+        // same source. Adaptive only changes scheduling/rate.
+        let a_dir = TempDir::new("a");
+        let off_dir = TempDir::new("off");
+        let on_dir = TempDir::new("on");
+        let src_dir = TempDir::new("src");
+        let (manifest, id) = make_source(src_dir.path());
+        let n = object_count(&manifest);
+
+        let a = FileStore::from_root(a_dir.path());
+        a.push(&manifest, src_dir.path()).expect("stage into A");
+
+        let off = FileStore::from_root(off_dir.path());
+        let off_report = sync_snapshot(&a, &off, &id, &cfg(), false, None).expect("off sync");
+
+        let on = FileStore::from_root(on_dir.path());
+        let on_cfg = TransferConfig::new(4, None).with_adaptive(AdaptivePolicy::On {
+            fraction: 0.8,
+            ceiling: 2,
+        });
+        let on_report = sync_snapshot(&a, &on, &id, &on_cfg, false, None).expect("adaptive sync");
+
+        assert_eq!(off_report.objects_copied, n);
+        assert_eq!(
+            on_report.objects_copied, n,
+            "adaptive copies the same count"
+        );
+        assert_eq!(on_report.objects_skipped, 0);
+
+        // Both dests have the manifest (same id) and every object, byte-identical.
+        on.get_manifest(&id).expect("On dest has the manifest");
+        for entry in manifest.entries() {
+            if entry.path_type == PathType::File {
+                let off_blob = off.get_object(&entry.checksum).expect("off object");
+                let on_blob = on.get_object(&entry.checksum).expect("on object");
+                assert_eq!(off_blob, on_blob, "Off vs On object bytes identical");
+            }
+        }
     }
 
     #[test]
