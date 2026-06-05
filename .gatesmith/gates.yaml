@@ -2269,7 +2269,9 @@ gates:
     phase: 17
     owner_agent: generic
     depends_on: [release-tag-crates-1.2.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-05T12:40:00Z
+    git_sha: aa5caef
     failure_count: 0
     verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.2.0\"'"
     pass_criteria:

@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 17 OPEN — 6/7 gates green — Release pipeline: dev → bench-verify branch → snapdir/snapdir → crates.io (1.2.0) (gates added 2026-06-05)
+## ✅ PHASE 17 COMPLETE — 7/7 gates green (operator sign-off 2026-06-05) — snapdir 1.2.0 RELEASED — ALL 123 GATES GREEN
 
 > **Progress:**
 > - `release-bench-verify-workflow` ✅ PASSED (code `5ed8851`) — NEW `.github/workflows/bench-verify.yml`: on `release-verify/**` push + dispatch, runs the determinism test + iai_hot 5%-gate (both fail the job) + criterion pipeline/hot_paths (informational), uploads `bench-verify-1.2.0` (target/criterion + target/iai + bench-output.log) `if:always()`.
@@ -16,7 +16,9 @@
 >
 > - `release-tag-crates-1.2.0` ✅ PASSED (operator confirm 2026-06-05; tag `73f2ab5`) — **snapdir 1.2.0 RELEASED.** Tag `v1.2.0` on snapdir/snapdir → release.yml run `27010910407` cut the GitHub release (live, 13 assets: 6 signed cross-target archives + checksums + SHA256SUMS + SLSA attest) and published **all 4 crates at 1.2.0** (core/catalog/stores/cli). TP worked for all four (operator registered it for the 3); the idempotent loop fixed the 1.1.0 partial-publish failure end-to-end. `cargo install snapdir-cli` → 1.2.0.
 >
-> **Ready next: `phase17-complete` (human_checkpoint)** → final sign-off. **POST-RELEASE FOLLOW-UP (journaled, not a blocker):** the iai instruction-count bench reported `0|N/A` counts (no committed baseline) so its 5% perf gate passes vacuously — give it a committed baseline so it actually enforces.
+> - `phase17-complete` ✅ PASSED (operator sign-off 2026-06-05) — snapdir **1.2.0 is fully released**: bench-verified on a branch via the uploaded GitHub artifact, PR-merged to snapdir/snapdir, tagged `v1.2.0` with a live GitHub release, all 4 crates published via the hardened idempotent loop; frozen format untouched. **Phase 17 complete. All 123 gates green.**
+>
+> **OPEN POST-RELEASE FOLLOW-UP (not a blocker):** give the iai instruction-count bench a committed baseline so its 5% perf gate actually enforces (it currently reads `0|N/A` → vacuous pass). Candidate for a future Phase 18 gate or a quick bench-lane fix.
 >
 > **POST-RELEASE FOLLOW-UP (noted in journal):** the iai instruction-count bench currently reports `0|N/A` counts with no committed baseline, so the 5% perf gate passes vacuously. Give it a committed baseline (or fix the count capture) so it actually enforces. Not a 1.2.0 blocker.
 
