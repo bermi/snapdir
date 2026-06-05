@@ -5,29 +5,95 @@ Fetch a snapshot from a store and check it out to the given path
 Usage: snapdir pull [OPTIONS] [PATH]
 
 Arguments:
-  [PATH]  Destination directory
+  [PATH]
+          Destination directory
 
 Options:
-      --cache-dir <DIR>       Directory where the object cache is stored [env: SNAPDIR_CACHE_DIR=]
-      --catalog <NAME>        Catalog adapter to use [env: SNAPDIR_CATALOG=]
-      --store <URI>           Store URI: `protocol://location/path`
-      --id <ID>               Snapshot ID to operate on
-      --exclude <PATTERN>     Exclude paths matching PATTERN
-      --paths <PATTERN>       Only include paths matching PATTERN
-      --linked                Use symlinks instead of copies
-      --force                 Force an action to run
-      --purge                 Purge objects with invalid checksums
-      --keep                  Keep the staging directory
-      --dryrun                Run without making any changes
-      --verbose               Enable verbose output
-      --debug                 Enable debug output
-      --no-progress           Disable the live progress line (transfers still run) [env: SNAPDIR_NO_PROGRESS=]
-  -q, --quiet                 Suppress stderr banners and the live progress line
-      --color <WHEN>          When to colorize progress output: auto, always, or never [default: auto]
-      --location <DIR|STORE>  Context (directory or store) for catalog queries
-  -j, --jobs <N>              Max concurrent object transfers (0/auto = number of CPUs, capped) [env: SNAPDIR_JOBS=]
-      --limit-rate <RATE>     Limit total transfer bandwidth, e.g. 10M, 512K, 1G (wget-style; aggregate across all transfers) [env: SNAPDIR_LIMIT_RATE=]
-  -h, --help                  Print help
-  -V, --version               Print version
+      --cache-dir <DIR>
+          Directory where the object cache is stored
+          
+          [env: SNAPDIR_CACHE_DIR=]
+
+      --catalog <NAME>
+          Catalog adapter to use
+          
+          [env: SNAPDIR_CATALOG=]
+
+      --store <URI>
+          Store URI: `protocol://location/path`
+
+      --id <ID>
+          Snapshot ID to operate on
+
+      --exclude <PATTERN>
+          Exclude paths matching PATTERN
+
+      --paths <PATTERN>
+          Only include paths matching PATTERN
+
+      --linked
+          Use symlinks instead of copies
+
+      --force
+          Force an action to run
+
+      --purge
+          Purge objects with invalid checksums
+
+      --keep
+          Keep the staging directory
+
+      --dryrun
+          Run without making any changes
+
+      --verbose
+          Enable verbose output
+
+      --debug
+          Enable debug output
+
+      --no-progress
+          Disable the live progress line (transfers still run)
+          
+          [env: SNAPDIR_NO_PROGRESS=]
+
+  -q, --quiet
+          Suppress stderr banners and the live progress line
+
+      --color <WHEN>
+          When to colorize progress output: auto, always, or never
+          
+          [default: auto]
+
+      --location <DIR|STORE>
+          Context (directory or store) for catalog queries
+
+  -j, --jobs <N>
+          Max concurrent object transfers (0/auto = number of CPUs, capped)
+          
+          [env: SNAPDIR_JOBS=]
+
+      --limit-rate <RATE>
+          Limit total transfer bandwidth, e.g. 10M, 512K, 1G (wget-style; aggregate across all transfers)
+          
+          [env: SNAPDIR_LIMIT_RATE=]
+
+      --adaptive[=<FRACTION>]
+          Adaptively tune transfer concurrency/bandwidth toward a fraction (default 0.8) of measured CPU/network capacity; backs off under contention. Opt-in; default is full speed.
+          
+          Presence (with or without a value) opts in; the optional value is the politeness fraction in `(0.0, 1.0]`.
+          
+          [env: SNAPDIR_ADAPTIVE=]
+
+      --max-jobs <N>
+          Adaptive concurrency ceiling (only meaningful with `--adaptive`). When unset, defaults to the auto concurrency; clamped to a sane upper bound
+          
+          [env: SNAPDIR_MAX_JOBS=]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
 
 ```

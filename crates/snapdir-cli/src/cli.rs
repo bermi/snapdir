@@ -33,8 +33,13 @@ use snapdir_core::{
 };
 use snapdir_stores::{
     resolve_adapter, Adapter, B2Store, ExternalStore, FileStore, GcsStore, S3Store, StreamStore,
-    TransferConfig,
+    TransferAdaptivePolicy, TransferConfig,
 };
+
+/// Upper bound for the adaptive concurrency ceiling (`--max-jobs` / `--jobs`
+/// under `--adaptive`). Keeps an over-eager explicit value from oversubscribing
+/// the controller's in-flight window.
+const ADAPTIVE_CEILING_CAP: usize = 64;
 
 /// Content-addressable directory snapshots.
 #[derive(Debug, Parser)]
@@ -167,6 +172,29 @@ pub struct GlobalArgs {
     /// Limit total transfer bandwidth, e.g. 10M, 512K, 1G (wget-style; aggregate across all transfers).
     #[arg(long, global = true, value_name = "RATE", env = "SNAPDIR_LIMIT_RATE")]
     pub limit_rate: Option<String>,
+
+    /// Adaptively tune transfer concurrency/bandwidth toward a fraction
+    /// (default 0.8) of measured CPU/network capacity; backs off under
+    /// contention. Opt-in; default is full speed.
+    ///
+    /// Presence (with or without a value) opts in; the optional value is the
+    /// politeness fraction in `(0.0, 1.0]`.
+    #[arg(
+        long,
+        global = true,
+        value_name = "FRACTION",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "0.8",
+        env = "SNAPDIR_ADAPTIVE",
+        value_parser = parse_adaptive_fraction
+    )]
+    pub adaptive: Option<f64>,
+
+    /// Adaptive concurrency ceiling (only meaningful with `--adaptive`). When
+    /// unset, defaults to the auto concurrency; clamped to a sane upper bound.
+    #[arg(long, global = true, value_name = "N", env = "SNAPDIR_MAX_JOBS")]
+    pub max_jobs: Option<usize>,
 }
 
 /// The `snapdir` subcommands, matching the Bash orchestrator one-for-one.
@@ -1014,8 +1042,18 @@ impl Cli {
     }
 
     /// Builds the [`TransferConfig`] from the global `--jobs` / `--limit-rate`
-    /// flags. `--jobs` unset or `0` falls back to the stores' auto-detected
-    /// default concurrency; `--limit-rate` unset means unlimited bandwidth.
+    /// / `--adaptive` / `--max-jobs` flags. `--jobs` unset or `0` falls back to
+    /// the stores' auto-detected default concurrency; `--limit-rate` unset means
+    /// unlimited bandwidth.
+    ///
+    /// Without `--adaptive`, the result is byte-for-byte the historical
+    /// non-adaptive config: `TransferConfig::new(concurrency, max_bytes_per_sec)`
+    /// ([`TransferAdaptivePolicy::Off`]). With `--adaptive=f` the same base
+    /// config gains an [`TransferAdaptivePolicy::On`] policy whose `fraction` is
+    /// `f` and whose `ceiling` is `--max-jobs` if set, else an explicit
+    /// `--jobs N`, else the auto concurrency (the ceiling is clamped to
+    /// [`ADAPTIVE_CEILING_CAP`]). `--limit-rate` is carried unchanged as the
+    /// rate cap in both paths.
     ///
     /// # Errors
     ///
@@ -1025,12 +1063,29 @@ impl Cli {
             Some(rate) => Some(parse_rate(rate)?),
             None => None,
         };
+        let auto = TransferConfig::default().concurrency.get();
         let concurrency = match self.globals.jobs {
             Some(n) if n > 0 => n,
             // Unset or 0 => auto (the stores' default).
-            _ => TransferConfig::default().concurrency.get(),
+            _ => auto,
         };
-        Ok(TransferConfig::new(concurrency, max_bytes_per_sec))
+        let base = TransferConfig::new(concurrency, max_bytes_per_sec);
+        match self.globals.adaptive {
+            // No `--adaptive`: byte-for-byte the historical non-adaptive config.
+            None => Ok(base),
+            // `--adaptive[=f]`: opt into adaptive tuning. The ceiling is
+            // `--max-jobs` if set, else an explicit `--jobs N`, else `auto`,
+            // clamped to a sane upper bound.
+            Some(fraction) => {
+                let ceiling = self
+                    .globals
+                    .max_jobs
+                    .or(self.globals.jobs.filter(|&n| n > 0))
+                    .unwrap_or(auto)
+                    .clamp(1, ADAPTIVE_CEILING_CAP);
+                Ok(base.with_adaptive(TransferAdaptivePolicy::On { fraction, ceiling }))
+            }
+        }
     }
 
     /// Field observability for the transfer commands: under `--verbose`, print
@@ -1051,10 +1106,28 @@ impl Cli {
         let Ok(config) = self.transfer_config() else {
             return;
         };
-        let concurrency = config.concurrency.get();
-        match self.globals.limit_rate.as_deref() {
-            Some(rate) => eprintln!("transfers: {concurrency} concurrent, limit {rate}"),
-            None => eprintln!("transfers: {concurrency} concurrent"),
+        match config.adaptive {
+            TransferAdaptivePolicy::On { fraction, ceiling } => {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    clippy::cast_precision_loss
+                )]
+                let pct = (fraction * 100.0).round() as u64;
+                match self.globals.limit_rate.as_deref() {
+                    Some(rate) => eprintln!(
+                        "adaptive: target {pct}% of capacity, ceiling {ceiling}, limit {rate}"
+                    ),
+                    None => eprintln!("adaptive: target {pct}% of capacity, ceiling {ceiling}"),
+                }
+            }
+            TransferAdaptivePolicy::Off => {
+                let concurrency = config.concurrency.get();
+                match self.globals.limit_rate.as_deref() {
+                    Some(rate) => eprintln!("transfers: {concurrency} concurrent, limit {rate}"),
+                    None => eprintln!("transfers: {concurrency} concurrent"),
+                }
+            }
         }
     }
 
@@ -1422,6 +1495,22 @@ fn parse_rate(s: &str) -> Result<u64> {
     Ok((value * multiplier) as u64)
 }
 
+/// clap `value_parser` for `--adaptive[=FRACTION]`: a finite `f64` in the
+/// half-open range `(0.0, 1.0]` (the politeness fraction). Rejects `<= 0` and
+/// `> 1` so a nonsensical target can't slip through.
+fn parse_adaptive_fraction(s: &str) -> Result<f64, String> {
+    let value: f64 = s
+        .trim()
+        .parse()
+        .map_err(|_| format!("invalid --adaptive '{s}': expected a number in (0.0, 1.0]"))?;
+    if !value.is_finite() || value <= 0.0 || value > 1.0 {
+        return Err(format!(
+            "invalid --adaptive '{s}': fraction must be in (0.0, 1.0]"
+        ));
+    }
+    Ok(value)
+}
+
 /// Reformats a `SNAPDIR*` environment variable into the oracle's `defaults`
 /// option line, faithfully reproducing the `sed -E 's|^_?SNAPDIR_|--|; s|_|-|g;'
 /// | tr '[:upper:]' '[:lower:]'` pipeline applied to the `KEY=VALUE` text:
@@ -1700,6 +1789,8 @@ mod tests {
         unsafe {
             std::env::remove_var("SNAPDIR_JOBS");
             std::env::remove_var("SNAPDIR_LIMIT_RATE");
+            std::env::remove_var("SNAPDIR_ADAPTIVE");
+            std::env::remove_var("SNAPDIR_MAX_JOBS");
         }
         let mut full = vec!["snapdir"];
         full.extend_from_slice(args);
@@ -1776,5 +1867,122 @@ mod tests {
         assert!(cli_with(&["--limit-rate", "nope"])
             .transfer_config()
             .is_err());
+    }
+
+    #[test]
+    fn adaptive_flag_without_value_defaults_to_point_eight() {
+        let cfg = cli_with(&["--adaptive"]).transfer_config().unwrap();
+        match cfg.adaptive {
+            TransferAdaptivePolicy::On { fraction, ceiling } => {
+                assert!(
+                    (fraction - 0.8).abs() < 1e-9,
+                    "expected fraction ~0.8, got {fraction}"
+                );
+                // Ceiling defaults to the auto concurrency when unset.
+                assert_eq!(ceiling, TransferConfig::default().concurrency.get());
+            }
+            TransferAdaptivePolicy::Off => panic!("expected adaptive On"),
+        }
+    }
+
+    #[test]
+    fn adaptive_flag_with_explicit_fraction() {
+        let cfg = cli_with(&["--adaptive=0.5"]).transfer_config().unwrap();
+        match cfg.adaptive {
+            TransferAdaptivePolicy::On { fraction, .. } => {
+                assert!(
+                    (fraction - 0.5).abs() < 1e-9,
+                    "expected fraction ~0.5, got {fraction}"
+                );
+            }
+            TransferAdaptivePolicy::Off => panic!("expected adaptive On"),
+        }
+    }
+
+    #[test]
+    fn adaptive_flag_out_of_range_is_rejected() {
+        // clap value_parser rejects <= 0 and > 1 at parse time.
+        for bad in ["0", "0.0", "1.5", "-0.2", "nope"] {
+            unsafe {
+                std::env::remove_var("SNAPDIR_ADAPTIVE");
+                std::env::remove_var("SNAPDIR_MAX_JOBS");
+            }
+            let arg = format!("--adaptive={bad}");
+            assert!(
+                Cli::try_parse_from(["snapdir", &arg, "defaults"]).is_err(),
+                "expected --adaptive={bad} to be rejected"
+            );
+        }
+        // 1.0 is the inclusive upper bound and must be accepted.
+        let cfg = cli_with(&["--adaptive=1.0"]).transfer_config().unwrap();
+        assert!(matches!(cfg.adaptive, TransferAdaptivePolicy::On { .. }));
+    }
+
+    #[test]
+    fn adaptive_unset_equals_pre_phase18_value() {
+        // The default (no --adaptive) MUST be byte-for-byte the historical
+        // non-adaptive config: Off, same concurrency + max_bytes_per_sec.
+        let cfg = cli_with(&["--jobs", "4", "--limit-rate", "1M"])
+            .transfer_config()
+            .unwrap();
+        let expected = TransferConfig::new(4, Some(1_048_576));
+        assert_eq!(cfg.adaptive, TransferAdaptivePolicy::Off);
+        assert_eq!(cfg.adaptive, expected.adaptive);
+        assert_eq!(cfg.concurrency, expected.concurrency);
+        assert_eq!(cfg.max_bytes_per_sec, expected.max_bytes_per_sec);
+
+        // Same for the all-defaults case.
+        let cfg = cli_with(&[]).transfer_config().unwrap();
+        let expected = TransferConfig::new(TransferConfig::default().concurrency.get(), None);
+        assert_eq!(cfg.adaptive, TransferAdaptivePolicy::Off);
+        assert_eq!(cfg.concurrency, expected.concurrency);
+        assert_eq!(cfg.max_bytes_per_sec, expected.max_bytes_per_sec);
+    }
+
+    #[test]
+    fn adaptive_max_jobs_sets_ceiling() {
+        let cfg = cli_with(&["--adaptive", "--max-jobs", "8"])
+            .transfer_config()
+            .unwrap();
+        match cfg.adaptive {
+            TransferAdaptivePolicy::On { ceiling, .. } => assert_eq!(ceiling, 8),
+            TransferAdaptivePolicy::Off => panic!("expected adaptive On"),
+        }
+
+        // An explicit --jobs acts as the ceiling under --adaptive when
+        // --max-jobs is unset; --limit-rate still threads through.
+        let cfg = cli_with(&["--adaptive=0.6", "--jobs", "3", "--limit-rate", "512K"])
+            .transfer_config()
+            .unwrap();
+        match cfg.adaptive {
+            TransferAdaptivePolicy::On { fraction, ceiling } => {
+                assert!((fraction - 0.6).abs() < 1e-9);
+                assert_eq!(ceiling, 3);
+            }
+            TransferAdaptivePolicy::Off => panic!("expected adaptive On"),
+        }
+        assert_eq!(cfg.max_bytes_per_sec, Some(524_288));
+
+        // --max-jobs wins over --jobs for the ceiling.
+        let cfg = cli_with(&["--adaptive", "--jobs", "2", "--max-jobs", "12"])
+            .transfer_config()
+            .unwrap();
+        match cfg.adaptive {
+            TransferAdaptivePolicy::On { ceiling, .. } => assert_eq!(ceiling, 12),
+            TransferAdaptivePolicy::Off => panic!("expected adaptive On"),
+        }
+    }
+
+    #[test]
+    fn adaptive_ceiling_is_clamped_to_cap() {
+        let cfg = cli_with(&["--adaptive", "--max-jobs", "9999"])
+            .transfer_config()
+            .unwrap();
+        match cfg.adaptive {
+            TransferAdaptivePolicy::On { ceiling, .. } => {
+                assert_eq!(ceiling, ADAPTIVE_CEILING_CAP);
+            }
+            TransferAdaptivePolicy::Off => panic!("expected adaptive On"),
+        }
     }
 }

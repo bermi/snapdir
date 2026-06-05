@@ -840,6 +840,9 @@ mod tests {
             objects_skipped: skipped,
             in_flight,
             phase,
+            // Not-adaptive: the live-tuning fields are advisory and unset here.
+            current_limit: 0,
+            target_rate: 0,
         }
     }
 
