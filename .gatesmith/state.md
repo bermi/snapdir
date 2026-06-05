@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 19 OPEN — 5/6 gates green — Release snapdir 1.3.0 (ship + verify Phase-18) (gates added 2026-06-05; +1 mid-phase ci fix)
+## ✅ PHASE 19 COMPLETE — 6/6 gates green (operator sign-off 2026-06-05) — snapdir 1.3.0 RELEASED — ALL 136 GATES GREEN
 
 > **Progress:**
 > - `release-prep-1.3.0` ✅ PASSED (code `c4e9e08`) — bump 1.2.0→1.3.0 + `[1.3.0]` CHANGELOG + compare links.
@@ -16,8 +16,9 @@
 > - `release-pr-upstream-1.3.0` ✅ PASSED (operator-authorized merge 2026-06-05; merge `2c50936`) — PR snapdir/snapdir#10 `release: 1.3.0` went 15/15 CI green and was squash-merged; **upstream/main now at 1.3.0 with ZERO .gatesmith tracked**. Canonical repo is on 1.3.0.
 >
 > - `release-tag-crates-1.3.0` ✅ PASSED (operator confirm 2026-06-05; tag `b8ac3a2`) — **snapdir 1.3.0 RELEASED.** Tag `v1.3.0` → release.yml run `27035729846` cut the GitHub release (live, 13 assets) + published **all 4 crates at 1.3.0** via the idempotent loop (no 403s; TP already registered). `cargo install snapdir-cli` → 1.3.0.
+> - `phase19-complete` ✅ PASSED (operator sign-off 2026-06-05; `cargo test --workspace --locked` 377 passed/0 failed). **Phase 19 complete. snapdir 1.3.0 shipped. All 136 gates green.**
 >
-> **Ready next: `phase19-complete` (human_checkpoint)** → final sign-off.
+> **OPEN follow-ups (noted, not gated):** docs prose for `--adaptive`/`--max-jobs` (clap auto-generates man/completions; CHANGELOG already covers it); a committed iai-bench baseline; **Phase 20 `snapdir export`** (designed — the next FEATURE phase). dev carries `.gatesmith`; main/upstream never do.
 
 > Operator-requested: ship the Phase-18 opt-in `--adaptive` transfer tuner + clearer progress line as **1.3.0**, full verify-branch + artifact path (same as the 1.2.0 release). **Lighter than 1.2.0:** bench-verify.yml, the idempotent `release.yml` publish, and Trusted Publishing for all 4 crates already shipped with 1.2.0 → no new CI/packaging gates, **no operator prerequisite** (just tag and go).
 >
