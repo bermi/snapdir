@@ -2176,7 +2176,9 @@ gates:
     phase: 17
     owner_agent: ci
     depends_on: [phase16-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-05T02:47:00Z
+    git_sha: 5ed8851
     failure_count: 0
     verification_cmd: "test -f .github/workflows/bench-verify.yml && grep -qE 'actions/upload-artifact' .github/workflows/bench-verify.yml && grep -qE 'iai_hot' .github/workflows/bench-verify.yml && grep -qiE 'criterion|pipeline' .github/workflows/bench-verify.yml && grep -qiE 'valgrind' .github/workflows/bench-verify.yml && grep -qE 'release-verify' .github/workflows/bench-verify.yml && actionlint .github/workflows/bench-verify.yml && cargo bench --workspace --no-run"
     pass_criteria:
