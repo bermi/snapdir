@@ -2237,7 +2237,9 @@ gates:
     phase: 17
     owner_agent: generic
     depends_on: [release-verify-branch]
-    status: pending
+    status: passed
+    passed_at: 2026-06-05T11:00:00Z
+    git_sha: 81dac7f
     failure_count: 0
     verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.2.0\"' && test -z \"$(git ls-tree -r --name-only upstream/main | grep '^\\.gatesmith')\""
     pass_criteria:

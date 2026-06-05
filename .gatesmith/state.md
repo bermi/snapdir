@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 17 OPEN — 4/7 gates green — Release pipeline: dev → bench-verify branch → snapdir/snapdir → crates.io (1.2.0) (gates added 2026-06-05)
+## ▶ PHASE 17 OPEN — 5/7 gates green — Release pipeline: dev → bench-verify branch → snapdir/snapdir → crates.io (1.2.0) (gates added 2026-06-05)
 
 > **Progress:**
 > - `release-bench-verify-workflow` ✅ PASSED (code `5ed8851`) — NEW `.github/workflows/bench-verify.yml`: on `release-verify/**` push + dispatch, runs the determinism test + iai_hot 5%-gate (both fail the job) + criterion pipeline/hot_paths (informational), uploads `bench-verify-1.2.0` (target/criterion + target/iai + bench-output.log) `if:always()`.
@@ -12,7 +12,9 @@
 >
 > - `release-verify-branch` ✅ PASSED (operator confirm 2026-06-05; branch `887e00c`) — `release-verify/1.2.0` (off upstream/main, 17 gatesmith-free commits, tip 1.2.0, **ZERO .gatesmith**) pushed to origin; bench-verify run `26992716420` → **success**, artifact `bench-verify-1.2.0` consulted: determinism+round-trip 4+3 passed/0 failed, criterion data captured, iai Ok/0-regressed (⚠ 0|N/A counts — first run, no committed baseline → vacuous pass; **follow-up: commit an iai baseline so the 5% gate enforces**).
 >
-> **Ready next: `release-pr-upstream` (human_checkpoint)** → PM escalates; open the `release: 1.2.0` PR from `release-verify/1.2.0` to snapdir/snapdir and merge at 1.2.0. Then `release-tag-crates-1.2.0` (operator registers TP for catalog/stores/cli first → tag `v1.2.0` → GH release + idempotent crates publish) → `phase17-complete`.
+> - `release-pr-upstream` ✅ PASSED (operator confirm 2026-06-05; merge `81dac7f`) — PR snapdir/snapdir#9 `release: 1.2.0` merged; **upstream/main now at 1.2.0 with ZERO .gatesmith tracked**. Canonical repo is on 1.2.0.
+>
+> **Ready next: `release-tag-crates-1.2.0` (human_checkpoint)** → PM escalates. ⚠ PREREQ (operator): register Trusted Publishing on crates.io for `snapdir-catalog`/`-stores`/`-cli` (only `-core` has it) BEFORE tagging. Then tag `v1.2.0` on `81dac7f` → release.yml builds the 6-target archives + GitHub release + the now-idempotent crates publish (core→catalog→stores→cli). Then `phase17-complete` (sign-off).
 >
 > **POST-RELEASE FOLLOW-UP (noted in journal):** the iai instruction-count bench currently reports `0|N/A` counts with no committed baseline, so the 5% perf gate passes vacuously. Give it a committed baseline (or fix the count capture) so it actually enforces. Not a 1.2.0 blocker.
 
