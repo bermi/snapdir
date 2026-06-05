@@ -3,6 +3,21 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
+## ▶ PHASE 19 OPEN — 0/5 gates green — Release snapdir 1.3.0 (ship + verify Phase-18) (gates added 2026-06-05)
+
+> Operator-requested: ship the Phase-18 opt-in `--adaptive` transfer tuner + clearer progress line as **1.3.0**, full verify-branch + artifact path (same as the 1.2.0 release). **Lighter than 1.2.0:** bench-verify.yml, the idempotent `release.yml` publish, and Trusted Publishing for all 4 crates already shipped with 1.2.0 → no new CI/packaging gates, **no operator prerequisite** (just tag and go).
+>
+> **Gates (5, linear chain), ready head = `release-prep-1.3.0`:**
+> - `release-prep-1.3.0` (generic, machine) — bump 1.2.0→1.3.0 + internal deps + lock + `[1.3.0]` CHANGELOG (--adaptive + progress) →
+> - `release-verify-branch-1.3.0` (generic, human✋) — cherry-pick the 6 Phase-18 SHAs (`de3fb7e b771917 f408032 5b05b41 e37267b e55c28b`) + the prep onto `release-verify/1.3.0` off `upstream/main` (ZERO `.gatesmith`), push to origin → bench-verify artifact (determinism incl. adaptive round-trip + iai + criterion) → consult →
+> - `release-pr-upstream-1.3.0` (generic, human✋) — PR → snapdir/snapdir, merge at 1.3.0 →
+> - `release-tag-crates-1.3.0` (packaging, human✋) — tag `v1.3.0` → GH release + idempotent crates publish (TP already done) →
+> - `phase19-complete` (generic, human✋) — sign-off.
+>
+> No frozen-interface mutation (version bump + CHANGELOG + orchestration). `release-prep-1.3.0` lands gatesmith-free on dev (cherry-pickable). **DEFERRED:** Phase 20 `snapdir export` (next FEATURE phase after this release).
+
+---
+
 ## ✅ PHASE 18 COMPLETE — 7/7 gates green (operator sign-off 2026-06-05) — ALL 130 GATES GREEN
 
 > **Progress:**
