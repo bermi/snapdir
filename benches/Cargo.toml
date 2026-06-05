@@ -44,3 +44,10 @@ tempfile = "3"
 [[bench]]
 name = "hot_paths"
 harness = false
+
+# Full-pipeline wall-clock benches over the BENCH-tier scenarios (walk+hash,
+# snapshot_id, push, fetch, sync). The "make an informed decision" tool — see
+# benches/README.md for the save-baseline / --baseline workflow.
+[[bench]]
+name = "pipeline"
+harness = false
