@@ -2446,7 +2446,9 @@ gates:
     phase: 19
     owner_agent: generic
     depends_on: [release-prep-1.3.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-05T17:30:00Z
+    git_sha: 01b1797
     failure_count: 0
     verification_cmd: "git rev-parse --verify --quiet release-verify/1.3.0 && test -z \"$(git log upstream/main..release-verify/1.3.0 --name-only --format= -- .gatesmith)\" && git log --oneline upstream/main..release-verify/1.3.0"
     pass_criteria:
