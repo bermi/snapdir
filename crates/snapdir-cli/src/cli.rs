@@ -1162,11 +1162,20 @@ impl Cli {
             );
             // Modern (unicode) glyphs unless the terminal is explicitly dumb.
             let ascii = matches!(std::env::var("TERM").as_deref(), Ok("dumb"));
-            let reporter = ProgressReporter::start(Arc::clone(&meter), jobs, true, color, ascii);
+            // Thread the true adaptive politeness fraction (`--adaptive[=F]`)
+            // into the renderer's adaptive readout; `None` when not adaptive.
+            let reporter = ProgressReporter::start(
+                Arc::clone(&meter),
+                jobs,
+                true,
+                color,
+                ascii,
+                self.globals.adaptive,
+            );
             (Some(meter), reporter)
         } else {
             let reporter =
-                ProgressReporter::start(Arc::new(Meter::new()), jobs, false, false, false);
+                ProgressReporter::start(Arc::new(Meter::new()), jobs, false, false, false, None);
             (None, reporter)
         }
     }

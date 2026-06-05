@@ -160,6 +160,36 @@ pub(crate) fn human_bytes(n: u64) -> String {
     }
 }
 
+/// Picks the [`BYTE_UNITS`] index appropriate for `n` (the magnitude whose
+/// value lands in `[1, 1024)`). Used to choose a size unit *once* from the
+/// known/estimated total and HOLD it for the whole transfer, so the size field
+/// never flips MB↔GB mid-stream (which would reflow the layout).
+fn unit_index_for(n: u64) -> usize {
+    if n < 1024 {
+        return 0;
+    }
+    let mut value = n as f64;
+    let mut unit = 0usize;
+    while value >= KIB && unit < BYTE_UNITS.len() - 1 {
+        value /= KIB;
+        unit += 1;
+    }
+    unit
+}
+
+/// Formats `n` bytes in the *fixed* unit `unit` (an index into [`BYTE_UNITS`])
+/// to one decimal place, e.g. `unit=3` (GB) renders `1.2` for ~1.2 GB and
+/// `0.4` for ~400 MB. Holding the unit + decimals fixed keeps the field's
+/// visible width stable as the value grows. The unit *label* is rendered
+/// separately by the caller (so `<xfer>/<total> GB` shares one suffix).
+fn bytes_in_unit(n: u64, unit: usize) -> String {
+    // `unit` is a [`BYTE_UNITS`] index (0..=5), so the cast never wraps.
+    let exp = i32::try_from(unit).unwrap_or(0);
+    let divisor = KIB.powi(exp);
+    let value = n as f64 / divisor;
+    format!("{value:.1}")
+}
+
 /// Formats a transfer rate, e.g. `148 MB/s`, `1.5 KB/s`, `0 B/s`.
 pub(crate) fn human_rate(bytes_per_sec: f64) -> String {
     if !bytes_per_sec.is_finite() || bytes_per_sec <= 0.0 {
@@ -168,6 +198,19 @@ pub(crate) fn human_rate(bytes_per_sec: f64) -> String {
     // Round to whole bytes and reuse the byte humanizer for consistent units.
     let bytes = bytes_per_sec.round() as u64;
     format!("{}/s", human_bytes(bytes))
+}
+
+/// Number of decimal digits in `n` (at least 1, so `0` is width 1). Used to
+/// left-pad the `done` count to the `total`'s width so the `done/total` field
+/// keeps a constant visible width as `done` climbs.
+fn decimal_digits(n: u64) -> usize {
+    let mut n = n;
+    let mut digits = 1usize;
+    while n >= 10 {
+        n /= 10;
+        digits += 1;
+    }
+    digits
 }
 
 /// Formats a coarse ETA duration, e.g. `1m05s`, `12s`, `2h03m`.
@@ -186,6 +229,30 @@ fn human_eta(d: Duration) -> String {
     }
 }
 
+/// The fixed visible width of the eta *value* slot (without the `eta ` label).
+/// Sized to hold the widest common form (`12m34s`, `2h03m`, and the `--`
+/// placeholder), so the field — and everything after it — never reflows as the
+/// eta ticks across magnitudes.
+const ETA_SLOT: usize = 6;
+
+/// Renders the eta value padded/clamped to [`ETA_SLOT`] columns. `None` (no
+/// stable signal yet) renders a right-padded `--` so the slot still occupies a
+/// constant width.
+fn eta_slot(eta: Option<Duration>) -> String {
+    let raw = match eta {
+        Some(d) => human_eta(d),
+        None => "--".to_owned(),
+    };
+    // Left-pad to a fixed width so the value is right-aligned in its slot;
+    // clamp overly-wide values (huge etas) so the column never grows.
+    let w = visible_width(&raw);
+    if w >= ETA_SLOT {
+        raw.chars().take(ETA_SLOT).collect()
+    } else {
+        format!("{}{}", " ".repeat(ETA_SLOT - w), raw)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 3. The pure line formatter.
 // ---------------------------------------------------------------------------
@@ -201,7 +268,8 @@ pub(crate) struct RenderMetrics {
     pub(crate) rate_out: f64,
     /// Smoothed objects/sec.
     pub(crate) obj_per_sec: f64,
-    /// Estimated time remaining, when computable.
+    /// The *displayed* ETA: throttled (refreshed at most every ~2s) and damped
+    /// so it counts down smoothly. `None` until a stable signal exists.
     pub(crate) eta: Option<Duration>,
     /// Resident set size in bytes, when sampleable.
     pub(crate) rss: Option<u64>,
@@ -211,6 +279,21 @@ pub(crate) struct RenderMetrics {
     pub(crate) jobs: usize,
     /// Monotonic spinner frame counter (mod the frame-set length).
     pub(crate) spinner_frame: usize,
+    /// Held size unit (index into [`BYTE_UNITS`]) for the byte field, chosen
+    /// once from the estimated total and held for the whole transfer so the
+    /// size column never flips units mid-stream. `None` falls back to a unit
+    /// derived from the live bytes-out.
+    pub(crate) size_unit: Option<usize>,
+    /// Estimated total bytes for the transfer (derived from the observed
+    /// average object size), when computable; `0`/`None` hides the estimate.
+    pub(crate) byte_total_est: Option<u64>,
+    /// The adaptive *politeness fraction* (`--adaptive[=FRACTION]`, in
+    /// `(0.0, 1.0]`), threaded from the CLI. This is the TRUE fraction the
+    /// operator asked for — it is NOT derivable from the [`MeterSnapshot`]
+    /// (whose `current_limit` is a concurrency count and `target_rate` is a
+    /// byte rate). Rendered as `(auto <fraction>)` when adaptive is active
+    /// (`current_limit > 0`). `None` when not adaptive.
+    pub(crate) adaptive_fraction: Option<f64>,
 }
 
 // Modern (unicode) glyph set — every glyph is display-width 1.
@@ -376,18 +459,35 @@ impl LineFields {
             0.0
         };
 
+        // Counts are labeled as *files* and the `done` value is left-padded to
+        // the digit-width of `total`, so e.g. `8/61` and `38/61` occupy the
+        // same width (no reflow as the count climbs).
         let counts = if determinate {
             let pct = (fraction * 100.0).clamp(0.0, 100.0);
-            format!("{pct:>3.0}% {done}/{total}")
+            let total_digits = decimal_digits(total);
+            format!("{pct:>3.0}% {done:>total_digits$}/{total} files")
         } else {
-            format!("{done} objs")
+            // Indeterminate: a digit-stable, explicitly-labeled file count.
+            format!("{done} files")
         };
 
-        let bytes = format!(
-            "{}/{}",
-            human_bytes(snap.bytes_out),
-            human_bytes(snap.bytes_in)
-        );
+        // Size field: always carries a unit, and the unit is the *held* one
+        // (chosen once from the estimated total) so it never flips mid-stream.
+        // When an estimated total is known we show `<xfer>/<est> <UNIT>`,
+        // otherwise just `<xfer> <UNIT>`. The transferred figure is bytes-out
+        // (the work the operator cares about for an upload/sync).
+        let unit = m
+            .size_unit
+            .unwrap_or_else(|| unit_index_for(snap.bytes_out));
+        let unit_label = BYTE_UNITS[unit];
+        let bytes = match m.byte_total_est {
+            Some(total_bytes) if total_bytes >= snap.bytes_out => format!(
+                "{}/{} {unit_label}",
+                bytes_in_unit(snap.bytes_out, unit),
+                bytes_in_unit(total_bytes, unit),
+            ),
+            _ => format!("{} {unit_label}", bytes_in_unit(snap.bytes_out, unit)),
+        };
         let (down_sym, up_sym) = if ascii {
             ("down".to_owned(), "up".to_owned())
         } else {
@@ -399,17 +499,38 @@ impl LineFields {
             human_rate(m.rate_out)
         );
 
+        // Concurrency / adaptive readout. When the meter reports adaptive is
+        // active (`current_limit > 0`) we surface it as `jobs <in>/<ceiling>
+        // (auto <fraction>)`, where `<ceiling>` is the adaptive ceiling the
+        // renderer already holds (`m.jobs`), `<in>` is the live in-flight
+        // gauge, and `<fraction>` is the TRUE politeness fraction threaded
+        // from the CLI (`--adaptive[=FRACTION]`). The fraction is NOT derivable
+        // from the meter (its `current_limit` is a concurrency count and
+        // `target_rate` is a byte rate), so when it wasn't threaded we fall
+        // back to a bare `(auto)` with no misleading number. When not adaptive,
+        // we keep the plain `<in>/<jobs>` style.
+        let conc = if snap.current_limit > 0 {
+            match m.adaptive_fraction {
+                Some(f) => format!("jobs {}/{} (auto {f:.1})", snap.in_flight, m.jobs),
+                None => format!("jobs {}/{} (auto)", snap.in_flight, m.jobs),
+            }
+        } else {
+            format!("{}/{}", snap.in_flight, m.jobs)
+        };
+
         Self {
             spinner: spinner_glyph(m.spinner_frame, ascii).to_string(),
             label,
             counts,
             bytes,
             rates,
-            conc: format!("{}/{}", snap.in_flight, m.jobs),
+            conc,
             obj: Some(format!("{:.0} obj/s", m.obj_per_sec)),
             mem: m.rss.map(|r| format!("mem {}", human_bytes(r))),
             cpu: m.cpu_pct.map(|c| format!("cpu {c:.0}%")),
-            eta: m.eta.map(|d| format!("eta {}", human_eta(d))),
+            // eta always occupies a fixed-width slot (value `--` when no stable
+            // signal yet) so fields after it never reflow as the eta ticks.
+            eta: Some(format!("eta {}", eta_slot(m.eta))),
             determinate,
             fraction,
         }
@@ -675,11 +796,44 @@ struct RenderState {
     obj_per_sec: f64,
     spinner_frame: usize,
     cpu: CpuSampler,
+    /// Heavily-smoothed bytes/sec written out, used as the steady denominator
+    /// for the byte-based ETA (steadier than the display rate `rate_out`).
+    smooth_bps: f64,
+    /// The currently-DISPLAYED eta (held between throttled refreshes and damped
+    /// toward new estimates). `None` until a stable signal is established.
+    displayed_eta: Option<Duration>,
+    /// When `displayed_eta` was last refreshed, for the ~2s throttle.
+    last_eta_update: Option<Instant>,
+    /// Held size unit (index into [`BYTE_UNITS`]) for the byte field, latched
+    /// once from the first credible total estimate and never changed after, so
+    /// the size column never flips units mid-stream.
+    size_unit: Option<usize>,
+    /// The adaptive politeness fraction threaded from the CLI
+    /// (`--adaptive[=FRACTION]`), or `None` when not adaptive. Constant for the
+    /// life of the reporter; surfaced verbatim in the adaptive readout.
+    adaptive_fraction: Option<f64>,
 }
 
+/// Smoothing factor for the steady byte-rate used by the ETA (much heavier
+/// than [`EWMA_ALPHA`] so the ETA denominator barely flickers).
+const ETA_RATE_ALPHA: f64 = 0.1;
+
+/// Minimum interval between DISPLAYED-eta refreshes. The spinner/bar/bps/iops
+/// keep their 100ms cadence; only the eta value is held between these.
+const ETA_REFRESH: Duration = Duration::from_secs(2);
+
+/// Maximum fraction the displayed eta may move toward a new estimate per
+/// refresh, so it settles and counts down smoothly instead of jumping.
+const ETA_DAMP: f64 = 0.3;
+
+/// Require at least this many completed objects before showing any eta, so we
+/// never flash a wild value before a rate is established.
+const ETA_MIN_OBJECTS: u64 = 4;
+
 impl RenderState {
-    /// Initializes from the meter and primes the CPU baseline.
-    fn init(meter: &Meter) -> Self {
+    /// Initializes from the meter and primes the CPU baseline. `adaptive_fraction`
+    /// is the CLI's `--adaptive[=FRACTION]` value (or `None` when not adaptive).
+    fn init(meter: &Meter, adaptive_fraction: Option<f64>) -> Self {
         let mut state = Self {
             last: Instant::now(),
             last_snap: meter.snapshot(),
@@ -688,6 +842,11 @@ impl RenderState {
             obj_per_sec: 0.0,
             spinner_frame: 0,
             cpu: CpuSampler::new(),
+            smooth_bps: 0.0,
+            displayed_eta: None,
+            last_eta_update: None,
+            size_unit: None,
+            adaptive_fraction,
         };
         let _ = state.cpu.poll();
         state
@@ -707,22 +866,111 @@ impl RenderState {
             self.rate_in = ewma(self.rate_in, d_in / dt);
             self.rate_out = ewma(self.rate_out, d_out / dt);
             self.obj_per_sec = ewma(self.obj_per_sec, d_obj / dt);
+            self.smooth_bps =
+                ETA_RATE_ALPHA * (d_out / dt) + (1.0 - ETA_RATE_ALPHA) * self.smooth_bps;
         }
         self.last = now;
         self.last_snap = snap;
         self.spinner_frame = self.spinner_frame.wrapping_add(1);
 
+        let byte_total_est = estimate_total_bytes(&snap);
+        // Latch the size unit once, from the first credible total estimate
+        // (or, failing that, the live bytes-out), and hold it thereafter.
+        if self.size_unit.is_none() {
+            if let Some(total) = byte_total_est {
+                self.size_unit = Some(unit_index_for(total.max(snap.bytes_out)));
+            } else if snap.bytes_out >= 1024 {
+                self.size_unit = Some(unit_index_for(snap.bytes_out));
+            }
+        }
+
+        let eta = self.update_eta(&snap, byte_total_est, now);
+
         RenderMetrics {
             rate_in: self.rate_in,
             rate_out: self.rate_out,
             obj_per_sec: self.obj_per_sec,
-            eta: compute_eta(&snap, self.obj_per_sec),
+            eta,
             rss: sample_rss(),
             cpu_pct: self.cpu.poll(),
             jobs,
             spinner_frame: self.spinner_frame,
+            size_unit: self.size_unit,
+            byte_total_est,
+            adaptive_fraction: self.adaptive_fraction,
         }
     }
+
+    /// Computes the THROTTLED + DAMPED displayed eta. The freshly-estimated eta
+    /// (byte-based, from [`compute_eta_bytes`]) is recomputed every tick, but
+    /// the *displayed* value is only refreshed every [`ETA_REFRESH`]; between
+    /// refreshes the previous value is held verbatim. On a refresh the new
+    /// estimate is damped (moved at most [`ETA_DAMP`] toward it) so it settles
+    /// smoothly instead of jumping.
+    fn update_eta(
+        &mut self,
+        snap: &MeterSnapshot,
+        byte_total_est: Option<u64>,
+        now: Instant,
+    ) -> Option<Duration> {
+        // Require a minimum number of completed objects before trusting any
+        // estimate, so we never flash a wild value before a rate is set.
+        let done = snap.objects_done + snap.objects_skipped;
+        let fresh = if done >= ETA_MIN_OBJECTS {
+            compute_eta_bytes(snap, byte_total_est, self.smooth_bps)
+        } else {
+            None
+        };
+
+        let Some(fresh) = fresh else {
+            // No credible fresh estimate this tick: HOLD whatever we last
+            // displayed (which is `None` until the first credible refresh).
+            return self.displayed_eta;
+        };
+
+        let due = match self.last_eta_update {
+            None => true, // first credible refresh: adopt directly
+            Some(last) => now.duration_since(last) >= ETA_REFRESH,
+        };
+        if due {
+            let next = match self.displayed_eta {
+                Some(prev) => damp_duration(prev, fresh, ETA_DAMP),
+                None => fresh,
+            };
+            self.displayed_eta = Some(next);
+            self.last_eta_update = Some(now);
+        }
+        self.displayed_eta
+    }
+}
+
+/// Moves `from` at most `frac` of the way toward `to` (a damped step on a
+/// duration, in seconds), so the displayed eta counts down smoothly.
+fn damp_duration(from: Duration, to: Duration, frac: f64) -> Duration {
+    let a = from.as_secs_f64();
+    let b = to.as_secs_f64();
+    let next = a + (b - a) * frac.clamp(0.0, 1.0);
+    Duration::from_secs_f64(next.max(0.0))
+}
+
+/// Estimates the transfer's total bytes from the observed average object size:
+/// `avg = bytes_out / completed`, `total ≈ avg * objects_total`. Returns `None`
+/// when the total object count is unknown or nothing has completed yet (no
+/// average to extrapolate from).
+fn estimate_total_bytes(snap: &MeterSnapshot) -> Option<u64> {
+    if snap.objects_total == 0 {
+        return None;
+    }
+    let completed = snap.objects_done + snap.objects_skipped;
+    if completed == 0 || snap.bytes_out == 0 {
+        return None;
+    }
+    let avg = snap.bytes_out as f64 / completed as f64;
+    let total = avg * snap.objects_total as f64;
+    if !total.is_finite() || total < 0.0 {
+        return None;
+    }
+    Some(total as u64)
 }
 
 impl ProgressReporter {
@@ -734,6 +982,7 @@ impl ProgressReporter {
         active: bool,
         color: bool,
         ascii: bool,
+        adaptive_fraction: Option<f64>,
     ) -> ProgressReporter {
         let stop = Arc::new(AtomicBool::new(false));
         if !active {
@@ -750,7 +999,7 @@ impl ProgressReporter {
         let stderr_lock: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
 
         let handle = std::thread::spawn(move || {
-            let mut state = RenderState::init(&meter);
+            let mut state = RenderState::init(&meter, adaptive_fraction);
             while !stop_thread.load(Ordering::Relaxed) {
                 std::thread::sleep(TICK);
                 if stop_thread.load(Ordering::Relaxed) {
@@ -797,22 +1046,39 @@ fn ewma(prev: f64, sample: f64) -> f64 {
     EWMA_ALPHA * sample + (1.0 - EWMA_ALPHA) * prev
 }
 
-/// Estimates remaining time from the objects gauge and the smoothed obj/s rate.
-/// `None` when the total is unknown or the rate is non-positive.
-fn compute_eta(snap: &MeterSnapshot, obj_per_sec: f64) -> Option<Duration> {
-    if snap.objects_total == 0 || obj_per_sec <= 0.0 {
+/// Estimates remaining time in BYTES (steadier than object count for mixed
+/// sizes): `remaining_bytes = total_est - bytes_out`, divided by the heavily
+/// smoothed byte rate `smooth_bps`. Falls back to an object-rate estimate when
+/// no byte total can be estimated (e.g. all-equal-size or unknown sizes), using
+/// `smooth_bps`-derived progress is not possible.
+///
+/// `None` when the total objects are unknown or no usable rate exists. The
+/// caller is responsible for throttling/damping the returned value.
+fn compute_eta_bytes(
+    snap: &MeterSnapshot,
+    byte_total_est: Option<u64>,
+    smooth_bps: f64,
+) -> Option<Duration> {
+    if snap.objects_total == 0 {
         return None;
     }
     let done = snap.objects_done + snap.objects_skipped;
-    let remaining = snap.objects_total.saturating_sub(done);
-    if remaining == 0 {
+    if snap.objects_total.saturating_sub(done) == 0 {
         return Some(Duration::ZERO);
     }
-    let secs = remaining as f64 / obj_per_sec;
-    if !secs.is_finite() || secs < 0.0 {
-        return None;
+
+    // Preferred: byte-based estimate with the heavily-smoothed byte rate.
+    if let Some(total) = byte_total_est {
+        if smooth_bps > 0.0 && total >= snap.bytes_out {
+            let remaining = (total - snap.bytes_out) as f64;
+            let secs = remaining / smooth_bps;
+            if secs.is_finite() && secs >= 0.0 {
+                return Some(Duration::from_secs_f64(secs));
+            }
+        }
     }
-    Some(Duration::from_secs_f64(secs))
+
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -917,20 +1183,24 @@ mod tests {
             cpu_pct: Some(85.0),
             jobs: 16,
             spinner_frame: 0,
+            ..Default::default()
         };
         let style = Style { color: false };
         let line = format_line(&s, &m, 200, &style, false);
 
         // (30 done + 10 skipped) / 100 = 40%.
         assert!(line.contains("40%"), "percent missing: {line}");
-        assert!(line.contains("40/100"), "counts missing: {line}");
+        // Counts are explicitly labeled as files.
+        assert!(line.contains("40/100 files"), "files count missing: {line}");
         assert!(line.contains('↓'), "down arrow missing: {line}");
         assert!(line.contains('↑'), "up arrow missing: {line}");
         assert!(line.contains("148 MB/s"), "rate_in missing: {line}");
         assert!(line.contains("4/16"), "concurrency missing: {line}");
         assert!(line.contains("mem 64 MB"), "mem missing: {line}");
         assert!(line.contains("cpu 85%"), "cpu missing: {line}");
-        assert!(line.contains("eta 42s"), "eta missing: {line}");
+        // eta value lives in a fixed-width slot (right-aligned, padded).
+        assert!(line.contains("42s"), "eta value missing: {line}");
+        assert!(line.contains("eta "), "eta label missing: {line}");
         assert!(line.contains("transfer"), "phase missing: {line}");
         assert!(
             line.contains('█') || line.contains('░'),
@@ -938,7 +1208,8 @@ mod tests {
         );
         assert!(line.contains("12 obj/s"), "obj/s missing: {line}");
 
-        // None metrics are omitted.
+        // None mem/cpu are omitted; eta with no signal renders the `--`
+        // placeholder in its fixed-width slot (not removed).
         let m2 = RenderMetrics {
             eta: None,
             rss: None,
@@ -948,7 +1219,10 @@ mod tests {
         let line2 = format_line(&s, &m2, 200, &style, false);
         assert!(!line2.contains("mem "), "mem should be omitted: {line2}");
         assert!(!line2.contains("cpu "), "cpu should be omitted: {line2}");
-        assert!(!line2.contains("eta "), "eta should be omitted: {line2}");
+        // eta with no signal renders the `--` placeholder (right-aligned in its
+        // fixed slot), not removed.
+        assert!(line2.contains("eta "), "eta label missing: {line2}");
+        assert!(line2.contains("--"), "eta placeholder missing: {line2}");
     }
 
     #[test]
@@ -971,13 +1245,14 @@ mod tests {
             cpu_pct: None,
             jobs: 16,
             spinner_frame: 1,
+            ..Default::default()
         };
         let style = Style { color: false };
         let line = format_line(&s, &m, 200, &style, true); // ascii = true
 
         assert!(line.contains("down"), "ascii down missing: {line}");
         assert!(line.contains("up"), "ascii up missing: {line}");
-        assert!(line.contains("8/16"), "concurrency missing: {line}");
+        assert!(line.contains("8/16 files"), "files count missing: {line}");
         assert!(line.contains("50%"), "percent missing: {line}");
         assert!(
             line.contains('[') && line.contains(']'),
@@ -1001,7 +1276,7 @@ mod tests {
         let style = Style { color: false };
         let line = format_line(&s, &m, 200, &style, false);
         assert!(
-            line.contains("5 objs"),
+            line.contains("5 files"),
             "indeterminate count missing: {line}"
         );
         assert!(!line.contains('%'), "no percent when indeterminate: {line}");
@@ -1029,6 +1304,7 @@ mod tests {
             cpu_pct: Some(85.0),
             jobs: 16,
             spinner_frame: 0,
+            ..Default::default()
         };
         let style = Style { color: false };
 
@@ -1083,7 +1359,245 @@ mod tests {
     fn progress_render_reporter_inactive_is_inert() {
         // An inactive reporter spawns no thread and finish() is a no-op.
         let meter = Arc::new(Meter::new());
-        let reporter = ProgressReporter::start(meter, 4, false, false, false);
+        let reporter = ProgressReporter::start(meter, 4, false, false, false, None);
         reporter.finish();
+    }
+
+    /// Strips ANSI escapes (`\x1b[...m`) so column offsets can be measured on
+    /// the visible text only. Tests use `color: false` so this is a no-op, but
+    /// keeping it makes the offset assertions robust to styling.
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                // Skip until the terminating 'm' of a CSI sequence.
+                for n in chars.by_ref() {
+                    if n == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Visible-column offset of the first occurrence of `needle` in `hay`.
+    fn col_of(hay: &str, needle: &str) -> usize {
+        let plain = strip_ansi(hay);
+        let byte_idx = plain.find(needle).unwrap_or_else(|| {
+            panic!("needle {needle:?} not found in line {plain:?}");
+        });
+        plain[..byte_idx].chars().count()
+    }
+
+    #[test]
+    fn progress_render_width_stable_columns() {
+        // As `done` and bytes change width over a transfer, the labeled fields
+        // after them must NOT shift: their visible-column offsets stay fixed.
+        let style = Style { color: false };
+        let total = 61u64;
+        // Held unit (GB) chosen once; estimate ~2 GB total.
+        let unit = Some(unit_index_for(2 * 1024 * 1024 * 1024));
+        let est = Some(2 * 1024 * 1024 * 1024u64);
+
+        let mut files_cols = Vec::new();
+        let mut rate_cols = Vec::new();
+        let mut eta_cols = Vec::new();
+        for (done, bytes_out) in [
+            (8u64, 120 * 1024 * 1024u64),
+            (38, 1100 * 1024 * 1024),
+            (60, 1900 * 1024 * 1024),
+        ] {
+            let s = snap(0, bytes_out, done, total, 0, 4, Phase::Transfer);
+            let m = RenderMetrics {
+                rate_in: 0.0,
+                rate_out: 18_000_000.0,
+                obj_per_sec: 5.0,
+                eta: Some(Duration::from_secs(80)),
+                rss: None,
+                cpu_pct: None,
+                jobs: 16,
+                spinner_frame: 0,
+                size_unit: unit,
+                byte_total_est: est,
+                adaptive_fraction: None,
+            };
+            // Wide enough that no optional is dropped.
+            let line = format_line(&s, &m, 200, &style, false);
+            files_cols.push(col_of(&line, "files"));
+            rate_cols.push(col_of(&line, "/s"));
+            eta_cols.push(col_of(&line, "eta "));
+        }
+        assert!(
+            files_cols.windows(2).all(|w| w[0] == w[1]),
+            "`files` column reflowed: {files_cols:?}"
+        );
+        assert!(
+            rate_cols.windows(2).all(|w| w[0] == w[1]),
+            "rate column reflowed: {rate_cols:?}"
+        );
+        assert!(
+            eta_cols.windows(2).all(|w| w[0] == w[1]),
+            "eta column reflowed: {eta_cols:?}"
+        );
+    }
+
+    #[test]
+    fn progress_render_files_vs_size_labels() {
+        let s = snap(0, 1_400_000_000, 38, 61, 0, 6, Phase::Transfer);
+        let m = RenderMetrics {
+            rate_out: 18_000_000.0,
+            jobs: 16,
+            size_unit: Some(unit_index_for(2_000_000_000)),
+            byte_total_est: Some(2_000_000_000),
+            ..Default::default()
+        };
+        let style = Style { color: false };
+        let line = strip_ansi(&format_line(&s, &m, 200, &style, false));
+        // Count is labeled as files.
+        assert!(line.contains("38/61 files"), "files label missing: {line}");
+        // Size carries a unit (no bare ambiguous number for the transferred
+        // size): the byte field reads `<xfer>/<est> GB`.
+        assert!(
+            line.contains(" GB") && line.contains('/'),
+            "unit-suffixed size missing: {line}"
+        );
+    }
+
+    #[test]
+    fn progress_render_eta_held_then_smooth() {
+        // Drive RenderState with snapshots ~100ms apart and assert the DISPLAYED
+        // eta is HELD within a <2s window, and that a settled stream produces a
+        // smoothly-decreasing eta (no large jumps).
+        let meter = Meter::new();
+        meter.set_phase(Phase::Transfer);
+        let mut state = RenderState::init(&meter, None);
+
+        // Build a steady stream: equal-size objects, constant byte rate.
+        let total = 100u64;
+        let obj_bytes = 10_000_000u64; // 10 MB/object
+        let mut t = 0u64;
+        let mut displayed: Vec<Option<Duration>> = Vec::new();
+        // 30 ticks * 100ms = ~3s of stream.
+        for i in 0..30u64 {
+            let done = (i + 1).min(total);
+            let s = snap(0, done * obj_bytes, done, total, 0, 4, Phase::Transfer);
+            // Sleep 100ms of *wall* time so the throttle window is real.
+            std::thread::sleep(Duration::from_millis(100));
+            let m = state.tick(s, 16);
+            displayed.push(m.eta);
+            t += 1;
+        }
+        let _ = t;
+
+        // Find the first tick that established an eta.
+        let first_some = displayed.iter().position(Option::is_some);
+        assert!(first_some.is_some(), "eta never established: {displayed:?}");
+        let start = first_some.unwrap();
+
+        // HOLD: within ~1.5s (15 ticks) after the first refresh there must be a
+        // run where the value does not change (it's throttled to >=2s). Assert
+        // at least two consecutive identical displayed values exist.
+        let vals: Vec<Duration> = displayed[start..].iter().filter_map(|x| *x).collect();
+        let has_held = vals.windows(2).any(|w| w[0] == w[1]);
+        assert!(has_held, "eta never held between refreshes: {vals:?}");
+
+        // SMOOTH: consecutive displayed values never jump by more than the
+        // whole remaining estimate (damping keeps steps small); concretely, no
+        // step grows the eta wildly and the trend is downward overall.
+        for w in vals.windows(2) {
+            let a = w[0].as_secs_f64();
+            let b = w[1].as_secs_f64();
+            assert!(
+                (b - a) <= a.max(1.0),
+                "eta jumped upward sharply: {a} -> {b}"
+            );
+        }
+        assert!(
+            vals.last().unwrap() <= vals.first().unwrap(),
+            "eta did not trend downward: {vals:?}"
+        );
+    }
+
+    #[test]
+    fn progress_render_no_eta_before_signal() {
+        // With too few completed objects, no eta is shown (no wild early value).
+        let meter = Meter::new();
+        let mut state = RenderState::init(&meter, None);
+        let s = snap(0, 5_000_000, 1, 100, 0, 4, Phase::Transfer);
+        std::thread::sleep(Duration::from_millis(100));
+        let m = state.tick(s, 16);
+        assert!(m.eta.is_none(), "eta should be None before signal");
+        // And the rendered line shows the placeholder, not a number.
+        let style = Style { color: false };
+        let line = format_line(&s, &m, 200, &style, false);
+        assert!(line.contains("eta "), "eta label missing: {line}");
+        assert!(line.contains("--"), "eta placeholder missing: {line}");
+    }
+
+    #[test]
+    fn progress_render_adaptive_readout() {
+        let style = Style { color: false };
+        // Adaptive active (current_limit > 0) WITH the threaded politeness
+        // fraction → shows the TRUE fraction: `jobs <in>/<ceiling> (auto 0.8)`.
+        let mut s = snap(0, 1_000_000, 10, 100, 0, 6, Phase::Transfer);
+        s.current_limit = 4_000_000;
+        s.target_rate = 5_000_000;
+        let m = RenderMetrics {
+            jobs: 16,
+            size_unit: Some(2),
+            adaptive_fraction: Some(0.8),
+            ..Default::default()
+        };
+        let line = strip_ansi(&format_line(&s, &m, 200, &style, false));
+        assert!(line.contains("jobs 6/16"), "adaptive jobs missing: {line}");
+        assert!(line.contains("(auto 0.8)"), "true fraction missing: {line}");
+
+        // Adaptive active but the fraction wasn't threaded → bare `(auto)` with
+        // NO misleading number.
+        let m_nofrac = RenderMetrics {
+            adaptive_fraction: None,
+            ..m
+        };
+        let line_nofrac = strip_ansi(&format_line(&s, &m_nofrac, 200, &style, false));
+        assert!(
+            line_nofrac.contains("jobs 6/16 (auto)"),
+            "bare auto fallback missing: {line_nofrac}"
+        );
+        // No digit leaks into the bare-auto form (e.g. no `(auto 0`).
+        assert!(
+            !line_nofrac.contains("(auto 0"),
+            "unexpected number in bare auto: {line_nofrac}"
+        );
+
+        // Not adaptive: current_limit == 0 → plain in_flight/jobs, no `auto`.
+        let s2 = snap(0, 1_000_000, 10, 100, 0, 6, Phase::Transfer);
+        let line2 = strip_ansi(&format_line(&s2, &m, 200, &style, false));
+        assert!(line2.contains("6/16"), "plain conc missing: {line2}");
+        assert!(
+            !line2.contains("auto"),
+            "unexpected auto indicator: {line2}"
+        );
+    }
+
+    #[test]
+    fn progress_render_adaptive_fraction_threaded_through_tick() {
+        // The fraction supplied to RenderState::init propagates into the
+        // RenderMetrics emitted by tick(), independent of meter contents.
+        let meter = Meter::new();
+        let mut state = RenderState::init(&meter, Some(0.5));
+        let mut s = snap(0, 1_000_000, 10, 100, 0, 6, Phase::Transfer);
+        s.current_limit = 4_000_000;
+        let m = state.tick(s, 16);
+        assert_eq!(m.adaptive_fraction, Some(0.5));
+        let style = Style { color: false };
+        let line = strip_ansi(&format_line(&s, &m, 200, &style, false));
+        assert!(
+            line.contains("(auto 0.5)"),
+            "threaded fraction not rendered: {line}"
+        );
     }
 }
