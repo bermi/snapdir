@@ -1,0 +1,104 @@
+name: Bench verify
+
+# Full benchmark suite for release verification. Rides a cherry-pick onto a
+# `release-verify/1.2.0` branch (off upstream/main) and uploads the results as a
+# consultable artifact. The determinism (round-trip + golden-id) and iai
+# instruction-count steps GATE the job; the criterion wall-clock steps are
+# informational (wall-clock is noisy) and only feed the artifact.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['release-verify/**']
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: bench-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  bench-verify:
+    name: Bench verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Pin the toolchain to 1.91.1 (matching ci.yaml's bench-iai job and
+      # run-iai-docker.sh's rust:1.91 image) so instruction counts are stable.
+      - name: Install Rust toolchain (1.91.1)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.1
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # valgrind provides the callgrind backend iai-callgrind measures through.
+      - name: Install valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends valgrind
+
+      # The runner version MUST match the `iai-callgrind = "=0.16.1"` dev-dep in
+      # benches/Cargo.toml or the runner refuses to run.
+      - name: Install iai-callgrind-runner (0.16.1)
+        run: cargo install iai-callgrind-runner --version 0.16.1 --locked
+
+      # Determinism + scenarios gate: golden-id + round-trip integration tests.
+      # This MUST be able to fail the job (no `|| true`); pipefail propagates a
+      # failing cargo through the `tee`.
+      - name: Determinism + scenarios gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          cargo test -p snapdir-benches --locked 2>&1 | tee -a bench-output.log
+
+      # iai instruction-count gate: enforces the 5% Ir/EstimatedCycles soft
+      # limit (configured in benches/benches/iai_hot.rs) and writes target/iai.
+      # MUST be able to fail the job (no `|| true`).
+      - name: iai instruction-count gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          cargo bench -p snapdir-benches --bench iai_hot 2>&1 | tee -a bench-output.log
+
+      # criterion wall-clock (informational): writes target/criterion. Reduced
+      # sampling keeps the heavy stage/push/many_small group reasonable. These
+      # are `|| true` so a noisy wall-clock run never fails the artifact upload.
+      - name: criterion wall-clock (pipeline)
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p target
+          cargo bench -p snapdir-benches --bench pipeline 2>&1 \
+            -- --warm-up-time 1 --measurement-time 3 --sample-size 10 \
+            | tee -a bench-output.log || true
+
+      - name: criterion wall-clock (hot_paths)
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p target
+          cargo bench -p snapdir-benches --bench hot_paths 2>&1 \
+            -- --warm-up-time 1 --measurement-time 3 --sample-size 10 \
+            | tee -a bench-output.log || true
+
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-verify-1.2.0
+          path: |
+            target/criterion/
+            target/iai/
+            bench-output.log
+          if-no-files-found: warn
