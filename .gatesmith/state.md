@@ -3,7 +3,9 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 19 OPEN — 0/5 gates green — Release snapdir 1.3.0 (ship + verify Phase-18) (gates added 2026-06-05)
+## ▶ PHASE 19 OPEN — 1/5 gates green — Release snapdir 1.3.0 (ship + verify Phase-18) (gates added 2026-06-05)
+
+> **Progress:** `release-prep-1.3.0` ✅ PASSED (code `c4e9e08`) — Cargo.toml bumped 1.2.0→1.3.0 (4 lines) + Cargo.lock regenerated (workspace-only) + `[1.3.0]` CHANGELOG (--adaptive tuner + clearer progress + interop note) + compare links. **The 7 commits to cherry-pick onto `release-verify/1.3.0` = the 6 Phase-18 SHAs (`de3fb7e b771917 f408032 5b05b41 e37267b e55c28b`) + this prep `c4e9e08`.** **Ready next: `release-verify-branch-1.3.0` (human_checkpoint)** → PM escalates; the cross-branch cherry-pick→push→bench-verify-artifact-consult runs between ticks.
 
 > Operator-requested: ship the Phase-18 opt-in `--adaptive` transfer tuner + clearer progress line as **1.3.0**, full verify-branch + artifact path (same as the 1.2.0 release). **Lighter than 1.2.0:** bench-verify.yml, the idempotent `release.yml` publish, and Trusted Publishing for all 4 crates already shipped with 1.2.0 → no new CI/packaging gates, **no operator prerequisite** (just tag and go).
 >
