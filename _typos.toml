@@ -31,6 +31,9 @@ persit = "persit"
 # `anc` / `anc_lines` / `oracle_anc` are local variable identifiers (short for
 # "ancestor(s)") used across the catalog tests.
 anc = "anc"
+# AIMD = Additive Increase Multiplicative Decrease (TCP-style congestion control);
+# the Phase-18 adaptive tuner's algorithm — intentional, not "aimed".
+aimd = "aimd"
 
 [default.extend-identifiers]
 # crate / API identifiers that look like typos but are intentional.
