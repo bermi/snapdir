@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 18 OPEN — 6/7 gates green — Opt-in adaptive transfer tuner (`--adaptive`) + clearer/steadier progress line (gates added 2026-06-05)
+## ✅ PHASE 18 COMPLETE — 7/7 gates green (operator sign-off 2026-06-05) — ALL 130 GATES GREEN
 
 > **Progress:**
 > - `adaptive-sys-samplers` ✅ PASSED (code `de3fb7e`) — NEW `snapdir-core/src/resources.rs`: best-effort CPU%-of-capacity (getrusage), RSS (proc/mach), total-RAM (sysconf/hw.memsize) samplers (Option/None-safe) + `libc` edge; Meter += advisory `current_limit`/`target_rate` atoms.
@@ -17,7 +17,9 @@
 >
 > - `progress-clarity-eta` ✅ PASSED (code `e55c28b`) — renderer rework: byte-based ETA refreshed ≤2s + damped (`--` until stable); `<done>/<total> files` vs unit-suffixed sizes; fixed-width/latched-unit columns so digits don't reflow (test asserts constant column offsets); adaptive readout `jobs <in>/<ceiling> (auto <fraction>)` using the TRUE `--adaptive` fraction threaded from the CLI (PM rejected a first attempt that showed a bogus `current_limit/target_rate` ratio).
 >
-> **Ready next: `phase18-complete` (human_checkpoint)** → PM ESCALATES for the Phase 18 sign-off (`cargo test --workspace --locked` + operator confirm). All 6 engineering gates done.
+> - `phase18-complete` ✅ PASSED (operator sign-off 2026-06-05; `cargo test --workspace --locked` → 377 passed / 0 failed). **Phase 18 complete. All 130 gates green.**
+>
+> **Code lands on `dev`** (gatesmith-free, cherry-pickable toward a future **1.3.0**); nothing pushed. **DEFERRED (noted, not gated):** docs prose for `--adaptive`/`--max-jobs` (rides next release-prep); the iai-bench committed baseline follow-up; **Phase 19 `snapdir export`** (designed in the plan — sync sibling that materializes the expanded tree via a new `ExpandedSink`).
 
 > Operator-requested: an **opt-in** `--adaptive[=FRACTION]` (default **0.8**) in-band congestion-control tuner for transfers, plus a clearer, width-stable status line with a smoothed ETA. **Adaptive is OPT-IN — default behavior is unchanged (full speed, OS schedules);** the polite tuner (which holds at a fraction of capacity to spare the host/neighbours) only engages when asked. The flag's optional arg IS the politeness fraction.
 >

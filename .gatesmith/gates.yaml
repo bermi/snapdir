@@ -2391,7 +2391,9 @@ gates:
     phase: 18
     owner_agent: generic
     depends_on: [adaptive-sys-samplers, adaptive-controller, adaptive-wire, adaptive-cli, progress-clarity-eta, adaptive-determinism-recheck]
-    status: pending
+    status: passed
+    passed_at: 2026-06-05T15:30:00Z
+    git_sha: 7c04fa4
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked"
     pass_criteria:
