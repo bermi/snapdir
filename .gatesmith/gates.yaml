@@ -2121,7 +2121,9 @@ gates:
     phase: 16
     owner_agent: bench
     depends_on: [bench-scenarios]
-    status: pending
+    status: passed
+    passed_at: 2026-06-05T01:02:00Z
+    git_sha: e024218
     failure_count: 0
     verification_cmd: "cargo bench -p snapdir-benches --bench iai_hot --no-run && grep -qiE 'regression|iai_callgrind' benches/benches/iai_hot.rs && test -x benches/run-iai-docker.sh"
     pass_criteria:
