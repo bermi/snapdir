@@ -22,6 +22,7 @@ pub mod excludes;
 pub mod manifest;
 pub mod merkle;
 pub mod progress;
+pub mod resources;
 pub mod store;
 pub mod walk;
 
@@ -39,5 +40,6 @@ pub use merkle::{
     Sha256Hasher,
 };
 pub use progress::{Meter, MeterSnapshot, Phase};
+pub use resources::{resident_set_bytes, total_ram_bytes, CpuSampler};
 pub use store::{manifest_path, object_path, Store, StoreError, MANIFESTS_DIR, OBJECTS_DIR};
 pub use walk::{walk, walk_with_meter, PathMode, WalkError, WalkOptions};

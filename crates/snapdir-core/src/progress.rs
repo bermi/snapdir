@@ -73,6 +73,12 @@ pub struct MeterSnapshot {
     pub in_flight: u64,
     /// The current coarse [`Phase`].
     pub phase: Phase,
+    /// Advisory: the current adaptive throughput limit in bytes/sec, or `0`
+    /// when not adaptive / unset. Display-only; never throttles the walk.
+    pub current_limit: u64,
+    /// Advisory: the adaptive controller's target throughput in bytes/sec, or
+    /// `0` when not adaptive / unset. Display-only; never throttles the walk.
+    pub target_rate: u64,
 }
 
 /// A lock-free progress meter shared across threads behind an
@@ -91,6 +97,13 @@ pub struct Meter {
     objects_skipped: AtomicU64,
     in_flight: AtomicU64,
     phase: AtomicU8,
+    /// Advisory adaptive throughput limit in bytes/sec (`0` = unset). Display
+    /// only — set by the adaptive controller for the renderer to show; reading
+    /// or writing it never affects the walk's output.
+    current_limit: AtomicU64,
+    /// Advisory adaptive target throughput in bytes/sec (`0` = unset). Display
+    /// only, with the same advisory semantics as `current_limit`.
+    target_rate: AtomicU64,
 }
 
 impl Meter {
@@ -145,6 +158,22 @@ impl Meter {
         self.objects_skipped.fetch_add(n, Ordering::Relaxed);
     }
 
+    /// Sets the advisory adaptive throughput limit (bytes/sec; `0` = unset).
+    ///
+    /// Display-only: the renderer reads this to show the live adaptive value.
+    /// It does not throttle or otherwise change the walk's behavior or output.
+    pub fn set_current_limit(&self, n: u64) {
+        self.current_limit.store(n, Ordering::Relaxed);
+    }
+
+    /// Sets the advisory adaptive target throughput (bytes/sec; `0` = unset).
+    ///
+    /// Display-only, with the same advisory semantics as
+    /// [`set_current_limit`](Meter::set_current_limit).
+    pub fn set_target_rate(&self, n: u64) {
+        self.target_rate.store(n, Ordering::Relaxed);
+    }
+
     /// Sets the current coarse [`Phase`].
     pub fn set_phase(&self, p: Phase) {
         self.phase.store(p.as_u8(), Ordering::Relaxed);
@@ -171,6 +200,8 @@ impl Meter {
             objects_skipped: self.objects_skipped.load(Ordering::Relaxed),
             in_flight: self.in_flight.load(Ordering::Relaxed),
             phase: self.phase(),
+            current_limit: self.current_limit.load(Ordering::Relaxed),
+            target_rate: self.target_rate.load(Ordering::Relaxed),
         }
     }
 }
@@ -242,5 +273,26 @@ mod tests {
         let snap = meter.snapshot();
         assert_eq!(snap.in_flight, 0, "gauge saturates at 0, no underflow");
         assert_eq!(snap.objects_done, 4);
+    }
+
+    #[test]
+    fn resources_meter_adaptive_fields_round_trip() {
+        let meter = Meter::new();
+        // Default advisory atoms are 0 (not adaptive / unset).
+        let initial = meter.snapshot();
+        assert_eq!(initial.current_limit, 0);
+        assert_eq!(initial.target_rate, 0);
+
+        meter.set_current_limit(5_000_000);
+        meter.set_target_rate(8_000_000);
+        let snap = meter.snapshot();
+        assert_eq!(snap.current_limit, 5_000_000);
+        assert_eq!(snap.target_rate, 8_000_000);
+
+        // Setters overwrite (store, not add) and 0 clears back to unset.
+        meter.set_current_limit(0);
+        let snap = meter.snapshot();
+        assert_eq!(snap.current_limit, 0);
+        assert_eq!(snap.target_rate, 8_000_000, "target unchanged");
     }
 }

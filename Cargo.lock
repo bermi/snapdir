@@ -3492,6 +3492,7 @@ name = "snapdir-core"
 version = "1.2.0"
 dependencies = [
  "blake3",
+ "libc",
  "md-5",
  "proptest",
  "regex",
