@@ -3,13 +3,16 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 18 OPEN — 2/7 gates green — Opt-in adaptive transfer tuner (`--adaptive`) + clearer/steadier progress line (gates added 2026-06-05)
+## ▶ PHASE 18 OPEN — 3/7 gates green — Opt-in adaptive transfer tuner (`--adaptive`) + clearer/steadier progress line (gates added 2026-06-05)
 
 > **Progress:**
 > - `adaptive-sys-samplers` ✅ PASSED (code `de3fb7e`) — NEW `snapdir-core/src/resources.rs`: best-effort CPU%-of-capacity (getrusage), RSS (proc/mach), total-RAM (sysconf/hw.memsize) samplers (Option/None-safe) + `libc` edge; Meter += advisory `current_limit`/`target_rate` atoms.
 > - `adaptive-controller` ✅ PASSED (code `b771917`) — NEW `snapdir-stores/src/adaptive.rs`: `AdaptiveGate` (resizable permit pool, async tokio-Semaphore + zero-dep Mutex/Condvar blocking semaphore, one `set_limit`, no-deadlock shrink) + `set_rate` on both rate limiters + the PURE deterministic `AdaptiveController` (slow-start→AIMD + gradient + throttle/CPU/memory/ceiling guardrails + ~15s re-probe + fraction target; injected clock/metrics). 12 adaptive tests.
 >
-> **Ready next (parallelizable): `adaptive-wire` (stores, ← adaptive-controller), `progress-clarity-eta` (cli, ← adaptive-sys-samplers)** — id-asc picks `adaptive-wire` next (wire the gate/controller into both transfer backends; byte-identical invariant).
+> - `adaptive-wire` ✅ PASSED (code `f408032`) — plugged the gate/controller into BOTH backends (async push/fetch via gate-acquire + 250ms tokio tick driver; rayon FileStore/sync via acquire_blocking + std::thread tick driver), `TransferConfig.adaptive: AdaptivePolicy` (Off default — unchanged; On{fraction,ceiling} via `with_adaptive`), `classify_error→Throttle|HardErr`. Off path byte-identical; 7 wire tests incl Off-vs-On same snapshot id + concurrency≤ceiling.
+>
+> **Ready next: `adaptive-cli` (cli ← wire), `progress-clarity-eta` (cli ← samplers), `adaptive-determinism-recheck` (bench ← wire)** — id-asc picks `adaptive-cli` next.
+> **⚠ CARRY-FORWARD (cli lane):** a pre-existing snapdir-cli TEST builds a `MeterSnapshot` struct-literal missing the new `current_limit`/`target_rate` fields (added by adaptive-sys-samplers) → `cargo test -p snapdir-cli` won't COMPILE until fixed. The first cli gate to run MUST fix that literal (it's in the cli lane).
 
 > Operator-requested: an **opt-in** `--adaptive[=FRACTION]` (default **0.8**) in-band congestion-control tuner for transfers, plus a clearer, width-stable status line with a smoothed ETA. **Adaptive is OPT-IN — default behavior is unchanged (full speed, OS schedules);** the polite tuner (which holds at a fraction of capacity to spare the host/neighbours) only engages when asked. The flag's optional arg IS the politeness fraction.
 >

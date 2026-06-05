@@ -2327,7 +2327,9 @@ gates:
     phase: 18
     owner_agent: stores
     depends_on: [adaptive-controller]
-    status: pending
+    status: passed
+    passed_at: 2026-06-05T14:05:00Z
+    git_sha: f408032
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked -- --nocapture"
     pass_criteria:
