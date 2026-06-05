@@ -3,9 +3,13 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 16 OPEN — 1/6 gates green — deterministic benchmark & regression-gate suite (gates added 2026-06-05)
+## ▶ PHASE 16 OPEN — 2/6 gates green — deterministic benchmark & regression-gate suite (gates added 2026-06-05)
 
-> **Progress:** `bench-scenarios` ✅ PASSED (code `9870162`) — benches/src/lib.rs is now a real std-only deterministic synthetic-scenario generator + catalog (Scenario{name,tier,exclude}, materialize -> regular files+dirs only, 0644/0755, deterministic bytes, no rng/time; gate_scenarios() x8 + bench_scenarios() x5) with tests/scenarios.rs proving twice-stable snapshot ids + byte-determinism + dedup(unique<files). **Ready next (parallelizable, all dep only bench-scenarios): `bench-determinism-gate`, `bench-criterion-suite`, `bench-iai-gate`** — PM picks one per tick (priority: phase asc, failure desc, id asc -> `bench-criterion-suite` is id-first, then `bench-determinism-gate`, then `bench-iai-gate`).
+> **Progress:**
+> - `bench-scenarios` ✅ PASSED (code `9870162`) — benches/src/lib.rs is now a real std-only deterministic synthetic-scenario generator + catalog (Scenario{name,tier,exclude}, materialize -> regular files+dirs only, 0644/0755, deterministic bytes, no rng/time; gate_scenarios() x8 + bench_scenarios() x5) with tests/scenarios.rs proving twice-stable snapshot ids + byte-determinism + dedup(unique<files).
+> - `bench-criterion-suite` ✅ PASSED (code `14fcffe`) — NEW benches/benches/pipeline.rs (2nd criterion [[bench]]) with 5 wall-clock groups over bench_scenarios(): walk+hash, snapshot_id, stage/push, checkout/fetch, sync A->B; iter_batched + fresh store/iter to measure real work (defeats skip-if-present); Throughput::Bytes. +benches/README.md (save/compare baseline workflow). Dead Rust-vs-Bash compare.sh + last-compare.json removed.
+>
+> **Ready next (parallelizable, both dep only bench-scenarios): `bench-determinism-gate`, `bench-iai-gate`** — id-asc tiebreak picks `bench-determinism-gate` next tick, then `bench-iai-gate`. After both + criterion: `bench-ci-wire` (ci lane) unblocks, then `phase16-complete` (human_checkpoint).
 
 
 > Operator-requested: a benchmark suite to make informed decisions on changes/refactorings/optimizations AND a deterministic baseline + gate to avoid regressions — local FS only, synthetic data (no network). Because snapdir is content-addressed, deterministic synthetic data -> deterministic manifest -> deterministic snapshot id, so the suite **doubles as integration testing** (assert final snapshot ids over a full local round-trip). macOS runs the valgrind/iai instruction-count gate inside a **pinned Linux Docker image** — the SAME image CI uses — so the committed baseline is authoritative on both.

@@ -2104,7 +2104,9 @@ gates:
     phase: 16
     owner_agent: bench
     depends_on: [bench-scenarios]
-    status: pending
+    status: passed
+    passed_at: 2026-06-05T00:32:00Z
+    git_sha: 14fcffe
     failure_count: 0
     verification_cmd: "test ! -f benches/compare.sh && cargo bench -p snapdir-benches --no-run"
     pass_criteria:
