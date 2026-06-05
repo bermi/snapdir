@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 16 OPEN — 4/6 gates green — deterministic benchmark & regression-gate suite (gates added 2026-06-05)
+## ▶ PHASE 16 OPEN — 5/6 gates green — deterministic benchmark & regression-gate suite (gates added 2026-06-05)
 
 > **Progress:**
 > - `bench-scenarios` ✅ PASSED (code `9870162`) — benches/src/lib.rs is now a real std-only deterministic synthetic-scenario generator + catalog (Scenario{name,tier,exclude}, materialize -> regular files+dirs only, 0644/0755, deterministic bytes, no rng/time; gate_scenarios() x8 + bench_scenarios() x5) with tests/scenarios.rs proving twice-stable snapshot ids + byte-determinism + dedup(unique<files).
@@ -11,7 +11,9 @@
 > - `bench-determinism-gate` ✅ PASSED (code `85bd874`) — NEW benches/tests/determinism.rs (4 tests, runs in cargo test --workspace, <0.2s): per gate scenario golden snapshot_id + invariants (unique objects, bytes, entry count) vs a pinned GOLDENS table, dedup(unique<files), excludes-drop-subtree, and a FULL ROUND-TRIP (push->sync A->B->fetch->re-walk->re-id == golden). SNAPDIR_BENCH_REGEN=1 reprints goldens for intentional frozen-format changes. This is the deterministic regression gate AND integration test.
 > - `bench-iai-gate` ✅ PASSED (code `e024218`) — NEW benches/benches/iai_hot.rs (iai-callgrind = "=0.16.1", 3rd [[bench]]): instruction-count benches (blake3 hash, walk+manifest, snapshot_id) over fixed tiny inputs with a 5% Ir/EstimatedCycles soft-limit regression gate. NEW executable benches/run-iai-docker.sh (pinned rust:1.91-slim-bookworm linux/amd64 + valgrind + runner 0.16.1) so macOS-via-Docker and CI share one baseline. README += instruction-count section.
 >
-> **Ready next: `bench-ci-wire` (ci lane)** — wire the suite into CI (Linux valgrind/iai job, same pinned image) + `cargo bench --workspace --no-run` compile checks in ci.yaml AND utils/ci/pre-push.sh. **⚠ MUST ALSO add `RUSTSEC-2025-0141` to `deny.toml` [advisories] ignore** (bincode 1.3.3 unmaintained, transitive dev-dep of iai-callgrind 0.16.1 — carry-forward blocker from bench-iai-gate; deny.toml is ci-owned). After ci-wire: `phase16-complete` (human_checkpoint sign-off).
+> - `bench-ci-wire` ✅ PASSED (code `f1ae236`) — ci.yaml += Linux `bench-iai` job (toolchain 1.91.1, apt valgrind, iai-callgrind-runner 0.16.1, runs `cargo bench --bench iai_hot` → 5% regression gate in CI) + `cargo bench --workspace --no-run` compile step; utils/ci/pre-push.sh += the same compile-only check; deny.toml += `RUSTSEC-2025-0141` advisories-ignore (resolves the iai bincode-1.3.3 carry-forward blocker). actionlint clean, `cargo deny … advisories ok`.
+>
+> **Ready next: `phase16-complete` (human_checkpoint)** → PM ESCALATES to operator for sign-off. The deterministic-suite story is fully wired; the real valgrind/iai instruction-count run is enforced in CI (`bench-iai` job) and reproducible on macOS via `bash benches/run-iai-docker.sh`.
 
 
 > Operator-requested: a benchmark suite to make informed decisions on changes/refactorings/optimizations AND a deterministic baseline + gate to avoid regressions — local FS only, synthetic data (no network). Because snapdir is content-addressed, deterministic synthetic data -> deterministic manifest -> deterministic snapshot id, so the suite **doubles as integration testing** (assert final snapshot ids over a full local round-trip). macOS runs the valgrind/iai instruction-count gate inside a **pinned Linux Docker image** — the SAME image CI uses — so the committed baseline is authoritative on both.

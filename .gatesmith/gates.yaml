@@ -2136,7 +2136,9 @@ gates:
     phase: 16
     owner_agent: ci
     depends_on: [bench-criterion-suite, bench-iai-gate, bench-determinism-gate]
-    status: pending
+    status: passed
+    passed_at: 2026-06-05T01:17:00Z
+    git_sha: f1ae236
     failure_count: 0
     verification_cmd: "grep -qiE 'valgrind' .github/workflows/ci.yaml && grep -qE 'bench.*--no-run|no-run.*bench' .github/workflows/ci.yaml && grep -qE 'no-run' utils/ci/pre-push.sh && cargo bench --workspace --no-run"
     pass_criteria:
