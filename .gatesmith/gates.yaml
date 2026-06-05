@@ -2412,6 +2412,19 @@ gates:
   # to run bench-verify + upload a consultable artifact, then PR to snapdir/snapdir, tag v1.3.0, publish.
   # ======================================================================
 
+  - id: aimd-typos-allowlist
+    phase: 19
+    owner_agent: ci
+    depends_on: [phase18-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -qiE 'aimd' _typos.toml && typos"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "RELEASE-BLOCKING DEFECT found during release-verify-branch-1.3.0: `typos` (the CI lint job + the local pre-push gate) rejects the technical acronym AIMD (Additive Increase Multiplicative Decrease) that Phase 18 introduced in crates/snapdir-stores/src/adaptive.rs (the `Phase::Aimd` enum variant + doc comments) and the 1.3.0 CHANGELOG -> blocks `git push` (pre-push hook) and would fail the release PR's CI. AIMD is a correct, intentional term, NOT a misspelling of AIMED. Fix: add aimd/Aimd to the `_typos.toml` allowlist ([default.extend-words] aimd = \"aimd\" and/or [default.extend-identifiers] Aimd = \"Aimd\") so `typos` passes clean across the whole workspace. ci lane (_typos.toml only). PM verifies _typos.toml mentions aimd AND `typos` exits 0. This gate sorts ahead of release-verify-branch-1.3.0 (id-asc) so the loop fixes it first; the fix is then cherry-picked into the release-verify branch."
+
   - id: release-prep-1.3.0
     phase: 19
     owner_agent: generic
