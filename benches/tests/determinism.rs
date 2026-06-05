@@ -44,7 +44,9 @@ use snapdir_benches::{gate_scenarios, Scenario};
 use snapdir_core::merkle::snapshot_id;
 use snapdir_core::store::Store;
 use snapdir_core::{walk, Blake3Hasher, ExcludeMatcher, Manifest, PathType, WalkOptions};
-use snapdir_stores::{sync_snapshot, FileStore, StreamStore, TransferConfig};
+use snapdir_stores::{
+    sync_snapshot, FileStore, StreamStore, TransferAdaptivePolicy, TransferConfig,
+};
 use tempfile::TempDir;
 
 /// One recorded golden row for a GATE-tier scenario. The values are produced by
@@ -373,6 +375,81 @@ fn determinism_full_local_round_trip_preserves_snapshot_id() {
         assert_eq!(
             round_trip_id, id,
             "round-trip id must equal the source id == the golden for {:?}",
+            scenario.name
+        );
+    }
+}
+
+/// Phase-18 "speed-only / byte-identical" invariant guard. The adaptive tuner
+/// (concurrency / rate controller) is allowed to change ONLY the SPEED of a
+/// transfer — never the BYTES. This re-runs the exact same full local round-trip
+/// as [`determinism_full_local_round_trip_preserves_snapshot_id`], but with the
+/// adaptive policy turned ON and a LOW ceiling (2) on every leg — A's push, the
+/// A -> B sync, and B's fetch all carry the adaptive [`TransferConfig`] (stores
+/// are built via [`FileStore::from_root_with_config`] so push/fetch are adaptive
+/// too; the same config is threaded into `sync_snapshot`). Ceiling 2 forces the
+/// gate/controller to actually clamp/gate on the multi-object scenarios. The
+/// assertion is identical to the non-adaptive test: the re-walked fetched tree
+/// must re-id to the SAME snapshot id == the recorded golden. If the adaptive
+/// path ever perturbed a single byte, this snapshot id would diverge and the
+/// test would fail — proving adaptivity is speed-only.
+#[test]
+fn determinism_adaptive_round_trip_preserves_snapshot_id() {
+    if regen_mode() {
+        // No goldens to assert against during regeneration.
+        return;
+    }
+    // Adaptive ON with a low ceiling so the controller/gate is genuinely
+    // exercised (ceiling 2 clamps real concurrency on multi-object scenarios).
+    let config = TransferConfig::new(4, None).with_adaptive(TransferAdaptivePolicy::On {
+        fraction: 0.8,
+        ceiling: 2,
+    });
+
+    for scenario in gate_scenarios() {
+        let (computed, src_dir, manifest) = materialize_and_compute(&scenario);
+        let id = computed.snapshot_id.clone();
+        assert_eq!(
+            id,
+            golden_for(scenario.name).snapshot_id,
+            "precondition: source id must equal the golden for {:?}",
+            scenario.name
+        );
+
+        let from_store_dir = TempDir::new().expect("create source store dir");
+        let to_store_dir = TempDir::new().expect("create destination store dir");
+        let dest_dir = TempDir::new().expect("create fetch dest dir");
+
+        // Build BOTH stores with the adaptive config so the push (into A) and the
+        // fetch (out of B) legs run under the adaptive policy, not just the sync.
+        let a = FileStore::from_root_with_config(from_store_dir.path(), config.clone());
+        let b = FileStore::from_root_with_config(to_store_dir.path(), config.clone());
+
+        a.push(&manifest, src_dir.path()).expect("push into A");
+        let report = sync_snapshot(
+            &a as &(dyn StreamStore + Sync),
+            &b as &(dyn StreamStore + Sync),
+            &id,
+            &config,
+            false,
+            None,
+        )
+        .expect("adaptive sync A -> B");
+        assert!(!report.dry_run, "round-trip sync must be a real copy");
+
+        let m2 = b.get_manifest(&id).expect("B has the synced manifest");
+        b.fetch_files(&m2, dest_dir.path())
+            .expect("fetch files out of B");
+
+        // Re-walk the fetched tree WITHOUT an exclude: excluded paths were never
+        // in the manifest, so the fetched tree already omits that subtree.
+        let round_tripped = walk_with(dest_dir.path(), &WalkOptions::default());
+        let round_trip_id = snapshot_id(&round_tripped, &Blake3Hasher::new());
+
+        assert_eq!(
+            round_trip_id, id,
+            "adaptive round-trip id must be byte-identical to the non-adaptive id \
+             == the golden for {:?} (adaptivity must be speed-only)",
             scenario.name
         );
     }
