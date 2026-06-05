@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0]
+
+### Added
+
+- **`snapdir sync` — streaming store-to-store snapshot copy.** A 15th subcommand
+  that copies ONE snapshot (manifest + raw content-addressed objects) directly from
+  one store to another, streaming through memory with no local-filesystem staging.
+  Backed by a new `StreamStore` trait and a `sync_snapshot` orchestrator; it reuses
+  the concurrency and aggregate rate-limiting from 1.1.0 (manifest-last,
+  skip-already-present). Works across the S3, GCS, and B2 stores and the local
+  `file://` store.
+- **Live transfer & hashing progress dashboard.** A single-line, self-updating
+  stderr progress indicator (spinner/bar plus from→to bytes/s and objects/s,
+  concurrency, and best-effort memory/CPU) for `push`/`fetch`/`pull`/`checkout`/
+  `stage`/`sync` and the local walk. It is shown only on an interactive TTY
+  (auto-disabled when piped); `--no-progress`, `--quiet/-q`, and `--color` control
+  it, and it honors `NO_COLOR`/`TERM=dumb`. stdout stays the scriptable snapshot id.
+- **Deterministic benchmark & regression-gate suite.** A synthetic-scenario
+  generator (regular files and dirs, fixed perms/bytes, no rng/time) drives: a golden
+  snapshot-id plus structural-invariants plus full local round-trip determinism gate
+  (runs everywhere as integration testing), criterion wall-clock decision benches, and
+  an iai-callgrind instruction-count perf gate (5% threshold; macOS via a pinned
+  Docker image, enforced in Linux CI). Benches are compile-checked in CI and pre-push.
+
+The manifest byte-format and content-addressed object/manifest layout are unchanged, so
+snapshots remain fully interoperable with 1.1.x.
+
 ## [1.1.0]
 
 ### Added
@@ -186,7 +213,9 @@ Bash-written caches and remote buckets stay mutually readable.
   `gcloud`) in the shipped binary. External tools are used only by the test/oracle
   harness.
 
-[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/snapdir/snapdir/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/snapdir/snapdir/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/snapdir/snapdir/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/snapdir/snapdir/releases/tag/v1.0.0
 [0.5.0]: https://github.com/snapdir/snapdir/releases/tag/v0.5.0
