@@ -2343,7 +2343,9 @@ gates:
     phase: 18
     owner_agent: cli
     depends_on: [adaptive-wire]
-    status: pending
+    status: passed
+    passed_at: 2026-06-05T14:25:00Z
+    git_sha: 5b05b41
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked adaptive -- --nocapture"
     pass_criteria:
