@@ -3,6 +3,21 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
+## 🔨 PHASE 20 OPEN — 0/5 gates — env/flag-selectable checksum algorithm + `--store` SNAPDIR_STORE default
+
+> **Operator-requested 2026-06-06 (AMA-confirmed):** expose the **already-implemented** blake3/md5/sha256 hashers via **`SNAPDIR_CHECKSUM`** + a **`--checksum`** flag, honored by **all** snapshot commands, with the selected algorithm driving the **snapshot id** too. **NO new algorithms** (no sha1/sha3), **NO new deps**, the **FROZEN `merkle.rs` is UNTOUCHED** — the CLI just stops hardcoding `Blake3Hasher` and threads a CLI-local `SelectedHasher` enum (impl of the existing `Hasher` trait) through the existing generic `walk`/`snapshot_id`. **blake3 default byte-identical.** Plus: the `--store`/`sync --from` → `$SNAPDIR_STORE` default-env bug fix. Ships in a future **1.4.0** via the Phase-19 release pipeline.
+>
+> **Gates (5), ready head = `checksum-cli-select` (then `store-env-default` — both dep only `phase19-complete`):**
+> - `checksum-cli-select` (cli, machine) — global `--checksum<blake3|md5|sha256>` + env `SNAPDIR_CHECKSUM`, keep `--checksum-bin` as a back-compat alias (precedence `--checksum` > `--checksum-bin` > env > default blake3); CLI-local `enum SelectedHasher { Blake3|Keyed|Md5|Sha256 }` `impl snapdir_core::Hasher` threaded through `walk_with` + `snapshot_id(&manifest, &selected)` in manifest/id/stage/push/fetch/pull/checkout/sync (replaces the hardcoded `&Blake3Hasher::new()` at ~368/387/571/816 + `build_manifest`). Tests: `SNAPDIR_CHECKSUM`/`--checksum` select sha256/md5 (64/32-hex lines, id ≠ blake3 id), local push→fetch round-trip self-consistent under sha256 AND md5, blake3 default id unchanged vs a pinned constant, `--checksum-bin` alias still works, precedence. →
+> - `store-env-default` (cli, machine) — `env="SNAPDIR_STORE"` on the global `--store` (mirror `--jobs`' `env="SNAPDIR_JOBS"`) + `sync --from`; `--to` stays explicit (two distinct stores); explicit flag overrides; missing flag+env keeps the existing required/`missing --store` error. →
+> - `checksum-determinism-recheck` (bench, machine, dep `checksum-cli-select`) — Phase-16 blake3 golden-id suite still green (no regression) + a md5/sha256 round-trip self-stability assertion (FileStore push → sync A→B → fetch → re-walk → re-id == produced id) + md5/sha256 id ≠ blake3 id. →
+> - `checksum-docs` (docs, machine, dep `checksum-cli-select`) — manifest-spec §4: id is the digest of the #-stripped manifest text under the **SELECTED** algorithm (**BLAKE3 by default**), not "always BLAKE3"; document `--checksum`/`SNAPDIR_CHECKSUM`, the `--checksum-bin` alias, the **implicit/external** algorithm (a manifest doesn't record which algo; recipient supplies the same `--checksum`), and `--store` → `$SNAPDIR_STORE`; README env-var note. →
+> - `phase20-complete` (generic, human✋, dep all-4) — `cargo test --workspace --locked` + operator sign-off.
+>
+> **Invariants:** no frozen-interface mutation / no re-lock (re-verify the 3 SHA locks each tick — they must NOT change); zero new deps; the blake3 default path produces identical checksums + snapshot ids to 1.3.0 (guarded by the determinism recheck + the cli "default unchanged" test); a non-blake3 snapshot is only created on opt-in; the algorithm is implicit in the manifest (frozen byte-format unchanged). **Lanes:** `checksum-cli-select`+`store-env-default` = cli (both `cli.rs`, id-asc picks checksum first); bench; docs; generic. **DEFERRED → Phase 21+:** `snapdir export` (the former "Phase 20" follow-up, re-numbered).
+
+---
+
 ## ✅ PHASE 19 COMPLETE — 6/6 gates green (operator sign-off 2026-06-05) — snapdir 1.3.0 RELEASED — ALL 136 GATES GREEN
 
 > **Progress:**
