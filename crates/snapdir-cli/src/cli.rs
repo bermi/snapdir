@@ -1650,16 +1650,68 @@ impl Drop for ScratchDir {
 /// oracle's `readlink` (`cd "$(dirname)" && pwd`/`basename`): the parent is
 /// made absolute, the basename is appended verbatim. Defaults to the current
 /// directory when no path is given.
+///
+/// The resolved absolute path is then normalized **lexically** so that the four
+/// surface forms `foo`, `./foo`, `foo/`, and `./foo/` all collapse to the same
+/// clean root. The walk downstream derives each entry's relative path with a
+/// string `strip_prefix(root)`; a trailing `/` or an interior `/./` on the root
+/// breaks that rewrite (it yields `.bar.txt` instead of `./bar.txt`, or makes
+/// `strip_prefix` miss and leak an absolute path). Normalizing here — and only
+/// here, in the CLI — keeps the frozen walk contract untouched while making
+/// every input form produce the identical manifest + snapshot id.
+///
+/// This is purely lexical: it does **not** call `.canonicalize()`, so symlinks
+/// and `..` keep their existing semantics and the not-found error path is
+/// preserved (the path need not exist yet for some commands).
 fn resolve_root(path: Option<&Path>) -> Result<PathBuf> {
     let raw = match path {
         Some(p) => p.to_path_buf(),
         None => std::env::current_dir().context("getting current directory")?,
     };
-    if raw.is_absolute() {
-        return Ok(raw);
+    let abs = if raw.is_absolute() {
+        raw
+    } else {
+        let cwd = std::env::current_dir().context("getting current directory")?;
+        cwd.join(raw)
+    };
+    Ok(lexically_normalize_root(&abs))
+}
+
+/// Lexically cleans an absolute root path for the walk, WITHOUT touching the
+/// filesystem (no symlink resolution):
+///
+/// - drops `CurDir` (`.`) components — collapses a leading `./` and any interior
+///   `/./` segments,
+/// - drops a trailing `/` (except the filesystem root `/` itself),
+/// - preserves `ParentDir` (`..`) and ordinary names verbatim — `..` keeps the
+///   existing semantics and is NOT resolved.
+///
+/// A canonical absolute path with no `.` segment and no trailing slash is
+/// returned byte-for-byte unchanged.
+fn lexically_normalize_root(abs: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    let mut pushed_any = false;
+    for comp in abs.components() {
+        match comp {
+            // Skip `.` segments entirely (leading `./`, interior `/./`).
+            Component::CurDir => {}
+            // The root `/` (and any prefix on non-unix) anchors the path.
+            Component::RootDir | Component::Prefix(_) => out.push(comp.as_os_str()),
+            // Ordinary names and `..` are kept verbatim, in order.
+            Component::Normal(_) | Component::ParentDir => {
+                out.push(comp.as_os_str());
+                pushed_any = true;
+            }
+        }
     }
-    let cwd = std::env::current_dir().context("getting current directory")?;
-    Ok(cwd.join(raw))
+    // `components()` already strips a trailing slash, so dropping it is implicit.
+    // Guard the degenerate "everything was `.`" case (e.g. a literal `/.`):
+    // fall back to the bare root so we never return an empty path.
+    if !pushed_any && out.as_os_str().is_empty() {
+        out.push(Component::RootDir.as_os_str());
+    }
+    out
 }
 
 /// OR-combines a list of `--exclude` patterns into a single expanded
