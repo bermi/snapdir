@@ -2537,7 +2537,9 @@ gates:
     phase: 20
     owner_agent: cli
     depends_on: [phase19-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-08T22:56:14Z
+    git_sha: 5d5d8f7
     failure_count: 0
     verification_cmd: "grep -qE 'env = \"SNAPDIR_STORE\"' crates/snapdir-cli/src/cli.rs && cargo test -p snapdir-cli --locked store_env -- --nocapture"
     pass_criteria:

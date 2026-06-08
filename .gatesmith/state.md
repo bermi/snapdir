@@ -3,14 +3,14 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## 🔨 PHASE 20 OPEN — 1/3 gates — input-path normalization bug + `--store` SNAPDIR_STORE default
+## 🔨 PHASE 20 OPEN — 2/3 gates — input-path normalization bug + `--store` SNAPDIR_STORE default
 
 > **Re-scoped 2026-06-08 (operator):** the env/flag-selectable **checksum** work was **REMOVED** from this phase (its 3 gates dropped; held WIP stashed in `stash@{0}`; the sha256/md5-can't-round-trip-through-blake3-stores escalation is now moot). Phase 20 now ships two CLI bug fixes: **(1)** the directory **PATH argument** must normalize so `foo`, `./foo`, `foo/`, `./foo/` all produce the **identical** manifest + snapshot id across manifest/id/stage/push; **(2)** `--store` / `sync --from` default to `$SNAPDIR_STORE`.
 >
-> **Gates (3), ready head = `store-env-default`:**
+> **Gates (3), ready head = `phase20-complete` (human✋ sign-off):**
 > - `push-path-normalize` ✅ **PASSED** (code `4075b53` @ 2026-06-08) — `resolve_root` (cli.rs) lexically normalizes the absolute root via `lexically_normalize_root` over `Path::components()` (drops `.` segments, strips trailing `/`, preserves `..`/RootDir, NO canonicalize) so every input form hands the frozen walk an identical clean root → spec `./`-relative output for all four. 5 `path_normalize` tests green (id/manifest/--absolute/push-round-trip four-form equality + pinned canonical-id invariant); core walk.rs/merkle.rs UNTOUCHED.
-> - `store-env-default` (cli, machine) — `env="SNAPDIR_STORE"` on the global `--store` (mirror `--jobs`' `env="SNAPDIR_JOBS"`) + `sync --from`; `--to` stays explicit (two distinct stores); explicit flag overrides; missing flag+env keeps the existing required/`missing --store` error. →
-> - `phase20-complete` (generic, human✋, dep [`push-path-normalize`, `store-env-default`]) — `cargo test --workspace --locked` + operator sign-off.
+> - `store-env-default` ✅ **PASSED** (code `5d5d8f7` @ 2026-06-08) — clap `env = "SNAPDIR_STORE"` on the global `--store` + `sync --from` (mirrors `--jobs`/`SNAPDIR_JOBS`); flag-omitted+env-set → clap supplies it, explicit flag overrides, neither → existing required-arg error preserved; `--to` stays explicit + the from≠to differ-check intact. 7 `store_env` tests green; 16 trycmd help snapshots refreshed (only the `[env: SNAPDIR_STORE=]` annotation added).
+> - `phase20-complete` (generic, human✋, dep [`push-path-normalize`, `store-env-default`]) — **READY:** `cargo test --workspace --locked` + operator sign-off. NEXT TICK ESCALATES (human_checkpoint).
 >
 > **Invariants:** no frozen-interface mutation / no re-lock (re-verify the 3 SHA locks each tick — they must NOT change; verified OK this tick); zero new deps; the canonical-form blake3 path produces identical manifests + snapshot ids to 1.3.0 (goldens untouched; guarded by the pinned-id test). **Lanes:** both bug gates = cli (id-asc picks `push-path-normalize` then `store-env-default`); generic for sign-off. **NEXT PHASE:** Phase 21 = rate limiting + exponential-backoff retries (7 gates, all gated on `phase20-complete`). **DEFERRED:** `snapdir export` (the former "Phase 20" feature, re-numbered).
 
