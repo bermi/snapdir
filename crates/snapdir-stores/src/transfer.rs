@@ -70,6 +70,13 @@ pub struct TransferConfig {
     /// unlimited. In the adaptive path this is the rate *cap* (`max_rate`); the
     /// controller may target a lower live rate.
     pub max_bytes_per_sec: Option<u64>,
+    /// Optional aggregate request-rate cap, in requests per second. `None`
+    /// means unlimited. A later gate wires this into the live store call sites
+    /// (`key_exists` / `get_bytes` / `put_bytes`) by pacing each request through
+    /// a [`RateLimiter`] / [`BlockingRateLimiter`] whose "tokens" are requests
+    /// (`acquire(1)` per request). The per-backend defaults live in
+    /// [`crate::limits::for_scheme`].
+    pub max_requests_per_sec: Option<u64>,
     /// Whether to tune concurrency / rate adaptively. [`AdaptivePolicy::Off`]
     /// (the default) keeps the historical fixed-concurrency path byte-for-byte.
     pub adaptive: AdaptivePolicy,
@@ -86,6 +93,7 @@ impl TransferConfig {
         Self {
             concurrency: NonZeroUsize::new(concurrency.max(1)).unwrap_or(NonZeroUsize::MIN),
             max_bytes_per_sec,
+            max_requests_per_sec: None,
             adaptive: AdaptivePolicy::Off,
         }
     }
@@ -108,6 +116,7 @@ impl Default for TransferConfig {
             // `detected` is >= 1, so the NonZeroUsize is always Some.
             concurrency: NonZeroUsize::new(detected).unwrap_or(NonZeroUsize::MIN),
             max_bytes_per_sec: None,
+            max_requests_per_sec: None,
             adaptive: AdaptivePolicy::Off,
         }
     }
@@ -595,6 +604,7 @@ mod tests {
             cfg.concurrency.get()
         );
         assert_eq!(cfg.max_bytes_per_sec, None);
+        assert_eq!(cfg.max_requests_per_sec, None);
 
         // The clamping ctor never yields 0.
         assert_eq!(TransferConfig::new(0, None).concurrency.get(), 1);
