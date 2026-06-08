@@ -2521,7 +2521,9 @@ gates:
     phase: 20
     owner_agent: cli
     depends_on: [phase19-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-08T22:52:56Z
+    git_sha: 4075b53
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked path_normalize -- --nocapture"
     pass_criteria:
