@@ -2583,3 +2583,118 @@ gates:
         - human_confirm: "Phase 20 done: the existing blake3/md5/sha256 hashers are selectable via SNAPDIR_CHECKSUM + --checksum (default blake3) across all snapshot commands, with the chosen algorithm driving the snapshot id consistently; blake3 default is byte-identical (determinism gate green); --store and sync --from default to $SNAPDIR_STORE; frozen merkle.rs untouched, no new deps. Approve?"
     human_checkpoint: true
     description: "PHASE 20 SIGN-OFF: env/flag-selectable checksum algorithm (existing blake3/md5/sha256 via SNAPDIR_CHECKSUM + --checksum, all commands, algo drives the snapshot id, blake3 default byte-identical) + --store/sync-from default to SNAPDIR_STORE; frozen format untouched, zero new deps; workspace tests green."
+
+  # ======================================================================
+  # PHASE 21 — Rate limiting + exponential-backoff retries (operator-requested 2026-06-08).
+  # Add backoff-with-full-jitter that HONOURS server Retry-After on transient (429/503/
+  # timeout/conn-reset) network failures; a request-rate (req/s) limiter; and WIRE the
+  # dormant AdaptiveController into live fetch/push. All configurable via flags/env on the
+  # --checksum precedence model (--flag > SNAPDIR_* env > per-backend default > global
+  # default), with PER-BACKEND defaults (researched from S3/GCS/B2 published limits)
+  # overriding the global defaults. Reuse classify_error + the existing token bucket; NO
+  # new deps (hand-rolled jitter PRNG); disable each SDK's built-in retries so snapdir's
+  # policy is the single authority. file:// path + frozen format UNTOUCHED.
+  # Per-backend defaults (cited in code comments): s3 read 5500 / write 3500 req/s, bytes
+  # unlimited (AWS: >=3500 write / >=5500 read req/s per prefix); gs read 5000 / write 1000
+  # req/s, bytes unlimited (GCS initial per-bucket, autoscales; 429 rateLimitExceeded
+  # retryable); b2 read 20 / write 50 req/s, read 25MB/s write 100MB/s (Backblaze <=10TB
+  # accounts: up 3000 req/min & 800Mbit/s, down 1200 req/min & 200Mbit/s; 503 may carry
+  # Retry-After). Global retry default: 5 attempts / 250ms base / x2 / 30s cap / full jitter.
+  # ======================================================================
+
+  - id: retry-backoff-core
+    phase: 21
+    owner_agent: stores
+    depends_on: [phase20-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked retry:: -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "New crates/snapdir-stores/src/retry.rs (stores lane). `RetryPolicy { max_attempts, base, cap }` (Default = 5 / 250ms / 30s) with `backoff(attempt, server_hint) = max(server_hint, full_jitter(min(cap, base*2^attempt)))`. Full jitter with NO new dep: a tiny hand-rolled SplitMix64 seeded from an AtomicU64 + one-time nanos sample, behind a `Jitter` trait so tests inject a deterministic stub (same injection discipline as adaptive.rs MonoTime). `Sleeper` trait (async tokio::time::sleep + blocking std::thread::sleep; test fake records delays, returns instantly). SDK-agnostic engine over `struct Attempt { err: StoreError, transient: bool, retry_after: Option<Duration> }`: `retry_async`/`retry_blocking(policy, sleeper, jitter, op)` loop = Ok->return; Err(a): if a.transient && attempts-left -> sleep(backoff(n, a.retry_after)) else return a.err. Deterministic unit tests (fn names under retry::): N attempts on persistent Throttle; immediate return on HardErr; success after k transient fails; Retry-After honoured (delay >= hint); cap respected; jitter in [0, min(cap, base*2^n)); exact attempt count. mod retry in lib.rs."
+
+  - id: backend-rate-limits
+    phase: 21
+    owner_agent: stores
+    depends_on: [phase20-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked limits:: -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "New crates/snapdir-stores/src/limits.rs + a request-rate limiter (stores lane). (1) `pub fn for_scheme(&str) -> BackendLimits { read_rps, write_rps, read_bps, write_bps: Option<u64>, retry: RetryPolicy }` returning the researched table (file/external = all None; s3 = read 5500 / write 3500 rps, bytes None; gs = read 5000 / write 1000 rps, bytes None; b2 = read 20 / write 50 rps, read 25MB/s write 100MB/s) — each constant documented with its source URL in a comment. (2) Request-rate limiting by REUSE: add `max_requests_per_sec: Option<u64>` to TransferConfig (transfer.rs) and construct a second RateLimiter/BlockingRateLimiter instance whose tokens are requests (acquire(1) per call) — NO new bucket code. Unit tests (fn names under limits::): for_scheme returns the documented values per scheme; a request-limiter pacing test reusing the existing RateLimiter current-thread enable_time() runtime pattern; an unlimited (None) backend is a no-op."
+
+  - id: stores-backoff-wire
+    phase: 21
+    owner_agent: stores
+    depends_on: [retry-backoff-core, backend-rate-limits]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked --features integration-mock backoff_wire -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Wire backoff into the network stores (stores lane: s3_store.rs, gcs_store.rs; b2_store.rs inherits via S3). At each SDK boundary (key_exists/get_bytes/put_bytes), where the SDK error is still CONCRETE, build an `Attempt`: decide transient-ness (reuse classify_error's signal set) AND extract `Retry-After` (aws-sdk-s3: headers off SdkError::ServiceError(..).raw(); google-cloud-storage: error metadata; B2 503 via the S3 path), then run through retry_async. Acquire the request-rate + byte-rate limiters before each call. Keep the existing integrity-mismatch loop in fetch_verified but INSIDE the transient-retry wrapper. DISABLE each SDK's built-in retries (aws-config RetryConfig::disabled(); GCS client equivalent) so snapdir's policy is the single authority (no 3xSDK*5xours compounding). Tests via an injectable fake SDK boundary / feature flag (no live cloud): a sequence of k transient errors then success retries and succeeds with monotonic backoff sleeps; a HardErr returns immediately; a Retry-After header makes the recorded sleep >= the hint; persistent Throttle exhausts max_attempts then surfaces the StoreError."
+
+  - id: adaptive-wire-live
+    phase: 21
+    owner_agent: stores
+    depends_on: [backend-rate-limits]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked adaptive_wire -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Make the dormant AdaptiveController LIVE in the transfer loops (stores lane: fetch.rs, push.rs). When AdaptivePolicy::On, drive transfers through the existing run_adaptive(items, &gate, op) instead of run_concurrent, feeding each op's classify_error() outcome into an AdaptiveController tick that resizes the AdaptiveGate. Default On for NETWORK stores (slow-start is safe + is the point of Full scope); file:// stays on run_concurrent. Reuse run_adaptive/AdaptiveGate/AdaptiveController as-is. Tests: a transfer fed injected Throttle outcomes shrinks the gate's live limit (AIMD), then recovers on sustained Success; the file:// path is unchanged (still run_concurrent); first-error-wins + completion-independent ordering preserved (existing transfer invariants stay green)."
+
+  - id: ratelimit-cli-select
+    phase: 21
+    owner_agent: cli
+    depends_on: [retry-backoff-core, backend-rate-limits]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --locked ratelimit -- --nocapture"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "test result: ok"
+    human_checkpoint: false
+    description: "Expose the knobs (cli lane, crates/snapdir-cli only). Add global flags mirroring the --checksum manual-env-resolver pattern (cli.rs:1365-1422): --max-retries/SNAPDIR_MAX_RETRIES (5), --retry-base-ms/SNAPDIR_RETRY_BASE_MS (250), --retry-max-ms/SNAPDIR_RETRY_MAX_MS (30000), --max-rate/SNAPDIR_MAX_RATE (bytes/s; 0/unset = backend default), --max-requests/SNAPDIR_MAX_REQUESTS (req/s; 0/unset = backend default), --adaptive/SNAPDIR_ADAPTIVE (on|off). Add resolver methods `resolve_retry_policy()` and `resolve_rate_limits(scheme)` that layer user-override -> snapdir_stores::limits::for_scheme(scheme) -> global default (scheme known at resolve_store/router dispatch), and thread the resolved RetryPolicy + TransferConfig (incl. max_requests_per_sec) into the store constructors. Surface in `snapdir defaults` (automatic via reformat_env_default). e2e tests (fn names contain `ratelimit`): precedence --max-requests beats env beats backend default beats global; a b2:// store with no flags resolves the B2 backend defaults; an s3:// store resolves unlimited bytes; defaults output lists the new env vars. Update help/trycmd snapshots for the new global flags."
+
+  - id: ratelimit-docs
+    phase: 21
+    owner_agent: docs
+    depends_on: [ratelimit-cli-select]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -qiE 'SNAPDIR_MAX_RETRIES|--max-retries' docs/rust-port/*.md README.md && grep -qiE 'Retry-After|exponential backoff' docs/rust-port/*.md README.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Document the feature (docs lane). A 'Rate limiting & retries' section: the env/flags table, the precedence rule (flag > env > backend default > global), the per-backend default table with the source URLs, the conservative retry defaults, full-jitter + Retry-After behaviour, that the adaptive tuner is on by default for network stores (--adaptive=off to disable), and that NO new deps were added. README: a short note on the new env vars. No frozen-format claim changes."
+
+  - id: phase21-complete
+    phase: 21
+    owner_agent: generic
+    depends_on: [retry-backoff-core, backend-rate-limits, stores-backoff-wire, adaptive-wire-live, ratelimit-cli-select, ratelimit-docs]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 21 done: transient network failures (429/503/timeout/conn-reset) now retry with full-jitter exponential backoff honouring server Retry-After; a request-rate (req/s) limiter + the byte-rate limiter are configurable via flags/env with per-backend defaults (S3/GCS/B2 published limits) overriding global defaults; the adaptive controller is wired live (on by default for network stores); zero new deps, SDK built-in retries disabled, file:// path + frozen format untouched; workspace tests green. Approve?"
+    human_checkpoint: true
+    description: "PHASE 21 SIGN-OFF: rate limiting + exponential-backoff retries shipped — full-jitter backoff w/ Retry-After on transient errors, req/s + byte/s limiters configurable (flag>env>backend>global) with researched per-backend defaults, adaptive controller wired live (network default On), no new deps, frozen format untouched, workspace green."
