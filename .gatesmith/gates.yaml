@@ -2601,7 +2601,9 @@ gates:
     phase: 21
     owner_agent: stores
     depends_on: [phase20-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-08T23:07:42Z
+    git_sha: 4edb244
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked limits:: -- --nocapture"
     pass_criteria:
@@ -2609,7 +2611,7 @@ gates:
         - exit_code: 0
         - regex_match: "test result: ok"
     human_checkpoint: false
-    description: "New crates/snapdir-stores/src/limits.rs + a request-rate limiter (stores lane). (1) `pub fn for_scheme(&str) -> BackendLimits { read_rps, write_rps, read_bps, write_bps: Option<u64>, retry: RetryPolicy }` returning the researched table (file/external = all None; s3 = read 5500 / write 3500 rps, bytes None; gs = read 5000 / write 1000 rps, bytes None; b2 = read 20 / write 50 rps, read 25MB/s write 100MB/s) — each constant documented with its source URL in a comment. (2) Request-rate limiting by REUSE: add `max_requests_per_sec: Option<u64>` to TransferConfig (transfer.rs) and construct a second RateLimiter/BlockingRateLimiter instance whose tokens are requests (acquire(1) per call) — NO new bucket code. Unit tests (fn names under limits::): for_scheme returns the documented values per scheme; a request-limiter pacing test reusing the existing RateLimiter current-thread enable_time() runtime pattern; an unlimited (None) backend is a no-op."
+    description: "New crates/snapdir-stores/src/limits.rs + a request-rate limiter (stores lane). DESC-CORRECTION 2026-06-08: BackendLimits holds RATE CAPS ONLY (no `retry` field) — the retry policy is GLOBAL (RetryPolicy::default(), defined later by retry-backoff-core); so limits.rs does NOT depend on retry.rs and this gate can run first. (1) `pub fn for_scheme(&str) -> BackendLimits { read_rps, write_rps, read_bps, write_bps: Option<u64> }` returning the researched table (file/external = all None; s3 = read 5500 / write 3500 rps, bytes None; gs = read 5000 / write 1000 rps, bytes None; b2 = read 20 / write 50 rps, read 25MB/s write 100MB/s) — each constant documented with its source URL in a comment. (2) Request-rate limiting by REUSE: add `max_requests_per_sec: Option<u64>` to TransferConfig (transfer.rs) and construct a second RateLimiter/BlockingRateLimiter instance whose tokens are requests (acquire(1) per call) — NO new bucket code. Unit tests (fn names under limits::): for_scheme returns the documented values per scheme; a request-limiter pacing test reusing the existing RateLimiter current-thread enable_time() runtime pattern; an unlimited (None) backend is a no-op."
 
   - id: stores-backoff-wire
     phase: 21

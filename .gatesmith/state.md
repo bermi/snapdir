@@ -3,12 +3,12 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## 🔨 PHASE 21 OPEN — 0/7 gates — rate limiting + exponential-backoff retries
+## 🔨 PHASE 21 OPEN — 1/7 gates — rate limiting + exponential-backoff retries
 
 > **Operator-requested 2026-06-08 (plan-approved):** add full-jitter **exponential backoff** that **honours server `Retry-After`** on transient (429/503/timeout/conn-reset) network failures; a **request-rate (req/s)** limiter; and WIRE the dormant `AdaptiveController` into live fetch/push. All configurable via flags/env on the `--checksum` precedence model (`--flag > SNAPDIR_* env > per-backend default > global`), with **researched per-backend defaults** (S3/GCS/B2 published limits) overriding global. Reuse `classify_error` + the existing token bucket; **NO new deps** (hand-rolled SplitMix64 jitter); disable each SDK's built-in retries so snapdir's policy is the single authority. `file://` path + frozen format UNTOUCHED. Global retry default 5 attempts / 250ms base / ×2 / 30s cap / full jitter.
 >
-> **Gates (7), ready head = `backend-rate-limits` (then `retry-backoff-core` — both stores, dep only `phase20-complete`, id-asc):**
-> - `backend-rate-limits` (stores) — `limits.rs::for_scheme()` table (s3 5500/3500 rps bytes-∞; gs 5000/1000 rps bytes-∞; b2 20/50 rps 25MB/100MB; file/external ∞, cited to AWS/GCS/Backblaze) + a req/s limiter by REUSE of the token bucket (new `TransferConfig.max_requests_per_sec`). →
+> **Gates (7), ready head = `retry-backoff-core` (stores, dep only `phase20-complete`):**
+> - `backend-rate-limits` ✅ **PASSED** (code `4edb244` @ 2026-06-08) — `limits.rs::for_scheme()` table (s3 5500/3500 rps bytes-∞; gcs 5000/1000 rps bytes-∞; b2 20/50 rps 25/100 MiB/s; file/unknown ∞, cited to AWS/GCS/Backblaze) + `TransferConfig.max_requests_per_sec` and a req/s limiter REUSING the existing token bucket. 7 `limits::` tests green. DESC-CORRECTION: BackendLimits = rate caps only (retry policy stays global). Live wiring deferred to `stores-backoff-wire`.
 > - `retry-backoff-core` (stores) — `retry.rs`: `RetryPolicy` + full-jitter backoff honouring `Retry-After`, injectable `Sleeper`/`Jitter`, SDK-agnostic `Attempt{err,transient,retry_after}` engine. →
 > - `stores-backoff-wire` (stores, dep retry-backoff-core + backend-rate-limits) — wrap key_exists/get_bytes/put_bytes through `retry_async`, extract Retry-After at the concrete SDK boundary, DISABLE SDK built-in retries. →
 > - `adaptive-wire-live` (stores, dep backend-rate-limits) — `run_adaptive` in fetch/push fed by `classify_error()`; ON by default for network stores, `file://` stays `run_concurrent`. →
