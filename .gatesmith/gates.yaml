@@ -2553,7 +2553,9 @@ gates:
     phase: 20
     owner_agent: generic
     depends_on: [push-path-normalize, store-env-default]
-    status: pending
+    status: passed
+    passed_at: 2026-06-08T23:04:41Z
+    git_sha: bb5c0fa
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked"
     pass_criteria:

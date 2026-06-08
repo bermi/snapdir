@@ -3,16 +3,30 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## 🔨 PHASE 20 OPEN — 2/3 gates — input-path normalization bug + `--store` SNAPDIR_STORE default
+## 🔨 PHASE 21 OPEN — 0/7 gates — rate limiting + exponential-backoff retries
 
-> **Re-scoped 2026-06-08 (operator):** the env/flag-selectable **checksum** work was **REMOVED** from this phase (its 3 gates dropped; held WIP stashed in `stash@{0}`; the sha256/md5-can't-round-trip-through-blake3-stores escalation is now moot). Phase 20 now ships two CLI bug fixes: **(1)** the directory **PATH argument** must normalize so `foo`, `./foo`, `foo/`, `./foo/` all produce the **identical** manifest + snapshot id across manifest/id/stage/push; **(2)** `--store` / `sync --from` default to `$SNAPDIR_STORE`.
+> **Operator-requested 2026-06-08 (plan-approved):** add full-jitter **exponential backoff** that **honours server `Retry-After`** on transient (429/503/timeout/conn-reset) network failures; a **request-rate (req/s)** limiter; and WIRE the dormant `AdaptiveController` into live fetch/push. All configurable via flags/env on the `--checksum` precedence model (`--flag > SNAPDIR_* env > per-backend default > global`), with **researched per-backend defaults** (S3/GCS/B2 published limits) overriding global. Reuse `classify_error` + the existing token bucket; **NO new deps** (hand-rolled SplitMix64 jitter); disable each SDK's built-in retries so snapdir's policy is the single authority. `file://` path + frozen format UNTOUCHED. Global retry default 5 attempts / 250ms base / ×2 / 30s cap / full jitter.
 >
-> **Gates (3), ready head = `phase20-complete` (human✋ sign-off):**
-> - `push-path-normalize` ✅ **PASSED** (code `4075b53` @ 2026-06-08) — `resolve_root` (cli.rs) lexically normalizes the absolute root via `lexically_normalize_root` over `Path::components()` (drops `.` segments, strips trailing `/`, preserves `..`/RootDir, NO canonicalize) so every input form hands the frozen walk an identical clean root → spec `./`-relative output for all four. 5 `path_normalize` tests green (id/manifest/--absolute/push-round-trip four-form equality + pinned canonical-id invariant); core walk.rs/merkle.rs UNTOUCHED.
-> - `store-env-default` ✅ **PASSED** (code `5d5d8f7` @ 2026-06-08) — clap `env = "SNAPDIR_STORE"` on the global `--store` + `sync --from` (mirrors `--jobs`/`SNAPDIR_JOBS`); flag-omitted+env-set → clap supplies it, explicit flag overrides, neither → existing required-arg error preserved; `--to` stays explicit + the from≠to differ-check intact. 7 `store_env` tests green; 16 trycmd help snapshots refreshed (only the `[env: SNAPDIR_STORE=]` annotation added).
-> - `phase20-complete` (generic, human✋, dep [`push-path-normalize`, `store-env-default`]) — **READY:** `cargo test --workspace --locked` + operator sign-off. NEXT TICK ESCALATES (human_checkpoint).
+> **Gates (7), ready head = `backend-rate-limits` (then `retry-backoff-core` — both stores, dep only `phase20-complete`, id-asc):**
+> - `backend-rate-limits` (stores) — `limits.rs::for_scheme()` table (s3 5500/3500 rps bytes-∞; gs 5000/1000 rps bytes-∞; b2 20/50 rps 25MB/100MB; file/external ∞, cited to AWS/GCS/Backblaze) + a req/s limiter by REUSE of the token bucket (new `TransferConfig.max_requests_per_sec`). →
+> - `retry-backoff-core` (stores) — `retry.rs`: `RetryPolicy` + full-jitter backoff honouring `Retry-After`, injectable `Sleeper`/`Jitter`, SDK-agnostic `Attempt{err,transient,retry_after}` engine. →
+> - `stores-backoff-wire` (stores, dep retry-backoff-core + backend-rate-limits) — wrap key_exists/get_bytes/put_bytes through `retry_async`, extract Retry-After at the concrete SDK boundary, DISABLE SDK built-in retries. →
+> - `adaptive-wire-live` (stores, dep backend-rate-limits) — `run_adaptive` in fetch/push fed by `classify_error()`; ON by default for network stores, `file://` stays `run_concurrent`. →
+> - `ratelimit-cli-select` (cli, dep retry-backoff-core + backend-rate-limits) — `--max-retries/--retry-base-ms/--retry-max-ms/--max-rate/--max-requests/--adaptive` + `SNAPDIR_*` via manual-env resolvers; `resolve_rate_limits(scheme)` layering user>for_scheme>global. →
+> - `ratelimit-docs` (docs, dep ratelimit-cli-select). →
+> - `phase21-complete` (generic, human✋, dep all-6) — `cargo test --workspace --locked` + operator sign-off.
 >
-> **Invariants:** no frozen-interface mutation / no re-lock (re-verify the 3 SHA locks each tick — they must NOT change; verified OK this tick); zero new deps; the canonical-form blake3 path produces identical manifests + snapshot ids to 1.3.0 (goldens untouched; guarded by the pinned-id test). **Lanes:** both bug gates = cli (id-asc picks `push-path-normalize` then `store-env-default`); generic for sign-off. **NEXT PHASE:** Phase 21 = rate limiting + exponential-backoff retries (7 gates, all gated on `phase20-complete`). **DEFERRED:** `snapdir export` (the former "Phase 20" feature, re-numbered).
+> **Invariants:** zero new deps (dependency-cooldown honoured); `file://` path + frozen format UNTOUCHED; blake3 behaviour unchanged; re-verify the 3 SHA locks each tick.
+
+---
+
+## ✅ PHASE 20 COMPLETE — 3/3 gates green (operator sign-off 2026-06-08) — input-path normalization + `--store` SNAPDIR_STORE default
+
+> **Re-scoped 2026-06-08 (operator):** the env/flag-selectable **checksum** work was **REMOVED** from this phase (its 3 gates dropped; held WIP stashed in `stash@{0}`; the sha256/md5-can't-round-trip-through-blake3-stores escalation is now moot). Phase 20 shipped two CLI bug fixes.
+>
+> - `push-path-normalize` ✅ **PASSED** (code `4075b53`) — `resolve_root` (cli.rs) lexically normalizes the absolute root via `lexically_normalize_root` over `Path::components()` (drops `.` segments, strips trailing `/`, preserves `..`/RootDir, NO canonicalize) so `foo`/`./foo`/`foo/`/`./foo/` all hand the frozen walk an identical clean root → spec `./`-relative output for all four. 5 `path_normalize` tests green; core walk.rs/merkle.rs UNTOUCHED.
+> - `store-env-default` ✅ **PASSED** (code `5d5d8f7`) — clap `env = "SNAPDIR_STORE"` on the global `--store` + `sync --from`; explicit flag overrides, neither → existing required-arg error preserved; `--to` stays explicit + from≠to differ-check intact. 7 `store_env` tests green; 16 trycmd snapshots refreshed (only `[env: SNAPDIR_STORE=]` added).
+> - `phase20-complete` ✅ **PASSED** (human✋ operator sign-off 2026-06-08; `git bb5c0fa`) — `cargo test --workspace --locked` exit 0, 0 failed across 32 binaries. Frozen merkle.rs/walk contract untouched, ZERO new deps.
 
 ---
 
