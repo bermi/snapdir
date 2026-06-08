@@ -2507,27 +2507,29 @@ gates:
     description: "PHASE 19 SIGN-OFF: snapdir 1.3.0 released — opt-in --adaptive transfer tuner (in-band AIMD/gradient with CPU/memory/throttle guardrails, polite default 0.8) + clearer width-stable progress line with a smoothed ETA; canonical snapdir/snapdir at 1.3.0 + GitHub release + crates.io; default behavior unchanged, frozen format untouched. Project complete."
 
   # ======================================================================
-  # PHASE 20 — Env/flag-selectable checksum algorithm (existing blake3/md5/sha256) + --store SNAPDIR_STORE default
-  # (operator-requested 2026-06-06). Expose the ALREADY-IMPLEMENTED blake3/md5/sha256 hashers via
-  # SNAPDIR_CHECKSUM + a --checksum flag, honored by ALL snapshot commands, with the selected algorithm
-  # driving the snapshot id too. NO new algorithms, NO new deps, frozen merkle.rs UNTOUCHED (CLI stops
-  # hardcoding BLAKE3 and threads a local SelectedHasher enum through the existing generic walk/snapshot_id).
-  # blake3 default byte-identical. Plus: --store (and sync --from) default to $SNAPDIR_STORE.
+  # PHASE 20 — Input-path normalization bug + --store SNAPDIR_STORE default
+  # (operator-requested; re-scoped 2026-06-08 — the env/flag-selectable checksum work
+  # was REMOVED here, see the 20:GATE-REPLACE journal entry 2026-06-08).
+  # Bug: `snapdir push foo`, `push ./foo`, `push foo/`, and `push ./foo/` must all produce
+  # the IDENTICAL manifest + snapshot id (today trailing-slash / `./` forms leak absolute
+  # or malformed `.bar` paths). Fix the shared path resolver; frozen merkle.rs/walk output
+  # contract + golden ids UNTOUCHED. Plus the independent fix: --store (and sync --from)
+  # default to $SNAPDIR_STORE.
   # ======================================================================
 
-  - id: checksum-cli-select
+  - id: push-path-normalize
     phase: 20
     owner_agent: cli
     depends_on: [phase19-complete]
     status: pending
     failure_count: 0
-    verification_cmd: "cargo test -p snapdir-cli --locked checksum -- --nocapture"
+    verification_cmd: "cargo test -p snapdir-cli --locked path_normalize -- --nocapture"
     pass_criteria:
       and:
         - exit_code: 0
         - regex_match: "test result: ok"
     human_checkpoint: false
-    description: "Make the existing blake3/md5/sha256 hashers selectable across ALL snapshot commands (cli lane, crates/snapdir-cli only — frozen merkle.rs UNTOUCHED). (1) Add a global `--checksum <ALGO>` flag (clap, values blake3|md5|sha256, env SNAPDIR_CHECKSUM, default blake3) and KEEP `--checksum-bin b3sum|md5sum|sha256sum` working as a back-compat alias (b3sum->blake3 etc.); precedence: --checksum > --checksum-bin > SNAPDIR_CHECKSUM > default blake3. (2) Define a CLI-local `enum SelectedHasher { Blake3(Blake3Hasher), Keyed(Blake3KeyedHasher), Md5(Md5Hasher), Sha256(Sha256Hasher) }` that `impl snapdir_core::Hasher` (match -> delegate hash_hex); resolve the algorithm once (incl. SNAPDIR_MANIFEST_CONTEXT -> Keyed only when algo==blake3) and thread `&SelectedHasher` through walk_with + the store/cache path AND `snapshot_id(&manifest, &selected)` in EVERY command that builds/ids/pushes/fetches a snapshot: manifest, id, stage, push, fetch, pull, checkout, sync (replace the hardcoded `&Blake3Hasher::new()` call sites at ~368/387/571/816 + build_manifest). The per-file checksums, dir merkle, snapshot id, and content-addressed object keys all then use the selected algorithm consistently. INVARIANT: the blake3 DEFAULT path (no --checksum/env) is byte-for-byte unchanged (same checksums + same snapshot ids as 1.3.0); stdout stays the scriptable id. e2e tests (fn names contain `checksum`): SNAPDIR_CHECKSUM=sha256 and `--checksum sha256` both select sha256 (manifest line checksums are 64-hex; id != the blake3 id); a LOCAL push->fetch (or stage->checkout) round-trip under --checksum sha256 AND under --checksum md5 re-walks/re-ids to the SAME id as it produced (self-consistent, integrity verified); the blake3 default id is unchanged vs a pinned constant; `--checksum-bin md5sum` still works (alias); precedence (--checksum beats env beats default). Keep the full cli suite green (update help/trycmd snapshots for the new flag)."
+    description: "Fix the bug: the directory PATH argument must be normalized so `foo`, `./foo`, `foo/`, and `./foo/` all produce the IDENTICAL manifest + snapshot id (cli lane, crates/snapdir-cli only — frozen merkle.rs + the walk output contract UNTOUCHED). ROOT CAUSE: `resolve_root` (crates/snapdir-cli/src/cli.rs ~L1653) hands the path to the walk verbatim via `cwd.join(raw)`, preserving a trailing `/` and `./`/`.` segments; downstream `rewrite_path` (crates/snapdir-core/src/walk.rs ~L448) derives each entry's relative path with string `strip_prefix(root)`, which breaks when root carries a trailing slash (yields `.bar.txt` instead of `./bar.txt`) or an interior `/./` (strip_prefix returns None -> the entry falls back to an ABSOLUTE path). FIX in `resolve_root`: after resolving to an absolute path, normalize it LEXICALLY — drop a trailing `/` (except the filesystem root `/`) and collapse a leading `./` and interior `/./` segments — WITHOUT resolving symlinks (do NOT canonicalize; preserve the existing root-symlink + `..` semantics and the not-found error path). The clean absolute root then makes rewrite_path emit the spec's relative form (docs/rust-port/manifest-spec.md §1.2-1.3: root entry `./`, directory paths end `/`, files `./...`) for every input form. Applies to ALL commands sharing resolve_root/build_manifest: manifest, id, stage, push. INVARIANT: a canonical path with no trailing slash and no `./` is byte-for-byte unchanged vs 1.3.0 (blake3 goldens untouched); `--absolute` mode also becomes consistent across the four forms (same normalized absolute prefix, no `/./` artifact). e2e tests (fn names contain `path_normalize`): for a fixture tree, `id foo` == `id ./foo` == `id foo/` == `id ./foo/` (all four snapshot ids equal); each form's emitted manifest is byte-identical and spec-conformant (root `./`, no absolute-path leakage, no `.bar` artifact); the same equality holds for `manifest` and for a local FileStore `push`->re-`id` round-trip; a pinned blake3 id for the canonical `foo` form is unchanged. Update help/trycmd snapshots only if surface text changes (it should not)."
 
   - id: store-env-default
     phase: 20
@@ -2543,46 +2545,19 @@ gates:
     human_checkpoint: false
     description: "Fix the bug: `--store` should default to $SNAPDIR_STORE when unset, for all --store commands and for `sync --from` (cli lane). Add `env = \"SNAPDIR_STORE\"` to the global `--store` arg (~line 83, mirroring the `--jobs` `env = \"SNAPDIR_JOBS\"` pattern at ~162-170) and to the `sync` command's `--from` arg (~line 290). Leave `sync --to` explicit (a sync needs two DISTINCT stores; defaulting both to the same env would be wrong) and keep the existing 'sync --from and --to must differ' check. With the env set and the flag unset, clap supplies the value; an explicit `--store`/`--from` still overrides; with neither flag nor env, the existing 'missing --store option' / clap-required error is preserved. e2e tests (fn names contain `store_env`): with SNAPDIR_STORE set and --store omitted, the resolved store equals the env value (assert against `snapdir defaults` output or a push/fetch dry-run); an explicit `--store` overrides the env; `sync --from` honors SNAPDIR_STORE while `--to` stays required. Update help/trycmd snapshots."
 
-  - id: checksum-determinism-recheck
-    phase: 20
-    owner_agent: bench
-    depends_on: [checksum-cli-select]
-    status: pending
-    failure_count: 0
-    verification_cmd: "cargo test -p snapdir-benches --locked determinism -- --nocapture"
-    pass_criteria:
-      and:
-        - exit_code: 0
-        - regex_match: "test result: ok"
-    human_checkpoint: false
-    description: "Guard the invariant: the BLAKE3 default is unchanged and the algo-driven id round-trips. Confirm the Phase-16 deterministic golden-id suite (blake3) is still green (no regression). Add a determinism-tier assertion (benches/, reuses the scenario generator + the existing Md5Hasher/Sha256Hasher from snapdir-core) that for md5 AND sha256: materialize a gate-tier scenario -> walk with that hasher -> snapshot_id(selected) -> full local round-trip (FileStore push -> sync A->B -> fetch -> re-walk with the SAME hasher -> re-id) yields the SAME id it produced (self-stable, byte-identical objects), and that the md5/sha256 id differs from the blake3 id for the same tree. No frozen-format change (the blake3 GOLDENS are untouched)."
-
-  - id: checksum-docs
-    phase: 20
-    owner_agent: docs
-    depends_on: [checksum-cli-select]
-    status: pending
-    failure_count: 0
-    verification_cmd: "grep -qiE 'SNAPDIR_CHECKSUM' docs/rust-port/manifest-spec.md && grep -qiE 'selected (checksum )?algorithm|BLAKE3 by default' docs/rust-port/manifest-spec.md"
-    pass_criteria:
-      and:
-        - exit_code: 0
-    human_checkpoint: false
-    description: "Update the docs (docs lane) for the selectable algorithm. docs/rust-port/manifest-spec.md: correct §4 — the snapshot id is the digest of the #-stripped manifest text using the SELECTED checksum algorithm (BLAKE3 BY DEFAULT), not 'always BLAKE3'; document `--checksum`/`SNAPDIR_CHECKSUM` (values blake3|md5|sha256), that `--checksum-bin` is a back-compat alias, and that the algorithm is IMPLICIT/external (a manifest does not record which algorithm produced it — a recipient supplies the same `--checksum` to verify; digest length hints the family). Note `--store` now defaults to `$SNAPDIR_STORE`. README: a short note on the new env vars. (No frozen-format claim changes — only the id-derivation wording about which algorithm.)"
-
   - id: phase20-complete
     phase: 20
     owner_agent: generic
-    depends_on: [checksum-cli-select, store-env-default, checksum-determinism-recheck, checksum-docs]
+    depends_on: [push-path-normalize, store-env-default]
     status: pending
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked"
     pass_criteria:
       and:
         - exit_code: 0
-        - human_confirm: "Phase 20 done: the existing blake3/md5/sha256 hashers are selectable via SNAPDIR_CHECKSUM + --checksum (default blake3) across all snapshot commands, with the chosen algorithm driving the snapshot id consistently; blake3 default is byte-identical (determinism gate green); --store and sync --from default to $SNAPDIR_STORE; frozen merkle.rs untouched, no new deps. Approve?"
+        - human_confirm: "Phase 20 done: the directory path argument is normalized so `foo`/`./foo`/`foo/`/`./foo/` all yield the identical manifest + snapshot id (across manifest/id/stage/push), with the canonical-form blake3 ids byte-identical to 1.3.0 (goldens untouched); --store and sync --from default to $SNAPDIR_STORE; frozen merkle.rs/walk contract untouched, no new deps. Approve?"
     human_checkpoint: true
-    description: "PHASE 20 SIGN-OFF: env/flag-selectable checksum algorithm (existing blake3/md5/sha256 via SNAPDIR_CHECKSUM + --checksum, all commands, algo drives the snapshot id, blake3 default byte-identical) + --store/sync-from default to SNAPDIR_STORE; frozen format untouched, zero new deps; workspace tests green."
+    description: "PHASE 20 SIGN-OFF: input-path normalization bug fixed (foo / ./foo / foo/ / ./foo/ all produce the identical manifest + snapshot id across manifest/id/stage/push; canonical blake3 ids unchanged) + --store/sync-from default to SNAPDIR_STORE; frozen format untouched, zero new deps; workspace tests green."
 
   # ======================================================================
   # PHASE 21 — Rate limiting + exponential-backoff retries (operator-requested 2026-06-08).
