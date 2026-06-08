@@ -2681,3 +2681,24 @@ gates:
         - human_confirm: "Phase 21 done: transient network failures (429/503/timeout/conn-reset) now retry with full-jitter exponential backoff honouring server Retry-After; a request-rate (req/s) limiter + the byte-rate limiter are configurable via flags/env with per-backend defaults (S3/GCS/B2 published limits) overriding global defaults; the adaptive controller is wired live (on by default for network stores); zero new deps, SDK built-in retries disabled, file:// path + frozen format untouched; workspace tests green. Approve?"
     human_checkpoint: true
     description: "PHASE 21 SIGN-OFF: rate limiting + exponential-backoff retries shipped — full-jitter backoff w/ Retry-After on transient errors, req/s + byte/s limiters configurable (flag>env>backend>global) with researched per-backend defaults, adaptive controller wired live (network default On), no new deps, frozen format untouched, workspace green."
+
+  # ======================================================================
+  # PHASE 22 — Release / crates.io polish (BACKLOG, operator-reported 2026-06-08).
+  # The snapdir crate pages on crates.io render NOTHING for the README because the
+  # published packages carry no README file (workspace.package sets description/keywords/
+  # categories but NO `readme`, and no crate has a per-crate README). Fix the publish
+  # metadata so every crate ships a README and crates.io renders it. Sequenced AFTER the
+  # current feature (dep phase21-complete) so it doesn't preempt Phase 21.
+  # ======================================================================
+
+  - id: crates-io-readme
+    phase: 22
+    owner_agent: generic
+    depends_on: [phase21-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "for c in snapdir-core snapdir-catalog snapdir-stores snapdir-cli; do cargo package -p $c --locked --allow-dirty --no-verify --list | grep -qiE '(^|/)README' || { echo \"NO README in $c package\"; exit 1; }; done"
+    pass_criteria:
+      exit_code: 0
+    human_checkpoint: false
+    description: "Make every crates.io page render a README (operator-reported: the snapdir crate pages show NOTHING for the README). ROOT CAUSE: root `[workspace.package]` (Cargo.toml) sets description/keywords/categories/repository/homepage/license but NO `readme`, and none of the 4 crates declare one — so the published .crate tarballs contain no README and crates.io renders a blank body. FIX (metadata/docs only, no behavior change): give EACH crate (snapdir-core, snapdir-catalog, snapdir-stores, snapdir-cli) a README that SHIPS INSIDE its package — cargo only packages files within the crate dir, so a root `../../README.md` will NOT publish. Approach: add a short, accurate per-crate `crates/<name>/README.md` (what the crate is + a pointer to the canonical https://github.com/snapdir/snapdir / snapdir.org + the workspace README), and set `readme = \"README.md\"` either per-crate or via `[workspace.package] readme = \"README.md\"` + `readme.workspace = true` in each crate (verify inheritance resolves per-crate-dir). Confirm `cargo package -p <crate> --list` shows the README in each tarball (the verification_cmd checks all four) and ideally that `cargo publish --dry-run` is clean. Keep content truthful and minimal; do not duplicate the full manual. PM-scoped GENERIC lane: this gate may touch root Cargo.toml's `[workspace.package]` `readme` key + each `crates/<name>/Cargo.toml` `readme`/inheritance + new `crates/<name>/README.md` files; nothing else. NOTE: ships on the next crates.io publish (a future release), not retroactively to 1.3.0."
