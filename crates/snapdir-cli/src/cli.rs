@@ -80,7 +80,7 @@ pub struct GlobalArgs {
     pub catalog: Option<String>,
 
     /// Store URI: `protocol://location/path`.
-    #[arg(long, global = true, value_name = "URI")]
+    #[arg(long, global = true, value_name = "URI", env = "SNAPDIR_STORE")]
     pub store: Option<String>,
 
     /// Snapshot ID to operate on.
@@ -288,7 +288,7 @@ pub enum Command {
     /// streaming through memory — no local staging.
     Sync {
         /// Source store URI: `protocol://location/path`.
-        #[arg(long, value_name = "STORE")]
+        #[arg(long, value_name = "STORE", env = "SNAPDIR_STORE")]
         from: String,
         /// Destination store URI: `protocol://location/path`.
         #[arg(long, value_name = "STORE")]

@@ -30,6 +30,8 @@ Options:
 
       --store <URI>
           Store URI: `protocol://location/path`
+          
+          [env: SNAPDIR_STORE=]
 
       --exclude <PATTERN>
           Exclude paths matching the extended-regex PATTERN (supports the `%system%` / `%common%` macros)

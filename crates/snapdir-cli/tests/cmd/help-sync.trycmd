@@ -12,6 +12,8 @@ Options:
 
       --from <STORE>
           Source store URI: `protocol://location/path`
+          
+          [env: SNAPDIR_STORE=]
 
       --catalog <NAME>
           Catalog adapter to use
@@ -23,6 +25,8 @@ Options:
 
       --store <URI>
           Store URI: `protocol://location/path`
+          
+          [env: SNAPDIR_STORE=]
 
       --id <ID>
           Snapshot ID to operate on
