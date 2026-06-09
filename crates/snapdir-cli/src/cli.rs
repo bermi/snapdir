@@ -14,7 +14,7 @@
 //! prints the effective default settings + environment, mirroring the oracle's
 //! `snapdir_defaults`. All 14 subcommands are now wired — none remain stubs.
 
-use std::io::IsTerminal;
+use std::io::{BufRead, IsTerminal, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,11 +29,12 @@ use snapdir_catalog::{
 use snapdir_core::{
     cache, expand_excludes, snapshot_id, walk_with_meter, Blake3Hasher, Blake3KeyedHasher,
     ExcludeMatcher, ExpandedExclude, FollowMode, Hasher, Manifest, ManifestEntry, Md5Hasher, Meter,
-    PathMode, PathType, Phase, Sha256Hasher, Store, WalkOptions,
+    PathMode, PathType, Phase, Sha256Hasher, Store, StoreError, WalkOptions,
 };
 use snapdir_stores::{
-    limits, resolve_adapter, Adapter, B2Store, ExternalStore, FileStore, GcsStore, RetryPolicy,
-    S3Store, StreamStore, TransferAdaptivePolicy, TransferConfig,
+    is_hex64, limits, read_pack, resolve_adapter, write_pack, Adapter, B2Store, ExternalStore,
+    FileSink, FileStore, GcsStore, PackReadReport, PackSink, RetryPolicy, S3Store, StreamSink,
+    StreamStore, TransferAdaptivePolicy, TransferConfig, WIRE_CAPS, WIRE_VERSION,
 };
 
 /// Upper bound for the adaptive concurrency ceiling (`--max-jobs` / `--jobs`
@@ -312,7 +313,20 @@ pub enum Command {
     },
 
     /// Print the version.
-    Version,
+    Version {
+        /// Also print the wire protocol version + plumbing capabilities.
+        ///
+        /// HIDDEN: the ssh:// acceleration probe runs `snapdir version
+        /// --capabilities` on the REMOTE snapdir and keys the accelerate/dumb
+        /// decision on the `wire=<N>` integer (exact match against
+        /// [`WIRE_VERSION`], never semver). Older remote snapdirs clap-error on
+        /// this unknown flag, which the probe treats as "no acceleration" —
+        /// clean degradation with no code on that path. Plain `snapdir
+        /// version` output stays byte-identical, and the hidden flag keeps the
+        /// trycmd `--help` snapshots byte-stable (CLI-compat freeze).
+        #[arg(long, hide = true)]
+        capabilities: bool,
+    },
 
     /// Generate a shell-completion script to stdout.
     ///
@@ -331,6 +345,51 @@ pub enum Command {
     /// pipeline calls as `snapdir man` to bundle the man page into each archive.
     #[command(hide = true)]
     Man,
+
+    /// Print the subset of the checksums offered on stdin that the store does
+    /// NOT hold, one per line, in first-occurrence order.
+    ///
+    /// Hidden wire plumbing (SNAPPACK acceleration, see
+    /// [`snapdir_stores::pack`]): the diff round trip of the upcoming `ssh://`
+    /// store — the local end offers a snapshot's full object list and the
+    /// remote `snapdir objects-needed --store file://<base>` answers with
+    /// exactly the absent objects, so only those ride the pack stream.
+    /// Fail-closed: ANY malformed stdin line errors before the first store
+    /// query and prints NOTHING.
+    #[command(hide = true)]
+    ObjectsNeeded,
+
+    /// Emit a SNAPPACK stream of the listed objects (+ optional manifest,
+    /// last) from the store to raw stdout.
+    ///
+    /// Hidden wire plumbing: the sending half of
+    /// `snapdir send-pack | ssh host 'snapdir receive-pack'`. Any failure —
+    /// including a missing object — aborts BEFORE the `end` trailer
+    /// ([`write_pack`]), so a consumer of the partial stream fails too.
+    #[command(hide = true)]
+    SendPack {
+        /// File listing one object checksum per line (`-` reads stdin).
+        #[arg(long, value_name = "FILE|-")]
+        ids: PathBuf,
+
+        /// Snapshot id whose manifest rides the pack as the LAST record.
+        #[arg(long, value_name = "ID")]
+        manifest_id: Option<String>,
+    },
+
+    /// Consume a SNAPPACK stream from stdin into the store.
+    ///
+    /// Hidden wire plumbing: the receiving half of the acceleration pipe.
+    /// Every payload is incrementally BLAKE3-verified against its claimed
+    /// checksum and the manifest commits only after the verified `end`
+    /// trailer ([`read_pack`]) — truncation files verified objects but never
+    /// publishes the snapshot. Summary on stderr; stdout stays silent.
+    #[command(hide = true)]
+    ReceivePack {
+        /// Fail unless the stream committed exactly this manifest id.
+        #[arg(long, value_name = "ID")]
+        require_manifest: Option<String>,
+    },
 }
 
 impl Cli {
@@ -415,8 +474,21 @@ impl Cli {
             Command::Locations => self.run_locations(),
             Command::Ancestors => self.run_ancestors(),
             Command::Revisions => self.run_revisions(),
-            Command::Version => {
-                println!("snapdir {}", env!("CARGO_PKG_VERSION"));
+            Command::Version { capabilities } => {
+                if *capabilities {
+                    // The acceleration probe's capability line: space-separated
+                    // `key=value` fields, consumers ignore unknown fields and
+                    // negotiate on the exact `wire` integer only (baked from
+                    // pack::WIRE_VERSION — NEVER from semver).
+                    println!(
+                        "snapdir {} wire={WIRE_VERSION} caps={}",
+                        env!("CARGO_PKG_VERSION"),
+                        WIRE_CAPS.join(",")
+                    );
+                } else {
+                    // CLI-compat frozen: plain `version` stays byte-identical.
+                    println!("snapdir {}", env!("CARGO_PKG_VERSION"));
+                }
                 Ok(())
             }
             Command::Defaults => run_defaults(),
@@ -435,6 +507,13 @@ impl Cli {
                     .render(&mut std::io::stdout())
                     .context("rendering the man page")?;
                 Ok(())
+            }
+            Command::ObjectsNeeded => self.run_objects_needed(),
+            Command::SendPack { ids, manifest_id } => {
+                self.run_send_pack(ids, manifest_id.as_deref())
+            }
+            Command::ReceivePack { require_manifest } => {
+                self.run_receive_pack(require_manifest.as_deref())
             }
         }
     }
@@ -1439,6 +1518,165 @@ impl Cli {
         Ok(())
     }
 
+    /// `snapdir objects-needed --store <url>` (hidden plumbing): read candidate
+    /// checksums from stdin (one per line) and print the subset the store does
+    /// NOT hold, one per line, preserving first-occurrence order.
+    ///
+    /// Fail-closed: every line is validated against `^[0-9a-f]{64}$` BEFORE the
+    /// store is even resolved — a malformed request errors with NOTHING on
+    /// stdout (it must never be partially answered). Empty input is valid and
+    /// prints nothing. Dedup happens here because the lib's
+    /// [`StreamStore::objects_needed`] documents dedup as the caller's job.
+    fn run_objects_needed(&self) -> Result<()> {
+        // Read to EOF + validate everything FIRST (fail closed, no output yet).
+        let ids = read_checksum_lines(std::io::stdin().lock())
+            .context("reading object checksums from stdin")?;
+        let ids = dedupe_preserving_order(ids);
+        let store = self.resolve_stream_store()?;
+        let needed = store
+            .objects_needed(&ids)
+            .context("querying the store for absent objects")?;
+        // Only now does anything reach stdout: the exact absent subset, in
+        // first-occurrence input order (the contract the accel diff relies on).
+        let stdout = std::io::stdout();
+        let mut out = stdout.lock();
+        for id in needed {
+            writeln!(out, "{id}")?;
+        }
+        Ok(())
+    }
+
+    /// `snapdir send-pack --store <url> --ids <FILE|-> [--manifest-id <id>]`
+    /// (hidden plumbing): emit a SNAPPACK stream of the listed objects (and the
+    /// optional manifest, last) to RAW stdout — progress/log lines go to stderr
+    /// only, the byte stream is the entire stdout contract.
+    ///
+    /// The id list gets the same fail-closed validation as `objects-needed`
+    /// (and is deduped — [`write_pack`] documents dedup as the caller's job).
+    /// Any failure, including a missing object, makes [`write_pack`] abort
+    /// BEFORE the `end` trailer, so the piped `receive-pack` fails too: no
+    /// silent partial transfer.
+    fn run_send_pack(&self, ids: &Path, manifest_id: Option<&str>) -> Result<()> {
+        // Read + validate the id list (file path or `-` = stdin) before any
+        // store work; a malformed list emits not a single pack byte.
+        let ids = if ids == Path::new("-") {
+            read_checksum_lines(std::io::stdin().lock())
+                .context("reading object checksums from stdin")?
+        } else {
+            let file = std::fs::File::open(ids)
+                .with_context(|| format!("opening --ids file {}", ids.display()))?;
+            read_checksum_lines(std::io::BufReader::new(file))
+                .with_context(|| format!("reading object checksums from {}", ids.display()))?
+        };
+        let ids = dedupe_preserving_order(ids);
+        if let Some(id) = manifest_id {
+            anyhow::ensure!(
+                is_hex64(id),
+                "invalid --manifest-id {id:?}: expected 64 lowercase hex characters"
+            );
+        }
+        let store = self.resolve_stream_store()?;
+        let stdout = std::io::stdout();
+        let report = write_pack(&*store, &ids, manifest_id, stdout.lock())
+            .context("writing pack stream to stdout")?;
+        if !self.globals.quiet {
+            eprintln!(
+                "sent pack: {} object(s){}",
+                report.objects_written,
+                if report.manifest_written {
+                    " + manifest"
+                } else {
+                    ""
+                }
+            );
+        }
+        Ok(())
+    }
+
+    /// `snapdir receive-pack --store <url> [--require-manifest <id>]` (hidden
+    /// plumbing): consume a SNAPPACK stream from stdin into the store.
+    ///
+    /// `file://` stores (the hot ssh path) stream each payload through
+    /// [`FileSink`]'s O(1)-memory temp-sibling discipline; every other
+    /// [`StreamStore`] goes through the generic buffered [`StreamSink`]. All
+    /// verification (incremental BLAKE3, manifest-commits-only-after-`end`)
+    /// lives in [`read_pack`] — the CLI adds nothing to the wire logic.
+    ///
+    /// `--require-manifest <id>` fails the command (after the read) unless the
+    /// stream committed a manifest with EXACTLY that id; without the flag an
+    /// objects-only stream is success. Summary goes to stderr; stdout stays
+    /// silent.
+    fn run_receive_pack(&self, require_manifest: Option<&str>) -> Result<()> {
+        // Validate the required id up front (fail closed, before any read).
+        if let Some(id) = require_manifest {
+            anyhow::ensure!(
+                is_hex64(id),
+                "invalid --require-manifest {id:?}: expected 64 lowercase hex characters"
+            );
+        }
+        let store_url = self
+            .globals
+            .store
+            .as_deref()
+            .context("missing --store option")?;
+        let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
+        let config = self.transfer_config_for(Some(adapter.name()))?;
+        let stdin = std::io::stdin();
+
+        let (report, committed) = if matches!(adapter, Adapter::File) {
+            // file:// — the hot ssh path: stream payloads straight to disk.
+            let store = FileStore::new_with_config(store_url, config);
+            let mut sink = FileSink::new(&store);
+            read_pack_recording(stdin.lock(), &mut sink)?
+        } else {
+            // Any other StreamStore: one buffered record at a time. External
+            // `snapdir-*-store` URLs are rejected by the resolver below.
+            let store = stream_store_for_adapter(&adapter, store_url, config, None)?;
+            let mut sink = StreamSink::new(&*store);
+            read_pack_recording(stdin.lock(), &mut sink)?
+        };
+
+        if let Some(required) = require_manifest {
+            match committed.as_deref() {
+                Some(id) if id == required => {}
+                Some(other) => anyhow::bail!(
+                    "pack committed manifest {other}, but --require-manifest expected {required}"
+                ),
+                None => anyhow::bail!(
+                    "pack stream carried no manifest record, but --require-manifest {required} \
+                     was given"
+                ),
+            }
+        }
+        if !self.globals.quiet {
+            eprintln!(
+                "received pack: {} object(s) written, {} skipped{}",
+                report.objects_written,
+                report.objects_skipped,
+                match &committed {
+                    Some(id) => format!(", manifest {id}"),
+                    None => String::new(),
+                }
+            );
+        }
+        Ok(())
+    }
+
+    /// Resolves the global `--store` to a concrete [`StreamStore`] for the
+    /// plumbing subcommands, via the same [`stream_store_for_adapter`] router
+    /// `sync` uses (external `snapdir-*-store` URLs are rejected there — they
+    /// have no in-process streaming surface).
+    fn resolve_stream_store(&self) -> Result<Box<dyn StreamStore + Sync>> {
+        let store_url = self
+            .globals
+            .store
+            .as_deref()
+            .context("missing --store option")?;
+        let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
+        let config = self.transfer_config_for(Some(adapter.name()))?;
+        stream_store_for_adapter(&adapter, store_url, config, None)
+    }
+
     /// The local cache as a `file://`-shaped store, rooted at the resolved cache
     /// directory. The cache uses the identical sharded layout as a `FileStore`.
     /// Cache copies honor `--jobs` / `--limit-rate` via the [`TransferConfig`].
@@ -1639,6 +1877,94 @@ fn stream_store_for_adapter(
              external `snapdir-*-store` URLs are not supported: {store_url}"
         )),
     }
+}
+
+/// Reads newline-separated object checksums to EOF, validating EVERY non-empty
+/// line against `^[0-9a-f]{64}$` ([`is_hex64`]) — any malformed line is a hard
+/// error (fail closed: the plumbing commands must validate the whole request
+/// before their first store query / first emitted byte). Empty lines are
+/// skipped; order is preserved; duplicates are kept (dedup is a separate,
+/// explicit step — [`dedupe_preserving_order`]).
+fn read_checksum_lines(reader: impl BufRead) -> Result<Vec<String>> {
+    let mut ids = Vec::new();
+    for line in reader.lines() {
+        let line = line.context("reading checksum list")?;
+        if line.is_empty() {
+            continue;
+        }
+        anyhow::ensure!(
+            is_hex64(&line),
+            "invalid object checksum {line:?}: expected 64 lowercase hex characters"
+        );
+        ids.push(line);
+    }
+    Ok(ids)
+}
+
+/// Drops duplicate checksums, keeping the FIRST occurrence of each and the
+/// relative order of survivors. The pack/diff libs document deduplication as
+/// the caller's job ([`StreamStore::objects_needed`], [`write_pack`]), so the
+/// CLI is where it happens.
+fn dedupe_preserving_order(ids: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::with_capacity(ids.len());
+    ids.into_iter()
+        .filter(|id| seen.insert(id.clone()))
+        .collect()
+}
+
+/// A [`PackSink`] decorator that records WHICH manifest id the stream
+/// committed: [`read_pack`]'s report only says WHETHER a manifest committed,
+/// but `receive-pack --require-manifest <id>` must compare the actual id (a
+/// pre-existing manifest in the store could otherwise mask a stream that
+/// carried the wrong one). Pure delegation — no wire logic lives here.
+struct RecordingSink<'a> {
+    inner: &'a mut dyn PackSink,
+    manifest_id: Option<String>,
+}
+
+impl PackSink for RecordingSink<'_> {
+    fn has_object(&mut self, checksum: &str) -> Result<bool, StoreError> {
+        self.inner.has_object(checksum)
+    }
+
+    fn stage_object(
+        &mut self,
+        checksum: &str,
+        len: u64,
+        payload: &mut dyn Read,
+    ) -> Result<(), StoreError> {
+        self.inner.stage_object(checksum, len, payload)
+    }
+
+    fn commit_object(&mut self, checksum: &str) -> Result<(), StoreError> {
+        self.inner.commit_object(checksum)
+    }
+
+    fn abort_object(&mut self, checksum: &str) {
+        self.inner.abort_object(checksum);
+    }
+
+    fn put_manifest(&mut self, id: &str, manifest: &Manifest) -> Result<(), StoreError> {
+        // Record only after the inner sink actually committed (an error here
+        // must not look like a committed manifest to --require-manifest).
+        self.inner.put_manifest(id, manifest)?;
+        self.manifest_id = Some(id.to_owned());
+        Ok(())
+    }
+}
+
+/// Runs [`read_pack`] through a [`RecordingSink`], returning the read report
+/// plus the id of the committed manifest (if any).
+fn read_pack_recording(
+    input: impl Read,
+    sink: &mut dyn PackSink,
+) -> Result<(PackReadReport, Option<String>)> {
+    let mut recording = RecordingSink {
+        inner: sink,
+        manifest_id: None,
+    };
+    let report = read_pack(input, &mut recording).context("reading pack stream from stdin")?;
+    Ok((report, recording.manifest_id))
 }
 
 /// Parses a wget-style byte-rate string into bytes/second.
