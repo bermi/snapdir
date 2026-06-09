@@ -6,6 +6,8 @@ Content-addressable directory snapshots: hash a directory into a deterministic I
 
 A single static binary with **zero runtime dependencies** — all hashing and storage is in-process; nothing to install alongside it.
 
+📖 **Documentation:** **[snapdir.org](https://snapdir.org)** — install guide, command reference, concepts, and use cases.
+
 ## Install
 
 ```sh
@@ -166,7 +168,8 @@ Precedence, highest to lowest: **`--flag` > `SNAPDIR_*` env > per-backend defaul
 
 ## Status & links
 
-- **v1.0.1.** 14 subcommands: `manifest id stage push fetch pull checkout verify verify-cache flush-cache locations ancestors revisions defaults`.
+- **v1.4.0.** 15 subcommands: `manifest id stage push fetch pull checkout verify verify-cache flush-cache locations ancestors revisions defaults sync`.
+- Full documentation, guides, and command reference: **[snapdir.org](https://snapdir.org)**.
 - An embedded redb catalog tracks where snapshots live (`locations` / `ancestors` / `revisions`).
 - Changelog: [docs/rust-port/CHANGELOG.md](docs/rust-port/CHANGELOG.md)
 - Migrating from the earlier version: [docs/rust-port/migration.md](docs/rust-port/migration.md)

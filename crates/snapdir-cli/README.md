@@ -15,8 +15,9 @@ cargo install snapdir-cli
 
 This installs the `snapdir` executable. Run `snapdir --help` to get started.
 
-It is part of the snapdir project. See the
-[canonical repository](https://github.com/snapdir/snapdir) for full documentation.
+It is part of the snapdir project. Full documentation — install, command reference,
+guides, and use cases — is at **[snapdir.org](https://snapdir.org)**; the source lives
+in the [canonical repository](https://github.com/snapdir/snapdir).
 
 ## License
 
