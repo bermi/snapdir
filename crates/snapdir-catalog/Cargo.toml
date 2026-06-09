@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "snapdir catalog: redb-backed locations/ancestors/revisions."
+readme = "README.md"
 
 [dependencies]
 thiserror.workspace = true

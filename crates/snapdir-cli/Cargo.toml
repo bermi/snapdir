@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "snapdir CLI: the `snapdir` binary exposing all subcommands."
+readme = "README.md"
 
 [[bin]]
 name = "snapdir"

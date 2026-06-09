@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "snapdir stores: FileStore, S3/B2/GCS native SDK stores + external-store shim."
+readme = "README.md"
 
 [features]
 # Enables the injectable network-retry seam used by the `backoff_wire` tests:

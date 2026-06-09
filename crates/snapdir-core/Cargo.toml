@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "snapdir core: manifest format, BLAKE3 merkle hashing, store trait, walk, cache."
+readme = "README.md"
 
 [dependencies]
 blake3 = "1.8.5"

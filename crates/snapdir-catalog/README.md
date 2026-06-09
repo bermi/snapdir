@@ -1,0 +1,17 @@
+# snapdir-catalog
+
+Catalog library for [snapdir](https://github.com/snapdir/snapdir) — content-addressable
+directory snapshots.
+
+This crate implements snapdir's local catalog: a pure-Rust,
+[redb](https://crates.io/crates/redb)-backed embedded store that tracks
+**locations**, **ancestors**, and **revisions** of snapshots. It has no SQLite or
+TLS dependencies.
+
+It is part of the snapdir project. See the
+[canonical repository](https://github.com/snapdir/snapdir) for full documentation,
+the CLI, and the available storage backends.
+
+## License
+
+MIT
