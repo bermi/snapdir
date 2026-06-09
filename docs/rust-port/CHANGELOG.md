@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-06-09
+
 ### Added
 
 - **Transient-failure retries with full-jitter exponential backoff.** Network
@@ -30,6 +32,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caps for `file://`/local (sources: AWS S3, GCS, Backblaze B2). Precedence,
   highest to lowest: `--flag` > `SNAPDIR_*` env > per-backend default > global
   default.
+
+### Fixed
+
+- **Input-path normalization.** `snapdir push`/`manifest`/`id`/`stage` now treat
+  `foo`, `./foo`, `foo/`, and `./foo/` identically — every form produces the same
+  manifest and snapshot id. Previously a trailing slash or a `./` prefix could
+  leak absolute paths or a malformed entry into the manifest.
+- **`--store` and `sync --from` default to `$SNAPDIR_STORE`.** When the flag is
+  omitted and the env var is set, snapdir uses it; an explicit flag still wins.
+  `sync --to` stays explicit (a sync needs two distinct stores).
+- **crates.io crate pages now render a README.** Each published crate
+  (`snapdir-core`/`-catalog`/`-stores`/`-cli`) ships its own README, so the
+  crates.io pages are no longer blank.
 
 These additions pull in **no new dependencies** and leave the manifest
 byte-format and content-addressed layout unchanged, so snapshots stay fully
@@ -266,7 +281,8 @@ Bash-written caches and remote buckets stay mutually readable.
   `gcloud`) in the shipped binary. External tools are used only by the test/oracle
   harness.
 
-[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/snapdir/snapdir/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/snapdir/snapdir/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/snapdir/snapdir/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/snapdir/snapdir/compare/v1.0.1...v1.1.0
