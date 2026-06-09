@@ -2904,7 +2904,9 @@ gates:
     phase: 24
     owner_agent: cli
     depends_on: [pack-wire-format]
-    status: pending
+    status: passed
+    passed_at: 2026-06-09T22:20:00Z
+    git_sha: 187b53d
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test plumbing --locked"
     pass_criteria:
