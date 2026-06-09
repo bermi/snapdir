@@ -191,6 +191,19 @@ Then exit. The next ralph tick repeats.
   root files (`Cargo.toml`, `rust-toolchain.toml`, etc.) by a non-ci lane. Journaled
   with tag `LANE-FENCE-EXC` when relied upon.
 
+- **stores — `crates/snapdir-ssh-store/` (Phase 24, operator plan-approved 2026-06-09).**
+  Phase 24 (`.gatesmith/plans/phase24-ssh-stores.md`) introduces a NEW workspace member
+  `crates/snapdir-ssh-store/` (the `snapdir-ssh-store` + `snapdir-sftp-store` external
+  store binaries). It is a store implementation, so the **stores** lane's writable area
+  is extended to include `crates/snapdir-ssh-store/` for the Phase-24 gates
+  (`ssh-store-scaffold`, `ssh-engine-dumb`, `sftp-engine`, `ssh-accel`,
+  `loopback-sshd-suite` [tests lane: that crate's `tests/` dir only], and follow-ups).
+  The one-time mechanical workspace registration accompanying `ssh-store-scaffold`
+  (root `Cargo.toml` `members` + `workspace.dependencies` entry + the resulting
+  `Cargo.lock` delta) is accepted by the fence as generated/mechanical registration,
+  exactly like the ci crate-stub exception above. Any OTHER change to root `Cargo.toml`
+  by the stores lane is still rejected. Journaled with tag `LANE-FENCE-EXC`.
+
 ---
 
 ## Output format for the tick

@@ -3,13 +3,14 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## 🔶 PHASE 24 IN PROGRESS — 3/12 gates — sftp:// + ssh:// stores (156/165 total)
+## 🔶 PHASE 24 IN PROGRESS — 4/12 gates — sftp:// + ssh:// stores (157/165 total)
 
 > Operator plan-approved 2026-06-09 (full spec: `.gatesmith/plans/phase24-ssh-stores.md`): system-OpenSSH external stores via the emit-command contract — `sftp://` pure-SFTP engine (works against `ForceCommand internal-sftp` chroots), `ssh://` shell engine + wire=1 SNAPPACK acceleration (`objects-needed`/`send-pack`/`receive-pack` hidden plumbing, byte-identical-oracle gated) with graceful fallback; un-weakenable modern-only security floor; new workspace crate `crates/snapdir-ssh-store` (2 bins, snapdir-core-only deps).
 > - `external-cli-wiring` ✅ (cli, code `bdfae15` @ 2026-06-09) — PREREQ BUG FIX: cli passed TREES where the external contract expects SHARDED store roots; push now stages into the cache then pushes from the cache root (`push --id` skips scratch), fetch lands objects in the cache root and commits the manifest LAST via `put_manifest`. Native store paths byte-identical. New e2e `external_store_roundtrip.rs` drives the real binary vs `mock://`.
 > - `pack-wire-format` ✅ (stores, code `18f76d3` @ 2026-06-09) — SNAPPACK 1 in `pack.rs`: hex64-validated obj/manifest records, incremental-BLAKE3 temp-sibling FileSink (O(1) mem), manifest commits only after a verified `end` trailer (truncation never publishes), duplicates verified-then-skipped; `WIRE_VERSION=1`/`WIRE_CAPS`; `StreamStore::objects_needed` defaulted (order-preserving, fail-closed). 23 pack tests. blake3 dep = exact req core already pins (LANE-FENCE-EXC, lock +1 line, no new crate).
 > - `cli-plumbing` ✅ (cli, code `187b53d` @ 2026-06-09) — hidden `version --capabilities` (wire=1 negotiation line) + `objects-needed`/`send-pack`/`receive-pack` thin glue over pack.rs; fail-closed validation, FileSink streaming on file://, `--require-manifest` pins the committed id; help surface byte-stable; 12 e2e plumbing tests incl. OS-pipe round-trip + truncation/idempotency.
-> - pending: `ssh-store-scaffold` (dep-free) → `ssh-engine-dumb`, `sftp-engine` → `ssh-accel` → `loopback-sshd-suite` → `ssh-ci-wire`, `ssh-docs`, `ssh-packaging-dist` → `phase24-complete` (human checkpoint).
+> - `ssh-store-scaffold` ✅ (stores, code `f306d0c` @ 2026-06-10) — new crate `crates/snapdir-ssh-store` (2 bins, snapdir-core-only): URL grammar, env family, ORDERED un-weakenable security floor, ssh -V ≥8.5 gate, bash-3.2-clean ControlMaster skeleton; 37 table tests; root Cargo.toml delta = 1 members line (LANE-FENCE-EXC; stores lane extended in PM_PROMPT).
+> - pending: `ssh-engine-dumb`, `sftp-engine` (both unblocked) → `ssh-accel` → `loopback-sshd-suite` → `ssh-ci-wire`, `ssh-docs`, `ssh-packaging-dist` → `phase24-complete` (human checkpoint).
 
 ## ✅ PHASES 0–23 COMPLETE — 153/153 — snapdir 1.4.0 RELEASED
 

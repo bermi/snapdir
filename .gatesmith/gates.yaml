@@ -2846,7 +2846,9 @@ gates:
     phase: 24
     owner_agent: stores
     depends_on: []
-    status: pending
+    status: passed
+    passed_at: 2026-06-10T00:05:00Z
+    git_sha: f306d0c
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-ssh-store --test emitted_contract --locked"
     pass_criteria:
