@@ -3,9 +3,19 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ✅ ALL GATES GREEN — 147/147 passed (2026-06-09)
+## ✅ ALL GATES GREEN — 153/153 passed (2026-06-09) — snapdir 1.4.0 RELEASED
 
-> Phases 0–22 complete. snapdir-rs is the Rust port at byte-for-byte manifest interop (frozen format locked), released as 1.3.0; Phases 20–22 added input-path normalization + `--store`/`sync --from` env default, the rate-limiting + exponential-backoff-retry feature (signed off 2026-06-09), and per-crate READMEs for crates.io. dev carries `.gatesmith`; main/upstream never do.
+> Phases 0–23 complete. snapdir-rs is the Rust port at byte-for-byte manifest interop (frozen format locked). **snapdir 1.4.0 is RELEASED** (2026-06-09): canonical snapdir/snapdir at 1.4.0 (`4b2e40c`), tag `v1.4.0`, GitHub release live (13 assets, signed + SLSA), all 4 crates published to crates.io. dev carries `.gatesmith`; main/upstream never do.
+
+## ✅ PHASE 23 COMPLETE — 6/6 gates — release snapdir 1.4.0
+
+> Shipped the Phase 20–22 work: input-path normalization, `--store`/`sync --from` → `$SNAPDIR_STORE`, the rate-limiting + exponential-backoff-retry feature (Retry-After + per-call request-rate limiting + per-backend defaults; adaptive stays opt-in), and per-crate crates.io READMEs. Zero new deps; frozen format untouched.
+> - `release-prep-1.4.0` ✅ (code `f269316`) — bump → 1.4.0 + CHANGELOG `[1.4.0]`.
+> - `deny-ignore-procmacroerror2` ✅ (ci, code `bfb3a8c`) — pre-push `cargo deny` caught the new RUSTSEC-2026-0173 (proc-macro-error2 unmaintained, bench dev-dep); justified ignore added.
+> - `release-verify-branch-1.4.0` ✅ — release-verify/1.4.0 off upstream/main (12 cherry-picks, ZERO .gatesmith), bench-verify run 27215144981 green.
+> - `release-pr-upstream-1.4.0` ✅ — PR snapdir/snapdir#11, 15/15 CI green (incl. Crate-age ≥3 days), squash-merged → upstream/main `4b2e40c` at 1.4.0.
+> - `release-tag-crates-1.4.0` ✅ (packaging) — tag `v1.4.0` → release.yml run 27216975334 success: GitHub release live + all 4 crates 1.4.0 on crates.io.
+> - `phase23-complete` ✅ (operator sign-off) — 1.4.0 released end-to-end.
 
 ## ✅ PHASE 22 COMPLETE — 1/1 gate — release / crates.io polish
 
