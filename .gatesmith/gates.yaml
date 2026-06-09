@@ -2876,7 +2876,9 @@ gates:
     phase: 24
     owner_agent: stores
     depends_on: [ssh-store-scaffold]
-    status: pending
+    status: passed
+    passed_at: 2026-06-10T01:00:00Z
+    git_sha: 4aca5fb
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-ssh-store --test fake_sftp_roundtrip --locked"
     pass_criteria:
