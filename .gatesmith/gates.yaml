@@ -2732,7 +2732,9 @@ gates:
     phase: 23
     owner_agent: generic
     depends_on: [crates-io-readme]
-    status: pending
+    status: passed
+    passed_at: 2026-06-09T14:24:22Z
+    git_sha: f269316
     failure_count: 0
     verification_cmd: "grep -qE '^version = \"1.4.0\"' Cargo.toml && grep -qE '^## \\[1.4.0\\]' docs/rust-port/CHANGELOG.md && cargo build --workspace --locked"
     pass_criteria:
