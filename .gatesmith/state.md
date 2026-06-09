@@ -3,12 +3,14 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## 🔨 PHASE 22 OPEN — 0/1 gate — release / crates.io polish (BACKLOG)
+## ✅ ALL GATES GREEN — 147/147 passed (2026-06-09)
 
-> **Operator-reported 2026-06-08:** the snapdir crate pages on crates.io render NOTHING for the README (the published packages carry no README — `[workspace.package]` sets description/keywords/categories but no `readme`, and no crate declares one).
->
-> **Gates (1), ready head = `crates-io-readme` (generic; dep phase21-complete — now satisfied):**
-> - `crates-io-readme` (generic) — give each crate (snapdir-core/catalog/stores/cli) a README that ships INSIDE its package (cargo only packages files within the crate dir — root `../../README.md` won't publish) + a `readme` field. Verification: `cargo package -p <crate> --list` shows a README for all four. Metadata/docs only; ships on the next crates.io publish.
+> Phases 0–22 complete. snapdir-rs is the Rust port at byte-for-byte manifest interop (frozen format locked), released as 1.3.0; Phases 20–22 added input-path normalization + `--store`/`sync --from` env default, the rate-limiting + exponential-backoff-retry feature (signed off 2026-06-09), and per-crate READMEs for crates.io. dev carries `.gatesmith`; main/upstream never do.
+
+## ✅ PHASE 22 COMPLETE — 1/1 gate — release / crates.io polish
+
+> **Operator-reported 2026-06-08:** the snapdir crate pages on crates.io rendered NOTHING for the README (published packages carried no README).
+> - `crates-io-readme` ✅ **PASSED** (code `3188e9f` @ 2026-06-09) — each crate (core/catalog/stores/cli) got a concise per-crate `README.md` in its own dir + a literal `readme = "README.md"` in `[package]` (per-crate, not workspace inheritance which warns "outside of the package"; root Cargo.toml unchanged). `cargo package --list` shows a README for all four; ships on the next crates.io publish. Metadata/docs only.
 
 ---
 

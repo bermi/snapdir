@@ -2708,7 +2708,9 @@ gates:
     phase: 22
     owner_agent: generic
     depends_on: [phase21-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-09T09:40:39Z
+    git_sha: 3188e9f
     failure_count: 0
     verification_cmd: "for c in snapdir-core snapdir-catalog snapdir-stores snapdir-cli; do cargo package -p $c --locked --allow-dirty --no-verify --list | grep -qiE '(^|/)README' || { echo \"NO README in $c package\"; exit 1; }; done"
     pass_criteria:
