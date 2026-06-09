@@ -35,6 +35,12 @@
 //! - [`stream`] ([`StreamStore`]) — object/manifest-level, content-addressed,
 //!   verified read/write primitives (the foundation for store-to-store sync),
 //!   implemented for [`FileStore`], [`S3Store`], [`GcsStore`], and [`B2Store`].
+//! - [`pack`] ([`write_pack`], [`read_pack`], [`PackSink`]) — the SNAPPACK 1
+//!   wire stream behind the `ssh://` acceleration plumbing
+//!   (`snapdir send-pack | ssh … 'snapdir receive-pack'`): `obj` records
+//!   stream through incremental BLAKE3 verification (O(1) memory into a
+//!   [`FileSink`]), the manifest rides last and commits only after the `end`
+//!   trailer, so truncation can never publish a snapshot.
 //! - [`sync`] ([`sync_snapshot`], [`SyncReport`]) — streaming store-to-store
 //!   snapshot copy: walks a source manifest and copies its raw objects
 //!   source → dest through memory only (no local filesystem staging),
@@ -48,6 +54,7 @@ pub(crate) mod fetch;
 pub mod file_store;
 pub mod gcs_store;
 pub mod limits;
+pub mod pack;
 pub(crate) mod push;
 pub mod retry;
 pub mod router;
@@ -66,6 +73,10 @@ pub use b2_store::B2Store;
 pub use file_store::FileStore;
 pub use gcs_store::{GcsLocation, GcsStore};
 pub use limits::{for_scheme, BackendLimits};
+pub use pack::{
+    is_hex64, read_pack, write_pack, FileSink, PackReadReport, PackSink, PackWriteReport,
+    StreamSink, MAX_HEADER_BYTES, MAX_MANIFEST_BYTES, WIRE_CAPS, WIRE_MAGIC, WIRE_VERSION,
+};
 pub use retry::{
     parse_retry_after, retry_async, retry_blocking, retry_network, AsyncSleeper, Attempt,
     BlockingSleeper, DefaultJitter, FixedJitter, Jitter, RetryPolicy, ThreadSleeper, TokioSleeper,

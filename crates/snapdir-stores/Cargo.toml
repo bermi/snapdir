@@ -23,6 +23,15 @@ integration-mock = []
 snapdir-core.workspace = true
 thiserror.workspace = true
 
+# --- SNAPPACK wire format (pack.rs) ------------------------------------------
+# `blake3` powers the INCREMENTAL payload hashing in `pack.rs`: obj payloads
+# stream through the hasher in O(1) memory, which the buffer-only
+# `snapdir_core::merkle::Hasher` trait (`hash_hex(&[u8])`) cannot do. This is
+# NOT a new supply-chain edge: it is the exact version requirement
+# `snapdir-core` already declares, so the lock graph gains no crate and the
+# deny.toml posture is unchanged.
+blake3 = "1.8.5"
+
 # --- S3 store (s3:// + S3-compatible) ---------------------------------------
 # CRITICAL TLS constraint: the shipped binary statically links on musl, so the
 # whole workspace standardizes on the `ring` rustls provider. `aws-lc-rs` is

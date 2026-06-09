@@ -92,4 +92,55 @@ pub trait StreamStore: Store {
     /// - [`StoreError::Integrity`] if the manifest does not hash to `id`.
     /// - [`StoreError::Io`] / [`StoreError::Backend`] on transport failure.
     fn put_manifest(&self, id: &str, manifest: &Manifest) -> Result<(), StoreError>;
+
+    /// Returns the subset of `checksums` NOT present in the store, PRESERVING
+    /// INPUT ORDER.
+    ///
+    /// This is the diff primitive behind the `snapdir objects-needed` wire
+    /// plumbing (SNAPPACK acceleration, see [`crate::pack`]): a sender offers
+    /// a snapshot's full object list and the receiver answers with exactly the
+    /// objects it still needs, so only those ride the pack stream.
+    ///
+    /// Semantics:
+    ///
+    /// - **Fail closed:** every checksum is validated against
+    ///   `^[0-9a-f]{64}$` ([`crate::pack::is_hex64`]) BEFORE the first
+    ///   existence probe; any invalid entry is a hard error and nothing is
+    ///   returned (a malformed request must never be partially answered).
+    /// - **Order-preserving, no dedup:** the returned complement keeps the
+    ///   input order, and deduplication is the CALLER's job — an absent
+    ///   checksum supplied twice is reported twice.
+    /// - The default implementation loops [`has_object`](Self::has_object)
+    ///   (one existence probe per checksum). Follow-up (not this gate): the
+    ///   S3/GCS backends should override this with their batched listing APIs
+    ///   to cut round trips — any override must preserve the exact contract
+    ///   above.
+    ///
+    /// # Errors
+    ///
+    /// - [`StoreError::Backend`] if any checksum is not 64 lowercase hex
+    ///   characters (fail closed, before any probe).
+    /// - Whatever [`has_object`](Self::has_object) surfaces on transport
+    ///   failure.
+    fn objects_needed(&self, checksums: &[String]) -> Result<Vec<String>, StoreError> {
+        // Validate EVERYTHING up front so an invalid entry can never be
+        // answered partially (fail closed).
+        for checksum in checksums {
+            if !crate::pack::is_hex64(checksum) {
+                return Err(StoreError::Backend {
+                    message: format!(
+                        "invalid object checksum {checksum:?}: expected 64 lowercase hex characters"
+                    ),
+                    source: None,
+                });
+            }
+        }
+        let mut needed = Vec::new();
+        for checksum in checksums {
+            if !self.has_object(checksum)? {
+                needed.push(checksum.clone());
+            }
+        }
+        Ok(needed)
+    }
 }
