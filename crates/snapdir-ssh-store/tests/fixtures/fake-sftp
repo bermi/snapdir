@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+#
+# fake-sftp: hermetic stand-in for OpenSSH's `sftp` used by
+# tests/fake_sftp_roundtrip.rs. NOT shipped, NOT the oracle — it interprets
+# exactly the batch verbs the sftp engine emits (ls, get, put, rm, rename,
+# mkdir, chmod, pwd, each with optional `-` failure tolerance) against
+# $FAKE_REMOTE_ROOT: the absolute remote paths in batch commands map to
+# ${FAKE_REMOTE_ROOT}<path>, so the destination-host argument is irrelevant
+# (a real server's filesystem root, fenced into a temp dir).
+#
+# CLI shape parsed: the one `_snapdir_sftp` produces —
+#     sftp <-o flags...> -b <batchfile> -- <host>
+# All `-o` options are accepted and ignored (no ControlMaster emulation; the
+# emitted scripts must not depend on a live master beyond what sftp itself
+# provides).
+#
+# Like real sftp, each batch command is echoed to STDOUT as `sftp> <cmd>`
+# (so the engine's listing parser is honestly exercised: it must drop these
+# lines), a successful `ls <path>` prints the path, errors go to stderr, an
+# unprefixed failing command aborts the batch with exit 1, and a `-` prefix
+# tolerates the failure.
+#
+# Fault injection (counted PER PROCESS, i.e. within a single sftp
+# invocation — each emitted chunk/batch runs in its own process):
+#   FAKE_SFTP_FAIL_VERB=<verb>   fail this verb...
+#   FAKE_SFTP_FAIL_AFTER=<n>     ...from its Nth occurrence on (default 1).
+#                                A failing `put` leaves a PARTIAL file at the
+#                                destination, simulating a killed transfer.
+#   FAKE_SFTP_UNREACHABLE=1      exit 255 before reading the batch, like a
+#                                connection-level failure.
+#
+# bash-3.2-clean: no associative arrays, no ${var^^}, no readarray.
+set -euo pipefail
+
+batch=""
+host=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-o)
+		shift 2
+		;;
+	-b)
+		batch="$2"
+		shift 2
+		;;
+	--)
+		shift
+		host="$1"
+		shift
+		;;
+	*)
+		echo "fake-sftp: unexpected argument '$1'" >&2
+		exit 2
+		;;
+	esac
+done
+if [ -z "$batch" ] || [ -z "$host" ]; then
+	echo "fake-sftp: expected 'sftp <-o flags...> -b <file> -- <host>'" >&2
+	exit 2
+fi
+root="${FAKE_REMOTE_ROOT:?FAKE_REMOTE_ROOT must be set}"
+
+if [ "${FAKE_SFTP_UNREACHABLE:-0}" = "1" ]; then
+	echo "fake-sftp: Connection closed by remote host" >&2
+	exit 255
+fi
+
+fail_verb="${FAKE_SFTP_FAIL_VERB:-}"
+fail_after="${FAKE_SFTP_FAIL_AFTER:-1}"
+fail_count=0
+
+# map <remote-abs-path>: the fake remote filesystem lives under $root.
+map() {
+	printf '%s%s' "$root" "$1"
+}
+
+while IFS= read -r line || [ -n "$line" ]; do
+	[ -n "$line" ] || continue
+	printf 'sftp> %s\n' "$line"
+	tolerate=0
+	cmd="$line"
+	case "$cmd" in
+	-*)
+		tolerate=1
+		cmd="${cmd#-}"
+		;;
+	esac
+	# Unquote arguments the way sftp's batch parser would (double quotes with
+	# backslash escapes). `eval set --` is acceptable in a test fixture: the
+	# inputs are emit-time-quoted checksums and test-controlled paths.
+	eval "set -- $cmd"
+	verb="$1"
+	shift
+	injected=0
+	if [ -n "$fail_verb" ] && [ "$verb" = "$fail_verb" ]; then
+		fail_count=$((fail_count + 1))
+		if [ "$fail_count" -ge "$fail_after" ]; then
+			injected=1
+		fi
+	fi
+	status=0
+	case "$verb" in
+	pwd)
+		if [ "$injected" -eq 1 ]; then
+			status=1
+		else
+			echo "Remote working directory: /"
+		fi
+		;;
+	ls)
+		p="$(map "$1")"
+		if [ "$injected" -eq 1 ] || [ ! -e "$p" ]; then
+			echo "Can't ls: \"$1\" not found" >&2
+			status=1
+		else
+			printf '%s\n' "$1"
+		fi
+		;;
+	get)
+		src="$(map "$1")"
+		dst="$2"
+		if [ "$injected" -eq 1 ] || [ ! -f "$src" ]; then
+			echo "File \"$1\" not found." >&2
+			status=1
+		else
+			cp "$src" "$dst" || status=1
+		fi
+		;;
+	put)
+		src="$1"
+		dst="$(map "$2")"
+		if [ "$injected" -eq 1 ]; then
+			# A killed transfer leaves a partial file at the destination.
+			printf 'PARTIAL' >"$dst" 2>/dev/null || true
+			echo "fake-sftp: injected put failure for \"$2\"" >&2
+			status=1
+		elif [ ! -f "$src" ]; then
+			echo "stat $1: No such file or directory" >&2
+			status=1
+		else
+			cp "$src" "$dst" || status=1
+		fi
+		;;
+	rm)
+		p="$(map "$1")"
+		if [ "$injected" -eq 1 ] || [ ! -f "$p" ]; then
+			echo "Couldn't delete file: \"$1\"" >&2
+			status=1
+		else
+			rm -f "$p"
+		fi
+		;;
+	rename)
+		# Strict SSH_FXP_RENAME semantics: fails if the target exists (the
+		# engine must `-rm` first; stricter than posix-rename@openssh.com).
+		src="$(map "$1")"
+		dst="$(map "$2")"
+		if [ "$injected" -eq 1 ] || [ ! -e "$src" ] || [ -e "$dst" ]; then
+			echo "Couldn't rename file \"$1\" to \"$2\"" >&2
+			status=1
+		else
+			mv "$src" "$dst"
+		fi
+		;;
+	mkdir)
+		# Single-level, fails if it exists — like the real verb; the engine
+		# must tolerate with `-mkdir`.
+		p="$(map "$1")"
+		if [ "$injected" -eq 1 ] || [ -e "$p" ]; then
+			echo "Couldn't create directory: \"$1\"" >&2
+			status=1
+		else
+			mkdir "$p" || status=1
+		fi
+		;;
+	chmod)
+		mode="$1"
+		p="$(map "$2")"
+		if [ "$injected" -eq 1 ] || [ ! -e "$p" ]; then
+			echo "Couldn't stat remote file: \"$2\"" >&2
+			status=1
+		else
+			chmod "$mode" "$p"
+		fi
+		;;
+	*)
+		echo "fake-sftp: unknown verb '$verb'" >&2
+		status=1
+		;;
+	esac
+	if [ "$status" -ne 0 ] && [ "$tolerate" -ne 1 ]; then
+		exit 1
+	fi
+done <"$batch"
+exit 0

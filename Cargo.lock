@@ -3505,6 +3505,7 @@ name = "snapdir-ssh-store"
 version = "1.4.0"
 dependencies = [
  "snapdir-core",
+ "snapdir-stores",
 ]
 
 [[package]]

@@ -20,10 +20,17 @@ path = "src/bin/snapdir-sftp-store.rs"
 
 [dependencies]
 # The ONLY dependency: frozen sharded-path helpers (`object_path` /
-# `manifest_path`) and (in later gates) manifest parsing. Argument parsing is
-# std-only by design — the contract grammar is 3 subcommands x <=3 flags, so
-# clap would be pure weight.
+# `manifest_path`) and manifest parsing. Argument parsing is std-only by
+# design — the contract grammar is 3 subcommands x <=3 flags, so clap would
+# be pure weight.
 snapdir-core.workspace = true
+
+[dev-dependencies]
+# Parity harness only: `ExternalStore::with_binary` drives the emitted
+# scripts end-to-end against tests/fixtures/fake-sftp (the harness lives
+# here, not in snapdir-stores, because `CARGO_BIN_EXE_*` only resolves in
+# the defining crate).
+snapdir-stores.workspace = true
 
 [lints]
 workspace = true

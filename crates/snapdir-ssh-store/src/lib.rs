@@ -27,9 +27,9 @@
 //! ([`url`]), env-family configuration + the un-weakenable security-floor
 //! flag builder ([`config`]), `ssh -V` floor check ([`version`]), and the
 //! emitted-script skeleton/quoting helpers ([`script`]) — are fully
-//! implemented and table-tested. The transport engines (the actual
-//! `ssh`/`sftp` script bodies) land in later gates; until then the
-//! subcommands fail closed with a clear "not implemented" error.
+//! implemented and table-tested. The `sftp://` transport engine
+//! ([`sftp_engine`]) is implemented; the `ssh://` engine lands in a later
+//! gate and until then fails closed with a clear "not implemented" error.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -38,6 +38,7 @@ use std::io::{Read, Write};
 pub mod args;
 pub mod config;
 pub mod script;
+pub mod sftp_engine;
 pub mod url;
 pub mod version;
 
@@ -134,10 +135,9 @@ where
 ///
 /// `args` must include the program name as its first element (it is
 /// skipped). `stdin` carries the manifest text for
-/// `get-fetch-files-command`; the scaffold does not read it yet (the
-/// transport engines, which bake stdin-derived object lists into the emitted
-/// scripts, are later gates).
-pub fn run_with<I, R, W, E>(engine: Engine, args: I, _stdin: R, out: &mut W, err: &mut E) -> u8
+/// `get-fetch-files-command` (read to EOF at emit time; the engines bake the
+/// stdin-derived object lists into the emitted scripts).
+pub fn run_with<I, R, W, E>(engine: Engine, args: I, mut stdin: R, out: &mut W, err: &mut E) -> u8
 where
     I: IntoIterator<Item = OsString>,
     R: Read,
@@ -176,14 +176,55 @@ where
             return 1;
         }
     };
-    // The skeleton/flag layers are real; only the per-subcommand script
-    // bodies are missing. Fail closed until the engine gates land.
-    let _ = (&parsed_url, &cfg);
-    let _ = writeln!(
-        err,
-        "{bin}: {}: the {}:// transport engine is not implemented yet",
-        command.subcommand.as_str(),
-        engine.scheme()
-    );
-    1
+    let result = match engine {
+        Engine::Sftp => match command.subcommand {
+            args::Subcommand::GetManifestCommand => {
+                sftp_engine::get_manifest_script(&parsed_url, &cfg, &command.id, &command.store)
+            }
+            args::Subcommand::GetPushCommand => command
+                .staging_dir
+                .as_deref()
+                .ok_or_else(|| Error::new("missing required option --staging-dir"))
+                .and_then(|staging| {
+                    sftp_engine::get_push_script(&parsed_url, &cfg, &command.id, staging)
+                }),
+            args::Subcommand::GetFetchFilesCommand => {
+                // The manifest text arrives on the emitting binary's stdin.
+                let mut manifest_text = String::new();
+                match stdin.read_to_string(&mut manifest_text) {
+                    Err(e) => Err(Error::new(format!(
+                        "failed to read the manifest from stdin: {e}"
+                    ))),
+                    Ok(_) => command
+                        .cache_dir
+                        .as_deref()
+                        .ok_or_else(|| Error::new("missing required option --cache-dir"))
+                        .and_then(|cache| {
+                            sftp_engine::get_fetch_files_script(
+                                &parsed_url,
+                                &cfg,
+                                &manifest_text,
+                                cache,
+                            )
+                        }),
+                }
+            }
+        },
+        // The ssh:// engine is the next gate; fail closed until it lands.
+        Engine::Ssh => Err(Error::new(format!(
+            "{}: the {}:// transport engine is not implemented yet",
+            command.subcommand.as_str(),
+            engine.scheme()
+        ))),
+    };
+    match result {
+        Ok(script) => {
+            let _ = out.write_all(script.as_bytes());
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(err, "{bin}: {e}");
+            1
+        }
+    }
 }
