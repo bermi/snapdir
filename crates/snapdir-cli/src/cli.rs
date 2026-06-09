@@ -32,8 +32,8 @@ use snapdir_core::{
     PathMode, PathType, Phase, Sha256Hasher, Store, WalkOptions,
 };
 use snapdir_stores::{
-    resolve_adapter, Adapter, B2Store, ExternalStore, FileStore, GcsStore, S3Store, StreamStore,
-    TransferAdaptivePolicy, TransferConfig,
+    limits, resolve_adapter, Adapter, B2Store, ExternalStore, FileStore, GcsStore, RetryPolicy,
+    S3Store, StreamStore, TransferAdaptivePolicy, TransferConfig,
 };
 
 /// Upper bound for the adaptive concurrency ceiling (`--max-jobs` / `--jobs`
@@ -195,6 +195,22 @@ pub struct GlobalArgs {
     /// unset, defaults to the auto concurrency; clamped to a sane upper bound.
     #[arg(long, global = true, value_name = "N", env = "SNAPDIR_MAX_JOBS")]
     pub max_jobs: Option<usize>,
+
+    /// Total retry attempts per network request, including the first (default 5).
+    #[arg(long, global = true, value_name = "N")]
+    pub max_retries: Option<u32>,
+
+    /// Base backoff delay in milliseconds for request retries (default 250).
+    #[arg(long, global = true, value_name = "MS")]
+    pub retry_base_ms: Option<u64>,
+
+    /// Maximum backoff delay in milliseconds for request retries (default 30000).
+    #[arg(long, global = true, value_name = "MS")]
+    pub retry_max_ms: Option<u64>,
+
+    /// Cap request rate (req/s); 0/unset uses the per-backend default.
+    #[arg(long, global = true, value_name = "N")]
+    pub max_requests: Option<u64>,
 }
 
 /// The `snapdir` subcommands, matching the Bash orchestrator one-for-one.
@@ -1037,7 +1053,7 @@ impl Cli {
             .as_deref()
             .context("missing --store option")?;
         let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
-        let config = self.transfer_config()?;
+        let config = self.transfer_config_for(Some(adapter.name()))?;
         store_for_adapter(&adapter, store_url, config, meter)
     }
 
@@ -1059,9 +1075,37 @@ impl Cli {
     ///
     /// Returns an error when `--limit-rate` cannot be parsed as a byte rate.
     fn transfer_config(&self) -> Result<TransferConfig> {
-        let max_bytes_per_sec = match self.globals.limit_rate.as_deref() {
+        self.transfer_config_for(None)
+    }
+
+    /// Builds the [`TransferConfig`], layering in the per-backend rate-limit
+    /// defaults and the operator-configured retry policy for `scheme`.
+    ///
+    /// `scheme` is the canonical adapter name (`"file"`, `"s3"`, `"b2"`,
+    /// `"gcs"`); `None` (and any scheme with no published
+    /// [`limits::for_scheme`] defaults, e.g. `file`) leaves the byte-rate /
+    /// request-rate caps exactly where [`Self::transfer_config`] historically
+    /// left them. The retry policy is always installed (it defaults to
+    /// [`RetryPolicy::default`], inert until the stores consume it), and the
+    /// request-rate cap defaults to `None` unless a backend default or an
+    /// operator override applies — so with no new flags/env and a `None` /
+    /// capless scheme the result is byte-for-byte the historical config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `--limit-rate` cannot be parsed as a byte rate.
+    fn transfer_config_for(&self, scheme: Option<&str>) -> Result<TransferConfig> {
+        // The byte/request caps layer the operator override over the per-backend
+        // default; `--limit-rate` is parsed here so a bad value still errors.
+        let limit_rate = match self.globals.limit_rate.as_deref() {
             Some(rate) => Some(parse_rate(rate)?),
             None => None,
+        };
+        let (max_requests_per_sec, max_bytes_per_sec) = match scheme {
+            Some(scheme) => self.resolve_rate_limits(scheme, limit_rate),
+            // No scheme: never apply a backend default; preserve historical
+            // behavior (request cap None, byte cap = --limit-rate as-is).
+            None => (None, limit_rate),
         };
         let auto = TransferConfig::default().concurrency.get();
         let concurrency = match self.globals.jobs {
@@ -1069,7 +1113,12 @@ impl Cli {
             // Unset or 0 => auto (the stores' default).
             _ => auto,
         };
-        let base = TransferConfig::new(concurrency, max_bytes_per_sec);
+        let base = TransferConfig::new(concurrency, max_bytes_per_sec)
+            .with_retry(self.resolve_retry_policy());
+        let base = TransferConfig {
+            max_requests_per_sec,
+            ..base
+        };
         match self.globals.adaptive {
             // No `--adaptive`: byte-for-byte the historical non-adaptive config.
             None => Ok(base),
@@ -1086,6 +1135,64 @@ impl Cli {
                 Ok(base.with_adaptive(TransferAdaptivePolicy::On { fraction, ceiling }))
             }
         }
+    }
+
+    /// Resolves the network-retry schedule with `--max-retries` /
+    /// `--retry-base-ms` / `--retry-max-ms` flags taking precedence over the
+    /// matching `SNAPDIR_MAX_RETRIES` / `SNAPDIR_RETRY_BASE_MS` /
+    /// `SNAPDIR_RETRY_MAX_MS` env vars, falling back to
+    /// [`RetryPolicy::default`] (5 attempts / 250ms base / 30000ms cap).
+    fn resolve_retry_policy(&self) -> RetryPolicy {
+        let default = RetryPolicy::default();
+        let max_attempts = self
+            .globals
+            .max_retries
+            .or_else(|| env_u64("SNAPDIR_MAX_RETRIES").and_then(|n| u32::try_from(n).ok()))
+            .unwrap_or(default.max_attempts);
+        let base_ms = self
+            .globals
+            .retry_base_ms
+            .or_else(|| env_u64("SNAPDIR_RETRY_BASE_MS"))
+            .map_or(default.base, std::time::Duration::from_millis);
+        let cap_ms = self
+            .globals
+            .retry_max_ms
+            .or_else(|| env_u64("SNAPDIR_RETRY_MAX_MS"))
+            .map_or(default.cap, std::time::Duration::from_millis);
+        RetryPolicy {
+            max_attempts,
+            base: base_ms,
+            cap: cap_ms,
+        }
+    }
+
+    /// Resolves the `(req/s, bytes/s)` caps for `scheme`, layering an operator
+    /// override over the published [`limits::for_scheme`] default over global
+    /// `None`.
+    ///
+    /// - req/s: `--max-requests` / `SNAPDIR_MAX_REQUESTS` (when `> 0`), else the
+    ///   conservative `min(read_rps, write_rps)` backend default, else `None`.
+    /// - bytes/s: `limit_rate` (the already-parsed `--limit-rate` /
+    ///   `SNAPDIR_LIMIT_RATE`), else the conservative `min(read_bps, write_bps)`
+    ///   backend default, else `None`.
+    ///
+    /// `TransferConfig` carries a single req/s and a single bytes/s, so the
+    /// conservative minimum of the read/write caps is chosen per dimension.
+    fn resolve_rate_limits(
+        &self,
+        scheme: &str,
+        limit_rate: Option<u64>,
+    ) -> (Option<u64>, Option<u64>) {
+        let backend = limits::for_scheme(scheme);
+        let req_override = self
+            .globals
+            .max_requests
+            .or_else(|| env_u64("SNAPDIR_MAX_REQUESTS"))
+            .filter(|&n| n > 0);
+        let max_requests_per_sec =
+            req_override.or_else(|| min_opt(backend.read_rps, backend.write_rps));
+        let max_bytes_per_sec = limit_rate.or_else(|| min_opt(backend.read_bps, backend.write_bps));
+        (max_requests_per_sec, max_bytes_per_sec)
     }
 
     /// Field observability for the transfer commands: under `--verbose`, print
@@ -1198,11 +1305,16 @@ impl Cli {
             "sync --from and --to must differ (both are {from_url})"
         );
 
-        let config = self.transfer_config()?;
         let from_adapter = resolve_adapter(from_url).context("resolving --from store protocol")?;
         let to_adapter = resolve_adapter(to_url).context("resolving --to store protocol")?;
-        let from_store = stream_store_for_adapter(&from_adapter, from_url, config.clone(), None)?;
-        let to_store = stream_store_for_adapter(&to_adapter, to_url, config.clone(), None)?;
+        // Each endpoint gets its own per-backend rate-limit defaults; the shared
+        // sync pipe (concurrency, retry, byte budget accounting) is driven by the
+        // source-side config below.
+        let from_config = self.transfer_config_for(Some(from_adapter.name()))?;
+        let to_config = self.transfer_config_for(Some(to_adapter.name()))?;
+        let from_store = stream_store_for_adapter(&from_adapter, from_url, from_config, None)?;
+        let to_store = stream_store_for_adapter(&to_adapter, to_url, to_config, None)?;
+        let config = self.transfer_config_for(Some(from_adapter.name()))?;
 
         self.log_transfer_config();
 
@@ -1502,6 +1614,26 @@ fn parse_rate(s: &str) -> Result<u64> {
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     Ok((value * multiplier) as u64)
+}
+
+/// Reads an environment variable as a `u64`, returning `None` when the variable
+/// is unset, empty, or does not parse as a non-negative integer. Used by the
+/// rate-limit / retry resolvers for their `SNAPDIR_*` env fallbacks.
+fn env_u64(key: &str) -> Option<u64> {
+    std::env::var(key).ok().and_then(|v| v.trim().parse().ok())
+}
+
+/// The smaller of two optional caps, treating `None` as "no cap on that
+/// dimension": `min(Some, Some)` is the lesser, `min(Some, None)` / `min(None,
+/// Some)` is the present one, and `min(None, None)` is `None`. Used to collapse
+/// a backend's separate read/write caps into the single value `TransferConfig`
+/// carries (the conservative choice).
+fn min_opt(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (None, None) => None,
+    }
 }
 
 /// clap `value_parser` for `--adaptive[=FRACTION]`: a finite `f64` in the
@@ -2045,5 +2177,171 @@ mod tests {
             }
             TransferAdaptivePolicy::Off => panic!("expected adaptive On"),
         }
+    }
+
+    /// Serializes the env-mutating rate-limit/retry tests so their `set_var` /
+    /// `remove_var` on the shared `SNAPDIR_*` process env can't race.
+    static RATELIMIT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Removes every rate-limit / retry env var so a resolver sees only its
+    /// explicit flags (and any var the test sets afterward).
+    fn ratelimit_clear_env() {
+        unsafe {
+            for key in [
+                "SNAPDIR_MAX_RETRIES",
+                "SNAPDIR_RETRY_BASE_MS",
+                "SNAPDIR_RETRY_MAX_MS",
+                "SNAPDIR_MAX_REQUESTS",
+                "SNAPDIR_LIMIT_RATE",
+            ] {
+                std::env::remove_var(key);
+            }
+        }
+    }
+
+    #[test]
+    fn ratelimit_retry_policy_flag_beats_env_beats_default() {
+        let _guard = RATELIMIT_ENV_LOCK.lock().unwrap();
+
+        // Default (no flags, no env) == RetryPolicy::default().
+        ratelimit_clear_env();
+        let p = cli_with(&[]).resolve_retry_policy();
+        assert_eq!(p, RetryPolicy::default());
+        assert_eq!(p.max_attempts, 5);
+        assert_eq!(p.base, std::time::Duration::from_millis(250));
+        assert_eq!(p.cap, std::time::Duration::from_secs(30));
+
+        // Env beats default.
+        ratelimit_clear_env();
+        unsafe {
+            std::env::set_var("SNAPDIR_MAX_RETRIES", "7");
+            std::env::set_var("SNAPDIR_RETRY_BASE_MS", "100");
+            std::env::set_var("SNAPDIR_RETRY_MAX_MS", "9000");
+        }
+        let p = cli_with(&[]).resolve_retry_policy();
+        assert_eq!(p.max_attempts, 7);
+        assert_eq!(p.base, std::time::Duration::from_millis(100));
+        assert_eq!(p.cap, std::time::Duration::from_secs(9));
+
+        // Flag beats env.
+        let p = cli_with(&[
+            "--max-retries",
+            "9",
+            "--retry-base-ms",
+            "500",
+            "--retry-max-ms",
+            "45000",
+        ])
+        .resolve_retry_policy();
+        assert_eq!(p.max_attempts, 9);
+        assert_eq!(p.base, std::time::Duration::from_millis(500));
+        assert_eq!(p.cap, std::time::Duration::from_secs(45));
+
+        ratelimit_clear_env();
+    }
+
+    #[test]
+    fn ratelimit_rate_limits_per_backend_defaults() {
+        let _guard = RATELIMIT_ENV_LOCK.lock().unwrap();
+        ratelimit_clear_env();
+        let cli = cli_with(&[]);
+
+        // b2: min(read_rps 20, write_rps 50) = 20 req/s; min(read_bps 25MiB,
+        // write_bps 100MiB) = 25 MiB/s.
+        assert_eq!(
+            cli.resolve_rate_limits("b2", None),
+            (Some(20), Some(25 * 1024 * 1024))
+        );
+        // s3: min(5500, 3500) = 3500 req/s; no byte cap.
+        assert_eq!(cli.resolve_rate_limits("s3", None), (Some(3500), None));
+        // gcs / gs: min(5000, 1000) = 1000 req/s; no byte cap.
+        assert_eq!(cli.resolve_rate_limits("gcs", None), (Some(1000), None));
+        assert_eq!(cli.resolve_rate_limits("gs", None), (Some(1000), None));
+        // file / unknown: no caps at all.
+        assert_eq!(cli.resolve_rate_limits("file", None), (None, None));
+        assert_eq!(cli.resolve_rate_limits("azure", None), (None, None));
+
+        ratelimit_clear_env();
+    }
+
+    #[test]
+    fn ratelimit_max_requests_flag_beats_env_beats_backend_default() {
+        let _guard = RATELIMIT_ENV_LOCK.lock().unwrap();
+
+        // Backend default applies when neither flag nor env is set (b2 => 20).
+        ratelimit_clear_env();
+        assert_eq!(cli_with(&[]).resolve_rate_limits("b2", None).0, Some(20));
+        // ...and is None for a capless scheme (global None).
+        assert_eq!(cli_with(&[]).resolve_rate_limits("file", None).0, None);
+
+        // Env beats the backend default.
+        ratelimit_clear_env();
+        unsafe {
+            std::env::set_var("SNAPDIR_MAX_REQUESTS", "2");
+        }
+        assert_eq!(cli_with(&[]).resolve_rate_limits("b2", None).0, Some(2));
+        // Env also supplies a cap for a scheme that has no backend default.
+        assert_eq!(cli_with(&[]).resolve_rate_limits("file", None).0, Some(2));
+
+        // Flag beats env (and the backend default).
+        let cli = cli_with(&["--max-requests", "3"]);
+        assert_eq!(cli.resolve_rate_limits("b2", None).0, Some(3));
+        assert_eq!(cli.resolve_rate_limits("file", None).0, Some(3));
+
+        // An explicit 0 means "unset" => fall through to the backend default.
+        ratelimit_clear_env();
+        let cli = cli_with(&["--max-requests", "0"]);
+        assert_eq!(cli.resolve_rate_limits("b2", None).0, Some(20));
+        assert_eq!(cli.resolve_rate_limits("file", None).0, None);
+
+        ratelimit_clear_env();
+    }
+
+    #[test]
+    fn ratelimit_limit_rate_overrides_backend_byte_default() {
+        let _guard = RATELIMIT_ENV_LOCK.lock().unwrap();
+        ratelimit_clear_env();
+        let cli = cli_with(&[]);
+
+        // No --limit-rate: b2 falls back to its 25 MiB/s byte default.
+        assert_eq!(
+            cli.resolve_rate_limits("b2", None).1,
+            Some(25 * 1024 * 1024)
+        );
+        // An explicit --limit-rate value overrides the backend byte default.
+        assert_eq!(
+            cli.resolve_rate_limits("b2", Some(1_048_576)).1,
+            Some(1_048_576)
+        );
+        // For a capless scheme the byte cap is exactly the --limit-rate value.
+        assert_eq!(
+            cli.resolve_rate_limits("file", Some(1_048_576)).1,
+            Some(1_048_576)
+        );
+        assert_eq!(cli.resolve_rate_limits("file", None).1, None);
+
+        ratelimit_clear_env();
+    }
+
+    #[test]
+    fn ratelimit_transfer_config_unchanged_when_knobs_unset() {
+        let _guard = RATELIMIT_ENV_LOCK.lock().unwrap();
+        ratelimit_clear_env();
+
+        // No new flags / env + a capless scheme (file) MUST be byte-for-byte the
+        // historical config: req-rate None, byte-rate None, retry = default.
+        let scheme_cfg = cli_with(&[]).transfer_config_for(Some("file")).unwrap();
+        let no_scheme_cfg = cli_with(&[]).transfer_config_for(None).unwrap();
+        let historical = TransferConfig::new(TransferConfig::default().concurrency.get(), None);
+
+        for cfg in [&scheme_cfg, &no_scheme_cfg] {
+            assert_eq!(cfg.max_requests_per_sec, None);
+            assert_eq!(cfg.max_bytes_per_sec, None);
+            assert_eq!(cfg.retry, RetryPolicy::default());
+            assert_eq!(cfg.adaptive, TransferAdaptivePolicy::Off);
+            assert_eq!(cfg.concurrency, historical.concurrency);
+        }
+
+        ratelimit_clear_env();
     }
 }

@@ -101,6 +101,18 @@ Options:
           
           [env: SNAPDIR_MAX_JOBS=]
 
+      --max-retries <N>
+          Total retry attempts per network request, including the first (default 5)
+
+      --retry-base-ms <MS>
+          Base backoff delay in milliseconds for request retries (default 250)
+
+      --retry-max-ms <MS>
+          Maximum backoff delay in milliseconds for request retries (default 30000)
+
+      --max-requests <N>
+          Cap request rate (req/s); 0/unset uses the per-backend default
+
   -h, --help
           Print help (see a summary with '-h')
 
