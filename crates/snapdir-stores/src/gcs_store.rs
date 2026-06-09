@@ -52,6 +52,7 @@ use std::sync::Arc;
 
 use google_cloud_gax::error::rpc::Code;
 use google_cloud_gax::error::Error as GcsError;
+use google_cloud_gax::retry_policy::NeverRetry;
 use google_cloud_storage::client::{Storage, StorageControl};
 use snapdir_core::manifest::Manifest;
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
@@ -60,8 +61,9 @@ use snapdir_core::Meter;
 
 use crate::fetch::fetch_files_concurrent;
 use crate::push::{push_objects_concurrent, upload_object};
+use crate::retry::{parse_retry_after, retry_network, Attempt, DefaultJitter, TokioSleeper};
 use crate::stream::StreamStore;
-use crate::transfer::{RateLimiter, TransferConfig};
+use crate::transfer::{classify_error, RateLimiter, TransferConfig};
 use tokio::runtime::Runtime;
 
 /// Number of times a fetch is retried when the downloaded bytes fail their
@@ -156,6 +158,10 @@ pub struct GcsStore {
     location: GcsLocation,
     runtime: Arc<Runtime>,
     config: TransferConfig,
+    /// Per-call request-rate limiter (one token per SDK call), built from
+    /// [`TransferConfig::max_requests_per_sec`]. Unlimited (a no-op) by default.
+    /// Shared (clone) so every call paces against one aggregate request budget.
+    req_limiter: RateLimiter,
     /// Optional progress meter; recorded into during transfers. `None` (the
     /// default from every constructor) means zero recording and byte-identical
     /// behavior. Set by the CLI via [`GcsStore::with_meter`].
@@ -192,23 +198,30 @@ impl GcsStore {
         install_ring_provider();
 
         let (storage, control) = runtime.block_on(async {
+            // Disable each SDK client's built-in retry loop (`NeverRetry`) so
+            // snapdir's RetryPolicy is the single backoff authority — no
+            // SDK-retries × ours compounding.
             let storage = Storage::builder()
+                .with_retry_policy(NeverRetry)
                 .build()
                 .await
                 .map_err(|e| backend("building GCS Storage client", e))?;
             let control = StorageControl::builder()
+                .with_retry_policy(NeverRetry)
                 .build()
                 .await
                 .map_err(|e| backend("building GCS StorageControl client", e))?;
             Ok::<_, StoreError>((storage, control))
         })?;
 
+        let req_limiter = RateLimiter::new(config.max_requests_per_sec);
         Ok(Self {
             storage,
             control,
             location,
             runtime: Arc::new(runtime),
             config,
+            req_limiter,
             meter: None,
         })
     }
@@ -224,12 +237,15 @@ impl GcsStore {
         control: StorageControl,
         location: GcsLocation,
     ) -> Result<Self, StoreError> {
+        let config = TransferConfig::default();
+        let req_limiter = RateLimiter::new(config.max_requests_per_sec);
         Ok(Self {
             storage,
             control,
             location,
             runtime: Arc::new(build_runtime()?),
-            config: TransferConfig::default(),
+            config,
+            req_limiter,
             meter: None,
         })
     }
@@ -260,70 +276,116 @@ impl GcsStore {
 
     /// Metadata HEAD on an object key; `Ok(true)` if it exists, `Ok(false)` if
     /// absent (see [`is_not_found`] for what counts as absent).
+    ///
+    /// The single SDK call is wrapped in [`retry_network`]: it acquires one
+    /// request-rate token, then retries a TRANSIENT failure under the store's
+    /// [`RetryPolicy`](crate::retry::RetryPolicy). A not-found is a normal
+    /// `Ok(false)` outcome (not a retry); other errors are classified via
+    /// [`gcs_attempt_from_err`].
     async fn key_exists(&self, key: &str) -> Result<bool, StoreError> {
-        match self
-            .control
-            .get_object()
-            .set_bucket(self.location.bucket_resource())
-            .set_object(key)
-            .send()
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(err) => {
-                if is_not_found(&err) {
-                    Ok(false)
-                } else {
-                    Err(backend("GCS get_object metadata failed", err))
+        retry_network(
+            &self.config.retry,
+            &self.req_limiter,
+            &TokioSleeper,
+            &DefaultJitter::new(),
+            || async {
+                match self
+                    .control
+                    .get_object()
+                    .set_bucket(self.location.bucket_resource())
+                    .set_object(key)
+                    .send()
+                    .await
+                {
+                    Ok(_) => Ok(true),
+                    Err(err) => {
+                        if is_not_found(&err) {
+                            return Ok(false);
+                        }
+                        Err(gcs_attempt_from_err("GCS get_object metadata failed", err))
+                    }
                 }
-            }
-        }
+            },
+        )
+        .await
     }
 
     /// GET an object key's full body, draining the read stream, or `None` if it
     /// is absent (see [`is_not_found`] for what counts as absent).
+    ///
+    /// Wrapped in [`retry_network`] like [`key_exists`](Self::key_exists): a
+    /// not-found is a normal `Ok(None)`; transient failures retry under the
+    /// store's [`RetryPolicy`](crate::retry::RetryPolicy).
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        let mut resp = match self
-            .storage
-            .read_object(self.location.bucket_resource(), key)
-            .send()
-            .await
-        {
-            Ok(resp) => resp,
-            Err(err) => {
-                if is_not_found(&err) {
-                    return Ok(None);
-                }
-                return Err(backend("GCS read_object failed", err));
-            }
-        };
+        retry_network(
+            &self.config.retry,
+            &self.req_limiter,
+            &TokioSleeper,
+            &DefaultJitter::new(),
+            || async {
+                let mut resp = match self
+                    .storage
+                    .read_object(self.location.bucket_resource(), key)
+                    .send()
+                    .await
+                {
+                    Ok(resp) => resp,
+                    Err(err) => {
+                        if is_not_found(&err) {
+                            return Ok(None);
+                        }
+                        return Err(gcs_attempt_from_err("GCS read_object failed", err));
+                    }
+                };
 
-        let mut buf = Vec::new();
-        while let Some(chunk) = resp.next().await {
-            let chunk = chunk.map_err(|e| backend("reading GCS object body", e))?;
-            buf.extend_from_slice(&chunk);
-        }
-        Ok(Some(buf))
+                let mut buf = Vec::new();
+                while let Some(chunk) = resp.next().await {
+                    // A mid-stream read failure can be transient (connection
+                    // reset); classify it the same way as the initial call.
+                    let chunk =
+                        chunk.map_err(|e| gcs_attempt_from_err("reading GCS object body", e))?;
+                    buf.extend_from_slice(&chunk);
+                }
+                Ok(Some(buf))
+            },
+        )
+        .await
     }
 
     /// PUT `bytes` at `key`. GCS object writes are atomic (the new object is only
     /// visible once fully uploaded), so no temp-key dance is needed — matching
     /// the oracle's reliance on `gcloud storage cp` atomicity.
+    ///
+    /// Wrapped in [`retry_network`]: each (re)try re-sends the full body, so the
+    /// content-addressed bytes that land are unchanged — only transient failures
+    /// retry under the store's [`RetryPolicy`](crate::retry::RetryPolicy).
     async fn put_bytes(&self, key: &str, bytes: Vec<u8>) -> Result<(), StoreError> {
-        // The SDK's upload future is large (>30 KiB); box it so it does not
-        // bloat the enclosing `push` future (clippy::large_futures).
-        let upload = self
-            .storage
-            .write_object(
-                self.location.bucket_resource(),
-                key,
-                bytes::Bytes::from(bytes),
-            )
-            .send_buffered();
-        Box::pin(upload)
-            .await
-            .map_err(|e| backend("GCS write_object failed", e))?;
-        Ok(())
+        retry_network(
+            &self.config.retry,
+            &self.req_limiter,
+            &TokioSleeper,
+            &DefaultJitter::new(),
+            || {
+                let bytes = bytes.clone();
+                async move {
+                    // The SDK's upload future is large (>30 KiB); box it so it
+                    // does not bloat the enclosing future (clippy::large_futures).
+                    let upload = self
+                        .storage
+                        .write_object(
+                            self.location.bucket_resource(),
+                            key,
+                            bytes::Bytes::from(bytes),
+                        )
+                        .send_buffered();
+                    Box::pin(upload)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| gcs_attempt_from_err("GCS write_object failed", e))
+                }
+            },
+        )
+        .await
     }
 
     /// Downloads `key`, verifying its BLAKE3 against `expected`, retrying up to
@@ -568,6 +630,54 @@ where
     }
 }
 
+/// Builds a retry [`Attempt`] from a concrete `google-cloud-storage`
+/// [`GcsError`], at the boundary where the SDK error still carries its HTTP
+/// status / headers / gRPC status.
+///
+/// - `transient`: true for the retryable signal set — an HTTP `429`/`503`
+///   status, the gRPC `RESOURCE_EXHAUSTED` / `UNAVAILABLE` / `DEADLINE_EXCEEDED`
+///   / `ABORTED` / `INTERNAL` codes, and the transport/timeout classes folded
+///   through the shared [`classify_error`](crate::classify_error) on the mapped
+///   [`StoreError`]. Conservative: unknown / `NOT_FOUND` / `PERMISSION_DENIED`
+///   are NOT transient.
+/// - `retry_after`: extracted from the error's HTTP `Retry-After` header (the
+///   delta-seconds form) when present, else `None`.
+/// - `err`: the mapped [`StoreError::Backend`] (the same value the non-retry
+///   path used to surface).
+fn gcs_attempt_from_err(message: &str, err: GcsError) -> Attempt {
+    let http_status = err.http_status_code();
+    let retry_after = err
+        .http_headers()
+        .and_then(|h| h.get("retry-after"))
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_retry_after);
+    let code = err.status().map(|s| s.code);
+
+    let store_err = backend(message, err);
+
+    let transient = http_status.is_some_and(|s| s == 429 || s == 503)
+        || matches!(
+            code,
+            Some(
+                Code::ResourceExhausted
+                    | Code::Unavailable
+                    | Code::DeadlineExceeded
+                    | Code::Aborted
+                    | Code::Internal
+            )
+        )
+        || matches!(
+            classify_error(&store_err),
+            crate::adaptive::OpResult::Throttle
+        );
+
+    Attempt {
+        transient,
+        retry_after,
+        err: store_err,
+    }
+}
+
 /// Classifies a `google-cloud-storage` SDK error as "object is absent".
 ///
 /// The SDK reports a missing object two different ways, and the absent-object
@@ -596,6 +706,59 @@ fn is_not_found(err: &GcsError) -> bool {
 mod tests {
     use super::*;
     use snapdir_core::manifest::PathType;
+    use std::time::Duration;
+
+    #[test]
+    fn backoff_wire_gcs_extract_503_retry_after_is_transient_with_hint() {
+        // A 503 carrying `Retry-After: 9` => transient, hint = 9s.
+        let mut headers = http::HeaderMap::new();
+        headers.insert("retry-after", http::HeaderValue::from_static("9"));
+        let err = GcsError::http(503, headers, bytes::Bytes::new());
+        let attempt = gcs_attempt_from_err("GCS op failed", err);
+        assert!(attempt.transient, "HTTP 503 must be transient");
+        assert_eq!(
+            attempt.retry_after,
+            Some(Duration::from_secs(9)),
+            "the Retry-After delta-seconds header must be extracted"
+        );
+    }
+
+    #[test]
+    fn backoff_wire_gcs_extract_resource_exhausted_is_transient_no_hint() {
+        // A service-level RESOURCE_EXHAUSTED (no HTTP status / header) =>
+        // transient with no hint.
+        use google_cloud_gax::error::rpc::Status;
+        let status = Status::default()
+            .set_code(Code::ResourceExhausted)
+            .set_message("quota exceeded");
+        let err = GcsError::service(status);
+        let attempt = gcs_attempt_from_err("GCS op failed", err);
+        assert!(
+            attempt.transient,
+            "RESOURCE_EXHAUSTED must be classified transient"
+        );
+        assert_eq!(attempt.retry_after, None, "no Retry-After header => None");
+    }
+
+    #[test]
+    fn backoff_wire_gcs_extract_not_found_is_not_transient() {
+        use google_cloud_gax::error::rpc::Status;
+
+        // A 404 / NOT_FOUND hard error => NOT transient (conservative).
+        let err = GcsError::http(404, http::HeaderMap::new(), bytes::Bytes::new());
+        let attempt = gcs_attempt_from_err("GCS op failed", err);
+        assert!(
+            !attempt.transient,
+            "a 404/not-found must never be classified transient"
+        );
+
+        let denied = GcsError::service(Status::default().set_code(Code::PermissionDenied));
+        let attempt = gcs_attempt_from_err("GCS op failed", denied);
+        assert!(
+            !attempt.transient,
+            "PERMISSION_DENIED must never be classified transient"
+        );
+    }
 
     /// Strips a leading `./` and a trailing `/` from a manifest path. Kept as a
     /// test-only assertion of the path normalization the orchestrator

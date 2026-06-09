@@ -23,6 +23,7 @@ use snapdir_core::store::StoreError;
 use tokio::sync::Mutex;
 
 use crate::adaptive::{AdaptiveGate, OpResult};
+use crate::retry::RetryPolicy;
 
 /// Upper bound on the auto-detected default concurrency.
 const DEFAULT_CONCURRENCY_CAP: usize = 16;
@@ -80,6 +81,13 @@ pub struct TransferConfig {
     /// Whether to tune concurrency / rate adaptively. [`AdaptivePolicy::Off`]
     /// (the default) keeps the historical fixed-concurrency path byte-for-byte.
     pub adaptive: AdaptivePolicy,
+    /// The transient-failure retry schedule wrapped around each network SDK
+    /// call (`key_exists` / `get_bytes` / `put_bytes`) via
+    /// [`retry_network`](crate::retry::retry_network). Defaults to
+    /// [`RetryPolicy::default`] (5 attempts, 250ms base, 30s cap); this is the
+    /// CONFIG SEAM the CLI sets later. The per-object integrity-mismatch retry
+    /// in `fetch_verified` is independent of this and unchanged.
+    pub retry: RetryPolicy,
 }
 
 impl TransferConfig {
@@ -95,6 +103,7 @@ impl TransferConfig {
             max_bytes_per_sec,
             max_requests_per_sec: None,
             adaptive: AdaptivePolicy::Off,
+            retry: RetryPolicy::default(),
         }
     }
 
@@ -103,6 +112,15 @@ impl TransferConfig {
     #[must_use]
     pub fn with_adaptive(mut self, policy: AdaptivePolicy) -> Self {
         self.adaptive = policy;
+        self
+    }
+
+    /// Returns this config with its network-retry schedule set to `policy`
+    /// (builder style). Defaults to [`RetryPolicy::default`]; the CLI uses this
+    /// to install an operator-configured policy.
+    #[must_use]
+    pub fn with_retry(mut self, policy: RetryPolicy) -> Self {
+        self.retry = policy;
         self
     }
 }
@@ -118,6 +136,7 @@ impl Default for TransferConfig {
             max_bytes_per_sec: None,
             max_requests_per_sec: None,
             adaptive: AdaptivePolicy::Off,
+            retry: RetryPolicy::default(),
         }
     }
 }

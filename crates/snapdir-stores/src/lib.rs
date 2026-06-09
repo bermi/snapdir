@@ -67,8 +67,8 @@ pub use file_store::FileStore;
 pub use gcs_store::{GcsLocation, GcsStore};
 pub use limits::{for_scheme, BackendLimits};
 pub use retry::{
-    retry_async, retry_blocking, AsyncSleeper, Attempt, BlockingSleeper, DefaultJitter,
-    FixedJitter, Jitter, RetryPolicy, ThreadSleeper, TokioSleeper,
+    parse_retry_after, retry_async, retry_blocking, retry_network, AsyncSleeper, Attempt,
+    BlockingSleeper, DefaultJitter, FixedJitter, Jitter, RetryPolicy, ThreadSleeper, TokioSleeper,
 };
 pub use router::{resolve_adapter, Adapter, RouteError};
 pub use s3_store::{S3Location, S3Store};

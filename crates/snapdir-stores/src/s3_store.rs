@@ -42,10 +42,12 @@ use std::sync::Arc;
 
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::config::Region;
+use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::Client;
 use aws_smithy_http_client::tls::rustls_provider::CryptoMode;
 use aws_smithy_http_client::tls::Provider as TlsProvider;
 use aws_smithy_http_client::Builder as HttpClientBuilder;
+use aws_smithy_runtime_api::client::orchestrator::HttpResponse;
 use snapdir_core::manifest::Manifest;
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
@@ -53,9 +55,11 @@ use snapdir_core::Meter;
 
 use crate::fetch::fetch_files_concurrent;
 use crate::push::{push_objects_concurrent, upload_object};
+use crate::retry::{parse_retry_after, retry_network, Attempt, DefaultJitter, TokioSleeper};
 use crate::stream::StreamStore;
-use crate::transfer::{RateLimiter, TransferConfig};
+use crate::transfer::{classify_error, RateLimiter, TransferConfig};
 
+use std::error::Error as StdError;
 use tokio::runtime::Runtime;
 
 /// Number of times a fetch is retried when the downloaded bytes fail their
@@ -141,6 +145,10 @@ pub struct S3Store {
     location: S3Location,
     runtime: Arc<Runtime>,
     config: TransferConfig,
+    /// Per-call request-rate limiter (one token per SDK call), built from
+    /// [`TransferConfig::max_requests_per_sec`]. Unlimited (a no-op) by default.
+    /// Shared (clone) so every call paces against one aggregate request budget.
+    req_limiter: RateLimiter,
     /// Optional progress meter; recorded into during transfers. `None` (the
     /// default from every constructor) means zero recording and byte-identical
     /// behavior. Set by the CLI via [`S3Store::with_meter`].
@@ -183,8 +191,11 @@ impl S3Store {
         let http_client = ring_https_client();
         let endpoint = endpoint_url.map(ToOwned::to_owned);
         let client = runtime.block_on(async move {
-            let mut loader =
-                aws_config::defaults(BehaviorVersion::latest()).http_client(http_client.clone());
+            let mut loader = aws_config::defaults(BehaviorVersion::latest())
+                .http_client(http_client.clone())
+                // Disable the SDK's own retry loop so snapdir's RetryPolicy is
+                // the single backoff authority (no SDK-3x × ours-5x compounding).
+                .retry_config(aws_config::retry::RetryConfig::disabled());
             if let Some(ep) = endpoint.as_deref() {
                 loader = loader.endpoint_url(ep);
             }
@@ -202,11 +213,13 @@ impl S3Store {
             Client::from_conf(builder.build())
         });
 
+        let req_limiter = RateLimiter::new(config.max_requests_per_sec);
         Ok(Self {
             client,
             location,
             runtime: Arc::new(runtime),
             config,
+            req_limiter,
             meter: None,
         })
     }
@@ -219,11 +232,14 @@ impl S3Store {
     ///
     /// [`StoreError::Backend`] if the tokio runtime cannot be created.
     pub fn from_client(client: Client, location: S3Location) -> Result<Self, StoreError> {
+        let config = TransferConfig::default();
+        let req_limiter = RateLimiter::new(config.max_requests_per_sec);
         Ok(Self {
             client,
             location,
             runtime: Arc::new(build_runtime()?),
-            config: TransferConfig::default(),
+            config,
+            req_limiter,
             meter: None,
         })
     }
@@ -253,68 +269,120 @@ impl S3Store {
     }
 
     /// HEAD an object key; `Ok(true)` if it exists, `Ok(false)` if absent.
+    ///
+    /// The single SDK call is wrapped in [`retry_network`]: it acquires one
+    /// request-rate token, then retries a TRANSIENT failure under the store's
+    /// [`RetryPolicy`]. A `404`/not-found is a normal `Ok(false)` outcome (not a
+    /// retry); any other error is classified via [`s3_attempt_from_err`].
     async fn key_exists(&self, key: &str) -> Result<bool, StoreError> {
-        match self
-            .client
-            .head_object()
-            .bucket(&self.location.bucket)
-            .key(key)
-            .send()
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(err) => {
-                let svc = err.into_service_error();
-                if svc.is_not_found() {
-                    Ok(false)
-                } else {
-                    Err(backend("S3 HEAD object failed", svc))
+        retry_network(
+            &self.config.retry,
+            &self.req_limiter,
+            &TokioSleeper,
+            &DefaultJitter::new(),
+            || async {
+                match self
+                    .client
+                    .head_object()
+                    .bucket(&self.location.bucket)
+                    .key(key)
+                    .send()
+                    .await
+                {
+                    Ok(_) => Ok(true),
+                    Err(err) => {
+                        // A genuine "absent" is a successful outcome of the op,
+                        // not a retry: peek the concrete service error first.
+                        if err.as_service_error().is_some_and(
+                            aws_sdk_s3::operation::head_object::HeadObjectError::is_not_found,
+                        ) {
+                            return Ok(false);
+                        }
+                        Err(s3_attempt_from_err("S3 HEAD object failed", err))
+                    }
                 }
-            }
-        }
+            },
+        )
+        .await
     }
 
     /// GET an object key's full body, or `None` if it is absent.
+    ///
+    /// The SDK call is wrapped in [`retry_network`] exactly like
+    /// [`key_exists`](Self::key_exists). A `NoSuchKey` is a normal `Ok(None)`
+    /// outcome; transient failures retry under the store's [`RetryPolicy`](crate::retry::RetryPolicy).
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        match self
-            .client
-            .get_object()
-            .bucket(&self.location.bucket)
-            .key(key)
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let data = resp
-                    .body
-                    .collect()
+        retry_network(
+            &self.config.retry,
+            &self.req_limiter,
+            &TokioSleeper,
+            &DefaultJitter::new(),
+            || async {
+                match self
+                    .client
+                    .get_object()
+                    .bucket(&self.location.bucket)
+                    .key(key)
+                    .send()
                     .await
-                    .map_err(|e| backend("reading S3 object body", e))?;
-                Ok(Some(data.into_bytes().to_vec()))
-            }
-            Err(err) => {
-                let svc = err.into_service_error();
-                if svc.is_no_such_key() {
-                    Ok(None)
-                } else {
-                    Err(backend("S3 GET object failed", svc))
+                {
+                    Ok(resp) => {
+                        // Draining the streamed body can itself fail transiently
+                        // (connection reset mid-download); classify it too.
+                        let data = resp.body.collect().await.map_err(|e| {
+                            let err = backend("reading S3 object body", e);
+                            let transient =
+                                matches!(classify_error(&err), crate::adaptive::OpResult::Throttle);
+                            Attempt {
+                                transient,
+                                retry_after: None,
+                                err,
+                            }
+                        })?;
+                        Ok(Some(data.into_bytes().to_vec()))
+                    }
+                    Err(err) => {
+                        if err.as_service_error().is_some_and(
+                            aws_sdk_s3::operation::get_object::GetObjectError::is_no_such_key,
+                        ) {
+                            return Ok(None);
+                        }
+                        Err(s3_attempt_from_err("S3 GET object failed", err))
+                    }
                 }
-            }
-        }
+            },
+        )
+        .await
     }
 
     /// PUT `bytes` at `key`. S3 PUT is atomic, so no temp-key dance is needed
     /// (the oracle relies on the same atomicity for manifests/objects).
+    ///
+    /// Wrapped in [`retry_network`]: each (re)try re-sends the full body, so the
+    /// content-addressed bytes that land are unchanged — only transient failures
+    /// retry under the store's [`RetryPolicy`](crate::retry::RetryPolicy).
     async fn put_bytes(&self, key: &str, bytes: Vec<u8>) -> Result<(), StoreError> {
-        self.client
-            .put_object()
-            .bucket(&self.location.bucket)
-            .key(key)
-            .body(bytes.into())
-            .send()
-            .await
-            .map_err(|e| backend("S3 PUT object failed", e))?;
-        Ok(())
+        retry_network(
+            &self.config.retry,
+            &self.req_limiter,
+            &TokioSleeper,
+            &DefaultJitter::new(),
+            || {
+                let bytes = bytes.clone();
+                async move {
+                    self.client
+                        .put_object()
+                        .bucket(&self.location.bucket)
+                        .key(key)
+                        .body(bytes.into())
+                        .send()
+                        .await
+                        .map(|_| ())
+                        .map_err(|err| s3_attempt_from_err("S3 PUT object failed", err))
+                }
+            },
+        )
+        .await
     }
 
     /// Downloads `key`, verifying its BLAKE3 against `expected`, retrying up to
@@ -559,10 +627,131 @@ where
     }
 }
 
+/// Builds a retry [`Attempt`] from a concrete aws-sdk-s3 [`SdkError`], at the
+/// boundary where the SDK error still carries its raw HTTP response.
+///
+/// - `transient`: true for the retryable signal set — an HTTP `429`/`503`
+///   status on the raw response, the throttle error codes
+///   (`SlowDown`/`Throttling`/`RequestTimeout`/`ServiceUnavailable`/…), and the
+///   transport/timeout classes — folded through the shared
+///   [`classify_error`](crate::classify_error) on the mapped [`StoreError`].
+///   Conservative: an unknown error is NOT transient.
+/// - `retry_after`: extracted from the raw response's `Retry-After` header (the
+///   delta-seconds form) when present, else `None`.
+/// - `err`: the mapped [`StoreError::Backend`] (the same value the non-retry
+///   path used to surface).
+fn s3_attempt_from_err<E>(message: &str, err: SdkError<E, HttpResponse>) -> Attempt
+where
+    E: ProvideErrorMetadata + StdError + Send + Sync + 'static,
+{
+    // Extract status code + Retry-After off the raw HTTP response (present on
+    // ServiceError / ResponseError variants) BEFORE we consume the error.
+    let (http_status, retry_after) = match err.raw_response() {
+        Some(resp) => {
+            let status = resp.status().as_u16();
+            let hint = resp
+                .headers()
+                .get("retry-after")
+                .and_then(parse_retry_after);
+            (Some(status), hint)
+        }
+        None => (None, None),
+    };
+
+    // The SDK error code (e.g. "SlowDown", "ServiceUnavailable") rides in the
+    // error metadata; fold it (plus the status) into the mapped StoreError's
+    // text so the shared classifier sees the transient signals.
+    let code = err.code().unwrap_or_default().to_owned();
+    let store_err = backend(message, err);
+
+    let transient = http_status.is_some_and(|s| s == 429 || s == 503)
+        || matches!(
+            classify_error(&store_err),
+            crate::adaptive::OpResult::Throttle
+        )
+        || {
+            let c = code.to_ascii_lowercase();
+            c.contains("slowdown")
+                || c.contains("throttl")
+                || c.contains("requesttimeout")
+                || c.contains("serviceunavailable")
+                || c.contains("internalerror")
+        };
+
+    Attempt {
+        transient,
+        retry_after,
+        err: store_err,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aws_sdk_s3::error::ErrorMetadata;
+    use aws_sdk_s3::operation::head_object::HeadObjectError;
+    use aws_sdk_s3::primitives::SdkBody;
+    use aws_smithy_runtime_api::http::StatusCode;
     use snapdir_core::manifest::PathType;
+    use std::time::Duration;
+
+    /// Builds a raw S3 [`HttpResponse`] with the given status and optional
+    /// `Retry-After` header, for exercising [`s3_attempt_from_err`] without a
+    /// live SDK call.
+    fn raw_response(status: u16, retry_after: Option<&str>) -> HttpResponse {
+        let mut resp = HttpResponse::new(
+            StatusCode::try_from(status).expect("valid status"),
+            SdkBody::empty(),
+        );
+        if let Some(v) = retry_after {
+            resp.headers_mut().insert("retry-after", v.to_owned());
+        }
+        resp
+    }
+
+    /// Wraps an S3 service error (carrying `code`) plus a raw response into the
+    /// concrete `SdkError` the store methods see, so the extractor runs on a
+    /// real SDK error shape.
+    fn s3_service_error(code: &str, status: u16, retry_after: Option<&str>) -> Attempt {
+        let meta = ErrorMetadata::builder().code(code).build();
+        let svc = HeadObjectError::generic(meta);
+        let err = SdkError::service_error(svc, raw_response(status, retry_after));
+        s3_attempt_from_err("S3 op failed", err)
+    }
+
+    #[test]
+    fn backoff_wire_s3_extract_503_retry_after_is_transient_with_hint() {
+        // A 503 SlowDown carrying `Retry-After: 12` => transient, hint = 12s.
+        let attempt = s3_service_error("SlowDown", 503, Some("12"));
+        assert!(attempt.transient, "503/SlowDown must be transient");
+        assert_eq!(
+            attempt.retry_after,
+            Some(Duration::from_secs(12)),
+            "the Retry-After delta-seconds header must be extracted"
+        );
+    }
+
+    #[test]
+    fn backoff_wire_s3_extract_429_without_header_is_transient_no_hint() {
+        // A 429 with no Retry-After header => still transient, but no hint.
+        let attempt = s3_service_error("Throttling", 429, None);
+        assert!(attempt.transient, "429 must be transient");
+        assert_eq!(
+            attempt.retry_after, None,
+            "absent Retry-After header => None (backoff handles the delay)"
+        );
+    }
+
+    #[test]
+    fn backoff_wire_s3_extract_404_is_not_transient() {
+        // A 404 NoSuchKey-style hard error => NOT transient (conservative).
+        let attempt = s3_service_error("NoSuchKey", 404, None);
+        assert!(
+            !attempt.transient,
+            "a 404/not-found must never be classified transient"
+        );
+        assert_eq!(attempt.retry_after, None);
+    }
 
     /// Strips a leading `./` and a trailing `/` from a manifest path. Kept as a
     /// test-only assertion of the path normalization the orchestrator

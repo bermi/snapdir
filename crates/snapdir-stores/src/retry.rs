@@ -45,6 +45,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use snapdir_core::StoreError;
 
+use crate::transfer::RateLimiter;
+
 // ---------------------------------------------------------------------------
 // RetryPolicy + backoff math.
 // ---------------------------------------------------------------------------
@@ -376,6 +378,85 @@ where
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// retry_network — the per-call boundary the network stores wrap each SDK call
+// in: acquire one request-rate token, then run the operation under the retry
+// engine. This is the single injectable seam the `backoff_wire` tests drive
+// (with a scripted `op` + recording sleeper), so the wiring is exercised with
+// NO live cloud.
+// ---------------------------------------------------------------------------
+
+/// Runs a single network operation through the full retry/limiter wiring.
+///
+/// Before **every** attempt this acquires one token from `req_limiter` (the
+/// per-call request-rate bucket — `acquire(1)`, a no-op when the limiter is
+/// unlimited), then drives `op` under [`retry_async`] with `policy`'s
+/// full-jitter backoff. `op` is the SDK call: it returns `Ok(T)` on success or
+/// `Err(`[`Attempt`]`)` carrying the mapped [`StoreError`], whether the failure
+/// is `transient`, and any server `retry_after` hint extracted from the
+/// concrete SDK error.
+///
+/// The real stores pass an `op` that performs the SDK call and builds the
+/// `Attempt` on error (via the per-SDK `*_attempt_from_err` extractors); the
+/// `backoff_wire` tests pass an `op` that replays a scripted sequence of
+/// `Attempt`s, so the retry/limiter wiring is exercised without any network.
+///
+/// # Errors
+///
+/// Returns the last [`Attempt`]'s [`StoreError`] when `op` does not succeed
+/// within the attempt budget (or fails non-transiently).
+pub async fn retry_network<T, F, Fut>(
+    policy: &RetryPolicy,
+    req_limiter: &RateLimiter,
+    sleeper: &impl AsyncSleeper,
+    jitter: &impl Jitter,
+    mut op: F,
+) -> Result<T, StoreError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, Attempt>>,
+{
+    // This mirrors [`retry_async`]'s control flow exactly, but inlines the
+    // per-attempt request-token acquire so it can call `op` directly each
+    // iteration (the `FnMut() -> Fut` bound on `retry_async` is non-lending, so
+    // an `op` wrapper future that re-borrows `op`/`req_limiter` cannot escape
+    // its closure — driving the loop here sidesteps that).
+    let max = clamped_max_attempts(policy);
+    let mut n: u32 = 0;
+    loop {
+        // Pace each (re)try through the per-call request-rate limiter (a no-op
+        // when unlimited), then run the operation.
+        req_limiter.acquire(1).await;
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(attempt) => {
+                let attempts_used = n + 1;
+                if attempt.transient && attempts_used < max {
+                    let delay = policy.backoff(n, attempt.retry_after, jitter.jitter01());
+                    sleeper.sleep(delay).await;
+                    n += 1;
+                } else {
+                    return Err(attempt.err);
+                }
+            }
+        }
+    }
+}
+
+/// Parses an HTTP `Retry-After` header value into a [`Duration`].
+///
+/// Honours the **delta-seconds** form (`Retry-After: 120`) — by far the common
+/// case for `429`/`503` throttling from S3/GCS — returning `Some(120s)`. The
+/// HTTP-date form is intentionally NOT parsed (it would need a date crate and a
+/// wall-clock read; the backoff engine already provides a sane delay when the
+/// hint is absent), so a non-numeric value yields `None`. A value of `0` maps
+/// to `Some(Duration::ZERO)` (a valid "retry now" floor).
+#[must_use]
+pub fn parse_retry_after(value: &str) -> Option<Duration> {
+    let trimmed = value.trim();
+    trimmed.parse::<u64>().ok().map(Duration::from_secs)
 }
 
 #[cfg(test)]

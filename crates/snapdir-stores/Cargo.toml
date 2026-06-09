@@ -9,6 +9,15 @@ repository.workspace = true
 homepage.workspace = true
 description = "snapdir stores: FileStore, S3/B2/GCS native SDK stores + external-store shim."
 
+[features]
+# Enables the injectable network-retry seam used by the `backoff_wire` tests:
+# the `retry_network` helper and the per-SDK `*_attempt_from_err` extractors are
+# always compiled, but the heavier scripted-`op` fake-injection harness is gated
+# here so both `cargo test` (via `cfg(test)`) and a downstream
+# `--features integration-mock` consumer can drive the retry wiring without any
+# live cloud. Carries no runtime deps; an empty feature.
+integration-mock = []
+
 [dependencies]
 snapdir-core.workspace = true
 thiserror.workspace = true
