@@ -3,11 +3,12 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## 🔶 PHASE 24 IN PROGRESS — 1/12 gates — sftp:// + ssh:// stores (154/165 total)
+## 🔶 PHASE 24 IN PROGRESS — 2/12 gates — sftp:// + ssh:// stores (155/165 total)
 
 > Operator plan-approved 2026-06-09 (full spec: `.gatesmith/plans/phase24-ssh-stores.md`): system-OpenSSH external stores via the emit-command contract — `sftp://` pure-SFTP engine (works against `ForceCommand internal-sftp` chroots), `ssh://` shell engine + wire=1 SNAPPACK acceleration (`objects-needed`/`send-pack`/`receive-pack` hidden plumbing, byte-identical-oracle gated) with graceful fallback; un-weakenable modern-only security floor; new workspace crate `crates/snapdir-ssh-store` (2 bins, snapdir-core-only deps).
 > - `external-cli-wiring` ✅ (cli, code `bdfae15` @ 2026-06-09) — PREREQ BUG FIX: cli passed TREES where the external contract expects SHARDED store roots; push now stages into the cache then pushes from the cache root (`push --id` skips scratch), fetch lands objects in the cache root and commits the manifest LAST via `put_manifest`. Native store paths byte-identical. New e2e `external_store_roundtrip.rs` drives the real binary vs `mock://`.
-> - pending: `ssh-store-scaffold`, `pack-wire-format` (both dep-free) → `ssh-engine-dumb`, `sftp-engine`, `cli-plumbing` → `ssh-accel` → `loopback-sshd-suite` → `ssh-ci-wire`, `ssh-docs`, `ssh-packaging-dist` → `phase24-complete` (human checkpoint).
+> - `pack-wire-format` ✅ (stores, code `18f76d3` @ 2026-06-09) — SNAPPACK 1 in `pack.rs`: hex64-validated obj/manifest records, incremental-BLAKE3 temp-sibling FileSink (O(1) mem), manifest commits only after a verified `end` trailer (truncation never publishes), duplicates verified-then-skipped; `WIRE_VERSION=1`/`WIRE_CAPS`; `StreamStore::objects_needed` defaulted (order-preserving, fail-closed). 23 pack tests. blake3 dep = exact req core already pins (LANE-FENCE-EXC, lock +1 line, no new crate).
+> - pending: `ssh-store-scaffold` (dep-free) → `ssh-engine-dumb`, `sftp-engine`, `cli-plumbing` → `ssh-accel` → `loopback-sshd-suite` → `ssh-ci-wire`, `ssh-docs`, `ssh-packaging-dist` → `phase24-complete` (human checkpoint).
 
 ## ✅ PHASES 0–23 COMPLETE — 153/153 — snapdir 1.4.0 RELEASED
 
