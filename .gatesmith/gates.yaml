@@ -2926,7 +2926,9 @@ gates:
     phase: 24
     owner_agent: stores
     depends_on: [ssh-engine-dumb, cli-plumbing]
-    status: pending
+    status: passed
+    passed_at: 2026-06-10T03:00:00Z
+    git_sha: 3aa3989
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-ssh-store --test accel --locked"
     pass_criteria:
