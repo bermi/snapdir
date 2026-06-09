@@ -2667,7 +2667,9 @@ gates:
     phase: 21
     owner_agent: docs
     depends_on: [ratelimit-cli-select]
-    status: pending
+    status: passed
+    passed_at: 2026-06-09T01:58:55Z
+    git_sha: 555555b
     failure_count: 0
     verification_cmd: "grep -qiE 'SNAPDIR_MAX_RETRIES|--max-retries' docs/rust-port/*.md README.md && grep -qiE 'Retry-After|exponential backoff' docs/rust-port/*.md README.md"
     pass_criteria:
