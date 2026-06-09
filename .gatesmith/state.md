@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## 🔶 PHASE 24 IN PROGRESS — 5/12 gates — sftp:// + ssh:// stores (158/165 total)
+## 🔶 PHASE 24 IN PROGRESS — 6/12 gates — sftp:// + ssh:// stores (159/165 total)
 
 > Operator plan-approved 2026-06-09 (full spec: `.gatesmith/plans/phase24-ssh-stores.md`): system-OpenSSH external stores via the emit-command contract — `sftp://` pure-SFTP engine (works against `ForceCommand internal-sftp` chroots), `ssh://` shell engine + wire=1 SNAPPACK acceleration (`objects-needed`/`send-pack`/`receive-pack` hidden plumbing, byte-identical-oracle gated) with graceful fallback; un-weakenable modern-only security floor; new workspace crate `crates/snapdir-ssh-store` (2 bins, snapdir-core-only deps).
 > - `external-cli-wiring` ✅ (cli, code `bdfae15` @ 2026-06-09) — PREREQ BUG FIX: cli passed TREES where the external contract expects SHARDED store roots; push now stages into the cache then pushes from the cache root (`push --id` skips scratch), fetch lands objects in the cache root and commits the manifest LAST via `put_manifest`. Native store paths byte-identical. New e2e `external_store_roundtrip.rs` drives the real binary vs `mock://`.
@@ -11,7 +11,8 @@
 > - `cli-plumbing` ✅ (cli, code `187b53d` @ 2026-06-09) — hidden `version --capabilities` (wire=1 negotiation line) + `objects-needed`/`send-pack`/`receive-pack` thin glue over pack.rs; fail-closed validation, FileSink streaming on file://, `--require-manifest` pins the committed id; help surface byte-stable; 12 e2e plumbing tests incl. OS-pipe round-trip + truncation/idempotency.
 > - `ssh-store-scaffold` ✅ (stores, code `f306d0c` @ 2026-06-10) — new crate `crates/snapdir-ssh-store` (2 bins, snapdir-core-only): URL grammar, env family, ORDERED un-weakenable security floor, ssh -V ≥8.5 gate, bash-3.2-clean ControlMaster skeleton; 37 table tests; root Cargo.toml delta = 1 members line (LANE-FENCE-EXC; stores lane extended in PM_PROMPT).
 > - `sftp-engine` ✅ (stores, code `4aca5fb` @ 2026-06-10) — pure-SFTP engine (works under `ForceCommand internal-sftp`): probe+pwd-liveness, JOBS-parallel put-tmp/rename/chmod chunks, manifest LAST, exact ERROR wording; fake-sftp fixture + 10 fault-injection tests via the real shim.
-> - pending: `ssh-engine-dumb` (unblocked) → `ssh-accel` → `loopback-sshd-suite` → `ssh-ci-wire`, `ssh-docs`, `ssh-packaging-dist` → `phase24-complete` (human checkpoint).
+> - `ssh-engine-dumb` ✅ (stores, code `1762463` @ 2026-06-10) — ssh:// dumb engine: batched existence probe + single `tar|ssh` atomic pipeline + manifest-last; fetch gated on an exact-match tar allowlist (hostile-remote safe); `_snapdir_dumb_*` functions = accel seam; fake-ssh fixture + 11 fault-injection tests.
+> - pending: `ssh-accel` (unblocked) → `loopback-sshd-suite` → `ssh-ci-wire`, `ssh-docs`, `ssh-packaging-dist` → `phase24-complete` (human checkpoint).
 
 ## ✅ PHASES 0–23 COMPLETE — 153/153 — snapdir 1.4.0 RELEASED
 
