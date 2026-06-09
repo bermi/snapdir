@@ -3,9 +3,15 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ✅ ALL GATES GREEN — 153/153 passed (2026-06-09) — snapdir 1.4.0 RELEASED
+## 🔶 PHASE 24 IN PROGRESS — 1/12 gates — sftp:// + ssh:// stores (154/165 total)
 
-> Phases 0–23 complete. snapdir-rs is the Rust port at byte-for-byte manifest interop (frozen format locked). **snapdir 1.4.0 is RELEASED** (2026-06-09): canonical snapdir/snapdir at 1.4.0 (`4b2e40c`), tag `v1.4.0`, GitHub release live (13 assets, signed + SLSA), all 4 crates published to crates.io. dev carries `.gatesmith`; main/upstream never do.
+> Operator plan-approved 2026-06-09 (full spec: `.gatesmith/plans/phase24-ssh-stores.md`): system-OpenSSH external stores via the emit-command contract — `sftp://` pure-SFTP engine (works against `ForceCommand internal-sftp` chroots), `ssh://` shell engine + wire=1 SNAPPACK acceleration (`objects-needed`/`send-pack`/`receive-pack` hidden plumbing, byte-identical-oracle gated) with graceful fallback; un-weakenable modern-only security floor; new workspace crate `crates/snapdir-ssh-store` (2 bins, snapdir-core-only deps).
+> - `external-cli-wiring` ✅ (cli, code `bdfae15` @ 2026-06-09) — PREREQ BUG FIX: cli passed TREES where the external contract expects SHARDED store roots; push now stages into the cache then pushes from the cache root (`push --id` skips scratch), fetch lands objects in the cache root and commits the manifest LAST via `put_manifest`. Native store paths byte-identical. New e2e `external_store_roundtrip.rs` drives the real binary vs `mock://`.
+> - pending: `ssh-store-scaffold`, `pack-wire-format` (both dep-free) → `ssh-engine-dumb`, `sftp-engine`, `cli-plumbing` → `ssh-accel` → `loopback-sshd-suite` → `ssh-ci-wire`, `ssh-docs`, `ssh-packaging-dist` → `phase24-complete` (human checkpoint).
+
+## ✅ PHASES 0–23 COMPLETE — 153/153 — snapdir 1.4.0 RELEASED
+
+> snapdir-rs is the Rust port at byte-for-byte manifest interop (frozen format locked). **snapdir 1.4.0 is RELEASED** (2026-06-09): canonical snapdir/snapdir at 1.4.0 (`4b2e40c`), tag `v1.4.0`, GitHub release live (13 assets, signed + SLSA), all 4 crates published to crates.io. dev carries `.gatesmith`; main/upstream never do.
 
 ## ✅ PHASE 23 COMPLETE — 6/6 gates — release snapdir 1.4.0
 

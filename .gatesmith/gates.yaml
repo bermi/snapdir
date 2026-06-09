@@ -2830,7 +2830,9 @@ gates:
     phase: 24
     owner_agent: cli
     depends_on: []
-    status: pending
+    status: passed
+    passed_at: 2026-06-09T21:45:00Z
+    git_sha: bdfae15
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test external_store_roundtrip --locked"
     pass_criteria:
