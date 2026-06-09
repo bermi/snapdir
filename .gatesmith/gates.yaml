@@ -2778,7 +2778,9 @@ gates:
     phase: 23
     owner_agent: generic
     depends_on: [release-verify-branch-1.4.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-09T15:28:26Z
+    git_sha: 4b2e40c
     failure_count: 0
     verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.4.0\"'"
     pass_criteria:
