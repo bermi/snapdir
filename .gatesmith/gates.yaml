@@ -2636,9 +2636,10 @@ gates:
     owner_agent: stores
     depends_on: [backend-rate-limits]
     status: passed
-    passed_at: 2026-06-09T01:04:29Z
-    git_sha: 82beb1b
-    failure_count: 0
+    passed_at: 2026-06-09T02:07:40Z
+    git_sha: 09bbc55
+    failure_count: 1
+    failure_note: "Failed once (failure_count 1): the adaptive_wire recovery test was timing+CPU-flaky under full-suite load. Fixed deterministically via an injectable ControllerDriver::tick_with(now,cpu,rss) seam (behavior-preserving) — verified full workspace green 3x. Prior pass git 82beb1b, fix git 09bbc55."
     verification_cmd: "cargo test -p snapdir-stores --locked adaptive_wire -- --nocapture"
     pass_criteria:
       and:
