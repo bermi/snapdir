@@ -895,6 +895,18 @@ impl ControllerDriver {
     /// injected monotonic clock + p95 object size, then applies the resulting
     /// [`Decision`] to the gate (concurrency), the rate applier (byte-rate), and
     /// the display meter. Returns the decision for tests/inspection.
+    ///
+    /// `now` (the monotonic clock), CPU and RSS are the driver's only impure
+    /// inputs; all are sampled here. Determinism-sensitive tests should instead
+    /// drive [`tick_with`](ControllerDriver::tick_with), supplying every impure
+    /// input explicitly so the controller's time- and load-dependent arms
+    /// (cooldown, re-probe, CPU guardrails) never depend on the machine's
+    /// current clock or load.
+    ///
+    /// The returned [`Decision`] is advisory (the live gate/rate/meter are
+    /// already updated as a side effect); callers may ignore it — hence not
+    /// `#[must_use]`.
+    #[allow(clippy::must_use_candidate)]
     pub fn tick(&self) -> Decision {
         let cpu_pct = self
             .cpu
@@ -903,7 +915,32 @@ impl ControllerDriver {
             .poll();
         let rss = resident_set_bytes();
         let now = self.epoch.elapsed();
+        self.tick_with(now, cpu_pct, rss)
+    }
 
+    /// Fully time-/load-injectable sibling of [`tick`](ControllerDriver::tick):
+    /// advances the controller using the caller-supplied monotonic `now`, CPU
+    /// percentage and RSS instead of sampling the driver's real `epoch` / live
+    /// [`CpuSampler`] / RSS sampler. The gate / rate / meter application step is
+    /// byte-for-byte identical to [`tick`](ControllerDriver::tick), so this
+    /// drives the *same* live wiring — only the impure inputs are injected.
+    ///
+    /// This is the injectable seam (mirroring the controller's own
+    /// `tick(now, cpu, rss, …)` and the crate's injected-clock/sleeper
+    /// convention in [`crate::retry`]): it lets determinism-sensitive tests
+    /// cross the controller's time-dependent thresholds (the 15s post-congestion
+    /// cooldown, the re-probe interval) and pin its CPU guardrails by advancing
+    /// `now` and fixing `cpu_pct` explicitly — with ZERO dependence on the
+    /// machine's wall clock or current load (which is what made driving the live
+    /// gate trajectory flaky under parallel test load). `now` must be
+    /// monotonically non-decreasing across calls, exactly as `epoch.elapsed()`
+    /// would be; `cpu_pct`/`rss` are `Some(_)` to assert a guardrail or `None`
+    /// to skip it, exactly as the live samplers' `Option`s flow.
+    ///
+    /// Like [`tick`](ControllerDriver::tick), the returned [`Decision`] is
+    /// advisory and may be ignored (the gate/rate/meter are already applied).
+    #[allow(clippy::must_use_candidate)]
+    pub fn tick_with(&self, now: MonoTime, cpu_pct: Option<f64>, rss: Option<u64>) -> Decision {
         let decision = {
             let mut controller = self
                 .controller

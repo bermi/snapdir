@@ -21,8 +21,8 @@
 //! 3. First-error-wins and completion-independent ordering still hold on the
 //!    `run_adaptive` (`AdaptivePolicy::On`) path.
 //!
-//! All inputs are injected (op outcomes + the driver's internal clock advances
-//! via ticks). No wall-clock-sensitive assertions, no network, no env needed.
+//! All inputs are injected (op outcomes + an explicit monotonic clock supplied
+//! to `tick_at`). No wall-clock-sensitive assertions, no network, no env needed.
 
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -100,25 +100,47 @@ fn adaptive_wire_classify_injected_transient_is_throttle() {
 ///
 /// We drive the production `ControllerDriver` + `AdaptiveGate` pair the same way
 /// `run_adaptive_downloads`/`run_adaptive_objects` do — feeding `OpSample`s
-/// derived from `classify_error()` on injected transient `StoreError`s and
-/// advancing the controller via `tick()` (which resizes the gate live). The
-/// observable is the gate's `limit()` trajectory: grow -> shrink-on-throttle ->
-/// recover-on-success. Determinism comes from injected outcomes + the driver's
-/// own monotonic clock advanced one tick at a time (no wall-clock assertions).
+/// derived from `classify_error()` on injected transient `StoreError`s — but
+/// advance the controller via the fully-injectable `tick_with(now, cpu, rss)`
+/// seam instead of `tick()` (which samples the real `epoch.elapsed()` AND the
+/// live CPU/RSS samplers). Injecting ALL impure inputs makes the observable gate
+/// trajectory (grow -> shrink-on-throttle -> recover-on-success) fully
+/// DETERMINISTIC: the time-dependent arms (the 15s post-congestion cooldown and
+/// additive-increase recovery) are crossed by explicit `now` advances, and the
+/// CPU guardrails are pinned to a calm value — so the trajectory no longer
+/// depends on how fast this test loop runs OR how loaded the machine is under
+/// parallel test load (the two sources that made the live `tick()` flaky).
+///
+/// `tick_with` applies the very same `Decision` to the real gate that the live
+/// `tick()` does (`gate.set_limit(decision.limit)` + rate/meter); only the
+/// impure inputs differ (injected vs sampled), so this exercises the identical
+/// production wiring. CPU is pinned at a calm 20% (`< 85`) so neither the
+/// no-increase nor the hard-decrease guardrail bites; RSS is `Some(0)` (RAM is
+/// `u64::MAX`, so the memory budget is disabled).
 #[test]
 fn adaptive_wire_aimd_shrinks_on_throttle_then_recovers() {
+    // Calm injected CPU + zero RSS: pins the load-dependent guardrails off so the
+    // gate trajectory depends only on the injected ops + clock (deterministic).
+    const CALM_CPU: Option<f64> = Some(20.0);
+    const NO_RSS: Option<u64> = Some(0);
+
     // Generous ceiling + huge RAM so neither the ceiling nor the memory budget
     // masks the AIMD behavior under test.
     let gate = AdaptiveGate::new(2, 32);
     let policy = AdaptivePolicy::new(0.8, 32, u64::MAX, None);
     let driver = ControllerDriver::new(policy, gate.clone(), 4096, None, None);
 
+    // Injected monotonic clock: advance one second per tick, deterministically.
+    let mut now = Duration::ZERO;
+    let step = Duration::from_secs(1);
+
     // --- grow: a healthy stream of successful ops raises the live gate limit.
     for _ in 0..10 {
         for _ in 0..4 {
             record_like_live(&driver, 2_000_000, &Ok(()));
         }
-        driver.tick();
+        driver.tick_with(now, CALM_CPU, NO_RSS);
+        now += step;
     }
     let grown = gate.limit();
     assert!(
@@ -127,10 +149,12 @@ fn adaptive_wire_aimd_shrinks_on_throttle_then_recovers() {
     );
 
     // --- shrink: a single sustained Throttle event halves the gate (AIMD
-    //     multiplicative-decrease) on the very next tick.
+    //     multiplicative-decrease) on the very next tick, and arms the 15s
+    //     post-congestion cooldown deadline (now + 15s).
     record_like_live(&driver, 0, &Err(transient_err("503 Service Unavailable")));
-    driver.tick();
+    driver.tick_with(now, CALM_CPU, NO_RSS);
     let after_throttle = gate.limit();
+    now += step;
     assert!(
         after_throttle < grown,
         "sustained Throttle must multiplicatively shrink the live gate: {after_throttle} >= {grown}",
@@ -141,32 +165,41 @@ fn adaptive_wire_aimd_shrinks_on_throttle_then_recovers() {
         "Throttle backoff should at least halve the gate: before {grown}, after {after_throttle}",
     );
 
-    // --- recover: after the 15s post-congestion cooldown, sustained Success
-    //     additively grows the gate back above the backed-off floor. We advance
-    //     the driver's own clock by ticking past the cooldown window (each tick
-    //     injects `epoch.elapsed()`, so spacing ticks over real time crosses the
-    //     15s cooldown without any wall-clock assertion).
-    //
-    // To keep the test fast yet deterministic we cannot fast-forward the
-    // driver's real `Instant`, so instead we assert recovery via a *fresh*
-    // driver+gate seeded at the backed-off limit and fed an uninterrupted
-    // healthy stream: the live gate must climb. This isolates the
-    // additive-increase recovery arm of AIMD using the same production wiring.
-    let recover_gate = AdaptiveGate::new(after_throttle.max(1), 32);
-    let recover_policy = AdaptivePolicy::new(0.8, 32, u64::MAX, None);
-    let recover_driver =
-        ControllerDriver::new(recover_policy, recover_gate.clone(), 4096, None, None);
-    let recover_start = recover_gate.limit();
+    // --- cooldown: while inside the 15s post-congestion window, even a
+    //     sustained-healthy stream must NOT grow the gate (the controller's
+    //     no-increase guard). Tick a few healthy seconds still inside the
+    //     window and assert the gate never climbs above the backed-off floor.
+    for _ in 0..5 {
+        for _ in 0..4 {
+            record_like_live(&driver, 3_000_000, &Ok(()));
+        }
+        driver.tick_with(now, CALM_CPU, NO_RSS);
+        now += step;
+        assert!(
+            gate.limit() <= after_throttle,
+            "no increase during the 15s cooldown: {} > {after_throttle}",
+            gate.limit(),
+        );
+    }
+
+    // --- recover: jump the injected clock decisively PAST the 15s cooldown
+    //     deadline, then feed the same uninterrupted healthy stream. Now the
+    //     additive-increase arm is allowed to fire and the live gate must climb
+    //     back above the backed-off floor. This crossing is deterministic — it
+    //     depends only on the injected `now`/CPU, never on wall-clock elapsed
+    //     time or the machine's current load.
+    now += Duration::from_secs(20); // well past the 15s cooldown from the throttle
     for _ in 0..12 {
         for _ in 0..4 {
-            record_like_live(&recover_driver, 3_000_000, &Ok(()));
+            record_like_live(&driver, 3_000_000, &Ok(()));
         }
-        recover_driver.tick();
+        driver.tick_with(now, CALM_CPU, NO_RSS);
+        now += step;
     }
     assert!(
-        recover_gate.limit() > recover_start,
-        "sustained Success must additively grow the live gate back up: {} <= {recover_start}",
-        recover_gate.limit(),
+        gate.limit() > after_throttle,
+        "after the cooldown, sustained Success must additively grow the live gate back up: {} <= {after_throttle}",
+        gate.limit(),
     );
 }
 
