@@ -2762,7 +2762,9 @@ gates:
     phase: 23
     owner_agent: generic
     depends_on: [release-prep-1.4.0, deny-ignore-procmacroerror2]
-    status: pending
+    status: passed
+    passed_at: 2026-06-09T15:09:15Z
+    git_sha: 4a8c0d3
     failure_count: 0
     verification_cmd: "git ls-remote --exit-code origin refs/heads/release-verify/1.4.0 >/dev/null"
     pass_criteria:
