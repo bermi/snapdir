@@ -2631,7 +2631,9 @@ gates:
     phase: 21
     owner_agent: stores
     depends_on: [backend-rate-limits]
-    status: pending
+    status: passed
+    passed_at: 2026-06-09T01:04:29Z
+    git_sha: 82beb1b
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked adaptive_wire -- --nocapture"
     pass_criteria:
@@ -2639,7 +2641,7 @@ gates:
         - exit_code: 0
         - regex_match: "test result: ok"
     human_checkpoint: false
-    description: "Make the dormant AdaptiveController LIVE in the transfer loops (stores lane: fetch.rs, push.rs). When AdaptivePolicy::On, drive transfers through the existing run_adaptive(items, &gate, op) instead of run_concurrent, feeding each op's classify_error() outcome into an AdaptiveController tick that resizes the AdaptiveGate. Default On for NETWORK stores (slow-start is safe + is the point of Full scope); file:// stays on run_concurrent. Reuse run_adaptive/AdaptiveGate/AdaptiveController as-is. Tests: a transfer fed injected Throttle outcomes shrinks the gate's live limit (AIMD), then recovers on sustained Success; the file:// path is unchanged (still run_concurrent); first-error-wins + completion-independent ordering preserved (existing transfer invariants stay green)."
+    description: "RE-SCOPED 2026-06-08 (operator-approved AskUserQuestion): the AdaptiveController is ALREADY wired live into the transfer loops as of snapdir 1.3.0 — fetch.rs::run_adaptive_downloads + push.rs::run_adaptive_objects call run_adaptive(items, &gate, op) under AdaptivePolicy::On (fed by a ControllerDriver + classify_error()), and AdaptivePolicy::Off (the DEFAULT) stays on run_concurrent. The original 'wire the dormant controller' premise was STALE (my plan-audit was wrong). This gate now = PROVE the live adaptive path with explicit coverage while KEEPING adaptive OPT-IN (default Off — do NOT change the shipped 1.3.0 default, NO behavior change). Add stores test(s) whose fn names contain `adaptive_wire` (so the `adaptive_wire` filter runs them — must be NON-HOLLOW): drive the real fetch (and/or push) adaptive path with AdaptivePolicy::On and a download/upload closure that returns injected classify_error-transient (Throttle) StoreErrors for the first K ops then Success, and assert the AdaptiveGate's live limit SHRINKS under sustained Throttle (AIMD multiplicative decrease) then RECOVERS under sustained Success; assert the AdaptivePolicy::Off / file:// path still uses run_concurrent (unchanged); assert first-error-wins + completion-independent ordering still hold on the adaptive path. Reuse AdaptiveGate/AdaptiveController/run_adaptive + the existing adaptive test patterns (fetch.rs/push.rs/transfer.rs test modules). NO default flip, NO new deps; crates/snapdir-stores/ only."
 
   - id: ratelimit-cli-select
     phase: 21
