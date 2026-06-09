@@ -3,11 +3,20 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## 🔨 PHASE 21 OPEN — 6/7 gates — rate limiting + exponential-backoff retries
+## 🔨 PHASE 22 OPEN — 0/1 gate — release / crates.io polish (BACKLOG)
 
-> **Operator-requested 2026-06-08 (plan-approved):** add full-jitter **exponential backoff** that **honours server `Retry-After`** on transient (429/503/timeout/conn-reset) network failures; a **request-rate (req/s)** limiter; and WIRE the dormant `AdaptiveController` into live fetch/push. All configurable via flags/env on the `--checksum` precedence model (`--flag > SNAPDIR_* env > per-backend default > global`), with **researched per-backend defaults** (S3/GCS/B2 published limits) overriding global. Reuse `classify_error` + the existing token bucket; **NO new deps** (hand-rolled SplitMix64 jitter); disable each SDK's built-in retries so snapdir's policy is the single authority. `file://` path + frozen format UNTOUCHED. Global retry default 5 attempts / 250ms base / ×2 / 30s cap / full jitter.
+> **Operator-reported 2026-06-08:** the snapdir crate pages on crates.io render NOTHING for the README (the published packages carry no README — `[workspace.package]` sets description/keywords/categories but no `readme`, and no crate declares one).
 >
-> **Gates (7), ready head = `phase21-complete` (generic, human✋ sign-off; dep all 6 — NEXT TICK ESCALATES):**
+> **Gates (1), ready head = `crates-io-readme` (generic; dep phase21-complete — now satisfied):**
+> - `crates-io-readme` (generic) — give each crate (snapdir-core/catalog/stores/cli) a README that ships INSIDE its package (cargo only packages files within the crate dir — root `../../README.md` won't publish) + a `readme` field. Verification: `cargo package -p <crate> --list` shows a README for all four. Metadata/docs only; ships on the next crates.io publish.
+
+---
+
+## ✅ PHASE 21 COMPLETE — 7/7 gates green (operator sign-off 2026-06-09) — rate limiting + exponential-backoff retries
+
+> **Operator-requested 2026-06-08 (plan-approved):** full-jitter **exponential backoff** honouring server `Retry-After` on transient (429/503/timeout/conn-reset) network failures; a **request-rate (req/s)** limiter; the adaptive controller proven live (kept OPT-IN). Configurable via flags/env (`--flag > SNAPDIR_* env > per-backend default > global`) with **researched per-backend defaults** (S3/GCS/B2). **NO new deps** (hand-rolled SplitMix64 jitter); each SDK's built-in retries disabled. `file://` path + frozen format UNTOUCHED. Retry default 5 / 250ms / ×2 / 30s / full jitter. `phase21-complete` ✅ signed off 2026-06-09 (`cargo test --workspace --locked` 433 passed/0 failed, green ×5 after the flaky-fix).
+>
+> **Gates (7) — all passed:**
 > - `ratelimit-docs` ✅ **PASSED** (code `555555b` @ 2026-06-09) — README "Rate limiting & retries" section (backoff + Retry-After, retry/request-rate flag/env tables, per-backend default table w/ AWS/GCS/Backblaze sources, flag>env>backend>global precedence, adaptive opt-in) + CHANGELOG [Unreleased] Added entry. Docs only; accurate to code; no frozen-format change.
 > - `ratelimit-cli-select` ✅ **PASSED** (code `32ddc65` @ 2026-06-09; DESC-CORRECTED) — new --max-retries/--retry-base-ms/--retry-max-ms (→ resolve_retry_policy → TransferConfig.with_retry) + --max-requests/SNAPDIR_MAX_REQUESTS (→ max_requests_per_sec); resolve_rate_limits(scheme) layers user > limits::for_scheme conservative min(read,write) > None (b2 20rps/25MiB, s3 3500rps, gs 1000rps, file none); reused existing --limit-rate/--adaptive (no dup flags). Byte-identical when knobs unset. 6 ratelimit tests; 16 trycmd refreshed (additive). [--max-rate/--adaptive dropped as already-shipped.]
 > - `stores-backoff-wire` ✅ **PASSED** (code `db5425a` @ 2026-06-09) — each S3/GCS network call (key_exists/get_bytes/put_bytes; b2 via S3) now runs through `retry_network`: acquire 1 request-rate token then drive the SDK call via the retry.rs full-jitter backoff. `s3_attempt_from_err`/`gcs_attempt_from_err` classify transient (429/503/RESOURCE_EXHAUSTED) + extract a Retry-After floor; SDK built-in retries DISABLED (S3 RetryConfig::disabled, GCS NeverRetry); `TransferConfig.retry` seam defaults to `RetryPolicy::default()` (CLI sets it next). 12 `backoff_wire` tests green. Frozen object-key/verify unchanged; no new deps. [DEP-CORRECTION: ratelimit-cli-select now deps on this.]

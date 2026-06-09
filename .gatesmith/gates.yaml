@@ -2683,7 +2683,9 @@ gates:
     phase: 21
     owner_agent: generic
     depends_on: [retry-backoff-core, backend-rate-limits, stores-backoff-wire, adaptive-wire-live, ratelimit-cli-select, ratelimit-docs]
-    status: pending
+    status: passed
+    passed_at: 2026-06-09T09:38:34Z
+    git_sha: d5b7216
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked"
     pass_criteria:
