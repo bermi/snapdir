@@ -1,0 +1,29 @@
+[package]
+name = "snapdir-ssh-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "snapdir ssh/sftp external stores: ssh:// + sftp:// over the system OpenSSH client."
+readme = "README.md"
+
+[[bin]]
+name = "snapdir-ssh-store"
+path = "src/bin/snapdir-ssh-store.rs"
+
+[[bin]]
+name = "snapdir-sftp-store"
+path = "src/bin/snapdir-sftp-store.rs"
+
+[dependencies]
+# The ONLY dependency: frozen sharded-path helpers (`object_path` /
+# `manifest_path`) and (in later gates) manifest parsing. Argument parsing is
+# std-only by design — the contract grammar is 3 subcommands x <=3 flags, so
+# clap would be pure weight.
+snapdir-core.workspace = true
+
+[lints]
+workspace = true
