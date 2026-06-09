@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Transient-failure retries with full-jitter exponential backoff.** Network
+  store calls (`s3://`, `gs://`, `b2://`) now retry transient failures — HTTP
+  `429`/`503`, S3 `SlowDown`, GCS `RESOURCE_EXHAUSTED`, request timeouts, and
+  connection reset/closed — under full-jitter exponential backoff, while a
+  non-transient error (e.g. `404` not-found) fails immediately. A server
+  `Retry-After` header (or GCS backoff hint) is honored as a floor on the wait.
+  Each SDK's built-in retries are disabled so snapdir's policy is the single
+  authority. Defaults are **5 total attempts** (the first try plus up to four
+  retries), **250 ms** base, doubling, capped at **30 s**; configurable via
+  `--max-retries`/`SNAPDIR_MAX_RETRIES`, `--retry-base-ms`/`SNAPDIR_RETRY_BASE_MS`,
+  and `--retry-max-ms`/`SNAPDIR_RETRY_MAX_MS`. The local `file://` store does no
+  network retrying.
+- **Per-second request-rate limiting (`--max-requests`/`SNAPDIR_MAX_REQUESTS`).**
+  Complements the existing aggregate byte-throughput cap
+  (`--limit-rate`/`SNAPDIR_LIMIT_RATE`) with a requests-per-second cap for the
+  network stores. When unset, a conservative **per-backend default** applies,
+  taken as the lower of each provider's published read/write limits:
+  `s3://` 3500 req/s, `gs://` 1000 req/s, `b2://` 20 req/s + 25 MiB/s, and no
+  caps for `file://`/local (sources: AWS S3, GCS, Backblaze B2). Precedence,
+  highest to lowest: `--flag` > `SNAPDIR_*` env > per-backend default > global
+  default.
+
+These additions pull in **no new dependencies** and leave the manifest
+byte-format and content-addressed layout unchanged, so snapshots stay fully
+interoperable with 1.x.
+
 ## [1.3.0]
 
 ### Added

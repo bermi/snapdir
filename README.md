@@ -108,6 +108,46 @@ Pick a backend by `--store` URI scheme:
 
 Cloud backends use native SDKs and standard credential chains — no bespoke env vars, no CLI shell-outs. Any other scheme dispatches to a `snapdir-<scheme>-store` binary on `PATH`.
 
+## Rate limiting & retries
+
+For the network backends (`s3://`, `gs://`, `b2://`), snapdir paces its requests and retries transient failures so transfers stay polite to the provider and survive throttling. The local `file://` store does no network retrying. No extra dependencies are pulled in for any of this — it is all in-process.
+
+### Retries & backoff
+
+Transient network failures — HTTP `429` / `503`, S3 `SlowDown`, GCS `RESOURCE_EXHAUSTED`, request timeouts, and connection reset/closed — are retried with **full-jitter exponential backoff**. A non-transient error (for example a `404` not-found) fails immediately; it is never retried.
+
+Each backoff is `random(0, min(cap, base × 2^attempt))`. When the server returns a `Retry-After` header (or a GCS backoff hint), it is honored as a floor — snapdir never retries sooner than the server asked, but may wait longer. Each SDK's own built-in retries are turned off so snapdir's policy is the single authority.
+
+Defaults: **5 total attempts** (the first try plus up to four retries), **250 ms** base, doubling, capped at **30 s**.
+
+| Flag | Env | Default | Meaning |
+| --- | --- | --- | --- |
+| `--max-retries` | `SNAPDIR_MAX_RETRIES` | `5` | Total attempts per request, including the first |
+| `--retry-base-ms` | `SNAPDIR_RETRY_BASE_MS` | `250` | Base backoff delay (ms) |
+| `--retry-max-ms` | `SNAPDIR_RETRY_MAX_MS` | `30000` | Backoff cap (ms) |
+
+### Request & bandwidth rate limiting
+
+| Flag | Env | Meaning |
+| --- | --- | --- |
+| `--max-requests` | `SNAPDIR_MAX_REQUESTS` | Cap on network requests per second |
+| `--limit-rate` | `SNAPDIR_LIMIT_RATE` | Aggregate byte-throughput cap (e.g. `10M`, `512K`) |
+
+When you don't set these, snapdir applies a conservative **per-backend default**, taken as the lower of each provider's published read/write limits:
+
+| Backend | Requests/s | Bandwidth | Source |
+| --- | --- | --- | --- |
+| `s3://` | 3500 | uncapped | [AWS S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html) |
+| `gs://` (GCS) | 1000 | uncapped | [Google Cloud Storage](https://docs.cloud.google.com/storage/docs/request-rate) |
+| `b2://` | 20 | 25 MiB/s | [Backblaze B2](https://www.backblaze.com/docs/cloud-storage-rate-limits) |
+| `file://` / local | uncapped | uncapped | — |
+
+Precedence, highest to lowest: **`--flag` > `SNAPDIR_*` env > per-backend default > global default.**
+
+### Adaptive concurrency (opt-in)
+
+`--adaptive` / `SNAPDIR_ADAPTIVE` is a separate, opt-in tuner that auto-tunes transfer concurrency (and network byte-rate) toward a polite fraction of measured capacity. It is **off by default** — default behavior is full speed. See the changelog for details.
+
 ## Use cases
 
 - Reproducible build/dataset artifacts addressed by content hash.
