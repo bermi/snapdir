@@ -2651,7 +2651,9 @@ gates:
     phase: 21
     owner_agent: cli
     depends_on: [retry-backoff-core, backend-rate-limits, stores-backoff-wire]
-    status: pending
+    status: passed
+    passed_at: 2026-06-09T01:48:28Z
+    git_sha: 32ddc65
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked ratelimit -- --nocapture"
     pass_criteria:
@@ -2659,7 +2661,7 @@ gates:
         - exit_code: 0
         - regex_match: "test result: ok"
     human_checkpoint: false
-    description: "Expose the knobs (cli lane, crates/snapdir-cli only). Add global flags mirroring the --checksum manual-env-resolver pattern (cli.rs:1365-1422): --max-retries/SNAPDIR_MAX_RETRIES (5), --retry-base-ms/SNAPDIR_RETRY_BASE_MS (250), --retry-max-ms/SNAPDIR_RETRY_MAX_MS (30000), --max-rate/SNAPDIR_MAX_RATE (bytes/s; 0/unset = backend default), --max-requests/SNAPDIR_MAX_REQUESTS (req/s; 0/unset = backend default), --adaptive/SNAPDIR_ADAPTIVE (on|off). Add resolver methods `resolve_retry_policy()` and `resolve_rate_limits(scheme)` that layer user-override -> snapdir_stores::limits::for_scheme(scheme) -> global default (scheme known at resolve_store/router dispatch), and thread the resolved RetryPolicy + TransferConfig (incl. max_requests_per_sec) into the store constructors. Surface in `snapdir defaults` (automatic via reformat_env_default). e2e tests (fn names contain `ratelimit`): precedence --max-requests beats env beats backend default beats global; a b2:// store with no flags resolves the B2 backend defaults; an s3:// store resolves unlimited bytes; defaults output lists the new env vars. Update help/trycmd snapshots for the new global flags."
+    description: "Expose the knobs (cli lane, crates/snapdir-cli only). DESC-CORRECTION 2026-06-09: --max-rate and --adaptive were DROPPED from this gate — the CLI ALREADY has --limit-rate/SNAPDIR_LIMIT_RATE (byte-rate -> max_bytes_per_sec, built in transfer_config() ~cli.rs:1061) and --adaptive/SNAPDIR_ADAPTIVE (the 1.3.0 opt-in fraction); do NOT add duplicates. Add ONLY the NEW global flags, mirroring the manual-env-resolver precedence pattern (like resolve_checksum_algo ~cli.rs:1365): --max-retries/SNAPDIR_MAX_RETRIES (default 5), --retry-base-ms/SNAPDIR_RETRY_BASE_MS (250), --retry-max-ms/SNAPDIR_RETRY_MAX_MS (30000) -> resolve_retry_policy() -> RetryPolicy -> TransferConfig.with_retry; and --max-requests/SNAPDIR_MAX_REQUESTS (req/s; 0/unset = backend default) -> TransferConfig.max_requests_per_sec. Add resolve_rate_limits(scheme) that, for the resolved store SCHEME (file/s3/gs|gcs/b2/external, known at resolve_store), layers user-override (--max-requests / existing --limit-rate) > snapdir_stores::limits::for_scheme(scheme) > global default (None). Because TransferConfig carries SINGLE req/s + bytes/s fields while for_scheme exposes read+write caps, the per-backend default = the CONSERVATIVE min(read,write) for each (e.g. b2 -> 20 req/s + 25 MiB/s; s3 -> 3500 req/s + unlimited bytes; gs -> 1000 req/s + unlimited; file/unknown -> None). Thread the resolved RetryPolicy + req/s + bytes/s into the TransferConfig handed to store construction (extend the existing transfer_config() to take/know the scheme, or add a scheme-aware sibling). Surface in `snapdir defaults` (automatic via reformat_env_default). e2e/unit tests (fn names contain `ratelimit`): precedence --max-requests > SNAPDIR_MAX_REQUESTS > backend default > global(None); a b2 store with no flags resolves 20 req/s + 25 MiB/s; an s3 store resolves 3500 req/s + unlimited bytes; gs resolves 1000 req/s; resolve_retry_policy precedence (flag > env > default 5/250/30000); `snapdir defaults` lists the new SNAPDIR_MAX_REQUESTS/SNAPDIR_MAX_RETRIES/SNAPDIR_RETRY_BASE_MS/SNAPDIR_RETRY_MAX_MS env vars. Update help/trycmd snapshots for the new global flags (the only surface delta should be the added flags)."
 
   - id: ratelimit-docs
     phase: 21
