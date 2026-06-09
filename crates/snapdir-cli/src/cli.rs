@@ -557,13 +557,27 @@ impl Cli {
                 m.set_phase(Phase::Transfer);
             }
             let store = self.resolve_store(meter.clone())?;
-            let scratch = ScratchDir::new("push")?;
-            cache
-                .fetch_files(&manifest, scratch.path())
-                .with_context(|| format!("materializing staged snapshot {id}"))?;
-            store
-                .push(&manifest, scratch.path())
-                .with_context(|| format!("pushing snapshot {id} to store"))?;
+            if self.store_is_external()? {
+                // External adapters' emit-command contract expects --staging-dir
+                // to be a SHARDED store root (`.objects/<sharded>` +
+                // `.manifests/<sharded>`) — exactly the cache's layout, and the
+                // staged snapshot already lives there in full (the cache's
+                // manifest-written-last invariant: a present manifest implies
+                // its objects are present, proven by `get_manifest` above).
+                // Hand the cache root over directly; a scratch TREE would be
+                // the wrong shape for the emitted script.
+                store
+                    .push(&manifest, &self.cache_dir())
+                    .with_context(|| format!("pushing snapshot {id} to store"))?;
+            } else {
+                let scratch = ScratchDir::new("push")?;
+                cache
+                    .fetch_files(&manifest, scratch.path())
+                    .with_context(|| format!("materializing staged snapshot {id}"))?;
+                store
+                    .push(&manifest, scratch.path())
+                    .with_context(|| format!("pushing snapshot {id} to store"))?;
+            }
             reporter.finish();
             println!("{id}");
             self.log_event("push", id, store_url)?;
@@ -606,9 +620,27 @@ impl Cli {
             m.set_phase(Phase::Transfer);
         }
         let store = self.resolve_store(meter.clone())?;
-        store
-            .push(&manifest, &root)
-            .with_context(|| format!("pushing snapshot {id} to store"))?;
+        if self.store_is_external()? {
+            // External adapters' emit-command contract expects --staging-dir to
+            // be a SHARDED store root, not the source tree (the bash oracle
+            // always pushes from the local cache, so its staging dir IS the
+            // cache). Stage into the cache first — the same idempotent,
+            // manifest-written-last write `stage` performs — then hand the
+            // cache root to the shim: the emitted script reads only
+            // `.manifests/<sharded id>` and that manifest's objects, so the
+            // cache holding other snapshots (a superset) is fine.
+            let cache = self.cache_store_with_meter(meter.clone())?;
+            cache
+                .push(&manifest, &root)
+                .with_context(|| format!("staging snapshot {id} into the local cache"))?;
+            store
+                .push(&manifest, &self.cache_dir())
+                .with_context(|| format!("pushing snapshot {id} to store"))?;
+        } else {
+            store
+                .push(&manifest, &root)
+                .with_context(|| format!("pushing snapshot {id} to store"))?;
+        }
         reporter.finish();
         println!("{id}");
         // Mirror the oracle's `_snapdir_log_event "push" "$id" "$store"` (L359):
@@ -685,17 +717,36 @@ impl Cli {
             m.set_total(total_object_bytes(&manifest));
         }
 
-        // Materialize the verified objects into a scratch tree, then push that
-        // tree into the cache store. This reuses the store's verify/atomic
-        // persist on both legs and lands the cache in the same sharded layout.
-        let scratch = ScratchDir::new("fetch")?;
-        store
-            .fetch_files(&manifest, scratch.path())
-            .with_context(|| format!("fetching objects for snapshot {id}"))?;
+        if self.store_is_external()? {
+            // External adapters' emit-command contract expects --cache-dir to
+            // be a SHARDED store root: the emitted script writes objects
+            // straight to `.objects/<sharded>` under the dir it is handed (NOT
+            // a dest tree). Point it at the cache root directly — no scratch
+            // double-copy — then commit the manifest LAST via the cache's
+            // `put_manifest` (which re-verifies the manifest hashes back to
+            // `id`). This preserves the cache's manifest-written-last
+            // invariant: a failed external fetch leaves orphan objects but
+            // never a manifest claiming the snapshot is complete.
+            store
+                .fetch_files(&manifest, &self.cache_dir())
+                .with_context(|| format!("fetching objects for snapshot {id}"))?;
+            cache
+                .put_manifest(id, &manifest)
+                .with_context(|| format!("saving snapshot {id} to the local cache"))?;
+        } else {
+            // Materialize the verified objects into a scratch tree, then push
+            // that tree into the cache store. This reuses the store's verify/
+            // atomic persist on both legs and lands the cache in the same
+            // sharded layout.
+            let scratch = ScratchDir::new("fetch")?;
+            store
+                .fetch_files(&manifest, scratch.path())
+                .with_context(|| format!("fetching objects for snapshot {id}"))?;
 
-        cache
-            .push(&manifest, scratch.path())
-            .with_context(|| format!("saving snapshot {id} to the local cache"))?;
+            cache
+                .push(&manifest, scratch.path())
+                .with_context(|| format!("saving snapshot {id} to the local cache"))?;
+        }
         if self.globals.verbose && !self.globals.quiet {
             eprintln!("SAVED: {id}");
         }
@@ -1055,6 +1106,33 @@ impl Cli {
         let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
         let config = self.transfer_config_for(Some(adapter.name()))?;
         store_for_adapter(&adapter, store_url, config, meter)
+    }
+
+    /// `true` when the resolved `--store` URL routes to a third-party
+    /// `snapdir-<proto>-store` binary ([`Adapter::External`]).
+    ///
+    /// The external emit-command contract hands `--staging-dir`/`--cache-dir`
+    /// to the emitted scripts as SHARDED store roots (`.objects/<sharded>` +
+    /// `.manifests/<sharded>` — the local cache's exact layout), not the
+    /// source/dest TREES the in-process stores take; `run_push` and
+    /// `fetch_inner` branch on this to swap the tree for the cache root.
+    /// Delegates the scheme decision to the same [`resolve_adapter`] router
+    /// [`Self::resolve_store`] uses, so the CLI never re-encodes the scheme
+    /// map.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `--store` is missing or its protocol is invalid —
+    /// the identical errors `resolve_store` surfaces, so calling this after a
+    /// successful `resolve_store` introduces no new failure mode.
+    fn store_is_external(&self) -> Result<bool> {
+        let store_url = self
+            .globals
+            .store
+            .as_deref()
+            .context("missing --store option")?;
+        let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
+        Ok(matches!(adapter, Adapter::External { .. }))
     }
 
     /// Builds the [`TransferConfig`] from the global `--jobs` / `--limit-rate`
