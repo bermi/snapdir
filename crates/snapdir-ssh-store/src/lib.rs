@@ -5,8 +5,9 @@
 //! crypto dependencies):
 //!
 //! - `ssh://` ([`Engine::Ssh`], binary `snapdir-ssh-store`) — requires a POSIX
-//!   shell on the remote host; later phases add a remote-`snapdir`
-//!   acceleration path with graceful fallback.
+//!   shell on the remote host; the emitted scripts negotiate a remote-
+//!   `snapdir` SNAPPACK acceleration path at runtime, with graceful fallback
+//!   to the dumb tar pipeline (see [`ssh_engine`]).
 //! - `sftp://` ([`Engine::Sftp`], binary `snapdir-sftp-store`) — speaks pure
 //!   SFTP, so it works against restricted accounts (chroots with
 //!   `ForceCommand internal-sftp`) with no remote shell at all.
@@ -28,9 +29,8 @@
 //! flag builder ([`config`]), `ssh -V` floor check ([`version`]), and the
 //! emitted-script skeleton/quoting helpers ([`script`]) — are fully
 //! implemented and table-tested. Both transport engines are implemented:
-//! the `sftp://` engine ([`sftp_engine`]) and the `ssh://` dumb engine
-//! ([`ssh_engine`]; the remote-`snapdir` acceleration branch lands in a
-//! later gate).
+//! the `sftp://` engine ([`sftp_engine`]) and the `ssh://` engine
+//! ([`ssh_engine`], dumb path + runtime-negotiated SNAPPACK acceleration).
 
 use std::ffi::OsString;
 use std::fmt;

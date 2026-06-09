@@ -17,6 +17,14 @@
 # must be set — the fence is the contract). stdin/stdout pass straight
 # through, so tar pipelines work.
 #
+# Remote environment:
+#   FAKE_SSH_REMOTE_PATH=<dir>     prepended to PATH before the remote
+#                                  command runs — tests point it at a dir
+#                                  holding the binaries the "remote host"
+#                                  should offer (the real `snapdir`, a fake
+#                                  printing a hostile capability line, a
+#                                  logging wrapper, ...).
+#
 # Fault injection:
 #   FAKE_SSH_FAIL_MATCH=<substr>   a remote command containing <substr>
 #                                  exits 255 before executing anything,
@@ -78,6 +86,11 @@ if [ $# -eq 0 ]; then
 	exit 2
 fi
 cmd="$*"
+
+if [ -n "${FAKE_SSH_REMOTE_PATH:-}" ]; then
+	PATH="$FAKE_SSH_REMOTE_PATH:$PATH"
+	export PATH
+fi
 
 if [ -n "${FAKE_SSH_FAIL_MATCH:-}" ]; then
 	case "$cmd" in

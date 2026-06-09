@@ -11,9 +11,42 @@
 //! strings never reach emitted text.
 //!
 //! The dumb push/fetch bodies live in shell functions
-//! (`_snapdir_dumb_push` / `_snapdir_dumb_fetch`) invoked from a tiny main
-//! dispatch, so the acceleration gate can later add a capability probe and
-//! branch in that dispatch without touching the bodies.
+//! (`_snapdir_dumb_push` / `_snapdir_dumb_fetch`); the main dispatch probes
+//! the remote for a wire-compatible `snapdir` **at script runtime** (emit
+//! time has no connection) and branches into `_snapdir_accel_push` /
+//! `_snapdir_accel_fetch` when the negotiation succeeds, falling back to the
+//! dumb bodies otherwise. Both paths are always embedded.
+//!
+//! Acceleration (runtime-negotiated, ssh:// only):
+//!
+//! - **Push** probes manifest presence AND capabilities in ONE round trip
+//!   (`test -f …; command -v snapdir && snapdir version --capabilities ||
+//!   echo 'caps none'`), then either short-circuits (manifest present),
+//!   streams a SNAPPACK (`snapdir objects-needed` diff → local `snapdir
+//!   send-pack | ssh 'snapdir receive-pack --require-manifest <id>'`; the
+//!   manifest rides the pack LAST, committed remotely only after the
+//!   verified `end` trailer), or runs `_snapdir_dumb_push`.
+//! - **Fetch** uses a caps-only probe and streams `ssh 'snapdir send-pack
+//!   --ids -' | snapdir receive-pack --store file://<cache>` — the remote
+//!   stream is untrusted, so the LOCAL receive-pack verifies every record.
+//! - **Negotiation** keys on the exact ` wire=1` token (a literal baked at
+//!   emit time from this module's [`WIRE_VERSION`], pinned by test to
+//!   `snapdir_stores::WIRE_VERSION` — never parsed from the semver) plus the
+//!   required entries of the `caps=` comma list.
+//! - **Runtime env knobs** (read by the emitted script, not this binary):
+//!   `SNAPDIR_SSH_NO_ACCEL=1` forces the dumb path;
+//!   `SNAPDIR_SSH_FORCE_ACCEL=1` errors instead of falling back when the
+//!   remote lacks the plumbing; `SNAPDIR_SSH_PULL_SENDALL=1` makes an
+//!   accelerated fetch request the FULL object list (both id lists are
+//!   baked, picked at runtime); `SNAPDIR_SSH_LOCAL_SNAPDIR=<abs path>` is
+//!   test/debug plumbing overriding which LOCAL `snapdir` binary anchors the
+//!   pipe ends (default: `snapdir` on `PATH`; a missing local binary
+//!   gracefully degrades to the dumb path).
+//! - **Fallback policy**: probe/diff failures (ssh reachable, plumbing not)
+//!   fall back to the dumb path — nothing has been written, the dumb path is
+//!   idempotent. A failure of the send|receive STREAM itself exits nonzero
+//!   with a retry hint and NEVER silently retries dumb (the failure is
+//!   likely environmental; a retry resumes incrementally for free).
 //!
 //! Engine invariants (mirroring the sftp engine and the mock contract):
 //!
@@ -52,6 +85,217 @@ use crate::script::{heredoc, remote_manifest_path, sh_quote, skeleton};
 use crate::sftp_engine::{file_checksums, validate_id, validate_local_dir};
 use crate::url::SshUrl;
 use crate::Error;
+
+/// The SNAPPACK wire version the emitted scripts negotiate on, baked into
+/// the script text as the literal ` wire=1` token (an exact integer match —
+/// NEVER derived from the remote's semver at runtime).
+///
+/// The shipped lib deliberately depends only on `snapdir-core`, so this is a
+/// local constant; the `wire_version_matches_snapdir_stores` unit test pins
+/// it to `snapdir_stores::WIRE_VERSION` (a dev-dependency) so a wire bump
+/// cannot silently desync the probe.
+const WIRE_VERSION: u32 = 1;
+
+/// The caps the push dispatch requires of the remote `snapdir`.
+const PUSH_CAPS: &str = "objects-needed,receive-pack";
+
+/// The cap the fetch dispatch requires of the remote `snapdir`.
+const FETCH_CAPS: &str = "send-pack";
+
+/// The shell that aborts on any probe transport failure: a nonzero
+/// `_snapdir_ssh` exit is connectivity (the probe's remote command itself
+/// always exits 0), surfaced with the real exit code — it NEVER maps to
+/// not-found or "no capabilities".
+const PROBE_GUARD: &str = r#"if [ "$snapdir_probe_status" -ne 0 ]; then
+  printf 'snapdir-ssh-store: failed to reach the store (ssh exit %s)\n' "$snapdir_probe_status" >&2
+  exit "$snapdir_probe_status"
+fi
+"#;
+
+/// The combined push probe — ONE round trip answering both "is the manifest
+/// already there?" (`manifest=0|1` line) and "what plumbing does the remote
+/// offer?" (a `snapdir <semver> wire=N caps=…` line, or `caps none` when
+/// `snapdir` is absent or predates `version --capabilities`).
+fn combined_probe_block(remote_manifest: &str) -> String {
+    let probe_cmd = format!(
+        "if test -f {man_q}; then echo manifest=1; else echo manifest=0; fi; \
+         command -v snapdir >/dev/null 2>&1 && snapdir version --capabilities || echo 'caps none'",
+        man_q = sh_quote(remote_manifest),
+    );
+    format!(
+        "snapdir_probe_status=0\n\
+         _snapdir_ssh {probe} >\"$snapdir_tmp/probe\" || snapdir_probe_status=$?\n\
+         {PROBE_GUARD}",
+        probe = sh_quote(&probe_cmd),
+    )
+}
+
+/// The caps-only fetch probe (fetch has no manifest to test — the manifest
+/// already arrived via `get-manifest-command`).
+fn caps_probe_block() -> String {
+    let probe_cmd = "command -v snapdir >/dev/null 2>&1 && \
+                     snapdir version --capabilities || echo 'caps none'";
+    format!(
+        "snapdir_probe_status=0\n\
+         _snapdir_ssh {probe} >\"$snapdir_tmp/probe\" || snapdir_probe_status=$?\n\
+         {PROBE_GUARD}",
+        probe = sh_quote(probe_cmd),
+    )
+}
+
+/// The runtime accel prelude: resolves the LOCAL `snapdir` binary
+/// (`SNAPDIR_SSH_LOCAL_SNAPDIR` override, else `snapdir` on `PATH`; absence
+/// flips `snapdir_local_ok=0` → graceful dumb fallback) and defines
+/// `_snapdir_caps_ok <cap>…`, the bash-3.2/POSIX capability check: the first
+/// probe line starting `snapdir ` must carry the exact ` wire=<N>` token
+/// (baked literal from [`WIRE_VERSION`]) and every required cap as a
+/// word-bounded member of the `caps=` comma list.
+fn accel_prelude() -> String {
+    format!(
+        r#"snapdir_local="${{SNAPDIR_SSH_LOCAL_SNAPDIR:-snapdir}}"
+snapdir_local_ok=0
+if command -v "$snapdir_local" >/dev/null 2>&1; then
+  snapdir_local_ok=1
+fi
+_snapdir_caps_ok() {{
+  snapdir_caps_line=''
+  while IFS= read -r snapdir_probe_line; do
+    case "$snapdir_probe_line" in
+    'snapdir '*)
+      snapdir_caps_line="$snapdir_probe_line"
+      break
+      ;;
+    esac
+  done <"$snapdir_tmp/probe"
+  if [ -z "$snapdir_caps_line" ]; then
+    return 1
+  fi
+  case " $snapdir_caps_line " in
+  *' wire={WIRE_VERSION} '*) ;;
+  *) return 1 ;;
+  esac
+  snapdir_caps_csv=''
+  for snapdir_caps_tok in $snapdir_caps_line; do
+    case "$snapdir_caps_tok" in
+    caps=*) snapdir_caps_csv=",${{snapdir_caps_tok#caps=}}," ;;
+    esac
+  done
+  for snapdir_cap in "$@"; do
+    case "$snapdir_caps_csv" in
+    *",$snapdir_cap,"*) ;;
+    *) return 1 ;;
+    esac
+  done
+  return 0
+}}
+"#
+    )
+}
+
+/// The `SNAPDIR_SSH_FORCE_ACCEL=1`-but-no-caps error body (emitted inside an
+/// `elif … then` arm): names the host, the required wire/caps, echoes what
+/// the probe actually returned, and lists the remedies. Exit 1.
+fn force_accel_error_block(host: &str, required_caps: &str) -> String {
+    format!(
+        r#"  {{
+    printf 'snapdir-ssh-store: SNAPDIR_SSH_FORCE_ACCEL=1, but %s does not offer the accelerated plumbing\n' {host_q}
+    printf 'required: snapdir on the remote PATH with wire={WIRE_VERSION} and caps %s\n' '{required_caps}'
+    printf 'the probe returned:\n'
+    cat "$snapdir_tmp/probe"
+    printf 'remedies: install or upgrade snapdir on %s, or unset SNAPDIR_SSH_FORCE_ACCEL\n' {host_q}
+  }} >&2
+  exit 1
+"#,
+        host_q = sh_quote(host),
+    )
+}
+
+/// `_snapdir_accel_push`: round trips 2+3 of the accelerated push. The baked
+/// want list (the manifest's deduped F-checksums) is diffed remotely via
+/// `snapdir objects-needed` (failure here → `_snapdir_dumb_push`, nothing
+/// written yet), then ONE local `send-pack | ssh 'receive-pack'` pipe
+/// streams the missing objects with the manifest as the LAST record — the
+/// remote commits it only after the verified `end` trailer. An EMPTY missing
+/// set still streams the manifest-only pack (completes an interrupted push).
+/// A stream failure exits nonzero with a retry hint — never a silent dumb
+/// retry mid-stream.
+fn accel_push_fn(base: &str, staging_abs: &str, id: &str, checksums: &[String]) -> String {
+    let store_url_q = sh_quote(&format!("file://{base}"));
+    let objects_needed_cmd = format!("snapdir objects-needed --store {store_url_q}");
+    let receive_cmd = format!(
+        "snapdir receive-pack --store {store_url_q} --require-manifest {}",
+        sh_quote(id),
+    );
+    let mut body = heredoc("cat >\"$snapdir_tmp/want\"", checksums);
+    let _ = write!(
+        body,
+        r#"if [ -s "$snapdir_tmp/want" ]; then
+  snapdir_need_status=0
+  _snapdir_ssh {objneed} <"$snapdir_tmp/want" >"$snapdir_tmp/need" || snapdir_need_status=$?
+  if [ "$snapdir_need_status" -ne 0 ]; then
+    _snapdir_dumb_push
+    return 0
+  fi
+else
+  : >"$snapdir_tmp/need"
+fi
+snapdir_stream_status=0
+"$snapdir_local" send-pack --store {staging_url} --ids "$snapdir_tmp/need" --manifest-id {id_q} | _snapdir_ssh {recv} || snapdir_stream_status=$?
+if [ "$snapdir_stream_status" -ne 0 ]; then
+  printf 'snapdir-ssh-store: accelerated push stream failed (exit %s); retrying the push resumes incrementally\n' "$snapdir_stream_status" >&2
+  exit "$snapdir_stream_status"
+fi
+"#,
+        objneed = sh_quote(&objects_needed_cmd),
+        staging_url = sh_quote(&format!("file://{staging_abs}")),
+        id_q = sh_quote(id),
+        recv = sh_quote(&receive_cmd),
+    );
+    format!("_snapdir_accel_push() {{\n{body}}}\n")
+}
+
+/// `_snapdir_accel_fetch`: one round trip streaming the runtime-chosen id
+/// list (`$snapdir_ids`, picked by the dispatch — the emit-time cache diff,
+/// or the full list under `SNAPDIR_SSH_PULL_SENDALL=1`) through `ssh
+/// 'snapdir send-pack --ids -' | snapdir receive-pack --store
+/// file://<cache>`. The remote stream is UNTRUSTED: the local receive-pack
+/// hash-verifies every record. Stream failure exits nonzero (no silent dumb
+/// fallback mid-stream).
+fn accel_fetch_fn(base: &str, cache_abs: &str) -> String {
+    let send_cmd = format!(
+        "snapdir send-pack --store {} --ids -",
+        sh_quote(&format!("file://{base}")),
+    );
+    format!(
+        r#"_snapdir_accel_fetch() {{
+snapdir_stream_status=0
+_snapdir_ssh {send} <"$snapdir_ids" | "$snapdir_local" receive-pack --store {cache_url} || snapdir_stream_status=$?
+if [ "$snapdir_stream_status" -ne 0 ]; then
+  printf 'snapdir-ssh-store: accelerated fetch stream failed (exit %s); retrying the fetch resumes incrementally\n' "$snapdir_stream_status" >&2
+  exit "$snapdir_stream_status"
+fi
+}}
+"#,
+        send = sh_quote(&send_cmd),
+        cache_url = sh_quote(&format!("file://{cache_abs}")),
+    )
+}
+
+/// Returns `dir` made absolute against the current working directory (the
+/// accel pipe ends hand it to `--store file://…`, which must be absolute;
+/// the orchestrator already passes absolute staging/cache dirs — this is
+/// defensive).
+fn absolute_dir(dir: &str) -> String {
+    let path = Path::new(dir);
+    if path.is_absolute() {
+        dir.to_owned()
+    } else {
+        std::env::current_dir().map_or_else(
+            |_| dir.to_owned(),
+            |cwd| cwd.join(path).display().to_string(),
+        )
+    }
+}
 
 /// Emits the `get-manifest-command` script: `test -f` probe with exit-code
 /// discipline (absent → exact not-found wording on stderr + exit 1; any
@@ -94,14 +338,16 @@ _snapdir_ssh {cat}
 /// checksums (deduped, sorted, hex64-validated) become the candidate object
 /// set baked into the script.
 ///
-/// Script flow: manifest probe (present → exact no-op wording, exit 0) →
-/// `_snapdir_dumb_push`: (a) ONE batched remote existence probe (candidate
-/// relpath heredoc piped to a remote `while read` loop under `umask <U>`,
-/// missing paths captured locally); (b) if anything is missing, one
-/// `tar -C <staging> -cf - -T missing | ssh 'tar -x into temp + mv -f'`
-/// pipeline (atomic per object via same-filesystem rename; failure
-/// propagates under the orchestrator's `pipefail`); (c) manifest LAST in a
-/// separate call (`mktemp` sibling + `cat` + `mv -f`).
+/// Script flow: ONE combined probe round trip (manifest presence + remote
+/// capabilities; present → exact no-op wording, exit 0), then the runtime
+/// dispatch (see the module docs) into either `_snapdir_accel_push`
+/// ([`accel_push_fn`]) or `_snapdir_dumb_push`: (a) ONE batched remote
+/// existence probe (candidate relpath heredoc piped to a remote `while
+/// read` loop under `umask <U>`, missing paths captured locally); (b) if
+/// anything is missing, one `tar -C <staging> -cf - -T missing | ssh 'tar
+/// -x into temp + mv -f'` pipeline (atomic per object via same-filesystem
+/// rename; failure propagates under the orchestrator's `pipefail`); (c)
+/// manifest LAST in a separate call (`mktemp` sibling + `cat` + `mv -f`).
 ///
 /// # Errors
 ///
@@ -130,15 +376,18 @@ pub fn get_push_script(
     let base = &url.base;
     let umask = &cfg.umask;
     let remote_manifest = remote_manifest_path(base, id);
+    let staging_abs = absolute_dir(staging);
 
     let mut script = skeleton(url, cfg);
-    script.push_str(&probe_block(&remote_manifest));
+    // ONE combined round trip: manifest presence + remote capabilities.
+    script.push_str(&combined_probe_block(&remote_manifest));
     // The exact no-op wording (the probe already proved the manifest is
     // present, which implies its objects are too).
     script.push_str(
-        "if [ \"$snapdir_manifest_present\" -eq 1 ]; then\n  \
+        "if grep -q '^manifest=1$' \"$snapdir_tmp/probe\"; then\n  \
          echo 'Manifest already exists on store.'\n  exit 0\nfi\n",
     );
+    script.push_str(&accel_prelude());
 
     // The dumb body, wrapped in a function so the accel gate can add a
     // capability probe + branch in the dispatch below without touching it.
@@ -204,7 +453,24 @@ pub fn get_push_script(
 
     script.push_str("_snapdir_dumb_push() {\n");
     script.push_str(&body);
-    script.push_str("}\n_snapdir_dumb_push\n");
+    script.push_str("}\n");
+    script.push_str(&accel_push_fn(base, &staging_abs, id, &checksums));
+    // Dispatch: NO_ACCEL (or no usable local snapdir — accel is impossible
+    // without one, so degrade gracefully) → dumb; negotiated caps → accel;
+    // FORCE_ACCEL without caps → designed error; else → dumb.
+    let _ = write!(
+        script,
+        r#"if [ "${{SNAPDIR_SSH_NO_ACCEL:-0}}" = "1" ] || [ "$snapdir_local_ok" -ne 1 ]; then
+  _snapdir_dumb_push
+elif _snapdir_caps_ok objects-needed receive-pack; then
+  _snapdir_accel_push
+elif [ "${{SNAPDIR_SSH_FORCE_ACCEL:-0}}" = "1" ]; then
+{err}else
+  _snapdir_dumb_push
+fi
+"#,
+        err = force_accel_error_block(&url.host_arg(), PUSH_CAPS),
+    );
     Ok(script)
 }
 
@@ -213,7 +479,12 @@ pub fn get_push_script(
 /// deduped by checksum and filtered against `--cache-dir` at emit time
 /// (objects already cached are not re-fetched).
 ///
-/// Script flow (`_snapdir_dumb_fetch`): (a) baked `checksum relpath` pair
+/// Script flow: the runtime dispatch (see the module docs; the caps-only
+/// probe round trip is skipped entirely when there is nothing to fetch)
+/// branches into `_snapdir_accel_fetch` ([`accel_fetch_fn`], fed the
+/// runtime-chosen baked id list) or `_snapdir_dumb_fetch`.
+///
+/// The dumb path (`_snapdir_dumb_fetch`): (a) baked `checksum relpath` pair
 /// heredoc; (b) batched remote existence check emitting exact
 /// `ERROR: missing object <checksum>` lines — any line aborts on stderr
 /// BEFORE any transfer; (c) one remote `tar -cf -` of the needed relpaths
@@ -364,7 +635,40 @@ fi
 
     script.push_str("_snapdir_dumb_fetch() {\n");
     script.push_str(&body);
-    script.push_str("}\n_snapdir_dumb_fetch\n");
+    script.push_str("}\n");
+
+    // Accel plumbing: BOTH id lists are baked (the emit-time cache diff and
+    // the full F-checksum list); the dispatch picks one at runtime.
+    let cache_abs = absolute_dir(cache);
+    let needed_ids: Vec<String> = needed.iter().map(|sum| (*sum).clone()).collect();
+    script.push_str(&accel_prelude());
+    script.push_str(&heredoc("cat >\"$snapdir_tmp/ids\"", &needed_ids));
+    script.push_str(&heredoc("cat >\"$snapdir_tmp/ids_all\"", &checksums));
+    script.push_str(&accel_fetch_fn(&url.base, &cache_abs));
+    // Dispatch: pick the id list (SENDALL → full), then NO_ACCEL / no local
+    // snapdir / nothing-to-fetch → dumb (the dumb body with an empty needed
+    // set makes no remote call and its epilogue passes trivially, so the
+    // probe round trip is skipped entirely); else probe caps and branch.
+    let _ = write!(
+        script,
+        r#"snapdir_ids="$snapdir_tmp/ids"
+if [ "${{SNAPDIR_SSH_PULL_SENDALL:-0}}" = "1" ]; then
+  snapdir_ids="$snapdir_tmp/ids_all"
+fi
+if [ "${{SNAPDIR_SSH_NO_ACCEL:-0}}" = "1" ] || [ "$snapdir_local_ok" -ne 1 ] || [ ! -s "$snapdir_ids" ]; then
+  _snapdir_dumb_fetch
+else
+{probe}if _snapdir_caps_ok send-pack; then
+  _snapdir_accel_fetch
+elif [ "${{SNAPDIR_SSH_FORCE_ACCEL:-0}}" = "1" ]; then
+{err}else
+  _snapdir_dumb_fetch
+fi
+fi
+"#,
+        probe = caps_probe_block(),
+        err = force_accel_error_block(&url.host_arg(), FETCH_CAPS),
+    );
     Ok(script)
 }
 
@@ -401,6 +705,25 @@ mod tests {
 
     fn cfg() -> Config {
         Config::from_lookup(Engine::Ssh, |_| None).unwrap()
+    }
+
+    #[test]
+    fn wire_version_matches_snapdir_stores() {
+        // The shipped lib depends only on snapdir-core, so the wire version
+        // is a local constant — this pin (against the dev-dependency that
+        // OWNS the protocol) is what keeps a future wire bump from silently
+        // desyncing the emitted probes.
+        assert_eq!(WIRE_VERSION, snapdir_stores::WIRE_VERSION);
+    }
+
+    #[test]
+    fn required_caps_are_advertised_by_the_cli_constants() {
+        for cap in PUSH_CAPS.split(',').chain(FETCH_CAPS.split(',')) {
+            assert!(
+                snapdir_stores::WIRE_CAPS.contains(&cap),
+                "required cap {cap:?} must be one the CLI advertises"
+            );
+        }
     }
 
     #[test]

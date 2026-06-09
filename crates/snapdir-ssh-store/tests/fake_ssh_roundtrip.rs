@@ -135,6 +135,16 @@ fn fake_remote_env(bindir: &Path, remote_root: &Path) -> EnvGuard {
     let old_path = std::env::var("PATH").unwrap_or_default();
     guard.set("PATH", &format!("{}:{old_path}", bindir.display()));
     guard.set("FAKE_REMOTE_ROOT", &remote_root.display().to_string());
+    // This suite is the DUMB-path contract: pin the runtime dispatch to the
+    // dumb bodies so a `snapdir` with wire plumbing on the host machine's
+    // PATH can never flip these tests onto the accel path (tests/accel.rs
+    // owns the dispatch + accel behavior), and scrub the other accel knobs
+    // a developer shell might leak.
+    guard.set("SNAPDIR_SSH_NO_ACCEL", "1");
+    guard.remove("SNAPDIR_SSH_FORCE_ACCEL");
+    guard.remove("SNAPDIR_SSH_PULL_SENDALL");
+    guard.remove("SNAPDIR_SSH_LOCAL_SNAPDIR");
+    guard.remove("FAKE_SSH_REMOTE_PATH");
     guard
 }
 
@@ -526,9 +536,14 @@ fn emitted_push_script_probes_then_transfers_then_commits_inside_dumb_function()
         "the object transfer must precede the manifest commit"
     );
 
-    // The dumb body is a function the accel gate can branch around.
+    // The dumb body is a function the runtime dispatch branches around
+    // (both paths embedded; tests/accel.rs owns the dispatch behavior).
     assert!(script.contains("_snapdir_dumb_push() {"));
-    assert!(script.trim_end().ends_with("_snapdir_dumb_push"));
+    assert!(script.contains("_snapdir_accel_push() {"));
+    assert!(
+        script.contains("  _snapdir_dumb_push\n"),
+        "the dispatch must still invoke the dumb body"
+    );
 
     // Exact no-op wording on the short-circuit path, BEFORE the dumb body.
     let noop = script
@@ -594,9 +609,14 @@ fn emitted_fetch_script_gates_extraction_on_the_exact_match_allowlist() {
     .unwrap();
     assert_skeleton_invariants(&script);
 
-    // The dumb body is a function the accel gate can branch around.
+    // The dumb body is a function the runtime dispatch branches around
+    // (both paths embedded; tests/accel.rs owns the dispatch behavior).
     assert!(script.contains("_snapdir_dumb_fetch() {"));
-    assert!(script.trim_end().ends_with("_snapdir_dumb_fetch"));
+    assert!(script.contains("_snapdir_accel_fetch() {"));
+    assert!(
+        script.contains("  _snapdir_dumb_fetch\n"),
+        "the dispatch must still invoke the dumb body"
+    );
 
     // Ordering: pre-transfer remote existence check → tar saved to a local
     // file → allowlist gate → extraction into the incoming temp dir.
@@ -645,9 +665,18 @@ fn emitted_fetch_script_skips_objects_already_cached() {
         &cache.path().display().to_string(),
     )
     .unwrap();
+    // The cached object is dropped from the transfer set at emit time: its
+    // sharded relpath never appears (no dumb pair, no expected-list entry),
+    // and the only place the bare checksum survives is the full-list
+    // `ids_all` heredoc baked for the runtime SNAPDIR_SSH_PULL_SENDALL knob.
     assert!(
-        !script.contains(&sums[0]),
-        "cached object must be dropped at emit time"
+        !script.contains(&object_path(&sums[0])),
+        "cached object must be dropped from the transfer set at emit time"
+    );
+    assert_eq!(
+        script.matches(&sums[0]).count(),
+        1,
+        "the cached checksum may only survive in the baked SENDALL list"
     );
     assert!(script.contains(&sums[1]), "uncached object must be fetched");
 }
