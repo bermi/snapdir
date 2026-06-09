@@ -2821,3 +2821,172 @@ gates:
         - human_confirm: "Phase 23 done: snapdir 1.4.0 released — path-normalization + --store/sync-from env default + the rate-limiting/exponential-backoff-retry feature + per-crate crates.io READMEs; PR-merged to snapdir/snapdir, tagged v1.4.0 with a live GitHub release, all 4 crates published to crates.io; frozen format untouched, zero new deps. Approve?"
     human_checkpoint: true
     description: "PHASE 23 SIGN-OFF: snapdir 1.4.0 released — input-path normalization, --store/sync-from -> $SNAPDIR_STORE, full-jitter exponential-backoff retries honouring Retry-After + per-call request-rate limiting with researched per-backend defaults (adaptive stays opt-in), and per-crate crates.io READMEs; canonical snapdir/snapdir at 1.4.0 + GitHub release + crates.io; default behavior unchanged, frozen format untouched."
+
+  # ===================================================================
+  # Phase 24 — SSH + SFTP stores (operator plan-approved 2026-06-09;
+  # full spec: .gatesmith/plans/phase24-ssh-stores.md)
+  # ===================================================================
+  - id: external-cli-wiring
+    phase: 24
+    owner_agent: cli
+    depends_on: []
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test external_store_roundtrip --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-cli/tests/external_store_roundtrip.rs]
+    human_checkpoint: false
+    description: "PREREQ BUG FIX (plan Phase 0). The emit-command contract expects --staging-dir/--cache-dir to be SHARDED store-root layouts (mock reads ${staging_dir}/.manifests/<sharded>, writes ${cache_dir}/.objects/<sharded>), but cli.rs passes TREES: run_push passes the source tree (cli.rs:610) / scratch tree (cli.rs:565) to Store::push, and fetch_inner does store.fetch_files(scratch)+cache.push(scratch-as-tree) (cli.rs:692-698) — so push/fetch --store <external>:// is broken end-to-end (latent: no CLI test drives mock://). FIX adapter-aware in cli.rs, matching the bash oracle (staging/cache dir IS the local cache): push+External = cache.push(&manifest,&root) first (stage semantics, idempotent) then store.push(&manifest, cache_root); fetch+External = store.fetch_files(&manifest, cache_root) directly then commit the manifest to the cache LAST via FileStore::put_manifest (manifest-last preserved locally, no scratch double-copy). Native file/s3/b2/gcs paths byte-identically UNCHANGED. GATE TEST external_store_roundtrip.rs: drive the real binary (env!(CARGO_BIN_EXE_snapdir), pattern store_roundtrip.rs) against mock:// with crates/snapdir-stores/tests/snapdir-mock-store on PATH: push -> fetch -> checkout round-trip identical tree + second push idempotent (emits 'Manifest already exists on store.') + fetch of unknown id maps to manifest-not-found error."
+
+  - id: ssh-store-scaffold
+    phase: 24
+    owner_agent: stores
+    depends_on: []
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-ssh-store --test emitted_contract --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-ssh-store/Cargo.toml, crates/snapdir-ssh-store/src/url.rs, crates/snapdir-ssh-store/src/config.rs, crates/snapdir-ssh-store/tests/emitted_contract.rs]
+    human_checkpoint: false
+    description: "Plan Phase 1: new workspace member crates/snapdir-ssh-store — lib + [[bin]] snapdir-ssh-store + [[bin]] snapdir-sftp-store (3-line shims into lib::run(Engine::{Ssh,Sftp},..)), sole dep snapdir-core, STD-ONLY arg parsing mirroring the mock grammar (subcommand + --key value|--key=value + --version). Modules: args.rs, url.rs (sftp|ssh://[user@]host[:port]/abs/base — reject embedded password/empty host/bare-root; charset-validate user+host incl. bracketed IPv6 = shell-injection defense), config.rs (env family SNAPDIR_{SSH,SFTP}_STORE_{IDENTITY_FILE,PORT,KNOWN_HOSTS,CONNECT_TIMEOUT,JOBS,CONTROL_PERSIST,UMASK,EXTRA_OPTS} + security-floor flag builder: floor -o flags FIRST on argv (OpenSSH first-obtained-wins) — BatchMode/StrictHostKeyChecking=yes/PasswordAuthentication=no/KbdInteractiveAuthentication=no/ClearAllForwardings + modern-only Kex (sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org) + AEAD-only Ciphers + modern HostKeyAlgorithms, MACs omitted (AEAD), EXTRA_OPTS appended LAST so it cannot weaken the floor), version.rs (`ssh -V` parse, fail closed <8.5), script.rs (shared skeleton: 0700 mktemp dir, ControlMaster=auto + ControlPath=$tmp/cm + ControlPersist, _snapdir_cleanup EXIT/TERM/HUP trap incl. -O exit; composes with the orchestrator wrapper, never traps INT; sh_quote/sftp_quote/heredoc helpers; emitted text bash-3.2-clean). GATES emitted-contract/security-floor(textual)/version-floor in tests/emitted_contract.rs: floor flags present+ordered on every invocation; EXTRA_OPTS StrictHostKeyChecking=no appears strictly AFTER the floor flag; exact wording \"ID '<id>' not found on --store '<store>'.\" and 'ERROR: missing object <checksum>'; URL + ssh -V parser tables. NO real network anywhere."
+
+  - id: ssh-engine-dumb
+    phase: 24
+    owner_agent: stores
+    depends_on: [ssh-store-scaffold]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-ssh-store --test fake_ssh_roundtrip --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-ssh-store/src/ssh_engine.rs, crates/snapdir-ssh-store/tests/fixtures/fake-ssh]
+    human_checkpoint: false
+    description: "Plan Phase 2: ssh:// dumb engine (POSIX shell on remote). Binary parses the staged manifest at EMIT time (push: --staging-dir/.manifests/<sharded>; fetch: manifest on the BINARY's stdin per shim.rs:294-300), validates checksums ^[0-9a-f]{64}$, bakes sharded relpath heredocs into the script. PUSH: runtime manifest probe (test -e; exit 0=no-op 'Manifest already exists on store.', 1=continue, other=fail — connectivity never masquerades as absence) -> ONE batched existence probe (heredoc | ssh 'umask U && mkdir -p base && cd base && while read p; do [ -e \"$p\" ] || printf %s\\\\n \"$p\"; done') -> one tar -T missing | ssh 'mktemp -d .snapdir-incoming + tar -x + mv -f into shards' (atomic per object) -> manifest LAST own call (cat>tmp && mv -f). FETCH: emit-time local cache diff; call1 batched existence check emitting exact 'ERROR: missing object <sum>' before transfer; call2 remote tar -cf - streamed to local file; EXACT-MATCH ALLOWLIST tar -tf vs client path list (closes tar entry-name attacks: .., abs paths, symlinks); extract to temp under cache, mv -f, ensure-no-errors epilogue. GATES atomicity (injected mid-transfer failure -> some objects, NO manifest, no non-temp partials; retry completes — mirror push.rs concurrent_upload_all_or_nothing_on_failure), idempotency, not-found-mapping (StoreError::ManifestNotFound), fetch-missing-object (exact wording), tar-allowlist (hostile ../evil entry rejected before extraction) — in tests/fake_ssh_roundtrip.rs via fixtures/fake-ssh (executes remote cmd via sh -c against $FAKE_REMOTE_ROOT; FAKE_SSH_FAIL_* fault knobs), driven through snapdir_stores::ExternalStore::with_binary(CARGO_BIN_EXE_snapdir-ssh-store) (helpers lifted from shim_external_store.rs:63-96; snapdir-stores as dev-dep)."
+
+  - id: sftp-engine
+    phase: 24
+    owner_agent: stores
+    depends_on: [ssh-store-scaffold]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-ssh-store --test fake_sftp_roundtrip --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-ssh-store/src/sftp_engine.rs, crates/snapdir-ssh-store/tests/fixtures/fake-sftp]
+    human_checkpoint: false
+    description: "Plan Phase 3: sftp:// engine — PURE SFTP protocol, NO remote shell, NO tar, NO accel (works against ForceCommand internal-sftp chroots; ssh:// and sftp:// are distinct transports). All ops are sftp -b batchfiles in $snapdir_tmp over the shared ControlMaster ('-' prefix tolerates failure; unprefixed aborts batch exit 1). PROBE: single-command 'ls <manifest_path>' batch; on failure a 'pwd' liveness batch over the live master disambiguates missing vs unreachable (network errors never map to not-found/silent re-push). PUSH: one batch of tolerated -ls <objpath> existence probes (stdout parsed dropping 'sftp> ' echo; parse failure degrades to upload-all — never wrong, only slower); missing objects chunked into JOBS parallel batchfiles each: -mkdir ancestor chain, put to <obj>.tmp.<pid>, -rm <obj>, rename tmp obj (posix-rename@openssh.com when offered), chmod 600 (umask substitute); backgrounded with explicit per-pid wait/status collection (wrapper's trailing bare wait must find nothing unchecked); manifest LAST in its own final batch with same tmp/rename/chmod discipline. FETCH: chunked -get into mktemp -d under cache-dir (flat checksum names), local move-into-shards + ensure-no-errors epilogue with exact 'ERROR: missing object <sum>' wording. GATES (sftp mirror of ssh set): atomicity, idempotency, not-found-mapping, fetch-missing-object — tests/fake_sftp_roundtrip.rs via fixtures/fake-sftp interpreting exactly the emitted batch verbs (ls/get/put/rm/rename/mkdir/chmod/pwd with '-' tolerance) against the same fake root."
+
+  - id: pack-wire-format
+    phase: 24
+    owner_agent: stores
+    depends_on: []
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores pack --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-stores/src/pack.rs]
+    human_checkpoint: false
+    description: "Plan Phase 4a: crates/snapdir-stores/src/pack.rs — SNAPPACK 1 stream format, ZERO new deps (tar rejected: both pipe ends are the Rust binary). Grammar: 'SNAPPACK 1\\n' then records 'obj <hex64> <len>\\n<payload>' / at most one 'manifest <hex64> <len>\\n<payload>' (must be last record) then trailer 'end\\n'. hex64 validated ^[0-9a-f]{64}$ on read AND write; header lines <=128 bytes; manifest payload buffered cap 64 MiB; obj payloads STREAMED with incremental BLAKE3 — file:// sinks stream to a temp_sibling and rename ONLY on hash match (file_store.rs discipline); mismatch => temp deleted, stream aborted. EOF before 'end' = hard error, manifest NEVER committed (manifest-last survives truncation). Duplicate obj records idempotent (still hash-verified, not rewritten; mismatch on a present object still aborts). pub const WIRE_VERSION: u32 = 1 + WIRE_CAPS = [objects-needed, send-pack, receive-pack] live HERE (not frozen snapdir-core). Plus StreamStore::objects_needed DEFAULTED trait method in stream.rs (order-preserving has_object loop; batched S3/GCS overrides = marked follow-up). GATES pack-roundtrip (encode N objects+manifest from store A -> decode into empty B -> byte-equal subset; 0-byte object; header-cap edges), receive-side security units (claimed X bytes hash Y -> nothing filed at X, no manifest; truncated stream -> objects filed manifest ABSENT; duplicates idempotent) as pack:: unit tests."
+
+  - id: cli-plumbing
+    phase: 24
+    owner_agent: cli
+    depends_on: [pack-wire-format]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test plumbing --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-cli/tests/plumbing.rs]
+    human_checkpoint: false
+    description: "Plan Phase 4b: hidden plumbing subcommands in cli.rs (all #[command(hide = true)] like Completions/Man; snapdir-cli is binary-only so zero semver-checks exposure; trycmd --help snapshots stay byte-stable). (1) `snapdir version --capabilities` (HIDDEN flag on existing Version variant; older remotes clap-error on it -> probe degrades cleanly): prints exactly 'snapdir <semver> wire=1 caps=objects-needed,send-pack,receive-pack' from pack::WIRE_VERSION/WIRE_CAPS — space-separated key=value, unknown fields ignored by parsers, negotiation on exact wire integer ONLY. (2) `snapdir objects-needed --store <url>`: stdin checksums; ANY malformed/empty line -> hard error exit!=0 BEFORE any output (fail-closed); dedupe preserving first-occurrence order; print exact absent subset in order; routes via stream_store_for_adapter (file/s3/gcs/b2). (3) `snapdir send-pack --store <url> --ids <FILE|-> [--manifest-id <id>]`: emits SNAPPACK, manifest record last; missing requested id -> abort BEFORE 'end' (receiver fails too); two-pass streaming on file stores (O(1) memory). (4) `snapdir receive-pack --store <url> [--require-manifest <id>]`: consumes SNAPPACK via pack.rs; paths ONLY ever derived from validated claimed checksum via object_path(). GATES objects-needed-correctness (pre-seed subset, feed full list w/ dupes, stdout == exact complement in first-occurrence order; malformed -> exit!=0 + empty stdout), receive-pack-security (X/Y mismatch, ../ header, truncation, duplicates), mid-stream-failure (writer closed after N records no 'end' -> partial objects NO manifest; full re-push completes), send|receive pack round-trip via the real binary — in tests/plumbing.rs (CARGO_BIN_EXE_snapdir against file:// temp stores)."
+
+  - id: ssh-accel
+    phase: 24
+    owner_agent: stores
+    depends_on: [ssh-engine-dumb, cli-plumbing]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-ssh-store --test accel --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-ssh-store/tests/accel.rs]
+    human_checkpoint: false
+    description: "Plan Phase 5: remote manifest-diff acceleration, ssh:// only, as a RUNTIME branch inside the emitted scripts (emit-time probing impossible — no connection exists at emit time; dumb path embedded as shell functions in the same script; local pipe ends use the local `snapdir` binary). ONE combined probe round trip: ssh \"if test -f <base>/<man_rel>; then echo manifest=1; else echo manifest=0; fi; command -v snapdir >/dev/null 2>&1 && snapdir version --capabilities || echo 'caps none'\". Dispatch: manifest=1 -> no-op exit 0; SNAPDIR_SSH_NO_ACCEL=1 -> dumb; caps line has baked literal wire=1 + needed caps -> accel; SNAPDIR_SSH_FORCE_ACCEL=1 without caps -> exit 1 with error naming host, required wire/caps, what the probe returned, remedies; else dumb. ACCEL PUSH (3 RTs: probe/diff/stream): baked F-checksum heredoc | ssh 'snapdir objects-needed --store file://<base>' -> missing; snapdir send-pack --store file://<staging> --ids missing --manifest-id <id> | ssh 'snapdir receive-pack --store file://<base> --require-manifest <id>' — manifest rides the pack last, remote commits only after verified 'end' (atomic, no 4th RT); empty missing still streams manifest-only pack (completes interrupted pushes). ACCEL FETCH (2 RTs): emit-time local cache diff (SNAPDIR_SSH_PULL_SENDALL=1 = full set) -> ssh 'snapdir send-pack --store file://<base> --ids -' < needed | snapdir receive-pack --store file://<cache-dir> (no --require-manifest; remote stream untrusted -> every record incrementally verified locally O(1) memory). FALLBACK POLICY: probe/diff failure -> dumb (nothing written, idempotent); STREAM failure -> fail the push, no silent dumb retry (user retry resumes incrementally). No cross-run caps memoization (one probe per op is O(1); ControlMaster amortizes). GATES accel-oracle (HEADLINE: same source via dumb and via send-pack|receive-pack into two roots -> identical snapshot id, identical .objects file SET, byte-equal blobs — mirror sync.rs sync_snapshot_adaptive_mirrors_same_snapshot), fallback (fake-ssh remote with no snapdir / fake printing wire=99 -> dumb completes byte-identically; FORCE_ACCEL -> exit!=0 with designed message), probe-shape text assertions — tests/accel.rs (fake-ssh + real CARGO_BIN_EXE_snapdir on PATH)."
+
+  - id: loopback-sshd-suite
+    phase: 24
+    owner_agent: tests
+    depends_on: [external-cli-wiring, ssh-engine-dumb, sftp-engine, ssh-accel]
+    status: pending
+    failure_count: 0
+    verification_cmd: "SNAPDIR_SSH_TEST_REQUIRE=1 cargo test -p snapdir-ssh-store --test loopback_sshd --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-ssh-store/tests/loopback_sshd.rs, crates/snapdir-ssh-store/tests/common/sshd.rs]
+    human_checkpoint: false
+    description: "Plan Phase 6 (T2): real-OpenSSH integration via a SELF-SPAWNED loopback sshd (no docker; runs on dev macOS pre-push AND CI). tests/common/sshd.rs fixture: temp dir, ed25519 host+user keys (ssh-keygen -q -N ''), authorized_keys, TWO configs for the current user — port A normal shell + 'Subsystem sftp internal-sftp'; port B same + 'ForceCommand internal-sftp' (sftp-only; ChrootDirectory needs root so no-shell is the tested property); ListenAddress 127.0.0.1, probed high ports (bind-then-drop), PasswordAuthentication no, UsePAM no, StrictModes no, sshd -D -e -f <abs config> child, killed+cleaned on drop; finds sshd at /usr/sbin/sshd then PATH. SKIP POLICY (house pattern, cf. s3_store.rs live tests): eprintln-skip when sshd absent UNLESS SNAPDIR_SSH_TEST_REQUIRE=1 (turns skip into failure so the gate cannot rot); SNAPDIR_SSH_TEST_HOST optional external-server override. Remote snapdir for accel tests = CARGO_BIN_EXE_snapdir exposed on the sshd account PATH via wrapper script. GATES: full push->get-manifest->fetch round-trips BOTH schemes (dumb) on port A; accel round-trip + accel-oracle over real sshd; fallback (remote PATH without snapdir); host-key-fail-closed (wrong known_hosts entry -> fails, AND still fails with EXTRA_OPTS=StrictHostKeyChecking=no — behavioral floor proof); restricted-sftp-only (sftp:// succeeds against port B, ssh:// fails); idempotent re-push; no leaked ControlMaster sockets after runs; probe-count (counting ssh wrapper: accel push = exactly 3 ssh invocations). macOS quirks (UsePAM, key perms 0600, abs paths) handled in fixture; verify on macOS FIRST."
+
+  - id: ssh-ci-wire
+    phase: 24
+    owner_agent: ci
+    depends_on: [loopback-sshd-suite]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -q 'SNAPDIR_SSH_TEST_REQUIRE' .github/workflows/ci.yaml && grep -q 'openssh-server' .github/workflows/ci.yaml && actionlint .github/workflows/ci.yaml"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Plan Phase 7a: CI wiring — NO new job (T1+T2 ride the existing `cargo test --workspace` matrix, which the local pre-push hook already mirrors, satisfying the all-checks-local rule). Two ci.yaml edits in the test job: (1) Linux-only step `sudo apt-get install -y --no-install-recommends openssh-server` (if: runner.os == 'Linux'; macOS ships /usr/sbin/sshd); (2) env SNAPDIR_SSH_TEST_REQUIRE: '1' so the sshd suite cannot silently skip in CI. Also extend the LOCAL pre-push hook mirror if it enumerates jobs explicitly (see [[local-pre-push-gates]] memory: pre-push must mirror ALL ci.yaml checks). actionlint clean; verify musl/coverage/doctests jobs pick the new crate up automatically via --workspace (no edits expected)."
+
+  - id: ssh-docs
+    phase: 24
+    owner_agent: docs
+    depends_on: [sftp-engine, ssh-accel]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -q 'sftp://' README.md && grep -q 'ssh://' README.md && test -f crates/snapdir-ssh-store/README.md && test -f docs/rust-port/ssh-wire-protocol.md && grep -q 'SNAPPACK' docs/rust-port/ssh-wire-protocol.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Plan Phase 7b: docs. (1) Root README store table: +ssh:// and +sftp:// rows (auth: SSH keys/agent; note 'use ssh:// when you have a shell; sftp:// for restricted/chroot accounts') + env-var family in the existing config sections. (2) crates/snapdir-ssh-store/README.md (crates.io page, per the crates-io-readme gate pattern + readme = \"README.md\" in [package]): URL grammar, env family SNAPDIR_{SSH,SFTP}_STORE_*, the security floor (modern-only algorithms, OpenSSH >=8.5 policy, floor un-weakenable by EXTRA_OPTS), acceleration behavior + SNAPDIR_SSH_{NO_ACCEL,FORCE_ACCEL,PULL_SENDALL}, sync-over-ssh non-support note. (3) docs/rust-port/ssh-wire-protocol.md: SNAPPACK 1 grammar (exact), capability-line grammar, wire-negotiation rules (exact integer match, unknown fields ignored), plumbing subcommand contracts. (4) ADR docs/adr/: system-OpenSSH transport + wire-versioned plumbing decision (vs russh; vs tar). (5) CHANGELOG [Unreleased]: Added entries. Accurate to code as merged; no version bump here (release is a later phase)."
+
+  - id: ssh-packaging-dist
+    phase: 24
+    owner_agent: packaging
+    depends_on: [sftp-engine, ssh-accel]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo package -p snapdir-ssh-store --list --allow-dirty | grep -q 'README.md' && cargo build --workspace --locked --target-dir target && test -x target/debug/snapdir-ssh-store && test -x target/debug/snapdir-sftp-store"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Plan Phase 7c: packaging — make snapdir-ssh-store releasable through the existing pipeline WITHOUT releasing: crates.io publish wiring (add the crate to release.yml's idempotent publish loop AFTER stores, before/with cli; note trusted-publishing registration for the NEW crate name as a release-time operator step in the gate handoff), cargo-dist / archive config so BOTH bins (snapdir-ssh-store, snapdir-sftp-store) land in the release archives incl. musl static target, version/[package] metadata complete (license, repo, homepage=snapdir.org, readme), cargo package --list sane (no test fixtures leaked into the crate: exclude tests/fixtures sshd material if needed). NO tag, NO publish, NO version bump (workspace stays 1.4.0 until the next release phase)."
+
+  - id: phase24-complete
+    phase: 24
+    owner_agent: generic
+    depends_on: [external-cli-wiring, ssh-store-scaffold, ssh-engine-dumb, sftp-engine, pack-wire-format, cli-plumbing, ssh-accel, loopback-sshd-suite, ssh-ci-wire, ssh-docs, ssh-packaging-dist]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 24 done: sftp:// + ssh:// stores shipped — system-OpenSSH transport with an un-weakenable modern-only security floor, sftp works against internal-sftp chroots, ssh:// gains wire=1 SNAPPACK acceleration (objects-needed/send-pack/receive-pack, manifest-last preserved end-to-end) with graceful fallback; the pre-existing CLI external-store wiring bug is fixed; all gates green incl. the loopback-sshd suite. Approve?"
+    human_checkpoint: true
+    description: "PHASE 24 SIGN-OFF: SSH + SFTP stores complete per the operator-approved plan (.gatesmith/plans/phase24-ssh-stores.md). Deliverables: crates/snapdir-ssh-store (2 bins, snapdir-core-only deps), CLI external-store wiring fix, SNAPPACK 1 wire format + hidden plumbing subcommands + StreamStore::objects_needed, runtime-negotiated ssh acceleration with byte-identical-oracle proof, loopback-sshd T2 suite wired into CI + local pre-push, docs/ADR/packaging. Manual smoke against a real remote host (with and without remote snapdir; FORCE_ACCEL error; sftp-only account) recommended before sign-off."
