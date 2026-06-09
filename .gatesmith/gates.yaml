@@ -2619,7 +2619,9 @@ gates:
     phase: 21
     owner_agent: stores
     depends_on: [retry-backoff-core, backend-rate-limits]
-    status: pending
+    status: passed
+    passed_at: 2026-06-09T01:22:58Z
+    git_sha: db5425a
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked --features integration-mock backoff_wire -- --nocapture"
     pass_criteria:
@@ -2648,7 +2650,7 @@ gates:
   - id: ratelimit-cli-select
     phase: 21
     owner_agent: cli
-    depends_on: [retry-backoff-core, backend-rate-limits]
+    depends_on: [retry-backoff-core, backend-rate-limits, stores-backoff-wire]
     status: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --locked ratelimit -- --nocapture"
