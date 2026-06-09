@@ -436,8 +436,9 @@ fn mkdir_chain(remote_file: &str) -> Vec<String> {
 /// Collects the manifest's `F`-entry checksums, deduped and sorted
 /// (`BTreeSet`), each validated as 64 lowercase hex characters — checksums
 /// become remote path segments inside emitted text, so the charset is the
-/// injection defense.
-fn file_checksums(manifest: &Manifest) -> Result<Vec<String>, Error> {
+/// injection defense. (Shared with [`crate::ssh_engine`]: the contract
+/// semantics are engine-independent.)
+pub(crate) fn file_checksums(manifest: &Manifest) -> Result<Vec<String>, Error> {
     let mut set = BTreeSet::new();
     for entry in manifest.entries() {
         if entry.path_type == PathType::File {
@@ -470,7 +471,9 @@ fn is_hex64(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-fn validate_id(id: &str) -> Result<(), Error> {
+/// Validates a snapshot id as 64 lowercase hex characters (shared with
+/// [`crate::ssh_engine`] — ids are embedded in emitted text on both paths).
+pub(crate) fn validate_id(id: &str) -> Result<(), Error> {
     if is_hex64(id) {
         Ok(())
     } else {
@@ -482,8 +485,9 @@ fn validate_id(id: &str) -> Result<(), Error> {
 
 /// Local directories are embedded in emitted text (via `sh_quote` /
 /// `sftp_quote`, which handle any byte but newlines break heredoc lines), so
-/// control characters are rejected outright.
-fn validate_local_dir(option: &str, value: &str) -> Result<(), Error> {
+/// control characters are rejected outright. (Shared with
+/// [`crate::ssh_engine`].)
+pub(crate) fn validate_local_dir(option: &str, value: &str) -> Result<(), Error> {
     if value.is_empty() || value.trim_end_matches('/').is_empty() {
         return Err(Error::new(format!(
             "{option} must be a non-root directory path"

@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+#
+# fake-ssh: hermetic stand-in for OpenSSH's `ssh` used by
+# tests/fake_ssh_roundtrip.rs. NOT shipped, NOT the oracle — it emulates the
+# one CLI shape `_snapdir_ssh` (and the skeleton's `-O exit` cleanup)
+# produces:
+#
+#     ssh <-o flags...> [-O <ctl>] -- <host> [command words...]
+#
+# All `-o` options are accepted and ignored (no ControlMaster emulation),
+# `-O exit` is a no-op success (the cleanup trap fires it on every run).
+# The remaining words after the host are joined with spaces — exactly like
+# real ssh — and executed locally via `sh -c` (a POSIX shell, like a dash
+# remote). There is no path remapping: the tests fence the "remote"
+# filesystem by constructing the store URL as ssh://fakehost<abs-path>, so
+# every emitted base path is an absolute path under $FAKE_REMOTE_ROOT (which
+# must be set — the fence is the contract). stdin/stdout pass straight
+# through, so tar pipelines work.
+#
+# Fault injection:
+#   FAKE_SSH_FAIL_MATCH=<substr>   a remote command containing <substr>
+#                                  exits 255 before executing anything,
+#                                  like a connection-level failure.
+#   FAKE_SSH_TRUNCATE_TAR=<bytes>  a remote tar-extract command (`tar -C
+#                                  ... -xf -`) sees only the first <bytes>
+#                                  bytes of its stdin and the "connection"
+#                                  then fails (exit 1) — a killed
+#                                  mid-transfer push.
+#   FAKE_SSH_EVIL_TAR=1            a remote tar-create command (`tar -cf`)
+#                                  is hijacked: it drains stdin and emits a
+#                                  tar with a foreign `payload/evil` entry
+#                                  instead. The engine's exact-match
+#                                  allowlist must reject ANY unexpected
+#                                  entry name — `../`/absolute/symlink
+#                                  attacks are covered by the same property.
+#
+# bash-3.2-clean: no associative arrays, no ${var^^}, no readarray.
+set -euo pipefail
+
+ctl=""
+host=""
+have_host=0
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-o)
+		shift 2
+		;;
+	-O)
+		ctl="$2"
+		shift 2
+		;;
+	--)
+		shift
+		host="$1"
+		have_host=1
+		shift
+		break
+		;;
+	*)
+		echo "fake-ssh: unexpected argument '$1'" >&2
+		exit 2
+		;;
+	esac
+done
+
+: "${FAKE_REMOTE_ROOT:?FAKE_REMOTE_ROOT must be set}"
+
+if [ "$ctl" = "exit" ]; then
+	# ControlMaster teardown: nothing to tear down here.
+	exit 0
+fi
+if [ "$have_host" -ne 1 ] || [ -z "$host" ]; then
+	echo "fake-ssh: expected 'ssh <-o flags...> -- <host> [command]'" >&2
+	exit 2
+fi
+if [ $# -eq 0 ]; then
+	echo "fake-ssh: interactive sessions are not supported" >&2
+	exit 2
+fi
+cmd="$*"
+
+if [ -n "${FAKE_SSH_FAIL_MATCH:-}" ]; then
+	case "$cmd" in
+	*"$FAKE_SSH_FAIL_MATCH"*)
+		echo "fake-ssh: Connection closed by remote host" >&2
+		exit 255
+		;;
+	esac
+fi
+
+if [ "${FAKE_SSH_EVIL_TAR:-0}" = "1" ]; then
+	case "$cmd" in
+	*"tar -cf"*)
+		# Hostile remote: ignore the requested path list and ship a tar
+		# whose entry name matches nothing the client expects.
+		cat >/dev/null
+		evil="$(mktemp -d "${TMPDIR:-/tmp}/fake-ssh-evil.XXXXXX")"
+		mkdir -p "$evil/payload"
+		echo "owned" >"$evil/payload/evil"
+		tar -cf - -C "$evil" payload/evil
+		rm -rf "$evil"
+		exit 0
+		;;
+	esac
+fi
+
+if [ -n "${FAKE_SSH_TRUNCATE_TAR:-}" ]; then
+	case "$cmd" in
+	*"tar -C"*"-xf -"*)
+		# Feed the extract only a truncated prefix of the stream, run it
+		# for realism (it fails on the unexpected EOF, possibly leaving
+		# remote .snapdir-incoming debris), then fail the "connection".
+		head -c "$FAKE_SSH_TRUNCATE_TAR" | sh -c "$cmd" >/dev/null 2>&1 || true
+		echo "fake-ssh: injected mid-transfer failure" >&2
+		exit 1
+		;;
+	esac
+fi
+
+exec sh -c "$cmd"

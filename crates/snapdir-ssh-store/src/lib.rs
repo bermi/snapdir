@@ -27,9 +27,10 @@
 //! ([`url`]), env-family configuration + the un-weakenable security-floor
 //! flag builder ([`config`]), `ssh -V` floor check ([`version`]), and the
 //! emitted-script skeleton/quoting helpers ([`script`]) — are fully
-//! implemented and table-tested. The `sftp://` transport engine
-//! ([`sftp_engine`]) is implemented; the `ssh://` engine lands in a later
-//! gate and until then fails closed with a clear "not implemented" error.
+//! implemented and table-tested. Both transport engines are implemented:
+//! the `sftp://` engine ([`sftp_engine`]) and the `ssh://` dumb engine
+//! ([`ssh_engine`]; the remote-`snapdir` acceleration branch lands in a
+//! later gate).
 
 use std::ffi::OsString;
 use std::fmt;
@@ -39,6 +40,7 @@ pub mod args;
 pub mod config;
 pub mod script;
 pub mod sftp_engine;
+pub mod ssh_engine;
 pub mod url;
 pub mod version;
 
@@ -176,46 +178,52 @@ where
             return 1;
         }
     };
-    let result = match engine {
-        Engine::Sftp => match command.subcommand {
-            args::Subcommand::GetManifestCommand => {
+    let result = match command.subcommand {
+        args::Subcommand::GetManifestCommand => match engine {
+            Engine::Ssh => {
+                ssh_engine::get_manifest_script(&parsed_url, &cfg, &command.id, &command.store)
+            }
+            Engine::Sftp => {
                 sftp_engine::get_manifest_script(&parsed_url, &cfg, &command.id, &command.store)
             }
-            args::Subcommand::GetPushCommand => command
-                .staging_dir
-                .as_deref()
-                .ok_or_else(|| Error::new("missing required option --staging-dir"))
-                .and_then(|staging| {
-                    sftp_engine::get_push_script(&parsed_url, &cfg, &command.id, staging)
-                }),
-            args::Subcommand::GetFetchFilesCommand => {
-                // The manifest text arrives on the emitting binary's stdin.
-                let mut manifest_text = String::new();
-                match stdin.read_to_string(&mut manifest_text) {
-                    Err(e) => Err(Error::new(format!(
-                        "failed to read the manifest from stdin: {e}"
-                    ))),
-                    Ok(_) => command
-                        .cache_dir
-                        .as_deref()
-                        .ok_or_else(|| Error::new("missing required option --cache-dir"))
-                        .and_then(|cache| {
-                            sftp_engine::get_fetch_files_script(
-                                &parsed_url,
-                                &cfg,
-                                &manifest_text,
-                                cache,
-                            )
-                        }),
-                }
-            }
         },
-        // The ssh:// engine is the next gate; fail closed until it lands.
-        Engine::Ssh => Err(Error::new(format!(
-            "{}: the {}:// transport engine is not implemented yet",
-            command.subcommand.as_str(),
-            engine.scheme()
-        ))),
+        args::Subcommand::GetPushCommand => command
+            .staging_dir
+            .as_deref()
+            .ok_or_else(|| Error::new("missing required option --staging-dir"))
+            .and_then(|staging| match engine {
+                Engine::Ssh => ssh_engine::get_push_script(&parsed_url, &cfg, &command.id, staging),
+                Engine::Sftp => {
+                    sftp_engine::get_push_script(&parsed_url, &cfg, &command.id, staging)
+                }
+            }),
+        args::Subcommand::GetFetchFilesCommand => {
+            // The manifest text arrives on the emitting binary's stdin.
+            let mut manifest_text = String::new();
+            match stdin.read_to_string(&mut manifest_text) {
+                Err(e) => Err(Error::new(format!(
+                    "failed to read the manifest from stdin: {e}"
+                ))),
+                Ok(_) => command
+                    .cache_dir
+                    .as_deref()
+                    .ok_or_else(|| Error::new("missing required option --cache-dir"))
+                    .and_then(|cache| match engine {
+                        Engine::Ssh => ssh_engine::get_fetch_files_script(
+                            &parsed_url,
+                            &cfg,
+                            &manifest_text,
+                            cache,
+                        ),
+                        Engine::Sftp => sftp_engine::get_fetch_files_script(
+                            &parsed_url,
+                            &cfg,
+                            &manifest_text,
+                            cache,
+                        ),
+                    }),
+            }
+        }
     };
     match result {
         Ok(script) => {

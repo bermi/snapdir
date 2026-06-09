@@ -806,7 +806,7 @@ fn run_version_prints_engine_binary_name_and_crate_version() {
 }
 
 #[test]
-fn run_engines_fail_closed_until_implemented() {
+fn run_ssh_engine_validates_the_id_before_emitting_anything() {
     let (code, out, err) = run_capture(
         Engine::Ssh,
         &[
@@ -820,8 +820,7 @@ fn run_engines_fail_closed_until_implemented() {
     );
     assert_eq!(code, 1);
     assert!(out.is_empty(), "stdout must stay script-pure: {out:?}");
-    assert!(err.contains("not implemented"), "{err}");
-    assert!(err.contains("get-manifest-command"), "{err}");
+    assert!(err.contains("invalid snapshot id"), "{err}");
 }
 
 #[test]
