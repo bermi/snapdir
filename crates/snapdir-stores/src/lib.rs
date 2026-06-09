@@ -22,6 +22,11 @@
 //! - [`transfer`] ([`TransferConfig`], [`RateLimiter`], [`run_concurrent`]) —
 //!   the concurrency + bandwidth-limiting foundation each store carries via a
 //!   [`TransferConfig`] for the (later) concurrent transfer loops.
+//! - [`retry`] ([`RetryPolicy`], [`retry_async`], [`retry_blocking`]) — a pure,
+//!   injectable full-jitter exponential-backoff engine (no real clock/sleep of
+//!   its own; the [`Jitter`] source and [`AsyncSleeper`]/[`BlockingSleeper`] are
+//!   injected). SDK-agnostic over an [`Attempt`] outcome; wiring into the
+//!   S3/GCS/B2 call sites is a later gate.
 //! - [`adaptive`] ([`AdaptiveGate`], [`AdaptiveController`]) — pure, injectable
 //!   adaptive control: a resizable concurrency permit pool (async + blocking)
 //!   plus a deterministic slow-start/AIMD controller that turns injected op
@@ -44,6 +49,7 @@ pub mod file_store;
 pub mod gcs_store;
 pub mod limits;
 pub(crate) mod push;
+pub mod retry;
 pub mod router;
 pub mod s3_store;
 pub mod shim;
@@ -60,6 +66,10 @@ pub use b2_store::B2Store;
 pub use file_store::FileStore;
 pub use gcs_store::{GcsLocation, GcsStore};
 pub use limits::{for_scheme, BackendLimits};
+pub use retry::{
+    retry_async, retry_blocking, AsyncSleeper, Attempt, BlockingSleeper, DefaultJitter,
+    FixedJitter, Jitter, RetryPolicy, ThreadSleeper, TokioSleeper,
+};
 pub use router::{resolve_adapter, Adapter, RouteError};
 pub use s3_store::{S3Location, S3Store};
 pub use shim::ExternalStore;
