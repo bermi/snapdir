@@ -2974,7 +2974,9 @@ gates:
     phase: 24
     owner_agent: docs
     depends_on: [sftp-engine, ssh-accel]
-    status: pending
+    status: passed
+    passed_at: 2026-06-10T00:40:00Z
+    git_sha: 0a40a05
     failure_count: 0
     verification_cmd: "grep -q 'sftp://' README.md && grep -q 'ssh://' README.md && test -f crates/snapdir-ssh-store/README.md && test -f docs/rust-port/ssh-wire-protocol.md && grep -q 'SNAPPACK' docs/rust-port/ssh-wire-protocol.md"
     pass_criteria:
