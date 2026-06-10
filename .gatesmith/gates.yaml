@@ -3111,7 +3111,9 @@ gates:
     phase: 26
     owner_agent: cli
     depends_on: [phase25-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-10T17:20:00Z
+    git_sha: a064003
     failure_count: 0
     verification_cmd: "cargo test -p snapdir --locked && cargo build --workspace --locked && test -x target/debug/snapdir"
     pass_criteria:
