@@ -3015,3 +3015,77 @@ gates:
         - human_confirm: "Phase 24 done: sftp:// + ssh:// stores shipped — system-OpenSSH transport with an un-weakenable modern-only security floor, sftp works against internal-sftp chroots, ssh:// gains wire=1 SNAPPACK acceleration (objects-needed/send-pack/receive-pack, manifest-last preserved end-to-end) with graceful fallback; the pre-existing CLI external-store wiring bug is fixed; all gates green incl. the loopback-sshd suite. Approve?"
     human_checkpoint: true
     description: "PHASE 24 SIGN-OFF: SSH + SFTP stores complete per the operator-approved plan (.gatesmith/plans/phase24-ssh-stores.md). Deliverables: crates/snapdir-ssh-store (2 bins, snapdir-core-only deps), CLI external-store wiring fix, SNAPPACK 1 wire format + hidden plumbing subcommands + StreamStore::objects_needed, runtime-negotiated ssh acceleration with byte-identical-oracle proof, loopback-sshd T2 suite wired into CI + local pre-push, docs/ADR/packaging. Manual smoke against a real remote host (with and without remote snapdir; FORCE_ACCEL error; sftp-only account) recommended before sign-off."
+
+  # ===================================================================
+  # Phase 25 — Release snapdir 1.5.0 (sftp:// + ssh:// stores)
+  # Mirrors the Phase-23 release pipeline; 5 crates now (+ snapdir-ssh-store,
+  # which needs first-time crates.io Trusted-Publishing registration).
+  # ===================================================================
+  - id: release-prep-1.5.0
+    phase: 25
+    owner_agent: generic
+    depends_on: [phase24-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -qE '^version = \"1.5.0\"' Cargo.toml && grep -q '## \\[1.5.0\\]' docs/rust-port/CHANGELOG.md && cargo build --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Prepare the 1.5.0 release (generic lane, gatesmith-free CODE-ONLY commit on dev so it cherry-picks cleanly). Bump 1.4.0 -> 1.5.0 in root Cargo.toml: [workspace.package] version AND the 3 internal path-dep versions (snapdir-core/catalog/stores in [workspace.dependencies]); regenerate Cargo.lock (cargo build). docs/rust-port/CHANGELOG.md: rename '## [Unreleased]' -> '## [1.5.0]' (date 2026-06-10) — the Added/Fixed entries for the ssh/sftp stores + external-store wiring fix were already written by the ssh-docs gate; verify they are complete and accurate; add a fresh empty '## [Unreleased]' above [1.5.0]; update the compare-links footer ([Unreleased]: ...compare/v1.5.0...HEAD; [1.5.0]: ...compare/v1.4.0...v1.5.0). Verify the crates.io publish loop in release.yml lists all 5 crates. The single release commit must contain NO .gatesmith paths."
+
+  - id: release-verify-branch-1.5.0
+    phase: 25
+    owner_agent: generic
+    depends_on: [release-prep-1.5.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git ls-remote --exit-code origin refs/heads/release-verify/1.5.0 >/dev/null"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "release-verify/1.5.0 is built off upstream/main (ZERO .gatesmith) with the 12 gatesmith-free 1.5.0 code commits cherry-picked, pushed to origin, and the bench-verify.yml run is green (determinism + iai + criterion artifact consulted). Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint). git fetch upstream. Create release-verify/1.5.0 off upstream/main; cherry-pick the 12 gatesmith-free Phase-24/25 code commits in order: bdfae15 (cli wiring fix), 18f76d3 (SNAPPACK), 187b53d (cli plumbing), f306d0c (ssh-store scaffold), 4aca5fb (sftp engine), 1762463 (ssh dumb engine), 3aa3989 (accel), afd5080 (loopback suite), 167e92d (ci wire), 0a40a05 (docs), 9475aab (release wiring), + the release-prep-1.5.0 commit. Tip at 1.5.0, ZERO .gatesmith tracked. Push to origin (bermi) -> bench-verify.yml uploads the determinism+iai+criterion artifact; consult it. PM machine-check: origin has the branch; human_confirm bench-verify green."
+
+  - id: release-pr-upstream-1.5.0
+    phase: 25
+    owner_agent: generic
+    depends_on: [release-verify-branch-1.5.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.5.0\"'"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "PR release-verify/1.5.0 -> snapdir/snapdir was opened, the full CI matrix went green (incl. the new required loopback-sshd suite on both OSes and crate-age >=3 days), and it was squash-merged; upstream/main is now at 1.5.0 with ZERO .gatesmith tracked. Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint, IRREVERSIBLE — merges to the canonical repo). Open PR release-verify/1.5.0 -> snapdir/snapdir main (title 'release: 1.5.0'), wait for the full CI matrix (now incl. the REQUIRED loopback-sshd suite on ubuntu+macos), operator-authorized squash-merge. PM machine-check: upstream/main Cargo.toml shows 1.5.0."
+
+  - id: release-tag-crates-1.5.0
+    phase: 25
+    owner_agent: packaging
+    depends_on: [release-pr-upstream-1.5.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git ls-remote --tags upstream refs/tags/v1.5.0 | grep -q v1.5.0 && for c in snapdir-core snapdir-catalog snapdir-stores snapdir-ssh-store snapdir-cli; do curl -sf \"https://index.crates.io/$(printf %s \"$c\" | cut -c1-2)/$(printf %s \"$c\" | cut -c3-4)/$c\" | grep -q '\"vers\":\"1.5.0\"' || exit 1; done"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "v1.5.0 is tagged on snapdir/snapdir, the GitHub release is live (signed archives incl. snapdir-ssh-store + snapdir-sftp-store bins + SHA256SUMS), and all 5 crates are at 1.5.0 on crates.io (snapdir-ssh-store's first publish succeeded after TP registration; idempotent loop re-runnable). Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint, IRREVERSIBLE — permanent tag + crates.io publish). PRE-STEP (operator, manual): register crates.io Trusted Publishing for the NEW crate name snapdir-ssh-store (Settings -> Trusted Publishing on crates.io: repo snapdir/snapdir, workflow release.yml, environment as the other 4 crates use) — the publish job is TP-OIDC only, no token fallback; the FIRST publish of a new crate name may additionally need the crate created/owned by the publishing account (crates.io supports TP for new crates since 2025 — verify in the dialog). Then tag v1.5.0 on the merged upstream/main commit and push -> release.yml builds 6-target archives (now staging the 2 new bins) + GitHub release (signed + SLSA) + the idempotent 5-crate publish loop (core->catalog->stores->ssh-store->cli; skip-if-published makes re-runs safe if TP registration races). PM machine-check: upstream tag v1.5.0 AND crates.io sparse index shows 1.5.0 for all FIVE crates; human_confirm GH release + crates live."
+
+  - id: phase25-complete
+    phase: 25
+    owner_agent: generic
+    depends_on: [release-tag-crates-1.5.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.5.0\"'"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 25 done: snapdir 1.5.0 released — sftp:// + ssh:// stores (system-OpenSSH, un-weakenable security floor, SNAPPACK acceleration), the external-store CLI wiring fix, 5 crates on crates.io incl. first publish of snapdir-ssh-store; frozen format untouched. Approve?"
+    human_checkpoint: true
+    description: "PHASE 25 SIGN-OFF: snapdir 1.5.0 released end-to-end — canonical snapdir/snapdir at 1.5.0, tag v1.5.0, GitHub release live with the two new store binaries in every archive, all 5 crates published (snapdir-ssh-store TP-registered + first-published). Default behavior unchanged for existing stores; frozen format untouched."
