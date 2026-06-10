@@ -12,7 +12,7 @@ A single static binary with **zero runtime dependencies** — all hashing and st
 
 ```sh
 # crates.io — installs the `snapdir` binary
-cargo install snapdir-cli
+cargo install snapdir
 ```
 
 Other ways:
@@ -24,6 +24,10 @@ Other ways:
 # As a Rust library
 cargo add snapdir-core
 ```
+
+> **Migrating from `cargo install snapdir-cli`?** That crate is now the
+> implementation library behind the CLI. Its versions ≤ 1.5.0 still install
+> the binary; from 1.5.1 the binary lives in the `snapdir` crate.
 
 ## Quick start — 60 seconds, no setup
 
@@ -193,7 +197,7 @@ Precedence, highest to lowest: **`--flag` > `SNAPDIR_*` env > per-backend defaul
 
 ## Status & links
 
-- **v1.4.0.** 15 subcommands: `manifest id stage push fetch pull checkout verify verify-cache flush-cache locations ancestors revisions defaults sync`.
+- **v1.5.0.** 15 subcommands: `manifest id stage push fetch pull checkout verify verify-cache flush-cache locations ancestors revisions defaults sync`.
 - Full documentation, guides, and command reference: **[snapdir.org](https://snapdir.org)**.
 - An embedded redb catalog tracks where snapshots live (`locations` / `ancestors` / `revisions`).
 - Changelog: [docs/rust-port/CHANGELOG.md](docs/rust-port/CHANGELOG.md)

@@ -22,7 +22,9 @@ and beta.
 | `crates/snapdir-core`    | Manifest format, FS walk, BLAKE3/MD5/SHA-256 hashing, cache, `Store` trait |
 | `crates/snapdir-catalog` | redb-backed catalog (locations / revisions / ancestors)   |
 | `crates/snapdir-stores`  | `file://`, `s3://`, `b2://`, `gs://` store implementations |
-| `crates/snapdir-cli`     | The `snapdir` binary (clap), wiring the crates together    |
+| `crates/snapdir-cli`     | CLI implementation library (clap), wiring the crates together |
+| `crates/snapdir`         | The `snapdir` binary — a thin shim over `snapdir-cli`      |
+| `crates/snapdir-ssh-store` | `ssh://` + `sftp://` external-store binaries (system OpenSSH) |
 | `benches/`               | Criterion micro-benchmarks (`snapdir-benches`)             |
 | `tests/`                 | Integration + interop harnesses                            |
 

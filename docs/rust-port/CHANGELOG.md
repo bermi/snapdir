@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`snapdir` crate: `cargo install snapdir` installs the CLI.** The flagship
+  `snapdir` crate name on crates.io now ships the `snapdir` binary (a thin
+  shim over the `snapdir-cli` implementation library), so the install command
+  matches the binary name.
+
+### Changed
+
+- **`snapdir-cli` is now the implementation library.** The `snapdir` binary
+  moved to the new `snapdir` crate; `snapdir-cli` keeps publishing and exposes
+  `snapdir_cli::run()` — the binary entrypoint, not a semver-stable
+  general-purpose API. Versions ≤ 1.5.0 of `snapdir-cli` are unaffected and
+  still install the binary directly.
+
 ## [1.5.0] — 2026-06-10
 
 ### Added
