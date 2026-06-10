@@ -1,10 +1,10 @@
 name: Release
 
 # Rust-port release pipeline. Triggered by semver tags (v*). Builds the
-# `snapdir` binary for every distribution target (incl. static musl), generates
-# shell completions + a man page, packs per-target archives with checksums,
-# attaches them to the GitHub release, and publishes the library crates to
-# crates.io.
+# `snapdir` binary plus the `snapdir-ssh-store`/`snapdir-sftp-store` helper
+# bins for every distribution target (incl. static musl), generates shell
+# completions + a man page, packs per-target archives with checksums, attaches
+# them to the GitHub release, and publishes the library crates to crates.io.
 #
 # Packaging config of record: packaging/dist-workspace.toml (cargo-dist). This
 # workflow is the hand-rolled matrix that implements the same plan with full
@@ -39,6 +39,11 @@ env:
   CARGO_TERM_COLOR: always
   BIN_NAME: snapdir
   CLI_CRATE: snapdir-cli
+  # External-store helper bins shipped ALONGSIDE `snapdir` in every archive.
+  # Built from crates/snapdir-ssh-store (std + snapdir-core only, so the
+  # musl-static legs stay trivially clean).
+  SSH_STORE_CRATE: snapdir-ssh-store
+  SSH_STORE_BINS: "snapdir-ssh-store snapdir-sftp-store"
   CARGO_PROFILE: dist
 
 jobs:
@@ -150,7 +155,7 @@ jobs:
         if: matrix.cross
         run: |
           cross build --locked --profile "${CARGO_PROFILE}" \
-            -p "${CLI_CRATE}" --bin "${BIN_NAME}" \
+            -p "${CLI_CRATE}" -p "${SSH_STORE_CRATE}" --bins \
             --target "${{ matrix.target }}"
 
       - name: Build (native)
@@ -158,7 +163,7 @@ jobs:
         shell: bash
         run: |
           cargo build --locked --profile "${CARGO_PROFILE}" \
-            -p "${CLI_CRATE}" --bin "${BIN_NAME}" \
+            -p "${CLI_CRATE}" -p "${SSH_STORE_CRATE}" --bins \
             --target "${{ matrix.target }}"
 
       - name: Stage archive contents
@@ -176,6 +181,10 @@ jobs:
           mkdir -p "dist/${name}"
 
           cp "target/${{ matrix.target }}/${CARGO_PROFILE}/${BIN_NAME}" "dist/${name}/"
+          # External-store helper bins ride in the same per-target archive.
+          for bin in ${SSH_STORE_BINS}; do
+            cp "target/${{ matrix.target }}/${CARGO_PROFILE}/${bin}" "dist/${name}/"
+          done
 
           cp README.md LICENSE "dist/${name}/"
           cp docs/rust-port/CHANGELOG.md "dist/${name}/CHANGELOG.md"
@@ -256,14 +265,29 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ---------------------------------------------------------------------------
-  # 4. Publish library crates to crates.io (core -> catalog/stores -> cli).
+  # 4. Publish library crates to crates.io
+  #    (core -> catalog/stores -> ssh-store -> cli).
   #    Order respects the internal dependency graph. The CLI binary is shipped
   #    via the archives above; publishing it is optional and kept last.
   # ---------------------------------------------------------------------------
   # Trusted Publishing — register the publisher on crates.io for each crate
-  # (snapdir-core/-catalog/-stores/-cli): crate Settings -> Trusted Publishing ->
-  # GitHub -> repo `snapdir/snapdir`, workflow `release.yml`. No stored token
-  # needed once registered.
+  # (snapdir-core/-catalog/-stores/-ssh-store/-cli): crate Settings ->
+  # Trusted Publishing -> GitHub -> repo `snapdir/snapdir`, workflow
+  # `release.yml`. No stored token needed once registered.
+  #
+  # *** RELEASE-TIME OPERATOR TODO (first release shipping snapdir-ssh-store) ***
+  # `snapdir-ssh-store` is a NEW crate name: Trusted Publishing can only be
+  # registered on crates.io AFTER the crate exists, and this job authenticates
+  # EXCLUSIVELY via the TP OIDC exchange below (crates-io-auth-action — there is
+  # no stored-token fallback). The first `cargo publish` of a brand-new crate
+  # name with a TP token works because the publisher (this repo + workflow) is
+  # asserted by the OIDC exchange; if crates.io rejects it, publish the first
+  # version manually with a scoped API token (`cargo publish -p snapdir-ssh-store
+  # --locked --no-verify`), then re-run this workflow — the idempotent skip-guard
+  # below makes the re-run safe. Either way, IMMEDIATELY after the first publish
+  # register Trusted Publishing for `snapdir-ssh-store` (crate Settings ->
+  # Trusted Publishing -> GitHub -> repo `snapdir/snapdir`, workflow
+  # `release.yml`) so subsequent releases need no operator step.
   crates-io:
     name: Publish crates.io
     needs: release
@@ -297,12 +321,18 @@ jobs:
           # so a partial release (e.g. one crate up, others 403'd) re-runs safely
           # instead of dying on the already-published crate under `pipefail`.
           #
-          # NOTE: Trusted Publishing must be registered on crates.io for
-          # snapdir-catalog/-stores/-cli too — currently only snapdir-core is
-          # registered, so the other three 403 on their first publish. Register
-          # them (crate Settings -> Trusted Publishing) to fix that; until then
-          # the skip-guard keeps a re-run from dying on the already-published ones.
-          for crate in snapdir-core snapdir-catalog snapdir-stores snapdir-cli; do
+          # NOTE: Trusted Publishing is registered on crates.io for the four
+          # original crates (snapdir-core/-catalog/-stores/-cli, done for 1.2.0).
+          # *** snapdir-ssh-store is NEW — see the RELEASE-TIME OPERATOR TODO in
+          # the job header above: its first publish needs the operator to mind
+          # the TP bootstrap; the skip-guard keeps a partial-release re-run from
+          # dying on the already-published crates. ***
+          #
+          # Ordering: snapdir-ssh-store's only runtime dep is snapdir-core, but
+          # its dev-dep on snapdir-stores is recorded (with this version) in the
+          # index metadata, so it publishes AFTER snapdir-stores and before the
+          # leaf consumer snapdir-cli.
+          for crate in snapdir-core snapdir-catalog snapdir-stores snapdir-ssh-store snapdir-cli; do
             echo "::group::publish ${crate}"
             # Sparse-index shard for a crate name >= 4 chars: <c1c2>/<c3c4>/<name>.
             # All four snapdir crate names are >= 4 chars, so this is uniform.
