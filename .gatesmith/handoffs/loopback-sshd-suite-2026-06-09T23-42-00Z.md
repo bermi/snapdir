@@ -141,3 +141,51 @@ Notes for downstream gates (informational, not blockers):
   server lacks `SetEnv PATH` support (OpenSSH < 8.7) — irrelevant on macOS/CI.
 
 Ready for PM verification: YES
+
+## Retry after PM fail (2026-06-10)
+
+**The race (confirmed from the PM evidence log):** `common::TempDir::new`
+derived its base from `std::env::temp_dir()`, which re-reads the
+process-global `TMPDIR` at call time. The leak test pinned `TMPDIR` to ONE
+shared scratch (`/tmp/sd-cm-<pid>/`) while holding the env lock — but other
+tests create their staging/cache/kit dirs in parallel OUTSIDE the lock, so
+under unlucky scheduling those dirs were created INSIDE the leak test's
+scratch. Consequences exactly as the PM observed: (1) staging dirs vanished
+mid-push when the scratch dropped (`tar: could not chdir`, "staged manifest
+… not found"); (2) the leak assertion scanned the shared scratch and flagged
+other tests' in-flight staging/cache dirs as leaks. My original green runs
+were scheduling luck.
+
+**The fix (lane-clean, tests/ only):**
+- `tests/common/mod.rs` — `TempDir::new` now roots at a FIXED `/tmp` base
+  (`/tmp/sd-lb-<pid>-<tag>-<n>`), never `std::env::temp_dir()`: no test's
+  directory creation can be redirected by another test's `TMPDIR` pin. The
+  short fixed base also keeps `ControlPath` sockets under the `sun_path`
+  limit. `TempDir::at` (the old shared-scratch constructor) is deleted.
+- `tests/loopback_sshd.rs` — `loopback_env(kit, port, tmp)` now pins
+  `TMPDIR` to EACH test's OWN scratch (`TempDir::new("<tag>-tmp")`), set
+  inside the `EnvGuard` (lock-covered, restored on drop). Every test passes
+  its private scratch; staging/cache/kit/remote-base dirs are all per-test —
+  no cross-test sharing of any mutable directory. (The sshd kit was already
+  per-test, which is stronger than the suggested shared read-only fixture.)
+- Leak assertion scoped: new `assert_no_script_leaks(tmp)` scans ONLY the
+  test's own pinned scratch and ONLY for script-created artifacts
+  (`snapdir-ssh-store.*` mktemp work dirs / `cm` sockets) — deterministic
+  regardless of what other tests are doing.
+- Shared-mutable-state audit: the only `std::env::set_var`/`remove_var`
+  sites are inside `EnvGuard` (mutex-held, drop-restored), and the only
+  `TMPDIR` mutation flows through `loopback_env`'s guard; no remaining
+  `env::temp_dir()` reads; per-test log files/kits/ports; `TEMP_COUNTER`
+  atomic. Verified by grep.
+
+**Proof (this machine, snapdir binary present — zero skips):**
+- `SNAPDIR_SSH_TEST_REQUIRE=1 cargo test -p snapdir-ssh-store --test
+  loopback_sshd --locked` × 3 with DEFAULT parallelism:
+  `7 passed; 0 failed` (5.13s / 4.71s / 4.66s).
+- Same command with `-- --test-threads=8`: `7 passed; 0 failed` (4.76s).
+- Full crate suite under REQUIRE=1: all 9 test targets `ok`.
+- `cargo fmt --check` clean; `cargo clippy --all-targets --locked -D
+  warnings` clean; no stray `sshd -D` children; no `sd-lb-*` leftovers in
+  `/tmp` after the runs.
+
+Ready for PM verification: YES

@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## 🔶 PHASE 24 IN PROGRESS — 7/12 gates — sftp:// + ssh:// stores (160/165 total)
+## 🔶 PHASE 24 IN PROGRESS — 8/12 gates — sftp:// + ssh:// stores (161/165 total)
 
 > Operator plan-approved 2026-06-09 (full spec: `.gatesmith/plans/phase24-ssh-stores.md`): system-OpenSSH external stores via the emit-command contract — `sftp://` pure-SFTP engine (works against `ForceCommand internal-sftp` chroots), `ssh://` shell engine + wire=1 SNAPPACK acceleration (`objects-needed`/`send-pack`/`receive-pack` hidden plumbing, byte-identical-oracle gated) with graceful fallback; un-weakenable modern-only security floor; new workspace crate `crates/snapdir-ssh-store` (2 bins, snapdir-core-only deps).
 > - `external-cli-wiring` ✅ (cli, code `bdfae15` @ 2026-06-09) — PREREQ BUG FIX: cli passed TREES where the external contract expects SHARDED store roots; push now stages into the cache then pushes from the cache root (`push --id` skips scratch), fetch lands objects in the cache root and commits the manifest LAST via `put_manifest`. Native store paths byte-identical. New e2e `external_store_roundtrip.rs` drives the real binary vs `mock://`.
@@ -13,8 +13,8 @@
 > - `sftp-engine` ✅ (stores, code `4aca5fb` @ 2026-06-10) — pure-SFTP engine (works under `ForceCommand internal-sftp`): probe+pwd-liveness, JOBS-parallel put-tmp/rename/chmod chunks, manifest LAST, exact ERROR wording; fake-sftp fixture + 10 fault-injection tests via the real shim.
 > - `ssh-engine-dumb` ✅ (stores, code `1762463` @ 2026-06-10) — ssh:// dumb engine: batched existence probe + single `tar|ssh` atomic pipeline + manifest-last; fetch gated on an exact-match tar allowlist (hostile-remote safe); `_snapdir_dumb_*` functions = accel seam; fake-ssh fixture + 11 fault-injection tests.
 > - `ssh-accel` ✅ (stores, code `3aa3989` @ 2026-06-10) — runtime-negotiated SNAPPACK accel: one combined probe RT, wire=1 exact-match dispatch, objects-needed diff + send-pack|receive-pack manifest-last stream, NO_ACCEL/FORCE_ACCEL/SENDALL toggles, graceful fallback (no silent mid-stream fallback). **Byte-identical dumb-vs-accel oracle proven.** 10/10 tests, zero skips.
-> - `loopback-sshd-suite` ❌ failed×1 (tests) — PM re-run hit a parallelism race: shared pinned TMPDIR across concurrent tests (staging dirs vanish mid-push; leak check counts other tests' dirs). Retry next tick with per-test TMPDIR isolation; teammate diff left uncommitted in tree.
-> - pending: `loopback-sshd-suite` (retry) → `ssh-ci-wire`; `ssh-docs`, `ssh-packaging-dist` (unblocked) → `phase24-complete` (human checkpoint).
+> - `loopback-sshd-suite` ✅ (tests, code `afd5080` @ 2026-06-10, failure_count 1 — TMPDIR race fixed on retry) — real-OpenSSH suite vs self-spawned sshd (3 flavors, no docker): dumb+accel round-trips, restricted-sftp-only, host-key fail-closed + EXTRA_OPTS-cannot-weaken behavioral proof, accel oracle over sshd, FORCE_ACCEL error, scoped no-leak; 7/7 ×3 runs + --test-threads=8; skips without sshd unless SNAPDIR_SSH_TEST_REQUIRE=1.
+> - pending: `ssh-ci-wire`, `ssh-docs`, `ssh-packaging-dist` (all unblocked) → `phase24-complete` (human checkpoint).
 
 ## ✅ PHASES 0–23 COMPLETE — 153/153 — snapdir 1.4.0 RELEASED
 
