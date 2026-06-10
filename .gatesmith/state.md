@@ -13,7 +13,8 @@
 > - `sftp-engine` ✅ (stores, code `4aca5fb` @ 2026-06-10) — pure-SFTP engine (works under `ForceCommand internal-sftp`): probe+pwd-liveness, JOBS-parallel put-tmp/rename/chmod chunks, manifest LAST, exact ERROR wording; fake-sftp fixture + 10 fault-injection tests via the real shim.
 > - `ssh-engine-dumb` ✅ (stores, code `1762463` @ 2026-06-10) — ssh:// dumb engine: batched existence probe + single `tar|ssh` atomic pipeline + manifest-last; fetch gated on an exact-match tar allowlist (hostile-remote safe); `_snapdir_dumb_*` functions = accel seam; fake-ssh fixture + 11 fault-injection tests.
 > - `ssh-accel` ✅ (stores, code `3aa3989` @ 2026-06-10) — runtime-negotiated SNAPPACK accel: one combined probe RT, wire=1 exact-match dispatch, objects-needed diff + send-pack|receive-pack manifest-last stream, NO_ACCEL/FORCE_ACCEL/SENDALL toggles, graceful fallback (no silent mid-stream fallback). **Byte-identical dumb-vs-accel oracle proven.** 10/10 tests, zero skips.
-> - pending: `loopback-sshd-suite` (unblocked) → `ssh-ci-wire`, `ssh-docs`, `ssh-packaging-dist` (docs/packaging unblocked) → `phase24-complete` (human checkpoint).
+> - `loopback-sshd-suite` ❌ failed×1 (tests) — PM re-run hit a parallelism race: shared pinned TMPDIR across concurrent tests (staging dirs vanish mid-push; leak check counts other tests' dirs). Retry next tick with per-test TMPDIR isolation; teammate diff left uncommitted in tree.
+> - pending: `loopback-sshd-suite` (retry) → `ssh-ci-wire`; `ssh-docs`, `ssh-packaging-dist` (unblocked) → `phase24-complete` (human checkpoint).
 
 ## ✅ PHASES 0–23 COMPLETE — 153/153 — snapdir 1.4.0 RELEASED
 

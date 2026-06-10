@@ -2942,8 +2942,9 @@ gates:
     phase: 24
     owner_agent: tests
     depends_on: [external-cli-wiring, ssh-engine-dumb, sftp-engine, ssh-accel]
-    status: pending
-    failure_count: 0
+    status: failed
+    failure_count: 1
+    failure_reason: "PM re-run 4/7 FAILED: parallel tests share one pinned TMPDIR (/tmp/sd-cm-<pid>) — staging dirs race ('staged manifest not found', 'tar: could not chdir') and the no-leak assertion counts other in-flight tests' dirs. Needs per-test TMPDIR isolation + scoped leak check."
     verification_cmd: "SNAPDIR_SSH_TEST_REQUIRE=1 cargo test -p snapdir-ssh-store --test loopback_sshd --locked"
     pass_criteria:
       and:
