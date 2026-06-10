@@ -3040,7 +3040,9 @@ gates:
     phase: 25
     owner_agent: generic
     depends_on: [release-prep-1.5.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-10T01:50:00Z
+    git_sha: 21ee6be
     failure_count: 0
     verification_cmd: "git ls-remote --exit-code origin refs/heads/release-verify/1.5.0 >/dev/null"
     pass_criteria:
