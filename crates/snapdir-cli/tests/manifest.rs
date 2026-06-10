@@ -22,8 +22,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Path to the compiled `snapdir` binary under test.
-fn snapdir_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_snapdir")
+///
+/// The bin target lives in the `snapdir` crate (`crates/snapdir`), so
+/// `CARGO_BIN_EXE_snapdir` is not set for snapdir-cli tests; `assert_cmd`'s
+/// lookup falls back to the shared target dir. Under `cargo test --workspace`
+/// the binary is always built first; for a standalone
+/// `cargo test -p snapdir-cli`, run `cargo build -p snapdir` once before.
+fn snapdir_bin() -> std::path::PathBuf {
+    assert_cmd::cargo::cargo_bin("snapdir")
 }
 
 /// Creates a unique temp directory for a test tree and returns its path.
@@ -68,7 +74,7 @@ fn build_basic_tree(root: &Path) {
 }
 
 /// Runs a command and returns its stdout as a `String`, asserting success.
-fn run_stdout(program: &str, args: &[&str], env: &[(&str, &str)]) -> String {
+fn run_stdout(program: &Path, args: &[&str], env: &[(&str, &str)]) -> String {
     let mut cmd = Command::new(program);
     cmd.args(args);
     for (k, v) in env {
@@ -76,10 +82,11 @@ fn run_stdout(program: &str, args: &[&str], env: &[(&str, &str)]) -> String {
     }
     let output = cmd
         .output()
-        .unwrap_or_else(|e| panic!("failed to run {program}: {e}"));
+        .unwrap_or_else(|e| panic!("failed to run {}: {e}", program.display()));
     assert!(
         output.status.success(),
-        "{program} {args:?} exited with {:?}\nstderr: {}",
+        "{} {args:?} exited with {:?}\nstderr: {}",
+        program.display(),
         output.status.code(),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -102,7 +109,7 @@ fn manifest_default_b3_golden() {
     build_basic_tree(&root);
     let root_str = root.to_string_lossy().into_owned();
 
-    let actual = run_stdout(snapdir_bin(), &["manifest", &root_str], &[]);
+    let actual = run_stdout(&snapdir_bin(), &["manifest", &root_str], &[]);
     assert_eq!(actual, GOLDEN_B3, "default b3 manifest");
     fs::remove_dir_all(&root).ok();
 }
@@ -127,7 +134,7 @@ fn manifest_absolute_golden() {
         writeln!(expected, "{head} {abs}").unwrap();
     }
 
-    let actual = run_stdout(snapdir_bin(), &["manifest", "--absolute", &root_str], &[]);
+    let actual = run_stdout(&snapdir_bin(), &["manifest", "--absolute", &root_str], &[]);
     assert_eq!(actual, expected, "--absolute manifest");
     fs::remove_dir_all(&root).ok();
 }
@@ -146,7 +153,7 @@ D 755 4d1b45a28d56adfbb6c561229078cca4 7 ./sub/
 F 644 644fde6d4d61626af24f1c5431fa7a97 7 ./sub/b.txt
 ";
     let actual = run_stdout(
-        snapdir_bin(),
+        &snapdir_bin(),
         &["manifest", "--checksum-bin", "md5sum", &root_str],
         &[],
     );
@@ -168,7 +175,7 @@ D 755 9f9e42210f9a39f7b1da7918867e4dd300c8e2cbce6765fc05dac9b332ba54a4 7 ./sub/
 F 644 42a19f77459c45b0218f7d21a485a8a41e3bcb4e80e6e570033c49e2fb16446a 7 ./sub/b.txt
 ";
     let actual = run_stdout(
-        snapdir_bin(),
+        &snapdir_bin(),
         &["manifest", "--checksum-bin", "sha256sum", &root_str],
         &[],
     );
@@ -190,7 +197,7 @@ F 644 ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f 5 ./a.txt
 F 644 af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262 0 ./empty
 ";
     let actual = run_stdout(
-        snapdir_bin(),
+        &snapdir_bin(),
         &["manifest", "--exclude", "sub", &root_str],
         &[],
     );
@@ -215,7 +222,7 @@ D 755 eeff000bbd1af1c3e4fefe03c4a4ebf8711cb2f7517767453c42913f8eb9670f 7 ./sub/
 F 644 8df06c5f5e6dcfcc59412fc9afafd46cbe4fbfbff16793befe474b152a5a993d 7 ./sub/b.txt
 ";
     let actual = run_stdout(
-        snapdir_bin(),
+        &snapdir_bin(),
         &["manifest", &root_str],
         &[("SNAPDIR_MANIFEST_CONTEXT", "sekret")],
     );
@@ -234,7 +241,7 @@ fn manifest_id_golden() {
     build_basic_tree(&root);
     let root_str = root.to_string_lossy().into_owned();
 
-    let actual = run_stdout(snapdir_bin(), &["id", &root_str], &[]);
+    let actual = run_stdout(&snapdir_bin(), &["id", &root_str], &[]);
     assert_eq!(
         actual.trim_end(),
         "e40705a8733449f93f0413549a20797575b2065669e35e5b6cd1084dc81ebeaf",

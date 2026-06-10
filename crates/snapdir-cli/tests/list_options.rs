@@ -15,8 +15,14 @@ use std::path::{Path, PathBuf};
 use assert_cmd::Command;
 
 /// Path to the compiled `snapdir` binary under test.
-fn snapdir_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_snapdir")
+///
+/// The bin target lives in the `snapdir` crate (`crates/snapdir`), so
+/// `CARGO_BIN_EXE_snapdir` is not set for snapdir-cli tests; `assert_cmd`'s
+/// lookup falls back to the shared target dir. Under `cargo test --workspace`
+/// the binary is always built first; for a standalone
+/// `cargo test -p snapdir-cli`, run `cargo build -p snapdir` once before.
+fn snapdir_bin() -> std::path::PathBuf {
+    assert_cmd::cargo::cargo_bin("snapdir")
 }
 
 /// Creates a unique temp directory for a test tree and returns its path.

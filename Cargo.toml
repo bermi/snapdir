@@ -5,6 +5,7 @@ members = [
     "crates/snapdir-catalog",
     "crates/snapdir-stores",
     "crates/snapdir-cli",
+    "crates/snapdir",
     "crates/snapdir-ssh-store",
     "benches",
 ]

@@ -3,7 +3,7 @@
 //! that power the upcoming `ssh://` store acceleration
 //! (`<local> snapdir send-pack | ssh host 'snapdir receive-pack'`).
 //!
-//! Everything here drives the REAL binary (`env!("CARGO_BIN_EXE_snapdir")`)
+//! Everything here drives the REAL binary (resolved via `snapdir_bin()`)
 //! against temp `file://` stores, mirroring how the existing e2e tests build
 //! fixtures: snapshot fixtures are pushed with the binary itself; raw object
 //! fixtures are seeded via the `snapdir-stores` `FileStore`/`StreamStore`
@@ -21,8 +21,14 @@ use snapdir_core::{manifest_path, object_path, Blake3Hasher, Hasher, Store};
 use snapdir_stores::{FileStore, StreamStore, WIRE_CAPS, WIRE_VERSION};
 
 /// The real binary under test.
-fn snapdir_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_snapdir")
+///
+/// The bin target lives in the `snapdir` crate (`crates/snapdir`), so
+/// `CARGO_BIN_EXE_snapdir` is not set for snapdir-cli tests; `assert_cmd`'s
+/// lookup falls back to the shared target dir. Under `cargo test --workspace`
+/// the binary is always built first; for a standalone
+/// `cargo test -p snapdir-cli`, run `cargo build -p snapdir` once before.
+fn snapdir_bin() -> std::path::PathBuf {
+    assert_cmd::cargo::cargo_bin("snapdir")
 }
 
 /// A fresh `snapdir` command with the cache pinned under `cache` and the

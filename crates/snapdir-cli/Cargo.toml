@@ -7,12 +7,13 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "snapdir CLI: the `snapdir` binary exposing all subcommands."
+description = "snapdir CLI implementation: the library behind the `snapdir` binary (which ships in the `snapdir` crate)."
 readme = "README.md"
 
-[[bin]]
-name = "snapdir"
-path = "src/main.rs"
+# NOTE: no [[bin]] target. The `snapdir` binary moved to the `snapdir` crate
+# (crates/snapdir) — two workspace packages cannot both emit a `snapdir` bin
+# (cargo warns "output filename collision"). snapdir-cli <= 1.5 keeps
+# installing the old binary; this crate now exposes `snapdir_cli::run()`.
 
 [dependencies]
 snapdir-core.workspace = true

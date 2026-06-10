@@ -1,0 +1,25 @@
+[package]
+name = "snapdir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Content-addressed directory snapshots — the snapdir CLI."
+readme = "README.md"
+
+[[bin]]
+name = "snapdir"
+path = "src/main.rs"
+
+[dependencies]
+# The entire CLI lives in the snapdir-cli implementation library; this crate
+# is the flagship-named shim so `cargo install snapdir` installs the binary.
+# Path+version dep (not [workspace.dependencies]): only this crate consumes
+# it, and an unused workspace-level entry would be flagged by cargo-shear.
+snapdir-cli = { path = "../snapdir-cli", version = "1.5.0" }
+
+[lints]
+workspace = true

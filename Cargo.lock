@@ -3449,6 +3449,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "snapdir"
+version = "1.5.0"
+dependencies = [
+ "snapdir-cli",
+]
+
+[[package]]
 name = "snapdir-benches"
 version = "1.5.0"
 dependencies = [
