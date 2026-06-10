@@ -107,8 +107,33 @@ Pick a backend by `--store` URI scheme:
 | `s3://`   | Amazon S3        | AWS credential chain (env / profiles / SSO / metadata)   |
 | `b2://`   | Backblaze B2     | B2 application key as `AWS_*` over the S3-compatible API  |
 | `gs://`   | Google Cloud Storage | ADC / `GOOGLE_APPLICATION_CREDENTIALS` / metadata     |
+| `ssh://`  | Any host with SSH shell access | SSH keys / agent via the system OpenSSH client |
+| `sftp://` | Any SFTP server (incl. restricted/chroot accounts) | SSH keys / agent via the system OpenSSH client |
 
-Cloud backends use native SDKs and standard credential chains — no bespoke env vars, no CLI shell-outs. Any other scheme dispatches to a `snapdir-<scheme>-store` binary on `PATH`.
+Cloud backends use native SDKs and standard credential chains — no bespoke env vars, no CLI shell-outs. Any other scheme dispatches to a `snapdir-<scheme>-store` binary on `PATH`; the `ssh://` and `sftp://` stores ship as two such binaries (`cargo install snapdir-ssh-store` provides both).
+
+### SSH & SFTP stores
+
+Store URLs take the form `ssh://[user@]host[:port]/abs/base/path` (likewise `sftp://`). Use `ssh://` when the remote gives you a shell — and it auto-accelerates when snapdir is installed remotely; use `sftp://` for restricted/chroot accounts (it speaks pure SFTP, so it works even under `ForceCommand internal-sftp` with no remote shell at all). Both require the `snapdir-ssh-store`/`snapdir-sftp-store` binaries on `PATH` and drive your system `ssh`/`sftp` client, so your `~/.ssh/config`, keys, agent, and `ProxyJump` setups keep working. Embedded passwords (`user:password@`) are rejected — authenticate with a key or an agent.
+
+Each scheme reads its own env family — `SNAPDIR_SSH_STORE_*` for `ssh://`, `SNAPDIR_SFTP_STORE_*` for `sftp://`:
+
+| Variable (suffix) | Default | Meaning |
+| --- | --- | --- |
+| `IDENTITY_FILE` | — | Private key path; also sets `IdentitiesOnly=yes` |
+| `KNOWN_HOSTS` | — | `UserKnownHostsFile` override |
+| `PORT` | — | Remote port (a port in the URL wins) |
+| `CONNECT_TIMEOUT` | `10` | `ConnectTimeout` seconds |
+| `JOBS` | `4` | Transfer parallelism (falls back to `SNAPDIR_JOBS`, then `SNAPDIR_MAX_JOBS`) |
+| `CONTROL_PERSIST` | `60` | `ControlMaster` linger seconds (one TCP+auth handshake per operation) |
+| `UMASK` | `077` | Umask for remote writes (`ssh://` only; `sftp://` uses explicit `chmod 600`) |
+| `EXTRA_OPTS` | — | Extra `Key=Value` ssh options, appended **last** |
+
+Both engines enforce an **un-weakenable, modern-only security floor** on every `ssh`/`sftp` invocation: modern-only key exchange (post-quantum hybrid `sntrup761x25519` first, then X25519), AEAD-only ciphers (ChaCha20-Poly1305, AES-GCM), Ed25519/RSA-SHA-2/ECDSA host keys (SHA-1 `ssh-rsa` and DSS excluded), `StrictHostKeyChecking=yes` always, `BatchMode=yes` (never an interactive prompt), and no password or keyboard-interactive auth. OpenSSH **≥ 8.5** is required locally (checked via `ssh -V`, fail-closed). Because OpenSSH takes the first value obtained for each option and the floor is always emitted first, `EXTRA_OPTS` structurally **cannot weaken the floor** — e.g. `EXTRA_OPTS="StrictHostKeyChecking=no"` is inert; extras can only add options the floor doesn't set.
+
+When the remote host has a wire-compatible `snapdir` on its `PATH`, `ssh://` transfers automatically switch to a pack-stream protocol that diffs objects remotely and streams only what's missing in O(1) round trips (falling back gracefully otherwise). Runtime toggles: `SNAPDIR_SSH_NO_ACCEL=1` forces the plain path, `SNAPDIR_SSH_FORCE_ACCEL=1` errors instead of falling back, and `SNAPDIR_SSH_PULL_SENDALL=1` makes an accelerated fetch request the full object list. Protocol details: [docs/rust-port/ssh-wire-protocol.md](docs/rust-port/ssh-wire-protocol.md).
+
+Limitation: `snapdir sync` does not support `ssh://`/`sftp://` stores (they have no in-process streaming surface) — `push`, `fetch`, `pull`, and `checkout` all work.
 
 ## Rate limiting & retries
 

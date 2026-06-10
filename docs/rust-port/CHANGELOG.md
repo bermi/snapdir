@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ssh://` and `sftp://` stores over the system OpenSSH client.** A new
+  `snapdir-ssh-store` crate ships two external-store binaries —
+  `snapdir-ssh-store` (`ssh://`, needs a remote POSIX shell) and
+  `snapdir-sftp-store` (`sftp://`, pure SFTP; works against restricted
+  `ForceCommand internal-sftp` chroot accounts) — with no SSH
+  reimplementation and zero new crypto dependencies. Store URLs take
+  `ssh://[user@]host[:port]/abs/base`; each scheme reads its own
+  `SNAPDIR_{SSH,SFTP}_STORE_*` env family (`IDENTITY_FILE`, `KNOWN_HOSTS`,
+  `PORT`, `CONNECT_TIMEOUT`, `JOBS`, `CONTROL_PERSIST`, `UMASK`,
+  `EXTRA_OPTS`). Every invocation multiplexes over one `ControlMaster`
+  connection and starts with an un-weakenable modern-only security floor
+  (pinned kex/AEAD-cipher/host-key lists, `StrictHostKeyChecking=yes`,
+  `BatchMode=yes`; `EXTRA_OPTS` are appended last and structurally cannot
+  weaken it); OpenSSH ≥ 8.5 is required locally, fail-closed. `snapdir sync`
+  does not support these stores.
+- **Automatic `ssh://` acceleration via SNAPPACK.** When the remote host has
+  a wire-compatible `snapdir` on its `PATH`, pushes and fetches negotiate at
+  runtime (exact `wire=1` integer match, never semver) and switch to a
+  self-verifying pack stream: the object list is diffed remotely and only
+  missing objects ride one `send-pack | receive-pack` pipe, with the manifest
+  as the last record, committed only after the verified `end` trailer —
+  manifest-last preserved end-to-end, byte-identical to the plain path.
+  Graceful fallback when the remote lacks the plumbing;
+  `SNAPDIR_SSH_NO_ACCEL=1`, `SNAPDIR_SSH_FORCE_ACCEL=1`, and
+  `SNAPDIR_SSH_PULL_SENDALL=1` control it. Spec:
+  `docs/rust-port/ssh-wire-protocol.md`.
+- **Hidden wire plumbing in the CLI.** `snapdir version --capabilities`
+  prints the negotiation line (`snapdir <semver> wire=<u32> caps=<csv>`), and
+  three hidden subcommands — `objects-needed`, `send-pack`, `receive-pack` —
+  implement the pack protocol over any built-in store with fail-closed input
+  validation and incremental BLAKE3 verification. The documented CLI surface
+  and plain `snapdir version` output are unchanged.
+- **`StreamStore::objects_needed`.** A defaulted trait method answering which
+  of the offered checksums a store does not hold (order-preserving,
+  fail-closed validation), available across the `file://`, `s3://`, `gs://`,
+  and `b2://` stores.
+
+### Fixed
+
+- **External-store CLI wiring.** `snapdir push`/`fetch --store` against an
+  external `snapdir-<scheme>-store` binary passed directory *trees* where the
+  emit-command contract expects *sharded store roots*, breaking every
+  external store end-to-end. Push now stages the snapshot into the local
+  cache and pushes from the cache root, and fetch lands objects directly in
+  the cache root, committing the manifest last. Affects all
+  `snapdir-*-store` binaries; the built-in stores were never affected.
+
 ## [1.4.0] — 2026-06-09
 
 ### Added

@@ -40,3 +40,4 @@ earlier one (see ADR-0024, which supersedes ADR-0001).
 | [0024](0024-retire-the-bash-oracle.md) | Retire the Bash oracle (full cut) | Accepted (supersedes 0001) |
 | [0025](0025-keep-native-certs.md) | Keep native-certs in the scratch image | Accepted |
 | [0026](0026-latest-deps-with-release-age-cooldown.md) | Adopt latest deps with a 3-day minimum-release-age | Accepted |
+| [0027](0027-ssh-sftp-stores-system-openssh-wire-plumbing.md) | SSH/SFTP stores via system OpenSSH + wire-versioned plumbing | Accepted |
