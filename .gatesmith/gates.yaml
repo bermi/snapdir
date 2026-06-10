@@ -3157,3 +3157,144 @@ gates:
         - human_confirm: "Phase 26 done: the `snapdir` crate name is owned and published; `cargo install snapdir` is the documented install; snapdir-cli remains supported per the chosen design. Approve?"
     human_checkpoint: true
     description: "PHASE 26 SIGN-OFF: `cargo install snapdir` works from crates.io and is the documented install path; the flagship name is owned (anti-squatting); snapdir-cli supported per the (a)/(b) design outcome."
+
+  # ===================================================================
+  # Phase 27 — SNAPPACK perf/durability (operator plan-approved 2026-06-10;
+  # research-driven: deep-research run wf_70775dd9 + design doc in the
+  # approved plan). Gated on phase26-complete. NOTE: snapdir fsyncs NOTHING
+  # today — recv-fsync-batch ADDS crash-durability to manifest-last (git
+  # core.fsyncMethod=batch pattern); wire2-zstd is additive (caps token,
+  # wire stays 1, receiver sniffs magic, SNAPPACK 1Z).
+  # ===================================================================
+  - id: recv-fsync-batch-stores
+    phase: 27
+    owner_agent: stores
+    depends_on: [phase26-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores pack --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-stores/src/fsync.rs]
+    human_checkpoint: false
+    description: "Batched receiver durability (plan Design A). New cfg-gated crates/snapdir-stores/src/fsync.rs over libc (libc already direct dep of core/cli — zero new lock crates): Linux sync_file_range(WRITE) per object at commit_object (fd open) + WAIT_BEFORE|WRITE|WAIT_AFTER pass at barrier; macOS libc::fsync per object (writeout-only on Darwin; std sync_all=F_FULLFSYNC is wrong per object); fallback sync_data per file at barrier. PackSink gains DEFAULTED flush_barrier() (no-op default); read_pack calls it in the 'end' arm BEFORE put_manifest (pack.rs:481-489). FileSink keeps written: Vec<PathBuf>; manifest commit via new file_store::write_manifest_durable (fsync temp -> rename -> fsync parent shard dir). EXACTLY 2 full syncs per pack; object shard dirs not individually fsynced (journal ordering — document the non-journaling-fs caveat). PRESERVE per-record rename visibility (incremental resume; pinned tests stay). Durability enum on FileSink (with_durability), lib env-free. Scope: receive-pack only; FileStore::push/put_object untouched (explicit non-goal). Tests: off-vs-batch identical filing, barrier-before-manifest ordering via recording sink, truncation/resume re-pinned."
+
+  - id: recv-fsync-knob-cli
+    phase: 27
+    owner_agent: cli
+    depends_on: [recv-fsync-batch-stores]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test plumbing --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "SNAPDIR_FSYNC=batch|off knob (default batch; any other value -> hard error, fail closed) read in run_receive_pack (cli.rs ~1609) -> FileSink::with_durability. plumbing.rs tests: default batch, off accepted, bogus value -> exit!=0 with clear message; trycmd --help snapshots byte-stable (env knob, no new flags)."
+
+  - id: wire2-zstd-format-stores
+    phase: 27
+    owner_agent: stores
+    depends_on: [phase26-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores pack --locked && cargo deny --workspace --all-features check && utils/ci/check-crate-age.sh"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "SNAPPACK 1Z (plan Design B): new WIRE_MAGIC_ZSTD 'SNAPPACK 1Z\\n' — same record grammar, whole stream after magic = ONE zstd frame containing record* 'end\\n' verbatim; zstd::stream::read::Decoder feeds the UNCHANGED parser (incremental BLAKE3 untouched); writer wraps stream::write::Encoder, finish() after end. Level 3 default + SNAPDIR_SSH_ZSTD_LEVEL (1..=19, encoding process only). Receiver SNIFFS magic, accepts v1 + 1Z forever (no flag). Caps: append 'snappack-zstd' to WIRE_CAPS; WIRE_VERSION stays 1 (1.5.0 _snapdir_caps_ok ignores unknown tokens — integer bump would dumb-fallback, unacceptable). Bounds unchanged on DECOMPRESSED bytes (128B header / 64MiB manifest; len fields bound allocations; bombs cost CPU only, all bytes hash-verified). Dep: zstd crate (zstd-sys bundled libzstd, MIT/BSD-3, cc/build.rs = the exercised blake3 pattern) plain dep of snapdir-stores; ruzstd REJECTED as encoder (named decode-only fallback if a dist target breaks; no pre-emptive feature gate). Tests: 1Z roundtrip via FileSink (assert magic + smaller-than-v1 on compressible fixture), unsolicited-1Z accepted+verified, truncated-1Z (objects remain, no manifest, no temp litter), lying-len-in-1Z bounded, bad magic 'SNAPPACK 3'/garbage clean error."
+
+  - id: wire2-zstd-cli
+    phase: 27
+    owner_agent: cli
+    depends_on: [wire2-zstd-format-stores]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test plumbing --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Hidden --pack-format <v1|zstd> (clap value_enum, default v1 -> old invocations byte-identical) on send-pack; receive-pack ZERO changes (magic sniff). version --capabilities automatically advertises the new WIRE_CAPS token. plumbing.rs: zstd pipe roundtrip via the real binary, default-v1 pinned, capabilities line contains snappack-zstd; trycmd help snapshots byte-stable."
+
+  - id: wire2-zstd-ssh
+    phase: 27
+    owner_agent: stores
+    depends_on: [wire2-zstd-format-stores, wire2-zstd-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-ssh-store --test accel --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ssh_engine zstd negotiation (lane exc: crates/snapdir-ssh-store). Local const ZSTD_CAP='snappack-zstd' + pin test vs snapdir_stores::WIRE_CAPS (same pattern as the local WIRE_VERSION pin, ssh_engine.rs:97,711). accel_prelude probes the LOCAL binary's caps too (snapdir_local_zstd flag — guards SNAPDIR_SSH_LOCAL_SNAPDIR pointing at a 1.5.0 binary). Push: runtime branch picks --pack-format zstd iff _snapdir_caps_ok snappack-zstd AND local-zstd; remote receive-pack command line UNCHANGED. Fetch: bake TWO quoted remote send-pack variants (with/without ' --pack-format zstd'), runtime pick (the ids/ids_all pattern); local receive-pack sniffs. PUSH_CAPS/FETCH_CAPS UNCHANGED -> FORCE_ACCEL semantics/text untouched (never interpolate runtime env into baked remote command lines). Emitted-text tests: branch present, wire=1 literal unchanged, floor flags intact."
+
+  - id: wire2-compat-matrix
+    phase: 27
+    owner_agent: stores
+    depends_on: [wire2-zstd-ssh, recv-fsync-knob-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-ssh-store --locked && cargo test -p snapdir-cli --test plumbing --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Full compatibility matrix (plan B5) via accel.rs install_caps_only_snapdir fakes + plumbing.rs: (1) new<->new = 1Z on the wire, fake's log records --pack-format zstd, byte-identical store, pack smaller on compressible fixture; (2) new client <-> 1.5.0-caps remote (no token) = accel still taken, v1, no flag; (3) 1.5.0 client <-> new remote = v1 (existing tests ARE this; pin explicitly); (4) FORCE_ACCEL error text zstd-free; (5) loopback_sshd accel oracle extended: dumb vs accel-zstd byte-identical over real sshd. Plus SNAPDIR_FSYNC interplay smoke (batch default through the full accel path)."
+
+  - id: dist-smoke-musl
+    phase: 27
+    owner_agent: ci
+    depends_on: [wire2-zstd-format-stores]
+    status: pending
+    failure_count: 0
+    verification_cmd: "rustup target list --installed | grep -q x86_64-unknown-linux-musl && cargo build --target x86_64-unknown-linux-musl -p snapdir-cli --profile dist --locked || echo 'musl target not installed locally; CI musl job is the enforcing check'"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Prove zstd-sys under the musl static gate early (risk: cc cross-compile of bundled libzstd — same class as blake3's C, already exercised, but verify). Locally: build if the musl target is installed (Darwin host may need musl-cross; if infeasible locally, the gate rides CI's musl job — ci lane verifies ci.yaml musl job covers --workspace with the new dep and turns this gate's local check into a documented skip). NO ci.yaml changes expected unless the musl job needs a zstd-related toolchain tweak."
+
+  - id: snappack-bench
+    phase: 27
+    owner_agent: bench
+    depends_on: [recv-fsync-batch-stores, wire2-zstd-format-stores]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo bench -p snapdir-benches --bench snappack -- --test"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [benches/benches/snappack.rs]
+    human_checkpoint: false
+    description: "New criterion target benches/benches/snappack.rs (registered like pipeline) + deterministic generators in benches/src/lib.rs: text_like_bytes(len,seed) (word-table concat — deterministic_bytes' 256B ramp is trivially compressible, only OK as a best-case third point) and incompressible_bytes (xorshift64*, seeded, std-only). Scenarios: (a) 5k x 4KiB text-like, (b) 256 x 1MiB incompressible. Benches: pack/send/{a,b}/{v1,zstd} (write_pack -> Vec, Throughput::Bytes) and pack/receive/{a,b}/{v1,zstd}x{fsync off,batch} (fresh dir per iter, BatchSize::PerIteration — pipeline.rs:112-138 pattern). Bytes-on-wire pinned by #[test]: zstd < v1 for (a), ratio printed. Acceptance: batch <=5% over off on (a) (record numbers in evidence). iai_hot: one fixed-workload bench_read_pack entry (64 x 1KiB, v1, durability Off) under the existing callgrind_5pct config; first run sets the baseline."
+
+  - id: snappack-docs
+    phase: 27
+    owner_agent: docs
+    depends_on: [wire2-zstd-ssh, recv-fsync-knob-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "typos README.md docs/ && grep -q 'SNAPPACK 1Z' docs/rust-port/ssh-wire-protocol.md && grep -q 'SNAPDIR_FSYNC' docs/rust-port/ssh-wire-protocol.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ssh-wire-protocol.md: new 'SNAPPACK 1Z — zstd transport encoding' section (magic, single-frame framing, decompressed-bytes bounds, bomb reasoning, receiver-sniffs/sender-only-on-negotiation) + 'Durability' section (batch model, journal-ordering argument, SNAPDIR_FSYNC, non-journaling-fs caveat — claim no more than git does). README perf note: compression auto-negotiates (both ends >= this release), SNAPDIR_SSH_ZSTD_LEVEL, WAN/HPN-SSH guidance + '-o Compression=no' now that SNAPPACK compresses above ssh. CHANGELOG [Unreleased]: both entries. Accuracy rule: verify every env/flag/const against landed code."
+
+  - id: phase27-complete
+    phase: 27
+    owner_agent: generic
+    depends_on: [recv-fsync-batch-stores, recv-fsync-knob-cli, wire2-zstd-format-stores, wire2-zstd-cli, wire2-zstd-ssh, wire2-compat-matrix, dist-smoke-musl, snappack-bench, snappack-docs]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 27 done: receive-pack is crash-durable by default (batched, 2 full syncs per pack, manifest-last now holds across power loss on journaling filesystems) and SNAPPACK 1Z zstd compression auto-negotiates with full back/forward compat (wire stays 1; 1.5.0 peers get v1). Measured bench numbers presented (compression ratio on the small-files scenario; batch-vs-off delta <=5%). Release as 1.6.0 is a separate future phase. Approve?"
+    human_checkpoint: true
+    description: "PHASE 27 SIGN-OFF: SNAPPACK perf/durability per the operator-approved plan — batched receiver durability (SNAPDIR_FSYNC=batch default) + additive zstd wire (snappack-zstd cap, SNAPPACK 1Z, receiver sniffs) + compat matrix + musl proof + benches + docs. PM presents the measured numbers from snappack-bench evidence at this checkpoint."
