@@ -55,6 +55,11 @@ MSRV="1.91.1"
 COVERAGE_FLOOR=75
 BUILDER_IMAGE="rust:1.96-slim-bookworm"
 
+# Mirror ci.yaml: the snapdir-ssh-store loopback sshd suite must RUN, never
+# eprintln-skip (macOS ships /usr/sbin/sshd; Linux: apt-get install
+# openssh-server). Applies to the test group AND coverage (llvm-cov runs tests).
+export SNAPDIR_SSH_TEST_REQUIRE=1
+
 # Accumulated failures: each entry is "CHECK NAME|||reproduce command".
 FAILURES=()
 
