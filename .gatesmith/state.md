@@ -7,7 +7,7 @@
 
 > **snapdir 1.5.0 is RELEASED**: upstream/main `8cc8e0c`, tag `v1.5.0`, GitHub release live (13 signed assets incl. `snapdir-ssh-store` + `snapdir-sftp-store` bins), **all 5 crates** at 1.5.0 on crates.io. snapdir-ssh-store's FIRST publish hit crates.io's "TP tokens cannot create new crates" 403 → recovered: manual publish with the operator's keychain token + idempotent job rerun finished snapdir-cli via TP. OPERATOR FOLLOW-UP: add TP on the snapdir-ssh-store crate page. Phase 27 SNAPPACK recv-fsync-batch + wire2-zstd queued (10 gates, plan-approved; NOTE snapdir fsyncs NOTHING today — fsync gate ADDS crash-durability to manifest-last).
 
-## 🔶 PHASE 26 IN PROGRESS — 1/4 gates — own the `snapdir` crate name (171/184 total)
+## 🔶 PHASE 26 IN PROGRESS — 2/4 gates — own the `snapdir` crate name (172/184 total)
 
 > - `snapdir-name-crate` ✅ (cli, code `a064003` @ 2026-06-10) — **design (b)**: the `snapdir` bin moved to the new flagship `crates/snapdir` (3-line shim over the new `snapdir_cli::run()` lib); duplicate-bin design (a) killed by cargo's output-filename-collision warning (verified 1.91.1 + 1.96.0). snapdir-cli stays published as the impl lib; ≤1.5 installs keep the old bin. Parity tests byte-identical; workspace 558/0.
 > - pending: `snapdir-name-docs` → `snapdir-name-release-1.5.1` (human ✋: bump+branch+PR+tag+publish, **TP/manual-first-publish for the `snapdir` name with the keychain token**, release.yml CLI_CRATE/dist follow-ups flagged by the crate gate) → `phase26-complete` (human ✋).

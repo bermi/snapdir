@@ -3127,7 +3127,9 @@ gates:
     phase: 26
     owner_agent: docs
     depends_on: [snapdir-name-crate]
-    status: pending
+    status: passed
+    passed_at: 2026-06-10T23:40:00Z
+    git_sha: 2d5918d
     failure_count: 0
     verification_cmd: "grep -q 'cargo install snapdir' README.md && test -f crates/snapdir/README.md"
     pass_criteria:
