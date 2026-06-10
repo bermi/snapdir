@@ -3004,7 +3004,9 @@ gates:
     phase: 24
     owner_agent: generic
     depends_on: [external-cli-wiring, ssh-store-scaffold, ssh-engine-dumb, sftp-engine, pack-wire-format, cli-plumbing, ssh-accel, loopback-sshd-suite, ssh-ci-wire, ssh-docs, ssh-packaging-dist]
-    status: pending
+    status: passed
+    passed_at: 2026-06-10T01:05:00Z
+    git_sha: 62560e5
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked"
     pass_criteria:
