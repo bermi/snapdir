@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 rust-version = "1.91.1"
 authors = ["Bermi Ferrer <bermi@bermilabs.com>"]
@@ -23,9 +23,9 @@ categories = ["command-line-utilities", "filesystem"]
 
 [workspace.dependencies]
 # Internal crates
-snapdir-core = { path = "crates/snapdir-core", version = "1.4.0" }
-snapdir-catalog = { path = "crates/snapdir-catalog", version = "1.4.0" }
-snapdir-stores = { path = "crates/snapdir-stores", version = "1.4.0" }
+snapdir-core = { path = "crates/snapdir-core", version = "1.5.0" }
+snapdir-catalog = { path = "crates/snapdir-catalog", version = "1.5.0" }
+snapdir-stores = { path = "crates/snapdir-stores", version = "1.5.0" }
 
 # Errors: thiserror in libs, anyhow (+ context) in the bin.
 thiserror = "2"
