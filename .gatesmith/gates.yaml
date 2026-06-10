@@ -2989,7 +2989,9 @@ gates:
     phase: 24
     owner_agent: packaging
     depends_on: [sftp-engine, ssh-accel]
-    status: pending
+    status: passed
+    passed_at: 2026-06-10T00:50:00Z
+    git_sha: 9475aab
     failure_count: 0
     verification_cmd: "cargo package -p snapdir-ssh-store --list --allow-dirty | grep -q 'README.md' && cargo build --workspace --locked --target-dir target && test -x target/debug/snapdir-ssh-store && test -x target/debug/snapdir-sftp-store"
     pass_criteria:
