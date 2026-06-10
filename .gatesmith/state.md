@@ -3,7 +3,12 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ✅ ALL GATES GREEN — 165/165 passed (2026-06-10) — PHASE 24 COMPLETE: sftp:// + ssh:// stores
+## 🔶 PHASE 25 IN PROGRESS — 1/5 gates — release snapdir 1.5.0 (166/170 total)
+
+> - `release-prep-1.5.0` ✅ (generic, code `1c416d9` @ 2026-06-10, gatesmith-free) — workspace + 3 internal dep versions → 1.5.0, lock regenerated, CHANGELOG [1.5.0] cut with fresh [Unreleased] + compare links; release.yml 5-crate loop confirmed.
+> - pending: `release-verify-branch-1.5.0` (human ✋) → `release-pr-upstream-1.5.0` (human ✋) → `release-tag-crates-1.5.0` (human ✋, incl. **crates.io TP registration for snapdir-ssh-store**) → `phase25-complete` (human ✋).
+
+## ✅ PHASE 24 COMPLETE — 12/12 (operator sign-off 2026-06-10) — sftp:// + ssh:// stores
 
 > Operator sign-off 2026-06-10. Shipped per the approved plan: the latent CLI external-store wiring bug fixed (affected ALL `snapdir-*-store` binaries), new crate `crates/snapdir-ssh-store` (`snapdir-ssh-store` + `snapdir-sftp-store` bins, snapdir-core-only deps), un-weakenable modern-only OpenSSH ≥8.5 floor, pure-SFTP engine (internal-sftp chroot-safe), ssh:// dumb engine (atomic tar pipeline, hostile-remote allowlist), SNAPPACK 1 wire format + hidden plumbing (`objects-needed`/`send-pack`/`receive-pack`, `version --capabilities`, wire=1) + `StreamStore::objects_needed`, runtime-negotiated acceleration (byte-identical dumb-vs-accel oracle PROVEN hermetically and over real sshd; NO_ACCEL/FORCE_ACCEL/PULL_SENDALL), loopback-sshd T2 suite required in ci/coverage/pre-push, docs (README, crates.io page, `ssh-wire-protocol.md`, ADR-0027, CHANGELOG), release wiring (publish loop + archives). Workspace 554 tests / 0 failed with sshd suite forced. **UNRELEASED** — next release phase: 1.5.0 bump, release-verify branch, upstream PR, tag + publish, and crates.io Trusted-Publishing registration for the new crate name. Frozen format untouched. dev carries `.gatesmith`; main/upstream never do.
 

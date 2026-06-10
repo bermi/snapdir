@@ -3025,7 +3025,9 @@ gates:
     phase: 25
     owner_agent: generic
     depends_on: [phase24-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-10T01:25:00Z
+    git_sha: 1c416d9
     failure_count: 0
     verification_cmd: "grep -qE '^version = \"1.5.0\"' Cargo.toml && grep -q '## \\[1.5.0\\]' docs/rust-port/CHANGELOG.md && cargo build --workspace --locked"
     pass_criteria:
