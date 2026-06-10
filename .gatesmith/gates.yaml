@@ -3091,3 +3091,65 @@ gates:
         - human_confirm: "Phase 25 done: snapdir 1.5.0 released — sftp:// + ssh:// stores (system-OpenSSH, un-weakenable security floor, SNAPPACK acceleration), the external-store CLI wiring fix, 5 crates on crates.io incl. first publish of snapdir-ssh-store; frozen format untouched. Approve?"
     human_checkpoint: true
     description: "PHASE 25 SIGN-OFF: snapdir 1.5.0 released end-to-end — canonical snapdir/snapdir at 1.5.0, tag v1.5.0, GitHub release live with the two new store binaries in every archive, all 5 crates published (snapdir-ssh-store TP-registered + first-published). Default behavior unchanged for existing stores; frozen format untouched."
+
+  # ===================================================================
+  # Phase 26 — own the `snapdir` crate name (operator-requested 2026-06-10)
+  # `cargo install snapdir` must work and become the documented install;
+  # snapdir-cli stays supported. crates.io name `snapdir` verified FREE
+  # (index 404 @ 2026-06-10) — claim it before someone squats it.
+  # Runs ONLY after 1.5.0 is fully released (dep: phase25-complete).
+  # ===================================================================
+  - id: snapdir-name-crate
+    phase: 26
+    owner_agent: cli
+    depends_on: [phase25-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir --locked && cargo build --workspace --locked && test -x target/debug/snapdir"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir/Cargo.toml]
+    human_checkpoint: false
+    description: "New workspace member crates/snapdir (package name `snapdir`) so `cargo install snapdir` installs THE snapdir binary. CONSTRAINT: two workspace packages emitting a bin named `snapdir` collide in the shared target dir — implementing teammate must verify cargo's current behavior and pick: (a) PREFERRED if tolerated: snapdir-cli gains a minimal lib target exposing its entrypoint (pub fn like run()->ExitCode; bin main becomes a 3-line shim), new crate `snapdir` = [[bin]] snapdir calling the same lib entry, snapdir-cli KEEPS its bin; (b) if collision is fatal: the bin target moves to crate `snapdir` (same binary, new home), snapdir-cli becomes a lib facade re-exporting the entry + README note ('binary moved to the snapdir crate; old snapdir-cli versions keep installing fine; pin <=1.5 for the old bin'), keeping the crate published/supported. Either way: byte-identical CLI behavior (trycmd/e2e parity test comparing `snapdir` output vs the previous binary across version/help/push-fetch roundtrip), workspace-inherited metadata (description 'Content-addressed directory snapshots' style, homepage snapdir.org, readme), cargo shear/deny/fmt/clippy clean, e2e: `cargo install --path crates/snapdir --root <tmp>` then drive a file:// push/fetch via the installed bin. LANE: cli + new dir crates/snapdir/ + root Cargo.toml members line (mechanical registration exception, PM_PROMPT)."
+
+  - id: snapdir-name-docs
+    phase: 26
+    owner_agent: docs
+    depends_on: [snapdir-name-crate]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -q 'cargo install snapdir' README.md && test -f crates/snapdir/README.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "README install section: `cargo install snapdir` becomes the primary documented install everywhere (root README, crates/snapdir/README.md as the crates.io landing page for the flagship name); snapdir-cli noted as still-supported (and what it now is per the (a)/(b) outcome of snapdir-name-crate). CHANGELOG [Unreleased] entry. Check docs/rust-port/migration.md + snapdir.org pointers for `cargo install snapdir-cli` mentions and update repo-side ones (website repo is out of scope — note it in the handoff as an operator follow-up for ../snapdir-website)."
+
+  - id: snapdir-name-release-1.5.1
+    phase: 26
+    owner_agent: packaging
+    depends_on: [snapdir-name-crate, snapdir-name-docs]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git fetch upstream --quiet && git ls-remote --tags upstream | grep -qE 'v1\\.5\\.1|v1\\.6\\.0' && curl -sf https://index.crates.io/sn/ap/snapdir >/dev/null"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "The follow-up release shipped end-to-end: release-verify branch green, upstream PR merged, tag pushed, release.yml succeeded, and crates.io now serves the `snapdir` crate (name owned; TP registered for it) with `cargo install snapdir` verified working from crates.io. Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint, IRREVERSIBLE). Condensed pipeline for the patch follow-up: version bump (1.5.1 suggested — snapdir-cli's added lib target is additive; operator may prefer 1.6.0; decide at prep) + CHANGELOG cut, release-verify branch off upstream/main with the phase-26 code commits, bench-verify green, PR 'release: <ver> — cargo install snapdir' to snapdir/snapdir, CI green, squash-merge, PRE-TAG OPERATOR STEP: register crates.io Trusted Publishing for the NEW crate name `snapdir` (same repo/workflow/environment as the other 5), add `snapdir` to release.yml's idempotent publish loop AFTER snapdir-cli (it depends on the cli lib) — that wiring change rides the phase-26 code commits — then tag + release.yml: archives (binary set unchanged) + 6-crate publish. PM machine-check: upstream tag exists AND crates.io index serves `snapdir`. Final manual smoke: `cargo install snapdir` on a clean machine/temp CARGO_HOME → `snapdir version` works."
+
+  - id: phase26-complete
+    phase: 26
+    owner_agent: generic
+    depends_on: [snapdir-name-crate, snapdir-name-docs, snapdir-name-release-1.5.1]
+    status: pending
+    failure_count: 0
+    verification_cmd: "curl -sf https://index.crates.io/sn/ap/snapdir | grep -q '\"vers\"'"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 26 done: the `snapdir` crate name is owned and published; `cargo install snapdir` is the documented install; snapdir-cli remains supported per the chosen design. Approve?"
+    human_checkpoint: true
+    description: "PHASE 26 SIGN-OFF: `cargo install snapdir` works from crates.io and is the documented install path; the flagship name is owned (anti-squatting); snapdir-cli supported per the (a)/(b) design outcome."
