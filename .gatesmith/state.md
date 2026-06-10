@@ -6,7 +6,10 @@
 ## 🔶 PHASE 25 IN PROGRESS — 1/5 gates — release snapdir 1.5.0 (166/170 total)
 
 > - `release-prep-1.5.0` ✅ (generic, code `1c416d9` @ 2026-06-10, gatesmith-free) — workspace + 3 internal dep versions → 1.5.0, lock regenerated, CHANGELOG [1.5.0] cut with fresh [Unreleased] + compare links; release.yml 5-crate loop confirmed.
-> - pending: `release-verify-branch-1.5.0` (human ✋) → `release-pr-upstream-1.5.0` (human ✋) → `release-tag-crates-1.5.0` (human ✋, incl. **crates.io TP registration for snapdir-ssh-store**) → `phase25-complete` (human ✋).
+> - `release-verify-branch-1.5.0` ✅ (operator-approved 2026-06-10) — branch `21ee6be` off upstream/main, 12 clean cherry-picks, ZERO .gatesmith; bench-verify run 27247039135 green (5/5 determinism, iai+criterion artifact consulted).
+> - IN FLIGHT: PR snapdir/snapdir#12 open, CI matrix running (watched in background).
+> - pending: `release-pr-upstream-1.5.0` (human ✋ merge) → `release-tag-crates-1.5.0` (human ✋, incl. **crates.io TP registration for snapdir-ssh-store BEFORE tagging**) → `phase25-complete` (human ✋).
+> - Phase 26 queued (gated on phase25-complete): own the `snapdir` crate name — `cargo install snapdir` (name verified FREE on crates.io 2026-06-10); 4 gates registered.
 
 ## ✅ PHASE 24 COMPLETE — 12/12 (operator sign-off 2026-06-10) — sftp:// + ssh:// stores
 
