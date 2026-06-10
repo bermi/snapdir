@@ -3,7 +3,11 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## 🔶 PHASE 25 IN PROGRESS — 1/5 gates — release snapdir 1.5.0 (166/170 total)
+## ✅ PHASE 25 COMPLETE — 5/5 — snapdir 1.5.0 RELEASED (2026-06-10); PHASE 26 NEXT (170/184 total)
+
+> **snapdir 1.5.0 is RELEASED**: upstream/main `8cc8e0c`, tag `v1.5.0`, GitHub release live (13 signed assets incl. `snapdir-ssh-store` + `snapdir-sftp-store` bins), **all 5 crates** at 1.5.0 on crates.io. snapdir-ssh-store's FIRST publish hit crates.io's "TP tokens cannot create new crates" 403 → recovered: manual publish with the operator's keychain token + idempotent job rerun finished snapdir-cli via TP. OPERATOR FOLLOW-UP: add TP on the snapdir-ssh-store crate page. NEXT: Phase 26 `cargo install snapdir` (4 gates, name verified FREE) → Phase 27 SNAPPACK recv-fsync-batch + wire2-zstd (10 gates, plan-approved; NOTE snapdir fsyncs NOTHING today — fsync gate ADDS crash-durability to manifest-last).
+
+## ✅ PHASE 25 GATE DETAIL — release snapdir 1.5.0
 
 > - `release-prep-1.5.0` ✅ (generic, code `1c416d9` @ 2026-06-10, gatesmith-free) — workspace + 3 internal dep versions → 1.5.0, lock regenerated, CHANGELOG [1.5.0] cut with fresh [Unreleased] + compare links; release.yml 5-crate loop confirmed.
 > - `release-verify-branch-1.5.0` ✅ (operator-approved 2026-06-10) — branch `21ee6be` off upstream/main, 12 clean cherry-picks, ZERO .gatesmith; bench-verify run 27247039135 green (5/5 determinism, iai+criterion artifact consulted).
