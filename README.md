@@ -27,7 +27,7 @@ cargo add snapdir-core
 
 > **Migrating from `cargo install snapdir-cli`?** That crate is now the
 > implementation library behind the CLI. Its versions ≤ 1.5.0 still install
-> the binary; from 1.5.1 the binary lives in the `snapdir` crate.
+> the binary; from 1.6.0 the binary lives in the `snapdir` crate.
 
 ## Quick start — 60 seconds, no setup
 

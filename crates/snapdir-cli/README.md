@@ -19,7 +19,7 @@ cargo install snapdir
 This installs the `snapdir` executable. Run `snapdir --help` to get started.
 
 `snapdir-cli` versions ≤ 1.5.0 keep installing the binary directly
-(`cargo install snapdir-cli@1.5.0` still works). From 1.5.1 this crate installs
+(`cargo install snapdir-cli@1.5.0` still works). From 1.6.0 this crate installs
 no binary itself: it exposes `snapdir_cli::run()`, the binary entrypoint the
 `snapdir` crate's `main` calls. `run()` is a binary entrypoint, not a stable
 library API — the crate keeps publishing and the CLI surface stays supported,

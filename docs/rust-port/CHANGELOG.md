@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-06-11
+
 ### Added
 
 - **`snapdir` crate: `cargo install snapdir` installs the CLI.** The flagship
@@ -347,7 +349,8 @@ Bash-written caches and remote buckets stay mutually readable.
   `gcloud`) in the shipped binary. External tools are used only by the test/oracle
   harness.
 
-[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/snapdir/snapdir/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/snapdir/snapdir/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/snapdir/snapdir/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/snapdir/snapdir/compare/v1.2.0...v1.3.0

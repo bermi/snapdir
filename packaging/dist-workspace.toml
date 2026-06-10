@@ -6,13 +6,15 @@
 # (`.github/workflows/release.yml`) drives it on `v*` tags.
 #
 # Lane note (packaging): this file is the load-bearing artifact for the
-# `release-config` gate. The primary binary lives in `crates/snapdir-cli`
-# (bin name `snapdir`); the external-store helper bins `snapdir-ssh-store` and
-# `snapdir-sftp-store` live in `crates/snapdir-ssh-store` and ship in the SAME
-# per-target archive (all targets, incl. the static musl legs — the crate is
-# std + snapdir-core only, so musl stays trivially clean). Library crates
-# (core/catalog/stores) are published to crates.io by the workflow, NOT
-# shipped as standalone archives here.
+# `release-config` gate. The primary binary lives in the flagship `snapdir`
+# package (`crates/snapdir`, bin name `snapdir` — a thin shim over the
+# `snapdir-cli` implementation library, which has NO bin target); the
+# external-store helper bins `snapdir-ssh-store` and `snapdir-sftp-store` live
+# in `crates/snapdir-ssh-store` and ship in the SAME per-target archive (all
+# targets, incl. the static musl legs — the crate is std + snapdir-core only,
+# so musl stays trivially clean). Library crates (core/catalog/stores/cli) are
+# published to crates.io by the workflow, NOT shipped as standalone archives
+# here.
 #
 # NB: `dist` reads `[workspace]` from this file so the tool can run with
 # `--workspace packaging/dist-workspace.toml` while the real Cargo workspace
@@ -25,14 +27,14 @@ members = ["cargo:../"]
 cargo-dist-version = "0.28.0"
 
 # Package selection: `dist` auto-detects every workspace package with [[bin]]
-# targets (snapdir-cli -> `snapdir`; snapdir-ssh-store -> `snapdir-ssh-store`
+# targets (snapdir -> `snapdir`; snapdir-ssh-store -> `snapdir-ssh-store`
 # + `snapdir-sftp-store`); the workspace-level `dist = false` keeps dist's own
 # publish/announce machinery off because release.yml's hand-rolled matrix is
 # the implementation of record — it builds all three bins per target
-# (`-p snapdir-cli -p snapdir-ssh-store --bins`) and stages them into one
-# archive per target. The library crates are released to crates.io separately
+# (`-p snapdir -p snapdir-ssh-store --bins`) and stages them into one
+# archive per target. The crates are released to crates.io separately
 # (see release.yml `crates-io`, order core -> catalog -> stores -> ssh-store
-# -> cli).
+# -> cli -> snapdir).
 dist = false
 
 # Hosting + release driver.
