@@ -947,3 +947,353 @@ fn second_capture_uploads_only_changed_object_to_pool() {
         fs::remove_dir_all(d).ok();
     }
 }
+
+// ===========================================================================
+// REVIEW-GATE STRENGTHENING (phase 28, objects-store-cli-tests-review)
+// Added after the impl became visible. Each test below pins a concrete impl
+// branch the black-box e2e suite could only assert loosely. They are e2e
+// against the real `snapdir` binary, mirroring the suite's existing style.
+// ===========================================================================
+
+/// Reads `stderr` from a `run_raw` `Output` as a lossy `String` (NOT lowercased,
+/// so message-exactness assertions can match the real casing/scheme).
+fn stderr_of(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// REVIEW (error exactness, OBJECTS side): an external `custom://` `--objects-store`
+/// is rejected with the SAME `sync`-style message the impl reuses
+/// (`stream_store_for_adapter`'s `Adapter::External` arm), and that message NAMES
+/// the offending object-pool URL — not merely a generic "not supported". This
+/// pins that the objects side is built via the shared rejecting router and that
+/// the surfaced URL is the OBJECTS URL (so the user can tell which side failed).
+#[test]
+fn external_objects_store_error_names_offending_pool_url() {
+    let src = temp_dir("xn-src");
+    let cap = temp_dir("xn-cap");
+    let cache = temp_dir("xn-cache");
+    build_tree(&src, &[("a.txt", b"hello")]);
+
+    let src_str = src.to_string_lossy().into_owned();
+    let cap_url = file_url(&cap);
+    // A distinctive authority so we can assert the OBJECTS url is the one named.
+    let bad_pool = "custom://objects-side-pool";
+
+    let out = run_raw(
+        &[
+            "push",
+            "--objects-store",
+            bad_pool,
+            "--store",
+            &cap_url,
+            &src_str,
+        ],
+        &cache,
+        &[],
+    );
+    assert!(
+        !out.status.success(),
+        "external --objects-store must be rejected"
+    );
+    let stderr = stderr_of(&out);
+    // The impl reuses the `sync` rejection verbatim: pin the actionable phrase ...
+    assert!(
+        stderr.contains("in-process stores (file/s3/b2/gcs)"),
+        "objects-side rejection must reuse the sync 'in-process stores (file/s3/b2/gcs)' \
+         message; got: {stderr}"
+    );
+    // ... and that it names the OFFENDING OBJECTS url (not the manifest --store).
+    assert!(
+        stderr.contains(bad_pool),
+        "rejection must name the offending --objects-store url {bad_pool:?}; got: {stderr}"
+    );
+    assert!(
+        !stderr.contains(&cap_url),
+        "the valid manifest --store {cap_url:?} must NOT be blamed; got: {stderr}"
+    );
+
+    for d in [&src, &cap, &cache] {
+        fs::remove_dir_all(d).ok();
+    }
+}
+
+/// REVIEW (error exactness, MANIFEST side): with a VALID `--objects-store` pool, an
+/// external `custom://` `--store` (manifest side) is rejected with the same
+/// `sync`-style message, and that message NAMES the offending MANIFEST url. Pins
+/// that the manifest side is ALSO routed through the rejecting
+/// `stream_store_for_adapter` (not silently accepted because the pool was valid),
+/// and that the blamed url is the manifest one.
+#[test]
+fn external_manifest_store_error_names_offending_store_url() {
+    let src = temp_dir("xmn-src");
+    let pool = temp_dir("xmn-pool");
+    let cache = temp_dir("xmn-cache");
+    build_tree(&src, &[("a.txt", b"hello")]);
+
+    let src_str = src.to_string_lossy().into_owned();
+    let pool_url = file_url(&pool);
+    let bad_store = "custom://manifest-side-store";
+
+    let out = run_raw(
+        &[
+            "push",
+            "--objects-store",
+            &pool_url,
+            "--store",
+            bad_store,
+            &src_str,
+        ],
+        &cache,
+        &[],
+    );
+    assert!(
+        !out.status.success(),
+        "external manifest --store must be rejected even when --objects-store is valid"
+    );
+    let stderr = stderr_of(&out);
+    assert!(
+        stderr.contains("in-process stores (file/s3/b2/gcs)"),
+        "manifest-side rejection must reuse the sync message; got: {stderr}"
+    );
+    assert!(
+        stderr.contains(bad_store),
+        "rejection must name the offending --store url {bad_store:?}; got: {stderr}"
+    );
+    // The valid pool must not be written to (rejected before any object write).
+    assert_eq!(
+        count_pool_objects(&pool),
+        0,
+        "no objects may be written when the manifest side is rejected"
+    );
+
+    for d in [&src, &pool, &cache] {
+        fs::remove_dir_all(d).ok();
+    }
+}
+
+/// REVIEW (missing --store, clean error): `--objects-store` set but `--store`
+/// genuinely UNSET (env removed) must fail with a clean, NON-panicking error that
+/// names `--store`. Strengthens the staged case by pinning that the message is the
+/// canonical `missing --store option` (the impl surfaces it BEFORE touching either
+/// store) and that NOTHING is written to the pool. NOTE: the impl's nicer
+/// `resolve_split_store` message that also names `$SNAPDIR_STORE` is shadowed on
+/// the push path by the earlier `store_url` guard, so this pins the ACTUAL
+/// observed message rather than over-asserting `$SNAPDIR_STORE`.
+#[test]
+fn missing_store_with_objects_store_is_clean_named_error() {
+    let src = temp_dir("mn-src");
+    let pool = temp_dir("mn-pool");
+    let cache = temp_dir("mn-cache");
+    build_tree(&src, &[("a.txt", b"hello")]);
+
+    let src_str = src.to_string_lossy().into_owned();
+    let pool_url = file_url(&pool);
+
+    let out = run_raw(
+        &["push", "--objects-store", &pool_url, &src_str],
+        &cache,
+        &[],
+    );
+    assert!(
+        !out.status.success(),
+        "--objects-store without --store must fail"
+    );
+    let stderr = stderr_of(&out);
+    assert!(
+        !stderr.contains("panicked")
+            && !stderr.contains("RUST_BACKTRACE")
+            && !stderr.to_lowercase().contains("internal error"),
+        "missing --store must be a clean error, not a panic; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("--store"),
+        "error must name --store; got: {stderr}"
+    );
+    assert_eq!(
+        count_pool_objects(&pool),
+        0,
+        "a missing-manifest-store failure must not write objects to the pool"
+    );
+
+    for d in [&src, &pool, &cache] {
+        fs::remove_dir_all(d).ok();
+    }
+}
+
+/// REVIEW (flag > env, exact): the `--objects-store` FLAG wins even when
+/// `$SNAPDIR_OBJECTS_STORE` names an INVALID (external) pool. clap's env wiring
+/// must let the flag fully shadow the env: a valid flag pool + a poison env pool
+/// must SUCCEED (env never consulted) and route objects to the FLAG pool. This is
+/// stronger than the staged `flag_objects_store_overrides_env` (which used two
+/// valid pools): here the env value would be a hard error if it were ever read.
+#[test]
+fn flag_objects_store_beats_poison_env() {
+    let src = temp_dir("fp-src");
+    let flag_pool = temp_dir("fp-flagpool");
+    let cap = temp_dir("fp-cap");
+    let cache = temp_dir("fp-cache");
+    build_tree(&src, &[("a.txt", b"hello")]);
+
+    let src_str = src.to_string_lossy().into_owned();
+    let flag_url = file_url(&flag_pool);
+    let cap_url = file_url(&cap);
+
+    // Env points at an external (would-fail) pool; the flag must completely win.
+    let out = run_raw(
+        &[
+            "push",
+            "--objects-store",
+            &flag_url,
+            "--store",
+            &cap_url,
+            &src_str,
+        ],
+        &cache,
+        &[("SNAPDIR_OBJECTS_STORE", "custom://poison-env-pool")],
+    );
+    assert!(
+        out.status.success(),
+        "the explicit --objects-store flag must shadow an invalid env entirely; \
+         stderr: {}",
+        stderr_of(&out)
+    );
+    let sum = Blake3Hasher::new().hash_hex(b"hello");
+    assert!(
+        flag_pool.join(sharded(".objects", &sum)).is_file(),
+        "objects must land in the FLAG pool"
+    );
+
+    for d in [&src, &flag_pool, &cap, &cache] {
+        fs::remove_dir_all(d).ok();
+    }
+}
+
+/// REVIEW (`store_is_external` short-circuit): a split store (`--objects-store` set)
+/// is treated as IN-PROCESS, so push takes the in-process tree/scratch branch and
+/// NEVER the external emit-command path. Proven end-to-end: with a `file://` pool
+/// and a `file://` manifest store, the pushed objects land as real blobs in the
+/// pool's `.objects/` (the in-process `FileStore` layout), and a fresh-cache fetch
+/// then offline checkout reproduces the tree — which only the in-process path
+/// yields. (The external path would instead emit per-object commands against a
+/// sharded cache root and write nothing to a pool tree.)
+#[test]
+fn split_store_uses_in_process_path_not_external_emit() {
+    let src = temp_dir("sp-src");
+    let pool = temp_dir("sp-pool");
+    let cap = temp_dir("sp-cap");
+    let dest = temp_dir("sp-dest");
+    let cache = temp_dir("sp-cache");
+
+    let leaves: &[(&str, &[u8])] = &[("x.txt", b"in-process-only"), ("y.txt", b"second")];
+    build_tree(&src, leaves);
+
+    let src_str = src.to_string_lossy().into_owned();
+    let dest_str = dest.to_string_lossy().into_owned();
+    let pool_url = file_url(&pool);
+    let cap_url = file_url(&cap);
+
+    let id = run_ok(
+        &[
+            "push",
+            "--objects-store",
+            &pool_url,
+            "--store",
+            &cap_url,
+            &src_str,
+        ],
+        &cache,
+        &[],
+    );
+
+    // In-process FileStore wrote real sharded blobs into the pool tree (the
+    // external emit path would have written nothing here).
+    for (_, bytes) in leaves {
+        let sum = Blake3Hasher::new().hash_hex(bytes);
+        assert!(
+            pool.join(sharded(".objects", &sum)).is_file(),
+            "split push must write in-process blobs into the pool .objects/"
+        );
+    }
+
+    // A fresh-cache fetch from the split store reads the in-process blobs back,
+    // and an OFFLINE checkout reproduces the tree byte-for-byte. Drives the
+    // in-process fetch branch that the `store_is_external() == false`
+    // short-circuit selects.
+    let read_cache = temp_dir("sp-readcache");
+    run_ok(
+        &[
+            "fetch",
+            "--objects-store",
+            &pool_url,
+            "--store",
+            &cap_url,
+            "--id",
+            &id,
+        ],
+        &read_cache,
+        &[],
+    );
+    run_ok(&["checkout", "--id", &id, &dest_str], &read_cache, &[]);
+    assert_tree_contents(&dest, leaves);
+    assert_eq!(
+        run_ok(&["id", &dest_str], &read_cache, &[]),
+        id,
+        "split round trip via the in-process path must re-manifest to the source id"
+    );
+
+    for d in [&src, &pool, &cap, &dest, &cache, &read_cache] {
+        fs::remove_dir_all(d).ok();
+    }
+}
+
+/// REVIEW (precedence completeness): the THIRD precedence permutation the staged
+/// suite left implicit — env-named OBJECTS pool combined with a FLAG-named manifest
+/// `--store` (mixed sources) must compose correctly: objects to the env pool,
+/// manifest to the flag store, and the round trip restores. Pins that the two
+/// global args resolve independently (each honoring its own flag-or-env source).
+#[test]
+fn env_objects_with_flag_store_compose() {
+    let src = temp_dir("mx-src");
+    let pool = temp_dir("mx-pool");
+    let cap = temp_dir("mx-cap");
+    let dest = temp_dir("mx-dest");
+    let cache = temp_dir("mx-cache");
+
+    let leaves: &[(&str, &[u8])] = &[("a.txt", b"hello"), ("z.txt", b"zeta")];
+    build_tree(&src, leaves);
+
+    let src_str = src.to_string_lossy().into_owned();
+    let dest_str = dest.to_string_lossy().into_owned();
+    let pool_url = file_url(&pool);
+    let cap_url = file_url(&cap);
+
+    // OBJECTS via env, MANIFEST via flag.
+    let id = run_ok(
+        &["push", "--store", &cap_url, &src_str],
+        &cache,
+        &[("SNAPDIR_OBJECTS_STORE", &pool_url)],
+    );
+    for (_, bytes) in leaves {
+        let sum = Blake3Hasher::new().hash_hex(bytes);
+        assert!(
+            pool.join(sharded(".objects", &sum)).is_file(),
+            "env-named pool must receive the objects"
+        );
+    }
+    assert!(
+        cap.join(sharded(".manifests", &id)).is_file(),
+        "flag-named --store must receive the manifest"
+    );
+
+    // Round trip with the same mixed sources restores byte-for-byte.
+    run_ok(
+        &["pull", "--store", &cap_url, "--id", &id, &dest_str],
+        &cache,
+        &[("SNAPDIR_OBJECTS_STORE", &pool_url)],
+    );
+    assert_tree_contents(&dest, leaves);
+
+    for d in [&src, &pool, &cap, &dest, &cache] {
+        fs::remove_dir_all(d).ok();
+    }
+}
