@@ -41,6 +41,17 @@ libc = "0.2"
 # deny.toml posture is unchanged.
 blake3 = "1.8.5"
 
+# --- SNAPPACK 1Z zstd transport encoding (pack.rs) ---------------------------
+# `zstd` wraps the WHOLE SNAPPACK body in one zstd frame for the additive
+# `SNAPPACK 1Z` form: the writer streams `record* "end\n"` through
+# `zstd::stream::write::Encoder` and the reader feeds `zstd::stream::read::Decoder`
+# to the UNCHANGED record parser (incremental BLAKE3 untouched; the 128B-header /
+# 64MiB-manifest / lying-len bounds all enforced on the DECOMPRESSED bytes). It
+# bundles libzstd via `zstd-sys` (cc/build.rs) — the SAME C-build pattern already
+# exercised by `blake3`, with no system zstd required — and is MIT/BSD-3 (license
+# clean for deny.toml). `ruzstd` is decode-only and is NOT used as the encoder.
+zstd = "0.13"
+
 # --- S3 store (s3:// + S3-compatible) ---------------------------------------
 # CRITICAL TLS constraint: the shipped binary statically links on musl, so the
 # whole workspace standardizes on the `ring` rustls provider. `aws-lc-rs` is

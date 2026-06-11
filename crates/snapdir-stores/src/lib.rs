@@ -82,8 +82,9 @@ pub use file_store::FileStore;
 pub use gcs_store::{GcsLocation, GcsStore};
 pub use limits::{for_scheme, BackendLimits};
 pub use pack::{
-    is_hex64, read_pack, write_pack, Durability, FileSink, PackReadReport, PackSink,
-    PackWriteReport, StreamSink, MAX_HEADER_BYTES, MAX_MANIFEST_BYTES, WIRE_CAPS, WIRE_MAGIC,
+    is_hex64, read_pack, write_pack, write_pack_with_format, Durability, FileSink, PackFormat,
+    PackReadReport, PackSink, PackWriteReport, StreamSink, DEFAULT_ZSTD_LEVEL, MAX_HEADER_BYTES,
+    MAX_MANIFEST_BYTES, MAX_ZSTD_LEVEL, MIN_ZSTD_LEVEL, WIRE_CAPS, WIRE_MAGIC, WIRE_MAGIC_ZSTD,
     WIRE_VERSION,
 };
 pub use retry::{

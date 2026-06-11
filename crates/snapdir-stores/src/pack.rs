@@ -76,11 +76,46 @@ use crate::stream::StreamStore;
 pub const WIRE_VERSION: u32 = 1;
 
 /// The plumbing capabilities this build advertises alongside [`WIRE_VERSION`].
-pub const WIRE_CAPS: &[&str] = &["objects-needed", "send-pack", "receive-pack"];
+///
+/// `snappack-zstd` advertises the additive [`WIRE_MAGIC_ZSTD`] transport
+/// encoding (same record grammar, whole body in one zstd frame). It is a plain
+/// capability token, NOT a version bump — 1.5.0's `_snapdir_caps_ok` ignores
+/// unknown tokens, so an integer [`WIRE_VERSION`] bump would force a dumb
+/// fallback against older peers; appending a token keeps full back/forward
+/// compatibility (a peer that lacks the token simply never gets a 1Z stream,
+/// and every receiver sniffs + accepts BOTH forms forever).
+pub const WIRE_CAPS: &[&str] = &[
+    "objects-needed",
+    "send-pack",
+    "receive-pack",
+    "snappack-zstd",
+];
 
-/// The exact magic line that opens every pack stream (version baked in; a
-/// unit test pins it to [`WIRE_VERSION`]).
+/// The exact magic line that opens every plain (v1) pack stream (version baked
+/// in; a unit test pins it to [`WIRE_VERSION`]).
 pub const WIRE_MAGIC: &str = "SNAPPACK 1\n";
+
+/// The magic line that opens a zstd-compressed pack stream (SNAPPACK 1Z).
+///
+/// The grammar is UNCHANGED: everything after this magic is a single zstd frame
+/// that decompresses to exactly `record* "end\n"` — the verbatim v1 body. The
+/// receiver sniffs the magic and feeds the decompressed bytes to the same
+/// parser, so the incremental BLAKE3 verification is byte-for-byte identical to
+/// v1. The wire version stays [`WIRE_VERSION`] = 1 (the trailing `Z` is a
+/// transport-encoding marker, not a new format version).
+pub const WIRE_MAGIC_ZSTD: &str = "SNAPPACK 1Z\n";
+
+/// Default zstd compression level for [`PackFormat::Zstd`] when the caller does
+/// not specify one. Level 3 is zstd's own default — a good speed/ratio balance
+/// for the typical small-text snapshot payload.
+pub const DEFAULT_ZSTD_LEVEL: i32 = 3;
+
+/// Minimum / maximum zstd level the encoder accepts. The library reads NO
+/// environment; the CLI lane validates a `SNAPDIR_SSH_ZSTD_LEVEL` knob against
+/// this range and threads the result in via [`PackFormat::Zstd`].
+pub const MIN_ZSTD_LEVEL: i32 = 1;
+/// See [`MIN_ZSTD_LEVEL`].
+pub const MAX_ZSTD_LEVEL: i32 = 19;
 
 /// Hard cap on a header line, INCLUDING its terminating `\n`. The reader
 /// rejects a longer line the moment the cap is reached — this bounds reader
@@ -463,11 +498,63 @@ impl PackSink for FileSink<'_> {
     }
 }
 
-/// Emits a SNAPPACK 1 stream: magic, one `obj` record per entry of `ids` IN
-/// INPUT ORDER, then (if `manifest_id` is given) the `manifest` record LAST,
-/// then the `end` trailer.
+/// The on-wire transport encoding [`write_pack_with_format`] emits.
 ///
-/// Fail-closed discipline:
+/// Both forms carry the IDENTICAL record grammar; they differ only in the magic
+/// line and whether the body bytes are wrapped in one zstd frame. The receiver
+/// sniffs the magic and accepts either form — there is no negotiation token on
+/// the wire, so a `Zstd` stream is just as self-describing as a `V1` one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackFormat {
+    /// Plain SNAPPACK 1 ([`WIRE_MAGIC`]): the historical byte-for-byte form.
+    V1,
+    /// SNAPPACK 1Z ([`WIRE_MAGIC_ZSTD`]): magic, then the WHOLE v1 body
+    /// (`record* "end\n"`) inside a single zstd frame at the given level
+    /// (clamped to `MIN_ZSTD_LEVEL..=MAX_ZSTD_LEVEL`).
+    Zstd(i32),
+}
+
+impl Default for PackFormat {
+    /// The default is [`PackFormat::V1`] so a caller that does not opt in emits
+    /// the historical byte-identical stream.
+    fn default() -> Self {
+        Self::V1
+    }
+}
+
+impl PackFormat {
+    /// Convenience constructor for the zstd form at the [`DEFAULT_ZSTD_LEVEL`].
+    #[must_use]
+    pub fn zstd_default() -> Self {
+        Self::Zstd(DEFAULT_ZSTD_LEVEL)
+    }
+}
+
+/// Emits a plain SNAPPACK 1 stream — the historical [`PackFormat::V1`] path,
+/// byte-for-byte unchanged. Equivalent to
+/// [`write_pack_with_format`]`(.., PackFormat::V1)`. See that function for the
+/// fail-closed discipline; this thin wrapper keeps every existing caller and
+/// pinned byte-comparison test untouched.
+pub fn write_pack(
+    source: &dyn StreamStore,
+    ids: &[String],
+    manifest_id: Option<&str>,
+    out: impl Write,
+) -> Result<PackWriteReport, StoreError> {
+    write_pack_with_format(source, ids, manifest_id, PackFormat::V1, out)
+}
+
+/// Emits a SNAPPACK stream in the chosen [`PackFormat`]: magic, one `obj`
+/// record per entry of `ids` IN INPUT ORDER, then (if `manifest_id` is given)
+/// the `manifest` record LAST, then the `end` trailer.
+///
+/// For [`PackFormat::Zstd`] the magic is emitted in the clear and everything
+/// after it (`record* "end\n"`) is written through a single
+/// `zstd::stream::write::Encoder`, whose frame is `finish()`ed after the `end`
+/// trailer. The record grammar — and therefore the reader's incremental BLAKE3
+/// verification — is identical to V1; compression is a pure transport wrapper.
+///
+/// Fail-closed discipline (identical for both formats):
 ///
 /// - Every id (and `manifest_id`) is validated against `^[0-9a-f]{64}$` BEFORE
 ///   any byte is written.
@@ -479,14 +566,17 @@ impl PackSink for FileSink<'_> {
 ///   own read verification) before its record is written.
 /// - Any failure — including a missing object — aborts BEFORE the `end`
 ///   trailer is emitted, so a consumer of the partial stream also fails
-///   (no silent partial transfer).
+///   (no silent partial transfer). Under zstd the frame is never `finish()`ed
+///   on the error path, so a truncated/incomplete frame is what the receiver
+///   sees — the receiver's decoder + missing-`end` check both reject it.
 ///
 /// Duplicates in `ids` emit duplicate records (the reader handles them
 /// idempotently); deduplication is the caller's job.
-pub fn write_pack(
+pub fn write_pack_with_format(
     source: &dyn StreamStore,
     ids: &[String],
     manifest_id: Option<&str>,
+    format: PackFormat,
     mut out: impl Write,
 ) -> Result<PackWriteReport, StoreError> {
     // Validate EVERY checksum before emitting anything (fail closed).
@@ -530,7 +620,45 @@ pub fn write_pack(
         None => None,
     };
 
-    out.write_all(WIRE_MAGIC.as_bytes())?;
+    match format {
+        PackFormat::V1 => {
+            out.write_all(WIRE_MAGIC.as_bytes())?;
+            let report = write_pack_body(source, ids, manifest_payload, hasher, &mut out)?;
+            out.flush()?;
+            Ok(report)
+        }
+        PackFormat::Zstd(level) => {
+            // Magic in the clear, then the WHOLE v1 body inside ONE zstd frame.
+            out.write_all(WIRE_MAGIC_ZSTD.as_bytes())?;
+            let level = level.clamp(MIN_ZSTD_LEVEL, MAX_ZSTD_LEVEL);
+            let mut encoder = zstd::stream::write::Encoder::new(&mut out, level)
+                .map_err(|err| backend_io("starting the SNAPPACK 1Z zstd encoder", err))?;
+            // On the fail-closed error paths below, `encoder` is dropped WITHOUT
+            // `finish()`, so the frame is never finalized and the receiver sees
+            // a truncated/incomplete frame (rejected by the decoder AND by the
+            // missing-`end` check). `finish()` is only reached after `end\n`.
+            let report = write_pack_body(source, ids, manifest_payload, hasher, &mut encoder)?;
+            let out = encoder
+                .finish()
+                .map_err(|err| backend_io("finalizing the SNAPPACK 1Z zstd frame", err))?;
+            out.flush()?;
+            Ok(report)
+        }
+    }
+}
+
+/// Emits the format-agnostic SNAPPACK body — `obj` records IN INPUT ORDER, the
+/// optional `manifest` record LAST, then the `end\n` trailer — into `out`
+/// (which is either the raw sink for V1 or the zstd encoder for 1Z). The magic
+/// has already been written by the caller; the byte grammar is identical for
+/// both formats, so the reader's parser/incremental-BLAKE3 path is shared.
+fn write_pack_body(
+    source: &dyn StreamStore,
+    ids: &[String],
+    manifest_payload: Option<(&str, Vec<u8>)>,
+    hasher: Blake3Hasher,
+    out: &mut dyn Write,
+) -> Result<PackWriteReport, StoreError> {
     let mut report = PackWriteReport::default();
 
     for id in ids {
@@ -558,7 +686,6 @@ pub fn write_pack(
     }
 
     out.write_all(b"end\n")?;
-    out.flush()?;
     Ok(report)
 }
 
@@ -577,13 +704,46 @@ pub fn write_pack(
 pub fn read_pack(input: impl Read, sink: &mut dyn PackSink) -> Result<PackReadReport, StoreError> {
     let mut input = BufReader::new(input);
 
-    check_magic(&read_header_line(&mut input)?)?;
+    // Sniff the magic line (read byte-by-byte up to its `\n`, so NOTHING past
+    // the magic is consumed — the body that follows is either plaintext records
+    // or a zstd frame, both left intact on `input`).
+    match classify_magic(&read_header_line(&mut input)?)? {
+        WireForm::V1 => parse_body(&mut input, sink),
+        WireForm::Zstd => {
+            // The whole body after the magic is ONE zstd frame that decompresses
+            // to the verbatim v1 body. Feed the decompressed bytes to the SAME
+            // parser: the incremental BLAKE3 verification is untouched, and the
+            // 128B-header / 64MiB-manifest / lying-len bounds are all enforced on
+            // the DECOMPRESSED bytes (a decompression bomb costs CPU only — every
+            // decompressed byte is still hash-verified).
+            let decoder = zstd::stream::read::Decoder::new(input)
+                .map_err(|err| backend_io("starting the SNAPPACK 1Z zstd decoder", err))?;
+            parse_body(&mut BufReader::new(decoder), sink)
+        }
+    }
+}
 
+/// The transport encoding [`classify_magic`] sniffed.
+enum WireForm {
+    /// Plain SNAPPACK 1: the body is plaintext records.
+    V1,
+    /// SNAPPACK 1Z: the body is a single zstd frame over the v1 record bytes.
+    Zstd,
+}
+
+/// Runs the shared record parse loop over `input` — which is the raw reader for
+/// V1 or the zstd-decompressing reader for 1Z. Identical for both forms: the
+/// grammar, the bounds, and the incremental BLAKE3 verification are all applied
+/// to the (decompressed) record bytes.
+fn parse_body(
+    input: &mut impl BufRead,
+    sink: &mut dyn PackSink,
+) -> Result<PackReadReport, StoreError> {
     let mut report = PackReadReport::default();
     let mut pending_manifest: Option<(String, Manifest)> = None;
 
     loop {
-        let line = read_header_line(&mut input)?;
+        let line = read_header_line(input)?;
         if line == "end" {
             // The `end` trailer is the ONLY place a manifest commits:
             // truncation anywhere above has already errored out, so a
@@ -609,9 +769,9 @@ pub fn read_pack(input: impl Read, sink: &mut dyn PackSink) -> Result<PackReadRe
         }
         let (kind, checksum, len) = parse_record_header(&line)?;
         match kind {
-            RecordKind::Obj => read_obj_record(&mut input, sink, &checksum, len, &mut report)?,
+            RecordKind::Obj => read_obj_record(&mut *input, sink, &checksum, len, &mut report)?,
             RecordKind::Manifest => {
-                pending_manifest = Some(read_manifest_record(&mut input, &checksum, len)?);
+                pending_manifest = Some(read_manifest_record(&mut *input, &checksum, len)?);
             }
         }
     }
@@ -751,6 +911,15 @@ fn protocol(message: impl Into<String>) -> StoreError {
     }
 }
 
+/// Wraps an `io::Error` from the zstd encoder/decoder setup or finalization as a
+/// backend error, preserving the underlying cause.
+fn backend_io(context: &str, err: io::Error) -> StoreError {
+    StoreError::Backend {
+        message: format!("SNAPPACK zstd transport error while {context}"),
+        source: Some(Box::new(err)),
+    }
+}
+
 /// Reads one `\n`-terminated header line (returned WITHOUT the `\n`),
 /// enforcing the [`MAX_HEADER_BYTES`] cap while reading — an over-long line is
 /// rejected the moment the cap is hit, without buffering more. EOF at any
@@ -787,22 +956,33 @@ fn read_header_line(input: &mut impl BufRead) -> Result<String, StoreError> {
     })
 }
 
-/// Validates the magic line (already stripped of its `\n`). Negotiation is on
-/// the exact `wire` integer only: a different version — newer OR older — is
-/// rejected, and the caller falls back to the dumb path.
-fn check_magic(line: &str) -> Result<(), StoreError> {
+/// Sniffs the magic line (already stripped of its `\n`) and classifies the
+/// transport encoding. The receiver accepts BOTH the plain `SNAPPACK 1` and the
+/// zstd `SNAPPACK 1Z` forms FOREVER — there is no flag and no negotiation token
+/// here, the magic alone is self-describing. Anything else — a different wire
+/// version (newer OR older, e.g. `SNAPPACK 3`), a non-canonical token, or
+/// garbage — is rejected, and the caller falls back to the dumb path.
+fn classify_magic(line: &str) -> Result<WireForm, StoreError> {
+    // Match against the magics WITHOUT their trailing `\n` (already stripped).
+    if line == WIRE_MAGIC.trim_end_matches('\n') {
+        return Ok(WireForm::V1);
+    }
+    if line == WIRE_MAGIC_ZSTD.trim_end_matches('\n') {
+        return Ok(WireForm::Zstd);
+    }
     let Some(version) = line.strip_prefix("SNAPPACK ") else {
         return Err(protocol(format!(
-            "bad pack magic {line:?} (expected {:?})",
-            WIRE_MAGIC.trim_end()
+            "bad pack magic {line:?} (expected {:?} or {:?})",
+            WIRE_MAGIC.trim_end(),
+            WIRE_MAGIC_ZSTD.trim_end()
         )));
     };
-    if version != WIRE_VERSION.to_string() {
-        return Err(protocol(format!(
-            "unsupported pack wire version {version:?}: this build speaks wire={WIRE_VERSION}"
-        )));
-    }
-    Ok(())
+    Err(protocol(format!(
+        "unsupported pack wire version {version:?}: this build speaks wire={WIRE_VERSION} \
+         (magic {:?} or {:?})",
+        WIRE_MAGIC.trim_end(),
+        WIRE_MAGIC_ZSTD.trim_end()
+    )))
 }
 
 /// Parses a record header line into `(kind, hex64, len)`, enforcing the exact
@@ -1056,13 +1236,50 @@ mod tests {
         Blake3Hasher::new().hash_hex(bytes)
     }
 
+    /// Hand-builds a SNAPPACK 1Z stream: the `SNAPPACK 1Z\n` magic in the clear,
+    /// then `body` (the verbatim v1 record bytes, `record* "end\n"`) inside ONE
+    /// zstd frame. `body` is whatever the caller wants the receiver's parser to
+    /// see after decompression — used to forge unsolicited / lying-len / bad
+    /// inner streams the writer would never emit.
+    fn zstd_stream_from_body(body: &[u8]) -> Vec<u8> {
+        let mut out = WIRE_MAGIC_ZSTD.as_bytes().to_vec();
+        let frame = zstd::stream::encode_all(body, DEFAULT_ZSTD_LEVEL).expect("zstd encode body");
+        out.extend_from_slice(&frame);
+        out
+    }
+
+    /// The verbatim v1 body (no magic): `records` concatenated + `end\n`.
+    fn v1_body(records: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for record in records {
+            out.extend_from_slice(record);
+        }
+        out.extend_from_slice(b"end\n");
+        out
+    }
+
     // --- wire constants ----------------------------------------------------
 
     #[test]
     fn pack_wire_constants_are_consistent() {
         assert_eq!(WIRE_MAGIC, format!("SNAPPACK {WIRE_VERSION}\n"));
         assert_eq!(WIRE_VERSION, 1);
-        assert_eq!(WIRE_CAPS, &["objects-needed", "send-pack", "receive-pack"]);
+        // WIRE_VERSION STAYS 1 even though the zstd transport encoding was added:
+        // `snappack-zstd` is an additive capability TOKEN, not a version bump.
+        assert_eq!(
+            WIRE_CAPS,
+            &[
+                "objects-needed",
+                "send-pack",
+                "receive-pack",
+                "snappack-zstd"
+            ]
+        );
+        // The 1Z magic shares the wire version with v1 (the `Z` is a transport
+        // marker, not a format version).
+        assert_eq!(WIRE_MAGIC_ZSTD, format!("SNAPPACK {WIRE_VERSION}Z\n"));
+        assert_eq!(DEFAULT_ZSTD_LEVEL, 3);
+        assert_eq!((MIN_ZSTD_LEVEL, MAX_ZSTD_LEVEL), (1, 19));
     }
 
     #[test]
@@ -1939,6 +2156,382 @@ mod tests {
         assert_eq!(
             snapshot_id(&b.get_manifest(&man_id).unwrap(), &Blake3Hasher::new()),
             man_id
+        );
+    }
+
+    // --- SNAPPACK 1Z (zstd transport encoding) -------------------------------
+
+    /// A highly compressible fixture: a large run of a single repeated line, so
+    /// the 1Z frame is provably smaller than the v1 stream.
+    fn compressible_payload(reps: usize) -> Vec<u8> {
+        b"the quick brown fox jumps over the lazy dog\n".repeat(reps)
+    }
+
+    #[test]
+    fn pack_zstd_roundtrip_magic_and_smaller_than_v1() {
+        // A compressible object + manifest. The 1Z stream must (a) open with the
+        // 1Z magic, (b) decode + verify byte-identically into the sink, and
+        // (c) be strictly smaller than the equivalent v1 stream.
+        let payloads = vec![compressible_payload(4096), b"tail\n".to_vec()];
+        let (a_dir, a, ids) = seed_store("zrt-a", &payloads);
+        let (manifest, man_id) = manifest_for(&payloads);
+        a.put_manifest(&man_id, &manifest).expect("seed manifest");
+
+        // v1 reference stream.
+        let mut v1 = Vec::new();
+        write_pack(&a, &ids, Some(&man_id), &mut v1).expect("write v1");
+        assert!(v1.starts_with(WIRE_MAGIC.as_bytes()));
+
+        // 1Z stream.
+        let mut zpack = Vec::new();
+        let wrote = write_pack_with_format(
+            &a,
+            &ids,
+            Some(&man_id),
+            PackFormat::zstd_default(),
+            &mut zpack,
+        )
+        .expect("write 1Z");
+        assert_eq!(wrote.objects_written, 2);
+        assert!(wrote.manifest_written);
+        assert!(
+            zpack.starts_with(WIRE_MAGIC_ZSTD.as_bytes()),
+            "1Z stream must open with the 1Z magic"
+        );
+        assert!(
+            zpack.len() < v1.len(),
+            "1Z stream ({} bytes) must be smaller than v1 ({} bytes) on a compressible fixture",
+            zpack.len(),
+            v1.len()
+        );
+
+        // The receiver sniffs the 1Z magic, decompresses, and files byte-equal
+        // objects at the identical sharded keys (incremental BLAKE3 untouched).
+        let b_dir = TempDir::new("zrt-b");
+        let b = FileStore::from_root(b_dir.path());
+        let mut sink = FileSink::new(&b);
+        let read = read_pack(zpack.as_slice(), &mut sink).expect("read 1Z");
+        assert_eq!(read.objects_written, 2);
+        assert_eq!(read.objects_skipped, 0);
+        assert!(read.manifest_committed);
+
+        for (id, payload) in ids.iter().zip(&payloads) {
+            let key = object_path(id);
+            assert_eq!(
+                fs::read(b_dir.path().join(&key)).expect("b object"),
+                *payload
+            );
+            assert_eq!(
+                fs::read(a_dir.path().join(&key)).expect("a object"),
+                fs::read(b_dir.path().join(&key)).expect("b object"),
+            );
+        }
+        assert_eq!(b.get_manifest(&man_id).expect("manifest in B"), manifest);
+        assert!(
+            !files_under(b_dir.path())
+                .iter()
+                .any(|p| p.to_string_lossy().ends_with(".tmp")),
+            "no stray temp files after a clean 1Z stream"
+        );
+    }
+
+    #[test]
+    fn pack_zstd_batch_durability_roundtrips() {
+        // The 1Z decode path feeds the SAME sink, so Batch durability works over
+        // a compressed stream exactly as over v1.
+        let payloads = vec![compressible_payload(2048), big_payload(512 * 1024)];
+        let (_a_dir, a, ids) = seed_store("zbatch-a", &payloads);
+        let (manifest, man_id) = manifest_for(&payloads);
+        a.put_manifest(&man_id, &manifest).expect("seed manifest");
+
+        let mut zpack = Vec::new();
+        write_pack_with_format(
+            &a,
+            &ids,
+            Some(&man_id),
+            PackFormat::zstd_default(),
+            &mut zpack,
+        )
+        .expect("write 1Z");
+
+        let b_dir = TempDir::new("zbatch-b");
+        let b = FileStore::from_root(b_dir.path());
+        let mut sink = FileSink::new(&b).with_durability(Durability::Batch);
+        let read = read_pack(zpack.as_slice(), &mut sink).expect("read 1Z batch");
+        assert_eq!(read.objects_written, 2);
+        assert!(read.manifest_committed);
+        for (id, payload) in ids.iter().zip(&payloads) {
+            assert_eq!(b.get_object(id).unwrap(), *payload);
+        }
+        assert_eq!(b.get_manifest(&man_id).expect("manifest"), manifest);
+    }
+
+    #[test]
+    fn pack_zstd_unsolicited_stream_is_accepted_and_verified() {
+        // A 1Z stream arrives with NO prior flag/negotiation — the receiver
+        // sniffs the magic and accepts it, verifying every record.
+        let payload = b"unsolicited compressed object\n".to_vec();
+        let checksum = hex_of(&payload);
+        let body = v1_body(&[raw_record("obj", &checksum, &payload)]);
+        let stream = zstd_stream_from_body(&body);
+
+        let b_dir = TempDir::new("zunsol");
+        let b = FileStore::from_root(b_dir.path());
+        let mut sink = FileSink::new(&b);
+        let read = read_pack(stream.as_slice(), &mut sink).expect("unsolicited 1Z accepted");
+        assert_eq!(read.objects_written, 1);
+        assert_eq!(b.get_object(&checksum).unwrap(), payload);
+    }
+
+    #[test]
+    fn pack_zstd_level_clamped_and_levels_roundtrip() {
+        // Out-of-range levels are clamped (not rejected) and every in-range
+        // level produces a valid, verifiable 1Z stream.
+        let payloads = vec![compressible_payload(1024)];
+        let (_a_dir, a, ids) = seed_store("zlevel-a", &payloads);
+
+        for level in [
+            MIN_ZSTD_LEVEL - 5,
+            MIN_ZSTD_LEVEL,
+            9,
+            MAX_ZSTD_LEVEL,
+            MAX_ZSTD_LEVEL + 50,
+        ] {
+            let mut zpack = Vec::new();
+            write_pack_with_format(&a, &ids, None, PackFormat::Zstd(level), &mut zpack)
+                .unwrap_or_else(|e| panic!("write 1Z at level {level}: {e}"));
+            assert!(zpack.starts_with(WIRE_MAGIC_ZSTD.as_bytes()));
+
+            let b_dir = TempDir::new("zlevel-b");
+            let b = FileStore::from_root(b_dir.path());
+            let mut sink = FileSink::new(&b);
+            let read = read_pack(zpack.as_slice(), &mut sink)
+                .unwrap_or_else(|e| panic!("read 1Z at level {level}: {e}"));
+            assert_eq!(read.objects_written, 1);
+            assert_eq!(b.get_object(&ids[0]).unwrap(), payloads[0]);
+        }
+    }
+
+    #[test]
+    fn pack_zstd_truncated_files_objects_but_never_manifest_and_no_litter() {
+        // Build a full 1Z stream, then cut the zstd frame short. The verified
+        // objects that fully decoded are filed (incremental resume), but the
+        // manifest is NEVER committed and no temp litter survives.
+        let payloads = vec![b"one\n".to_vec(), b"two\n".to_vec()];
+        let (_a_dir, a, ids) = seed_store("ztrunc-a", &payloads);
+        let (manifest, man_id) = manifest_for(&payloads);
+        a.put_manifest(&man_id, &manifest).expect("seed manifest");
+
+        // Forge the body so the manifest record is LAST, then truncate the frame
+        // hard (drop its tail) so the `end` trailer never decodes.
+        let body = v1_body(&[
+            raw_record("obj", &ids[0], &payloads[0]),
+            raw_record("obj", &ids[1], &payloads[1]),
+            raw_record("manifest", &man_id, &manifest_bytes(&manifest)),
+        ]);
+        let full = zstd_stream_from_body(&body);
+        // Keep the magic + a prefix of the frame only.
+        let magic_len = WIRE_MAGIC_ZSTD.len();
+        let frame_len = full.len() - magic_len;
+        let cut = &full[..magic_len + frame_len / 2];
+
+        let b_dir = TempDir::new("ztrunc-b");
+        let b = FileStore::from_root(b_dir.path());
+        let mut sink = FileSink::new(&b);
+        let err = read_pack(cut, &mut sink).expect_err("truncated 1Z is a hard error");
+        // Either a zstd decode error or the missing-`end` truncation error — both
+        // are hard failures that never commit the manifest.
+        let _ = err;
+        drop(sink);
+
+        // The manifest must NEVER be committed (manifest-last survives a cut).
+        assert!(matches!(
+            b.get_manifest(&man_id),
+            Err(StoreError::ManifestNotFound { .. })
+        ));
+        // No temp litter regardless of how many objects decoded before the cut.
+        assert!(
+            !files_under(b_dir.path())
+                .iter()
+                .any(|p| p.to_string_lossy().ends_with(".tmp")),
+            "no stray temp files after a truncated 1Z stream"
+        );
+    }
+
+    #[test]
+    fn pack_zstd_lying_len_inside_frame_stays_bounded() {
+        // A header INSIDE the 1Z frame LIES about a huge payload length while
+        // sending few bytes. Bounds are enforced on the DECOMPRESSED bytes: the
+        // manifest cap fires on the header alone, and an obj record that under-
+        // delivers its claimed length is a truncation error — neither allocates
+        // gigabytes nor hangs.
+        let claimed = hex_of(b"irrelevant");
+
+        // (a) Manifest record claiming > 64MiB: the cap check fires on the header.
+        let big_len: u64 = MAX_MANIFEST_BYTES + 1;
+        let mut body = format!("manifest {claimed} {big_len}\n").into_bytes();
+        body.extend_from_slice(b"end\n");
+        let stream = zstd_stream_from_body(&body);
+        let b_dir = TempDir::new("zlie-man");
+        let b = FileStore::from_root(b_dir.path());
+        let mut sink = FileSink::new(&b);
+        let err = read_pack(stream.as_slice(), &mut sink).expect_err("lying manifest len");
+        assert!(err.to_string().contains("cap"), "got: {err}");
+
+        // (b) Obj record claiming a giant length but sending only a few bytes:
+        // truncation error, bounded — the prealloc guard never honors the lie.
+        let body = {
+            let mut out = format!("obj {claimed} 4000000000\n").into_bytes();
+            out.extend_from_slice(b"tiny"); // 4 bytes, not 4e9
+            out.extend_from_slice(b"end\n");
+            out
+        };
+        let stream = zstd_stream_from_body(&body);
+        let mut sink = FileSink::new(&b);
+        let err = read_pack(stream.as_slice(), &mut sink).expect_err("lying obj len");
+        assert!(err.to_string().contains("truncated"), "got: {err}");
+        assert!(
+            !files_under(b_dir.path())
+                .iter()
+                .any(|p| p.to_string_lossy().ends_with(".tmp")),
+            "no temp litter after a lying-len 1Z stream"
+        );
+    }
+
+    #[test]
+    fn pack_zstd_oversized_header_inside_frame_is_bounded() {
+        // The 128-byte header cap is enforced on DECOMPRESSED bytes too: a long
+        // garbage header line inside the frame is rejected before buffering more.
+        let mut body = "o".repeat(200).into_bytes();
+        body.extend_from_slice(b"\nend\n");
+        let stream = zstd_stream_from_body(&body);
+        let b_dir = TempDir::new("zhdr-cap");
+        let b = FileStore::from_root(b_dir.path());
+        let mut sink = FileSink::new(&b);
+        let err = read_pack(stream.as_slice(), &mut sink).expect_err("must reject");
+        assert!(err.to_string().contains("128-byte cap"), "got: {err}");
+    }
+
+    #[test]
+    fn pack_zstd_mismatch_inside_frame_fails_closed() {
+        // A record inside the 1Z frame CLAIMS checksum X but its decompressed
+        // bytes hash to Y: hard Integrity error, nothing filed, no litter.
+        let claimed = hex_of(b"good bytes");
+        let evil = b"evil bytes";
+        let body = v1_body(&[raw_record("obj", &claimed, evil)]);
+        let stream = zstd_stream_from_body(&body);
+
+        let b_dir = TempDir::new("zmismatch");
+        let b = FileStore::from_root(b_dir.path());
+        let mut sink = FileSink::new(&b);
+        let err = read_pack(stream.as_slice(), &mut sink).expect_err("must abort");
+        assert!(matches!(err, StoreError::Integrity { .. }), "got: {err}");
+        drop(sink);
+        assert!(!StreamStore::has_object(&b, &claimed).unwrap());
+        assert_eq!(
+            files_under(b_dir.path()),
+            Vec::<PathBuf>::new(),
+            "no file may survive a mismatch inside the 1Z frame"
+        );
+    }
+
+    #[test]
+    fn pack_zstd_bad_magic_is_a_clean_error() {
+        // Garbage / wrong-version magics — including ones that merely resemble
+        // the 1Z magic — are rejected cleanly (no panic, no decode attempt).
+        let b_dir = TempDir::new("zmagic");
+        let b = FileStore::from_root(b_dir.path());
+        for stream in [
+            &b"SNAPPACK 3\nend\n"[..],             // wrong version
+            &b"SNAPPACK 1z\nGARBAGE"[..],          // lowercase z is NOT the 1Z magic
+            &b"SNAPPACK 2Z\nGARBAGE"[..],          // wrong version + Z
+            &b"SNAPPACK 1ZZ\nGARBAGE"[..],         // trailing junk
+            &b"GARBAGE\nend\n"[..],                // not SNAPPACK at all
+            &b"SNAPPACK 1Z\nnot a zstd frame"[..], // right magic, garbage frame
+        ] {
+            let mut sink = FileSink::new(&b);
+            assert!(
+                read_pack(stream, &mut sink).is_err(),
+                "stream {:?} must be rejected cleanly",
+                String::from_utf8_lossy(stream)
+            );
+        }
+    }
+
+    #[test]
+    fn pack_zstd_stream_sink_generic_roundtrips() {
+        // The generic StreamSink also decodes a 1Z stream correctly.
+        let payloads = vec![compressible_payload(512), b"z\n".to_vec()];
+        let (_a_dir, a, ids) = seed_store("zss-a", &payloads);
+        let (manifest, man_id) = manifest_for(&payloads);
+        a.put_manifest(&man_id, &manifest).expect("seed manifest");
+
+        let mut zpack = Vec::new();
+        write_pack_with_format(
+            &a,
+            &ids,
+            Some(&man_id),
+            PackFormat::zstd_default(),
+            &mut zpack,
+        )
+        .expect("write 1Z");
+
+        let b_dir = TempDir::new("zss-b");
+        let b = FileStore::from_root(b_dir.path());
+        let mut sink = StreamSink::new(&b);
+        let read = read_pack(zpack.as_slice(), &mut sink).expect("read 1Z");
+        assert_eq!(read.objects_written, 2);
+        assert!(read.manifest_committed);
+        for (id, payload) in ids.iter().zip(&payloads) {
+            assert_eq!(b.get_object(id).expect("object"), *payload);
+        }
+        assert_eq!(b.get_manifest(&man_id).expect("manifest"), manifest);
+    }
+
+    #[test]
+    fn pack_v1_default_unchanged_and_both_forms_file_identically() {
+        // `write_pack` (the default) is byte-identical to V1, and the v1 + 1Z
+        // forms of the SAME content file the SAME on-disk tree.
+        let payloads = vec![compressible_payload(256), b"k\n".to_vec()];
+        let (_a_dir, a, ids) = seed_store("zboth-a", &payloads);
+        let (manifest, man_id) = manifest_for(&payloads);
+        a.put_manifest(&man_id, &manifest).expect("seed manifest");
+
+        let mut default_pack = Vec::new();
+        write_pack(&a, &ids, Some(&man_id), &mut default_pack).expect("default");
+        let mut v1_pack = Vec::new();
+        write_pack_with_format(&a, &ids, Some(&man_id), PackFormat::V1, &mut v1_pack)
+            .expect("explicit v1");
+        assert_eq!(
+            default_pack, v1_pack,
+            "default == explicit V1, byte-for-byte"
+        );
+        assert!(default_pack.starts_with(WIRE_MAGIC.as_bytes()));
+
+        let mut z_pack = Vec::new();
+        write_pack_with_format(
+            &a,
+            &ids,
+            Some(&man_id),
+            PackFormat::zstd_default(),
+            &mut z_pack,
+        )
+        .expect("1Z");
+
+        let v1_dir = TempDir::new("zboth-v1");
+        let v1_store = FileStore::from_root(v1_dir.path());
+        let mut v1_sink = FileSink::new(&v1_store);
+        read_pack(v1_pack.as_slice(), &mut v1_sink).expect("read v1");
+
+        let z_dir = TempDir::new("zboth-z");
+        let z_store = FileStore::from_root(z_dir.path());
+        let mut z_sink = FileSink::new(&z_store);
+        read_pack(z_pack.as_slice(), &mut z_sink).expect("read 1Z");
+
+        assert_eq!(
+            filing_of(v1_dir.path()),
+            filing_of(z_dir.path()),
+            "v1 and 1Z must file byte-identical trees"
         );
     }
 }
