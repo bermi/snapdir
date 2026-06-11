@@ -3228,7 +3228,9 @@ gates:
     phase: 27
     owner_agent: cli
     depends_on: [wire2-zstd-format-stores]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T20:37:06Z
+    git_sha: 57211f4
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test plumbing --locked"
     pass_criteria:
