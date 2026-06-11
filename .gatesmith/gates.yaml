@@ -3445,7 +3445,9 @@ gates:
     phase: 28
     owner_agent: adversary
     depends_on: [split-store-tests-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T23:23:12Z
+    git_sha: 3a54067
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/objects_store.rs && grep -cF 'test]' .gatesmith/pending-tests/objects_store.rs"
     pass_criteria:
