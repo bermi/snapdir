@@ -600,3 +600,186 @@ fn list_default_impl_fails_closed_with_store_error() {
         Ok(v) => panic!("expected fail-closed Err, got Ok({v:?})"),
     }
 }
+
+// ===========================================================================
+// SHARD-RECONSTRUCTION BOUNDARIES (now-visible impl: the helper requires
+// EXACTLY 4 segments `3/3/3/rest` AND total length == 64 hex). These pin the
+// `segments.len() != 4` and `is_hex64` length branches that the black-box
+// suite could only approach indirectly.
+//
+// NOTE: S3/GCS/B2 reuse the SAME reconstruction (`manifest_ids_from_keys` ->
+// `manifest_id_from_shard_segments`), so these FileStore boundary tests cover
+// that shared key->id logic. The S3/GCS LIVE paths (the listing transport
+// itself) are creds-gated and not exercised here.
+// ===========================================================================
+
+/// A valid lowercase 64-hex id, planted at its real `3/3/3/rest` shard path.
+/// Distinct from any seeded snapshot id; used to drive the boundary plants.
+const VALID_ID: &str = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+
+#[test]
+fn list_ignores_a_too_shallow_key_whose_first_segments_already_total_64() {
+    // SPEC + IMPL (`segments.len() != 4`): a key at the WRONG (too-SHALLOW)
+    // depth must be skipped even when its segments happen to concatenate to a
+    // 64-hex string. Plant `.manifests/<32hex>/<32hex>` (depth 2, concat == 64
+    // valid hex). is_hex64 alone would accept the concat, so this pins that the
+    // DEPTH==4 guard runs FIRST and rejects it. Mixed with one real manifest.
+    let root = TempDir::new("shallow64");
+    let store = FileStore::from_root(root.path().to_path_buf());
+
+    let src = TempDir::new("shallow64-src");
+    let (manifest, id) = build_tree(src.path(), &[("f", b"shallow real\n")]);
+    store.put_manifest(&id, &manifest).expect("put real");
+
+    // Two 32-hex halves of VALID_ID => concat is the valid 64-hex id, but only
+    // TWO segments deep, not four.
+    let half_a = &VALID_ID[..32];
+    let half_b = &VALID_ID[32..];
+    let shallow = root.path().join(".manifests").join(half_a);
+    fs::create_dir_all(&shallow).unwrap();
+    fs::write(shallow.join(half_b), b"too shallow").unwrap();
+
+    let listed = store
+        .list_manifest_ids()
+        .expect("a too-shallow key must be skipped, NOT error");
+    assert!(
+        !listed.iter().any(|x| *x == VALID_ID),
+        "a depth-2 key that concatenates to 64-hex must NOT be listed: {listed:?}"
+    );
+    assert_same_set(listed, vec![id]);
+}
+
+#[test]
+fn list_ignores_a_correct_depth_key_whose_rest_makes_total_length_below_64() {
+    // SPEC + IMPL (`is_hex64` length check at depth 4): a key at the CORRECT
+    // `3/3/3/rest` depth whose segments are all valid hex but whose total
+    // length is 63 (one short of 64) must be skipped — depth is right, length
+    // is wrong. Pins the length arm of is_hex64 independently of the depth arm.
+    let root = TempDir::new("len63");
+    let store = FileStore::from_root(root.path().to_path_buf());
+
+    let src = TempDir::new("len63-src");
+    let (manifest, id) = build_tree(src.path(), &[("f", b"len63 real\n")]);
+    store.put_manifest(&id, &manifest).expect("put real");
+
+    // 3 + 3 + 3 + 54 = 63 valid-hex chars across the correct 4 segments.
+    let s0 = &VALID_ID[0..3];
+    let s1 = &VALID_ID[3..6];
+    let s2 = &VALID_ID[6..9];
+    let rest = "a".repeat(54);
+    assert_eq!(s0.len() + s1.len() + s2.len() + rest.len(), 63);
+    let short = root.path().join(".manifests").join(s0).join(s1).join(s2);
+    fs::create_dir_all(&short).unwrap();
+    fs::write(short.join(&rest), b"one char short").unwrap();
+
+    let listed = store
+        .list_manifest_ids()
+        .expect("a 63-char (length != 64) key must be skipped, NOT error");
+    assert_same_set(listed, vec![id]);
+}
+
+#[test]
+fn list_ignores_a_correct_depth_key_whose_rest_makes_total_length_above_64() {
+    // SPEC + IMPL (`is_hex64` length check at depth 4): the symmetric over-long
+    // case — correct depth, all valid hex, total length 65 (one over 64). Must
+    // be skipped; pins that is_hex64 rejects > 64 just as it rejects < 64.
+    let root = TempDir::new("len65");
+    let store = FileStore::from_root(root.path().to_path_buf());
+
+    let src = TempDir::new("len65-src");
+    let (manifest, id) = build_tree(src.path(), &[("f", b"len65 real\n")]);
+    store.put_manifest(&id, &manifest).expect("put real");
+
+    // 3 + 3 + 3 + 56 = 65 valid-hex chars across the correct 4 segments.
+    let s0 = &VALID_ID[0..3];
+    let s1 = &VALID_ID[3..6];
+    let s2 = &VALID_ID[6..9];
+    let rest = "b".repeat(56);
+    assert_eq!(s0.len() + s1.len() + s2.len() + rest.len(), 65);
+    let long = root.path().join(".manifests").join(s0).join(s1).join(s2);
+    fs::create_dir_all(&long).unwrap();
+    fs::write(long.join(&rest), b"one char long").unwrap();
+
+    let listed = store
+        .list_manifest_ids()
+        .expect("a 65-char (length != 64) key must be skipped, NOT error");
+    assert_same_set(listed, vec![id]);
+}
+
+#[test]
+fn list_does_not_list_a_64hex_value_that_is_a_directory_name_not_a_leaf() {
+    // SPEC + IMPL (the walk inserts ONLY on `is_dir() == false`): a 64-hex id
+    // that exists in the tree purely as the NAME of a DIRECTORY (the leaf
+    // `rest` segment is a dir, with no file under it) must NOT be listed —
+    // list reconstructs ids from FILE leaves, not directory nodes. This pins
+    // the file-vs-dir classification in `push_manifest_walk_entry`.
+    let root = TempDir::new("dir-leaf");
+    let store = FileStore::from_root(root.path().to_path_buf());
+
+    let src = TempDir::new("dir-leaf-src");
+    let (manifest, id) = build_tree(src.path(), &[("f", b"dir-leaf real\n")]);
+    store.put_manifest(&id, &manifest).expect("put real");
+
+    // Build the real `3/3/3/rest` shard path of VALID_ID, but make `rest` a
+    // DIRECTORY (mkdir, no file leaf under it). The reconstruction-to-64-hex is
+    // valid, yet there is no FILE leaf, so it must not surface.
+    let p = manifest_path(VALID_ID); // ".manifests/abc/def/012/3456...."
+    let as_dir = root.path().join(&p);
+    fs::create_dir_all(&as_dir).unwrap();
+
+    let listed = store
+        .list_manifest_ids()
+        .expect("a 64-hex directory node must be skipped, NOT error");
+    assert!(
+        !listed.iter().any(|x| *x == VALID_ID),
+        "a 64-hex value that is only a directory name must NOT be listed: {listed:?}"
+    );
+    assert_same_set(listed, vec![id]);
+}
+
+#[test]
+fn list_returns_only_the_valids_among_several_mixed_invalid_keys() {
+    // SPEC + IMPL: a tree mixing SEVERAL distinct malformed keys (wrong depth,
+    // wrong length, non-hex, uppercase) with SEVERAL genuine manifests returns
+    // EXACTLY the genuine ids — every invalid skipped without error, no valid
+    // dropped. Exercises the accumulate-while-skipping loop over many entries.
+    let root = TempDir::new("mixed");
+    let store = FileStore::from_root(root.path().to_path_buf());
+
+    // Several genuine manifests.
+    let ids = seed_manifests(&store, 3);
+
+    let manifests = root.path().join(".manifests");
+
+    // (a) too shallow: depth-1 file directly under .manifests/.
+    fs::write(manifests.join("not-a-shard"), b"x").unwrap();
+
+    // (b) too deep: 5 segments.
+    let deep = manifests.join("aaa").join("bbb").join("ccc").join("ddd");
+    fs::create_dir_all(&deep).unwrap();
+    fs::write(deep.join("eee"), b"x").unwrap();
+
+    // (c) correct depth, non-hex leaf (contains 'z'), length 64.
+    let nonhex = manifests.join("zzz").join("zzz").join("zzz");
+    fs::create_dir_all(&nonhex).unwrap();
+    fs::write(nonhex.join("z".repeat(55)), b"x").unwrap();
+
+    // (d) uppercase 64-hex at its uppercased shard path.
+    let up = manifest_path(&VALID_ID.to_uppercase());
+    let up_disk = root.path().join(&up);
+    fs::create_dir_all(up_disk.parent().unwrap()).unwrap();
+    fs::write(&up_disk, b"x").unwrap();
+
+    // (e) correct depth, valid hex, wrong length (63).
+    let short = manifests
+        .join(&VALID_ID[0..3])
+        .join(&VALID_ID[3..6])
+        .join(&VALID_ID[6..9]);
+    fs::create_dir_all(&short).unwrap();
+    fs::write(short.join("c".repeat(54)), b"x").unwrap();
+
+    let listed = store
+        .list_manifest_ids()
+        .expect("a mix of malformed keys must be skipped, NOT error");
+    assert_same_set(listed, ids);
+}
