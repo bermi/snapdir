@@ -3258,7 +3258,9 @@ gates:
     phase: 27
     owner_agent: stores
     depends_on: [wire2-zstd-ssh, recv-fsync-knob-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T21:12:26Z
+    git_sha: b2e2f33
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-ssh-store --locked && cargo test -p snapdir-cli --test plumbing --locked"
     pass_criteria:
