@@ -465,6 +465,164 @@ fn accel_push_get_manifest_accel_fetch_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
+// zstd negotiation (wire2-zstd-ssh): both peers speak snappack-zstd → 1Z;
+// a 1.5.0-style peer (no cap) cleanly falls back to v1 with accel STILL taken
+// ---------------------------------------------------------------------------
+
+/// Installs a remote `snapdir` at `dir/snapdir` that logs every argv to `log`
+/// and execs `real` — same as [`install_logging_snapdir`] but as a standalone
+/// file usable for the LOCAL pipe end (via `SNAPDIR_SSH_LOCAL_SNAPDIR`).
+fn install_logging_snapdir_at(path: &Path, real: &Path, log: &Path) {
+    write_script(
+        path,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >>{log}\nexec {real} \"$@\"\n",
+            log = sh_quote(&log.display().to_string()),
+            real = sh_quote(&real.display().to_string()),
+        ),
+    );
+}
+
+#[test]
+fn zstd_push_and_fetch_engage_when_both_peers_advertise_the_cap() {
+    let Some(real) =
+        require_snapdir("zstd_push_and_fetch_engage_when_both_peers_advertise_the_cap")
+    else {
+        return;
+    };
+    let staging = TempDir::new("zz-stage");
+    let remote_root = TempDir::new("zz-remote");
+    let bindir = TempDir::new("zz-bin");
+    let remote_bin = TempDir::new("zz-remote-bin");
+    let local_bin = TempDir::new("zz-local-bin");
+    let cache = TempDir::new("zz-cache");
+    let cache_pin = TempDir::new("zz-cachepin");
+    let mut env = fake_remote_env(bindir.path(), remote_root.path(), cache_pin.path());
+
+    // Remote AND local are the REAL binary behind logging shims (the real
+    // binary's caps include snappack-zstd), so both negotiate zstd.
+    let remote_log = remote_bin.path().join("invocations.log");
+    install_logging_snapdir(remote_bin.path(), &real, &remote_log);
+    let local_log = local_bin.path().join("local.log");
+    let local_snapdir = local_bin.path().join("snapdir");
+    install_logging_snapdir_at(&local_snapdir, &real, &local_log);
+    env.set(
+        "FAKE_SSH_REMOTE_PATH",
+        &remote_bin.path().display().to_string(),
+    );
+    env.set(
+        "SNAPDIR_SSH_LOCAL_SNAPDIR",
+        &local_snapdir.display().to_string(),
+    );
+
+    let (manifest, _id, sums) = stage_tree(staging.path(), FILES);
+    let base = remote_root.path().join("snap");
+    let store = external_store(&base);
+
+    // Push: the LOCAL send-pack carries --pack-format zstd; the remote
+    // receive-pack still ran (sniffed the 1Z magic).
+    store
+        .push(&manifest, staging.path())
+        .expect("zstd accel push");
+    let local = log_lines(&local_log);
+    assert!(
+        local.contains("send-pack") && local.contains("--pack-format zstd"),
+        "the local send-pack must opt into zstd: {local}"
+    );
+    assert!(
+        log_lines(&remote_log).contains("receive-pack"),
+        "the remote receive-pack still ran (magic-sniffed): {}",
+        log_lines(&remote_log)
+    );
+
+    // Fetch: the REMOTE send-pack carries --pack-format zstd; the local
+    // receive-pack landed every object byte-correctly (it verified each).
+    fs::write(&remote_log, b"").unwrap();
+    store
+        .fetch_files(&manifest, cache.path())
+        .expect("zstd accel fetch");
+    let remote = log_lines(&remote_log);
+    assert!(
+        remote.contains("send-pack") && remote.contains("--pack-format zstd"),
+        "the remote send-pack must opt into zstd: {remote}"
+    );
+    for (sum, (_, content)) in sums.iter().zip(FILES) {
+        assert_eq!(
+            &fs::read(cache.path().join(object_path(sum))).unwrap(),
+            content
+        );
+    }
+}
+
+#[test]
+fn zstd_falls_back_to_v1_against_a_remote_without_the_cap_accel_still_taken() {
+    let Some(real) =
+        require_snapdir("zstd_falls_back_to_v1_against_a_remote_without_the_cap_accel_still_taken")
+    else {
+        return;
+    };
+    let staging = TempDir::new("zr-stage");
+    let remote_root = TempDir::new("zr-remote");
+    let bindir = TempDir::new("zr-bin");
+    let remote_bin = TempDir::new("zr-remote-bin");
+    let cache = TempDir::new("zr-cache");
+    let cache_pin = TempDir::new("zr-cachepin");
+    let mut env = fake_remote_env(bindir.path(), remote_root.path(), cache_pin.path());
+
+    // A 1.5.0-style remote: wire=1 with the full v1 caps but WITHOUT
+    // snappack-zstd. The caps-only shim records any non-version invocation, so
+    // we can only exercise the FETCH path (push streams real packs the shim
+    // can't serve) — fetch picks the v1 send-pack variant, accel still taken.
+    let log = remote_bin.path().join("invocations.log");
+    write_script(
+        &remote_bin.path().join("snapdir"),
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >>{log}\n\
+             if [ \"$1\" = version ] && [ \"$2\" = --capabilities ]; then\n  \
+             printf '%s\\n' 'snapdir 1.5.0 wire=1 caps=objects-needed,send-pack,receive-pack'\n  \
+             exit 0\nfi\nexec {real} \"$@\"\n",
+            log = sh_quote(&log.display().to_string()),
+            real = sh_quote(&real.display().to_string()),
+        ),
+    );
+    env.set(
+        "FAKE_SSH_REMOTE_PATH",
+        &remote_bin.path().display().to_string(),
+    );
+    env.set("SNAPDIR_SSH_LOCAL_SNAPDIR", &real.display().to_string());
+
+    // Seed the store directly (dumb-style) so fetch has objects to pull.
+    let (manifest, _id, sums) = stage_tree(staging.path(), FILES);
+    let base = remote_root.path().join("snap");
+    for (sum, (_, content)) in sums.iter().zip(FILES) {
+        let obj = base.join(object_path(sum));
+        fs::create_dir_all(obj.parent().unwrap()).unwrap();
+        fs::write(&obj, content).unwrap();
+    }
+
+    external_store(&base)
+        .fetch_files(&manifest, cache.path())
+        .expect("v1-fallback accel fetch must succeed");
+
+    let remote = log_lines(&log);
+    assert!(
+        remote.contains("send-pack"),
+        "accel was STILL taken: {remote}"
+    );
+    assert!(
+        !remote.contains("--pack-format zstd"),
+        "a cap-less remote must receive the v1 send-pack variant: {remote}"
+    );
+    // Objects landed byte-correctly via the v1 stream.
+    for (sum, (_, content)) in sums.iter().zip(FILES) {
+        assert_eq!(
+            &fs::read(cache.path().join(object_path(sum))).unwrap(),
+            content
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // interrupted-accel completion: manifest-only pack
 // ---------------------------------------------------------------------------
 
@@ -857,10 +1015,25 @@ fn emitted_push_script_carries_combined_probe_and_both_paths() {
         probe_line.contains("caps none"),
         "snapdir-less remotes must degrade inside the same probe: {probe_line}"
     );
+    // Exactly one REMOTE probe round trip (the `_snapdir_ssh`-wrapped one);
+    // the LOCAL-binary zstd probe also calls `version --capabilities` but on
+    // `"$snapdir_local"`, not over ssh.
     assert_eq!(
-        script.matches("version --capabilities").count(),
+        script
+            .lines()
+            .filter(|l| l.contains("version --capabilities") && l.contains("_snapdir_ssh"))
+            .count(),
         1,
-        "exactly one capability probe"
+        "exactly one remote capability probe round trip"
+    );
+    // The LOCAL-binary zstd probe runs the local snapdir, never the remote.
+    assert!(
+        script.contains("\"$snapdir_local\" version --capabilities"),
+        "the local-zstd probe queries the LOCAL binary's caps"
+    );
+    assert!(
+        script.contains("snapdir_local_zstd"),
+        "a local-zstd flag guards the zstd push branch"
     );
 
     // The wire check is a baked literal (emit-time constant), not a runtime
@@ -914,6 +1087,46 @@ fn emitted_push_script_carries_combined_probe_and_both_paths() {
 
     // Stream failures never silently retry dumb.
     assert!(script.contains("retrying the push resumes incrementally"));
+
+    // --- zstd negotiation (wire2-zstd-ssh) ---------------------------------
+    // The zstd push branch is present: the LOCAL send-pack carries a STATIC
+    // `--pack-format zstd` (never a runtime env value), gated on a runtime
+    // flag that requires BOTH local-zstd support AND the remote advertising
+    // the snappack-zstd cap.
+    assert!(
+        script.contains("send-pack --store") && script.contains("--pack-format zstd"),
+        "the local send-pack has a baked --pack-format zstd variant"
+    );
+    assert!(
+        script.contains("$snapdir_push_zstd"),
+        "a runtime flag chooses the zstd vs v1 send-pack variant"
+    );
+    assert!(
+        script.contains("_snapdir_caps_ok snappack-zstd"),
+        "the zstd branch requires the remote to advertise snappack-zstd"
+    );
+    assert!(
+        script.contains("\"$snapdir_local_zstd\" = \"1\""),
+        "the zstd branch also requires the LOCAL binary to support zstd"
+    );
+    // CRITICAL: the remote receive-pack command is UNCHANGED (it sniffs the
+    // magic) — `--pack-format` only ever rides the LOCAL send-pack, never the
+    // remote `receive-pack` invocation (`send-pack`'s `--pack-format` sits to
+    // the LEFT of the `| _snapdir_ssh 'snapdir receive-pack …'` pipe).
+    for line in script.lines() {
+        if let Some(recv_idx) = line.find("receive-pack") {
+            assert!(
+                !line[recv_idx..].contains("--pack-format"),
+                "the remote receive-pack must never carry --pack-format: {line}"
+            );
+        }
+    }
+    // The wire=1 literal is unchanged (zstd is a transport encoding, not a
+    // version bump).
+    assert!(
+        script.contains(" wire=1 "),
+        "wire=1 literal unchanged by zstd"
+    );
 }
 
 #[test]
@@ -937,8 +1150,20 @@ fn emitted_fetch_script_carries_caps_probe_and_both_id_lists() {
     .unwrap();
     assert_skeleton_invariants(&script);
 
-    // Caps-only probe (no manifest test on fetch), exactly one.
-    assert_eq!(script.matches("version --capabilities").count(), 1);
+    // Caps-only probe (no manifest test on fetch): exactly one REMOTE round
+    // trip (the LOCAL-binary zstd probe also queries caps, but never over ssh).
+    assert_eq!(
+        script
+            .lines()
+            .filter(|l| l.contains("version --capabilities") && l.contains("_snapdir_ssh"))
+            .count(),
+        1,
+        "exactly one remote capability probe round trip"
+    );
+    assert!(
+        script.contains("\"$snapdir_local\" version --capabilities"),
+        "the local-zstd probe queries the LOCAL binary's caps"
+    );
     assert!(script.contains(" wire=1 "), "baked literal wire token");
 
     // BOTH paths and BOTH baked id lists; the dispatch picks at runtime.
@@ -957,6 +1182,41 @@ fn emitted_fetch_script_carries_caps_probe_and_both_id_lists() {
         "_snapdir_ssh {} <\"$snapdir_ids\"",
         sh_quote("snapdir send-pack --store 'file:///srv/snap' --ids -")
     )));
+
+    // --- zstd negotiation (wire2-zstd-ssh) ---------------------------------
+    // BOTH remote send-pack variants are statically baked (the same two-baked
+    // pattern as ids/ids_all); the dispatch picks which CONSTANT to send — a
+    // runtime env value is NEVER interpolated into the baked remote string.
+    assert!(
+        script.contains(&format!(
+            "_snapdir_ssh {} <\"$snapdir_ids\"",
+            sh_quote("snapdir send-pack --store 'file:///srv/snap' --ids - --pack-format zstd")
+        )),
+        "the zstd remote send-pack variant is baked, fully quoted: {script}"
+    );
+    assert!(
+        script.contains("$snapdir_fetch_zstd"),
+        "a runtime flag chooses the zstd vs v1 remote send-pack variant"
+    );
+    assert!(
+        script.contains("_snapdir_caps_ok snappack-zstd"),
+        "the zstd branch requires the remote to advertise snappack-zstd"
+    );
+    assert!(
+        script.contains("\"$snapdir_local_zstd\" = \"1\""),
+        "the zstd branch also requires the LOCAL binary to support zstd"
+    );
+    // The LOCAL receive-pack is unchanged (it sniffs the incoming magic):
+    // `--pack-format` only ever rides the REMOTE send-pack (to the LEFT of the
+    // `| "$snapdir_local" receive-pack …` pipe), never receive-pack itself.
+    for line in script.lines() {
+        if let Some(recv_idx) = line.find("receive-pack") {
+            assert!(
+                !line[recv_idx..].contains("--pack-format"),
+                "the local receive-pack must never carry --pack-format: {line}"
+            );
+        }
+    }
     assert!(
         script.contains(&format!(
             "receive-pack --store {}",

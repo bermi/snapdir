@@ -102,6 +102,16 @@ const PUSH_CAPS: &str = "objects-needed,receive-pack";
 /// The cap the fetch dispatch requires of the remote `snapdir`.
 const FETCH_CAPS: &str = "send-pack";
 
+/// The OPTIONAL capability token gating the additive SNAPPACK 1Z (zstd)
+/// transport encoding. Unlike [`PUSH_CAPS`]/[`FETCH_CAPS`] it is NEVER part of
+/// `FORCE_ACCEL` negotiation: a peer that lacks it simply receives a v1 stream
+/// (the receiver sniffs the magic and accepts both forms forever), so accel is
+/// still taken — only the on-wire encoding falls back. It is a LOCAL constant
+/// (the shipped lib depends only on `snapdir-core`); the
+/// `zstd_cap_matches_snapdir_stores` test pins it to the
+/// `snapdir_stores::WIRE_CAPS` token so a rename cannot silently desync.
+const ZSTD_CAP: &str = "snappack-zstd";
+
 /// The shell that aborts on any probe transport failure: a nonzero
 /// `_snapdir_ssh` exit is connectivity (the probe's remote command itself
 /// always exits 0), surfaced with the real exit code — it NEVER maps to
@@ -154,8 +164,21 @@ fn accel_prelude() -> String {
     format!(
         r#"snapdir_local="${{SNAPDIR_SSH_LOCAL_SNAPDIR:-snapdir}}"
 snapdir_local_ok=0
+snapdir_local_zstd=0
 if command -v "$snapdir_local" >/dev/null 2>&1; then
   snapdir_local_ok=1
+  # Probe the LOCAL binary's caps for the zstd transport. An OLDER local
+  # snapdir (e.g. 1.5.0) rejects `version --capabilities` nonzero; the
+  # `|| true` keeps that from tripping `set -e`, and the empty/cap-less
+  # output simply leaves snapdir_local_zstd=0 (clean v1 fallback).
+  snapdir_local_caps="$("$snapdir_local" version --capabilities 2>/dev/null || true)"
+  case " $snapdir_local_caps " in
+  *' wire={WIRE_VERSION} '*)
+    case "$snapdir_local_caps" in
+    *caps=*{ZSTD_CAP}*) snapdir_local_zstd=1 ;;
+    esac
+    ;;
+  esac
 fi
 _snapdir_caps_ok() {{
   snapdir_caps_line=''
@@ -240,7 +263,11 @@ else
   : >"$snapdir_tmp/need"
 fi
 snapdir_stream_status=0
-"$snapdir_local" send-pack --store {staging_url} --ids "$snapdir_tmp/need" --manifest-id {id_q} | _snapdir_ssh {recv} || snapdir_stream_status=$?
+if [ "$snapdir_push_zstd" = "1" ]; then
+  "$snapdir_local" send-pack --store {staging_url} --ids "$snapdir_tmp/need" --manifest-id {id_q} --pack-format zstd | _snapdir_ssh {recv} || snapdir_stream_status=$?
+else
+  "$snapdir_local" send-pack --store {staging_url} --ids "$snapdir_tmp/need" --manifest-id {id_q} | _snapdir_ssh {recv} || snapdir_stream_status=$?
+fi
 if [ "$snapdir_stream_status" -ne 0 ]; then
   printf 'snapdir-ssh-store: accelerated push stream failed (exit %s); retrying the push resumes incrementally\n' "$snapdir_stream_status" >&2
   exit "$snapdir_stream_status"
@@ -262,14 +289,22 @@ fi
 /// hash-verifies every record. Stream failure exits nonzero (no silent dumb
 /// fallback mid-stream).
 fn accel_fetch_fn(base: &str, cache_abs: &str) -> String {
-    let send_cmd = format!(
-        "snapdir send-pack --store {} --ids -",
-        sh_quote(&format!("file://{base}")),
-    );
+    let store_q = sh_quote(&format!("file://{base}"));
+    // TWO statically-baked, fully-quoted remote send-pack variants (same
+    // ids/ids_all pattern). The trailing ` --pack-format zstd` is a literal,
+    // NEVER a runtime env value interpolated into the baked remote string —
+    // the dispatch only CHOOSES which constant variant to send. The local
+    // receive-pack sniffs the incoming magic, so v1 and 1Z are both accepted.
+    let send_cmd = format!("snapdir send-pack --store {store_q} --ids -");
+    let send_cmd_zstd = format!("snapdir send-pack --store {store_q} --ids - --pack-format zstd");
     format!(
         r#"_snapdir_accel_fetch() {{
 snapdir_stream_status=0
-_snapdir_ssh {send} <"$snapdir_ids" | "$snapdir_local" receive-pack --store {cache_url} || snapdir_stream_status=$?
+if [ "$snapdir_fetch_zstd" = "1" ]; then
+  _snapdir_ssh {send_zstd} <"$snapdir_ids" | "$snapdir_local" receive-pack --store {cache_url} || snapdir_stream_status=$?
+else
+  _snapdir_ssh {send} <"$snapdir_ids" | "$snapdir_local" receive-pack --store {cache_url} || snapdir_stream_status=$?
+fi
 if [ "$snapdir_stream_status" -ne 0 ]; then
   printf 'snapdir-ssh-store: accelerated fetch stream failed (exit %s); retrying the fetch resumes incrementally\n' "$snapdir_stream_status" >&2
   exit "$snapdir_stream_status"
@@ -277,6 +312,7 @@ fi
 }}
 "#,
         send = sh_quote(&send_cmd),
+        send_zstd = sh_quote(&send_cmd_zstd),
         cache_url = sh_quote(&format!("file://{cache_abs}")),
     )
 }
@@ -460,15 +496,20 @@ pub fn get_push_script(
     // FORCE_ACCEL without caps → designed error; else → dumb.
     let _ = write!(
         script,
-        r#"if [ "${{SNAPDIR_SSH_NO_ACCEL:-0}}" = "1" ] || [ "$snapdir_local_ok" -ne 1 ]; then
+        r#"snapdir_push_zstd=0
+if [ "${{SNAPDIR_SSH_NO_ACCEL:-0}}" = "1" ] || [ "$snapdir_local_ok" -ne 1 ]; then
   _snapdir_dumb_push
 elif _snapdir_caps_ok objects-needed receive-pack; then
+  if [ "$snapdir_local_zstd" = "1" ] && _snapdir_caps_ok {zstd_cap}; then
+    snapdir_push_zstd=1
+  fi
   _snapdir_accel_push
 elif [ "${{SNAPDIR_SSH_FORCE_ACCEL:-0}}" = "1" ]; then
 {err}else
   _snapdir_dumb_push
 fi
 "#,
+        zstd_cap = ZSTD_CAP,
         err = force_accel_error_block(&url.host_arg(), PUSH_CAPS),
     );
     Ok(script)
@@ -655,10 +696,14 @@ fi
 if [ "${{SNAPDIR_SSH_PULL_SENDALL:-0}}" = "1" ]; then
   snapdir_ids="$snapdir_tmp/ids_all"
 fi
+snapdir_fetch_zstd=0
 if [ "${{SNAPDIR_SSH_NO_ACCEL:-0}}" = "1" ] || [ "$snapdir_local_ok" -ne 1 ] || [ ! -s "$snapdir_ids" ]; then
   _snapdir_dumb_fetch
 else
 {probe}if _snapdir_caps_ok send-pack; then
+  if [ "$snapdir_local_zstd" = "1" ] && _snapdir_caps_ok {zstd_cap}; then
+    snapdir_fetch_zstd=1
+  fi
   _snapdir_accel_fetch
 elif [ "${{SNAPDIR_SSH_FORCE_ACCEL:-0}}" = "1" ]; then
 {err}else
@@ -666,6 +711,7 @@ elif [ "${{SNAPDIR_SSH_FORCE_ACCEL:-0}}" = "1" ]; then
 fi
 fi
 "#,
+        zstd_cap = ZSTD_CAP,
         probe = caps_probe_block(),
         err = force_accel_error_block(&url.host_arg(), FETCH_CAPS),
     );
@@ -724,6 +770,19 @@ mod tests {
                 "required cap {cap:?} must be one the CLI advertises"
             );
         }
+    }
+
+    #[test]
+    fn zstd_cap_matches_snapdir_stores() {
+        // The optional zstd transport token is a local constant (the shipped
+        // lib depends only on snapdir-core); this pin against the
+        // dev-dependency that OWNS the cap keeps a future rename from silently
+        // desyncing the runtime zstd negotiation.
+        assert!(
+            snapdir_stores::WIRE_CAPS.contains(&ZSTD_CAP),
+            "ZSTD_CAP {ZSTD_CAP:?} must be a token the CLI advertises in WIRE_CAPS"
+        );
+        assert_eq!(ZSTD_CAP, "snappack-zstd");
     }
 
     #[test]
