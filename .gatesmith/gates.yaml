@@ -3460,7 +3460,9 @@ gates:
     phase: 28
     owner_agent: cli
     depends_on: [objects-store-cli-spec-tests, split-store-tests-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T23:29:55Z
+    git_sha: 9a4e84d
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test objects_store --locked && test ! -f .gatesmith/pending-tests/objects_store.rs"
     pass_criteria:
