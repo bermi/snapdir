@@ -1236,3 +1236,503 @@ fn emitted_fetch_script_carries_caps_probe_and_both_id_lists() {
     assert!(script.contains("retrying the fetch resumes incrementally"));
     assert!(script.contains("unset SNAPDIR_SSH_FORCE_ACCEL"));
 }
+
+// ===========================================================================
+// wire2-compat-matrix (phase 27): the full back/forward SNAPPACK
+// compatibility matrix (plan B5). The accel cases below reuse the existing
+// `install_caps_only_snapdir` / `install_logging_snapdir` fakes and the
+// `fake_remote_env` harness; the on-wire-byte cases (magic + zstd-smaller-than-v1)
+// drive the REAL `snapdir send-pack` binary directly so the assertions read the
+// actual stream bytes, never an inferred property.
+// ===========================================================================
+
+/// A highly compressible fixture: one large, very repetitive object plus a
+/// couple of small distinct ones. Used by the new<->new matrix case so the 1Z
+/// pack is unambiguously smaller than the v1 pack.
+/// Builds the compressible fixture: one large, very repetitive 64 KiB object
+/// (zstd crushes it to a tiny frame → 1Z pack < v1 pack) plus a couple of
+/// small distinct ones. Owned so the big payload lives on the heap, not the
+/// stack.
+fn compressible_files() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        ("repeat.txt", vec![b'A'; 64 * 1024]),
+        ("small-a.txt", b"distinct small payload a\n".to_vec()),
+        ("small-b.txt", b"distinct small payload b\n".to_vec()),
+    ]
+}
+
+/// The fixture as the `&[(&str, &[u8])]` slice `stage_tree` expects.
+fn as_file_slice<'a>(files: &'a [(&'static str, Vec<u8>)]) -> Vec<(&'static str, &'a [u8])> {
+    files.iter().map(|(n, c)| (*n, c.as_slice())).collect()
+}
+
+/// Runs the REAL `snapdir send-pack --store file://<staging> --ids <file>`
+/// (optionally `--pack-format zstd`) and returns the raw stdout pack bytes.
+/// This is the on-wire byte stream the ssh `send-pack` half pipes to
+/// `receive-pack`, captured hermetically (no ssh, no fixture).
+fn send_pack_bytes(real: &Path, staging: &Path, ids_file: &Path, zstd: bool) -> Vec<u8> {
+    let mut cmd = std::process::Command::new(real);
+    cmd.arg("send-pack")
+        .arg("--store")
+        .arg(format!("file://{}", staging.display()))
+        .arg("--ids")
+        .arg(ids_file)
+        .arg("--quiet");
+    if zstd {
+        cmd.arg("--pack-format").arg("zstd");
+    }
+    let out = cmd.output().expect("run snapdir send-pack");
+    assert!(
+        out.status.success(),
+        "send-pack failed (zstd={zstd}): {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
+}
+
+/// Writes the deduped object checksums (one per line) to `path`.
+fn write_ids(path: &Path, sums: &[String]) {
+    fs::write(path, format!("{}\n", sums.join("\n"))).expect("write ids file");
+}
+
+// ---------------------------------------------------------------------------
+// (1) new<->new = SNAPPACK 1Z on the wire
+// ---------------------------------------------------------------------------
+
+#[test]
+fn matrix_new_to_new_is_snappack_1z_byte_identical_store_and_smaller_pack() {
+    let Some(real) =
+        require_snapdir("matrix_new_to_new_is_snappack_1z_byte_identical_store_and_smaller_pack")
+    else {
+        return;
+    };
+
+    // --- on-wire bytes (hermetic, no ssh): the 1Z magic AND a SMALLER pack on
+    //     a compressible fixture, driving the real send-pack directly. -------
+    let staging = TempDir::new("nn-stage");
+    let ids = TempDir::new("nn-ids");
+    let fixture = compressible_files();
+    let fixture_slice = as_file_slice(&fixture);
+    let (_manifest, _id, sums) = stage_tree(staging.path(), &fixture_slice);
+    let ids_file = ids.path().join("ids.txt");
+    write_ids(&ids_file, &sums);
+
+    let v1 = send_pack_bytes(&real, staging.path(), &ids_file, false);
+    let zz = send_pack_bytes(&real, staging.path(), &ids_file, true);
+
+    // new<->new advertises `--pack-format zstd`, which opens with the 1Z magic.
+    assert!(
+        v1.starts_with(b"SNAPPACK 1\n"),
+        "v1 pack opens with the plain magic"
+    );
+    assert!(
+        zz.starts_with(b"SNAPPACK 1Z\n"),
+        "the new<->new pack is SNAPPACK 1Z on the wire: {:?}",
+        &zz[..zz.len().min(16)]
+    );
+    assert!(
+        zz.len() < v1.len(),
+        "the 1Z pack must be smaller than v1 on a compressible fixture: \
+         zstd={} v1={} bytes",
+        zz.len(),
+        v1.len()
+    );
+
+    // --- accel path: the invocation log records `--pack-format zstd`, and the
+    //     resulting store is byte-identical to a v1 (NO_ACCEL dumb) push. -----
+    let remote_root = TempDir::new("nn-remote");
+    let bindir = TempDir::new("nn-bin");
+    let remote_bin = TempDir::new("nn-remote-bin");
+    let local_bin = TempDir::new("nn-local-bin");
+    let cache_pin = TempDir::new("nn-cachepin");
+    let mut env = fake_remote_env(bindir.path(), remote_root.path(), cache_pin.path());
+
+    let (manifest, id, _sums) = stage_tree(staging.path(), &fixture_slice);
+    let root_v1 = remote_root.path().join("v1");
+    let root_zz = remote_root.path().join("zstd");
+
+    // Reference v1 store: forced dumb (no zstd ever on the wire).
+    env.set("SNAPDIR_SSH_NO_ACCEL", "1");
+    external_store(&root_v1)
+        .push(&manifest, staging.path())
+        .expect("forced-dumb v1 push");
+    env.remove("SNAPDIR_SSH_NO_ACCEL");
+
+    // new<->new accel store: both peers are the REAL binary (caps include
+    // snappack-zstd), so the LOCAL send-pack opts into zstd.
+    let remote_log = remote_bin.path().join("invocations.log");
+    install_logging_snapdir(remote_bin.path(), &real, &remote_log);
+    let local_log = local_bin.path().join("local.log");
+    let local_snapdir = local_bin.path().join("snapdir");
+    install_logging_snapdir_at(&local_snapdir, &real, &local_log);
+    env.set(
+        "FAKE_SSH_REMOTE_PATH",
+        &remote_bin.path().display().to_string(),
+    );
+    env.set(
+        "SNAPDIR_SSH_LOCAL_SNAPDIR",
+        &local_snapdir.display().to_string(),
+    );
+    external_store(&root_zz)
+        .push(&manifest, staging.path())
+        .expect("new<->new (zstd) accel push");
+
+    // The wire negotiated 1Z: the LOCAL send-pack carried `--pack-format zstd`.
+    let local = log_lines(&local_log);
+    assert!(
+        local.contains("send-pack") && local.contains("--pack-format zstd"),
+        "new<->new must put --pack-format zstd on the wire: {local}"
+    );
+    assert!(
+        log_lines(&remote_log).contains("receive-pack"),
+        "the remote receive-pack still ran (magic-sniffed the 1Z stream)"
+    );
+
+    // Byte-identical store: the on-wire encoding is transparent to the landed
+    // objects + manifest (the resulting store is identical to v1).
+    let set_v1 = relative_file_set(&root_v1);
+    assert_eq!(
+        set_v1,
+        relative_file_set(&root_zz),
+        "the 1Z store must be byte-identical (same file set) to the v1 store"
+    );
+    assert!(
+        set_v1.contains(&manifest_path(&id)),
+        "snapshot id committed on both"
+    );
+    for rel in &set_v1 {
+        assert_eq!(
+            fs::read(root_v1.join(rel)).unwrap(),
+            fs::read(root_zz.join(rel)).unwrap(),
+            "byte-equal at {rel} across v1 vs 1Z transports"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (2) new client <-> 1.5.0-caps remote (NO snappack-zstd token): accel is
+//     STILL taken, the wire is v1, NO `--pack-format zstd` flag is emitted.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn matrix_new_client_to_1_5_0_remote_takes_accel_on_v1_without_zstd_flag() {
+    let Some(real) =
+        require_snapdir("matrix_new_client_to_1_5_0_remote_takes_accel_on_v1_without_zstd_flag")
+    else {
+        return;
+    };
+    let staging = TempDir::new("n5-stage");
+    let remote_root = TempDir::new("n5-remote");
+    let bindir = TempDir::new("n5-bin");
+    let remote_bin = TempDir::new("n5-remote-bin");
+    let cache = TempDir::new("n5-cache");
+    let cache_pin = TempDir::new("n5-cachepin");
+    let mut env = fake_remote_env(bindir.path(), remote_root.path(), cache_pin.path());
+
+    // A 1.5.0-style remote: wire=1 with the full v1 caps but WITHOUT the
+    // snappack-zstd token. The caps-only shim records any non-version
+    // invocation, so the FETCH path is the exercisable one (push streams real
+    // packs the shim cannot serve); fetch picks the v1 send-pack variant.
+    let log = remote_bin.path().join("invocations.log");
+    write_script(
+        &remote_bin.path().join("snapdir"),
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >>{log}\n\
+             if [ \"$1\" = version ] && [ \"$2\" = --capabilities ]; then\n  \
+             printf '%s\\n' 'snapdir 1.5.0 wire=1 caps=objects-needed,send-pack,receive-pack'\n  \
+             exit 0\nfi\nexec {real} \"$@\"\n",
+            log = sh_quote(&log.display().to_string()),
+            real = sh_quote(&real.display().to_string()),
+        ),
+    );
+    env.set(
+        "FAKE_SSH_REMOTE_PATH",
+        &remote_bin.path().display().to_string(),
+    );
+    env.set("SNAPDIR_SSH_LOCAL_SNAPDIR", &real.display().to_string());
+
+    // Seed the store directly so fetch has objects to pull.
+    let (manifest, _id, sums) = stage_tree(staging.path(), FILES);
+    let base = remote_root.path().join("snap");
+    for (sum, (_, content)) in sums.iter().zip(FILES) {
+        let obj = base.join(object_path(sum));
+        fs::create_dir_all(obj.parent().unwrap()).unwrap();
+        fs::write(&obj, content).unwrap();
+    }
+
+    external_store(&base)
+        .fetch_files(&manifest, cache.path())
+        .expect("v1-fallback accel fetch must succeed against a 1.5.0-caps remote");
+
+    let remote = log_lines(&log);
+    // accel STILL taken: the remote send-pack ran.
+    assert!(
+        remote.contains("send-pack"),
+        "accel must STILL be taken against a 1.5.0-caps remote: {remote}"
+    );
+    // the wire is v1: NO --pack-format zstd anywhere in the negotiated commands.
+    assert!(
+        !remote.contains("--pack-format zstd"),
+        "a remote that does NOT advertise snappack-zstd must receive the v1 \
+         send-pack variant (no --pack-format zstd): {remote}"
+    );
+    // objects landed byte-correctly through the v1 stream.
+    for (sum, (_, content)) in sums.iter().zip(FILES) {
+        assert_eq!(
+            &fs::read(cache.path().join(object_path(sum))).unwrap(),
+            content
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (3) 1.5.0 client <-> new remote = v1 (PINNED): a client whose LOCAL binary
+//     does NOT support zstd negotiates v1 even when the remote advertises the
+//     snappack-zstd cap. The local-zstd probe gates the zstd branch.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn matrix_1_5_0_client_to_new_remote_pins_v1_when_local_lacks_zstd() {
+    let Some(real) =
+        require_snapdir("matrix_1_5_0_client_to_new_remote_pins_v1_when_local_lacks_zstd")
+    else {
+        return;
+    };
+    let staging = TempDir::new("c5-stage");
+    let remote_root = TempDir::new("c5-remote");
+    let bindir = TempDir::new("c5-bin");
+    let remote_bin = TempDir::new("c5-remote-bin");
+    let local_bin = TempDir::new("c5-local-bin");
+    let cache = TempDir::new("c5-cache");
+    let cache_pin = TempDir::new("c5-cachepin");
+    let mut env = fake_remote_env(bindir.path(), remote_root.path(), cache_pin.path());
+
+    // The REMOTE is the new binary (full caps incl. snappack-zstd), behind a
+    // logging shim, and execs the REAL binary for the actual transfer.
+    let remote_log = remote_bin.path().join("invocations.log");
+    install_logging_snapdir(remote_bin.path(), &real, &remote_log);
+
+    // The LOCAL binary is a 1.5.0-style client: it advertises wire=1 with the
+    // v1 caps but NOT snappack-zstd, and execs the REAL binary for send-pack /
+    // receive-pack (which accept the v1 stream). So the local-zstd probe yields
+    // 0 → the zstd branch is gated off and the wire stays v1.
+    let local_log = local_bin.path().join("local.log");
+    let local_snapdir = local_bin.path().join("snapdir");
+    write_script(
+        &local_snapdir,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >>{log}\n\
+             if [ \"$1\" = version ] && [ \"$2\" = --capabilities ]; then\n  \
+             printf '%s\\n' 'snapdir 1.5.0 wire=1 caps=objects-needed,send-pack,receive-pack'\n  \
+             exit 0\nfi\nexec {real} \"$@\"\n",
+            log = sh_quote(&local_log.display().to_string()),
+            real = sh_quote(&real.display().to_string()),
+        ),
+    );
+    env.set(
+        "FAKE_SSH_REMOTE_PATH",
+        &remote_bin.path().display().to_string(),
+    );
+    env.set(
+        "SNAPDIR_SSH_LOCAL_SNAPDIR",
+        &local_snapdir.display().to_string(),
+    );
+
+    let (manifest, id, sums) = stage_tree(staging.path(), FILES);
+    let base = remote_root.path().join("snap");
+    let store = external_store(&base);
+
+    // Push: accel taken, but the LOCAL send-pack must NOT carry --pack-format
+    // zstd (the local binary doesn't support it → v1 on the wire).
+    store
+        .push(&manifest, staging.path())
+        .expect("1.5.0-client push must take accel on v1");
+    let local = log_lines(&local_log);
+    assert!(
+        local.contains("send-pack"),
+        "accel STILL taken with a 1.5.0 local: {local}"
+    );
+    assert!(
+        !local.contains("--pack-format zstd"),
+        "a 1.5.0 local (no zstd cap) must keep the wire at v1 \
+         even against a zstd-capable remote: {local}"
+    );
+    assert!(
+        log_lines(&remote_log).contains("receive-pack"),
+        "the remote receive-pack ran on the v1 stream"
+    );
+    assert_eq!(
+        fs::read_to_string(base.join(manifest_path(&id))).unwrap(),
+        manifest_bytes(&manifest),
+        "the v1 push committed the manifest"
+    );
+
+    // Fetch: the REMOTE send-pack must likewise stay v1 (the local can only
+    // sniff/verify a v1 stream).
+    fs::write(&remote_log, b"").unwrap();
+    store
+        .fetch_files(&manifest, cache.path())
+        .expect("1.5.0-client fetch on v1");
+    let remote = log_lines(&remote_log);
+    assert!(
+        remote.contains("send-pack") && !remote.contains("--pack-format zstd"),
+        "the remote send-pack must stay v1 for a 1.5.0 local: {remote}"
+    );
+    for (sum, (_, content)) in sums.iter().zip(FILES) {
+        assert_eq!(
+            &fs::read(cache.path().join(object_path(sum))).unwrap(),
+            content
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (4) FORCE_ACCEL error text is zstd-free: the SNAPDIR_SSH_FORCE_ACCEL failure
+//     message must not mention zstd / snappack-zstd (it stayed out of
+//     PUSH_CAPS / FETCH_CAPS — only objects-needed/receive-pack are required).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn matrix_force_accel_error_text_is_zstd_free() {
+    let Some(real) = require_snapdir("matrix_force_accel_error_text_is_zstd_free") else {
+        return;
+    };
+    let staging = TempDir::new("fz-stage");
+    let remote_root = TempDir::new("fz-remote");
+    let bindir = TempDir::new("fz-bin");
+    let remote_bin = TempDir::new("fz-remote-bin");
+    let cache_pin = TempDir::new("fz-cachepin");
+    let mut env = fake_remote_env(bindir.path(), remote_root.path(), cache_pin.path());
+
+    install_old_snapdir(remote_bin.path());
+    env.set(
+        "FAKE_SSH_REMOTE_PATH",
+        &remote_bin.path().display().to_string(),
+    );
+    env.set("SNAPDIR_SSH_LOCAL_SNAPDIR", &real.display().to_string());
+    env.set("SNAPDIR_SSH_FORCE_ACCEL", "1");
+
+    let (manifest, id, _sums) = stage_tree(staging.path(), FILES);
+    let base = remote_root.path().join("snap");
+    let err = external_store(&base)
+        .push(&manifest, staging.path())
+        .unwrap_err();
+    match &err {
+        StoreError::Backend { message, .. } => {
+            let lower = message.to_lowercase();
+            assert!(
+                !lower.contains("zstd") && !lower.contains("snappack-zstd"),
+                "the FORCE_ACCEL error must not mention zstd (it is NOT a \
+                 required cap): {message}"
+            );
+            // still the designed error, naming the REQUIRED (zstd-free) caps.
+            assert!(
+                message.contains("objects-needed,receive-pack"),
+                "names only the required caps: {message}"
+            );
+        }
+        other => panic!("expected Backend error, got {other:?}"),
+    }
+
+    // Also pin the EMITTED push/fetch scripts: the FORCE_ACCEL diagnostic the
+    // script prints must be zstd-free too (the required-caps list and the
+    // error are baked literals).
+    let staging_dir = staging.path().display().to_string();
+    let push = ssh_engine::get_push_script(&ssh_url(), &default_cfg(), &id, &staging_dir).unwrap();
+    let fetch_manifest = manifest.to_string();
+    let fetch =
+        ssh_engine::get_fetch_files_script(&ssh_url(), &default_cfg(), &fetch_manifest, "/tmp/c")
+            .unwrap();
+    for (label, script) in [("push", &push), ("fetch", &fetch)] {
+        // The required-caps token the FORCE_ACCEL path prints must NOT include
+        // snappack-zstd. Scan every line that mentions the required-caps
+        // diagnostic / FORCE_ACCEL.
+        for line in script.lines() {
+            if line.contains("SNAPDIR_SSH_FORCE_ACCEL") || line.contains("required:") {
+                assert!(
+                    !line.contains("snappack-zstd"),
+                    "{label} script FORCE_ACCEL/required diagnostic must be \
+                     zstd-free: {line}"
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SNAPDIR_FSYNC interplay smoke: the receive-pack durability default (`batch`)
+// works through the full accel path with zstd active — no breakage when both
+// the zstd transport AND batch crash-durability are engaged at once.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fsync_batch_default_interoperates_with_zstd_accel_path() {
+    let Some(real) = require_snapdir("fsync_batch_default_interoperates_with_zstd_accel_path")
+    else {
+        return;
+    };
+    let staging = TempDir::new("fy-stage");
+    let remote_root = TempDir::new("fy-remote");
+    let bindir = TempDir::new("fy-bin");
+    let remote_bin = TempDir::new("fy-remote-bin");
+    let local_bin = TempDir::new("fy-local-bin");
+    let cache = TempDir::new("fy-cache");
+    let cache_pin = TempDir::new("fy-cachepin");
+    let mut env = fake_remote_env(bindir.path(), remote_root.path(), cache_pin.path());
+
+    // Both peers are the REAL binary → zstd negotiated. The remote receive-pack
+    // runs under the default SNAPDIR_FSYNC (batch) durability.
+    let remote_log = remote_bin.path().join("invocations.log");
+    install_logging_snapdir(remote_bin.path(), &real, &remote_log);
+    let local_log = local_bin.path().join("local.log");
+    let local_snapdir = local_bin.path().join("snapdir");
+    install_logging_snapdir_at(&local_snapdir, &real, &local_log);
+    env.set(
+        "FAKE_SSH_REMOTE_PATH",
+        &remote_bin.path().display().to_string(),
+    );
+    env.set(
+        "SNAPDIR_SSH_LOCAL_SNAPDIR",
+        &local_snapdir.display().to_string(),
+    );
+    // The receive-pack durability default is `batch`; pin it EXPLICITLY so the
+    // smoke proves zstd + batch coexist (no accidental `off` in the env).
+    env.set("SNAPDIR_FSYNC", "batch");
+
+    // A compressible fixture so the zstd transport is genuinely exercised.
+    let fixture = compressible_files();
+    let fixture_slice = as_file_slice(&fixture);
+    let (manifest, id, sums) = stage_tree(staging.path(), &fixture_slice);
+    let base = remote_root.path().join("snap");
+    let store = external_store(&base);
+
+    // Push under zstd + batch durability: must complete and commit the manifest.
+    store
+        .push(&manifest, staging.path())
+        .expect("zstd + batch-durability accel push must succeed");
+    assert!(
+        log_lines(&local_log).contains("--pack-format zstd"),
+        "the zstd transport was active on the push"
+    );
+    assert!(
+        log_lines(&remote_log).contains("receive-pack"),
+        "the remote receive-pack ran under batch durability"
+    );
+    assert_eq!(
+        fs::read_to_string(base.join(manifest_path(&id))).unwrap(),
+        manifest_bytes(&manifest),
+        "the manifest committed durably through the zstd accel path"
+    );
+
+    // Fetch back into a cold cache: every object lands byte-correctly (the
+    // LOCAL receive-pack, also under batch durability, verified each record).
+    store
+        .fetch_files(&manifest, cache.path())
+        .expect("zstd + batch-durability accel fetch must succeed");
+    for (sum, (_, content)) in sums.iter().zip(&fixture) {
+        assert_eq!(
+            &fs::read(cache.path().join(object_path(sum))).unwrap(),
+            content
+        );
+    }
+}

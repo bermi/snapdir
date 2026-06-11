@@ -452,6 +452,140 @@ fn accel_oracle_roundtrip_and_idempotent_repush_over_sshd() {
 }
 
 // ---------------------------------------------------------------------------
+// 5b. wire2-compat-matrix (phase 27): dumb vs accel-ZSTD byte-identical oracle
+//     over real sshd. Both peers are the REAL binary (caps include
+//     snappack-zstd), so the accel path negotiates the 1Z transport; the
+//     resulting store must be byte-identical to a forced-dumb (v1) push.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn accel_zstd_oracle_byte_identical_to_dumb_over_sshd() {
+    let test = "accel_zstd_oracle_byte_identical_to_dumb_over_sshd";
+    let Some(real) = require_snapdir(test) else {
+        return;
+    };
+    let Some(mut kit) = SshKit::new(test) else {
+        return;
+    };
+
+    // Expose the real snapdir to the REMOTE side behind a logging wrapper.
+    let bin = kit.dir().join("bin");
+    fs::create_dir_all(&bin).expect("create remote bin dir");
+    let remote_log = kit.dir().join("remote-invocations.log");
+    install_logging_snapdir(&bin, &real, &remote_log);
+    let server = kit.spawn(&Flavor::Shell {
+        set_env_path: Some(format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", bin.display())),
+    });
+
+    // DOCUMENTED environmental skip: sshd honors SetEnv PATH only from OpenSSH
+    // 8.7 on (macOS + CI ship newer). Allowed even under REQUIRE.
+    let probe = kit.ssh_exec(server.port, "command -v snapdir");
+    if !probe.status.success() {
+        eprintln!(
+            "SKIP {test}: this sshd does not honor `SetEnv PATH` \
+             (need OpenSSH >= 8.7 server): {}",
+            String::from_utf8_lossy(&probe.stderr).trim()
+        );
+        return;
+    }
+
+    // A LOCAL logging shim so the on-wire `--pack-format zstd` flag is asserted
+    // from the LOCAL send-pack invocation, never assumed. It execs the REAL
+    // binary, whose caps include snappack-zstd → the negotiation picks 1Z.
+    let local_bin = kit.dir().join("local-bin");
+    fs::create_dir_all(&local_bin).expect("create local bin dir");
+    let local_log = local_bin.join("local.log");
+    let local_snapdir = local_bin.join("snapdir");
+    install_logging_snapdir(&local_bin, &real, &local_log);
+
+    // A COMPRESSIBLE fixture so the zstd transport is genuinely engaged.
+    let staging = TempDir::new("az-stage");
+    let cache = TempDir::new("az-cache");
+    let tmp = TempDir::new("az-tmp");
+    let base_dumb = kit.dir().join("remote-zstd-dumb");
+    let base_accel = kit.dir().join("remote-zstd-accel");
+    let repeat = vec![b'A'; 64 * 1024];
+    let compressible: &[(&str, &[u8])] = &[
+        ("repeat.txt", repeat.as_slice()),
+        ("small-a.txt", b"distinct small payload a\n"),
+        ("small-b.txt", b"distinct small payload b\n"),
+    ];
+    let (manifest, id, sums) = stage_tree(staging.path(), compressible);
+
+    let mut env = loopback_env(&kit, server.port, tmp.path());
+    env.set(
+        "SNAPDIR_SSH_LOCAL_SNAPDIR",
+        &local_snapdir.display().to_string(),
+    );
+
+    // Reference: forced-dumb (v1) push into root A.
+    env.set("SNAPDIR_SSH_NO_ACCEL", "1");
+    ssh_store(&base_dumb)
+        .push(&manifest, staging.path())
+        .expect("forced-dumb push");
+    env.remove("SNAPDIR_SSH_NO_ACCEL");
+
+    // Accel-ZSTD push into root B; prove the 1Z transport engaged.
+    let accel = ssh_store(&base_accel);
+    accel
+        .push(&manifest, staging.path())
+        .expect("accel-zstd push");
+    assert!(
+        log_lines(&local_log).contains("--pack-format zstd"),
+        "the LOCAL send-pack must opt into zstd over real sshd: {}",
+        log_lines(&local_log)
+    );
+    assert!(
+        log_lines(&remote_log).contains("receive-pack"),
+        "the remote receive-pack ran (magic-sniffed the 1Z stream): {}",
+        log_lines(&remote_log)
+    );
+
+    // THE ORACLE: byte-identical store (set + contents + committed id) between
+    // the dumb v1 push and the accel 1Z push over a real server.
+    let set_dumb = relative_file_set(&base_dumb);
+    assert_eq!(
+        set_dumb,
+        relative_file_set(&base_accel),
+        "the .objects/** + manifest file sets must be identical (v1 vs 1Z)"
+    );
+    assert!(
+        set_dumb.contains(&manifest_path(&id)),
+        "snapshot id committed on both"
+    );
+    for rel in &set_dumb {
+        assert_eq!(
+            fs::read(base_dumb.join(rel)).unwrap(),
+            fs::read(base_accel.join(rel)).unwrap(),
+            "byte-equal at {rel} across v1 vs 1Z transports"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(base_accel.join(manifest_path(&id))).unwrap(),
+        manifest_bytes(&manifest),
+        "manifest bytes are the staged manifest's bytes"
+    );
+
+    // Accel-ZSTD fetch into a cold cache: every object lands byte-correctly.
+    fs::write(&remote_log, b"").unwrap();
+    accel
+        .fetch_files(&manifest, cache.path())
+        .expect("accel-zstd fetch");
+    assert!(
+        log_lines(&remote_log).contains("--pack-format zstd"),
+        "the remote send-pack must opt into zstd on fetch: {}",
+        log_lines(&remote_log)
+    );
+    for (sum, (_, content)) in sums.iter().zip(compressible) {
+        assert_eq!(
+            &fs::read(cache.path().join(object_path(sum)))
+                .unwrap_or_else(|_| panic!("object {sum} in cache")),
+            content
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 6. fallback over real sshd: no remote snapdir → dumb; FORCE_ACCEL → error
 // ---------------------------------------------------------------------------
 
