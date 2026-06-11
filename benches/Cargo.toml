@@ -62,6 +62,14 @@ harness = false
 name = "pipeline"
 harness = false
 
+# SNAPPACK send/receive wall-clock benches over text-like (compressible) and
+# incompressible corpora, comparing v1 vs zstd on the wire and fsync off vs
+# batch on receive. A `#[test]` pins bytes-on-wire (zstd < v1 for the text
+# scenario). See benches/benches/snappack.rs.
+[[bench]]
+name = "snappack"
+harness = false
+
 # Deterministic INSTRUCTION-COUNT perf gate (iai-callgrind, harness = false).
 # Measures CPU instruction counts over FIXED TINY deterministic inputs so the
 # counts are stable; FAILS on a >5% Ir / EstimatedCycles regression. Compiles on

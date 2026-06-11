@@ -33,6 +33,9 @@ use iai_callgrind::{
 use snapdir_benches::{deterministic_bytes, gate_scenarios, Scenario};
 use snapdir_core::merkle::snapshot_id;
 use snapdir_core::{walk, Blake3Hasher, Hasher, Manifest, WalkOptions};
+use snapdir_stores::{
+    read_pack, write_pack, Durability, FileSink, FileStore, PackReadReport, StreamStore,
+};
 use std::hint::black_box;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -142,6 +145,61 @@ fn bench_snapshot_id(manifest: Manifest) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// 4. SNAPPACK receive hot path (read_pack into a FileSink).
+// ---------------------------------------------------------------------------
+
+/// Fixed receive workload: 64 objects × 1KiB each (v1 wire). Small + constant
+/// so callgrind's instruction counts stay byte-stable.
+const PACK_OBJECTS: usize = 64;
+const PACK_OBJECT_BYTES: usize = 1024;
+
+/// A pre-encoded v1 pack + the fresh dest store dir it will be read into (NOT
+/// counted — runs in `setup`). The source objects are distinct (`deterministic_bytes`
+/// over a per-object length) so each has a unique content-address. The returned
+/// `TempDir` owns the dest dir (kept alive so the filed objects aren't dropped
+/// before the read completes); only `read_pack` is counted.
+fn setup_read_pack() -> (TempDir, Vec<u8>) {
+    let hasher = Blake3Hasher::new();
+
+    // Source store (its own tempdir) seeded with PACK_OBJECTS distinct objects.
+    let src_dir = TempDir::new().expect("create source store dir");
+    let src = FileStore::from_root(src_dir.path());
+    let mut ids = Vec::with_capacity(PACK_OBJECTS);
+    for i in 0..PACK_OBJECTS {
+        // Vary the length by a few bytes per object so addresses differ.
+        let bytes = deterministic_bytes(PACK_OBJECT_BYTES + i);
+        let checksum = hasher.hash_hex(&bytes);
+        src.put_object(&checksum, bytes)
+            .expect("seed source object");
+        ids.push(checksum);
+    }
+
+    // Encode the whole set into one in-memory v1 pack (no manifest).
+    let mut pack = Vec::new();
+    write_pack(&src, &ids, None, &mut pack).expect("write_pack into Vec");
+
+    // Fresh, empty dest dir for the read. `src_dir` can drop — the pack bytes
+    // are already in memory.
+    let dest_dir = TempDir::new().expect("create dest store dir");
+    (dest_dir, pack)
+}
+
+// `read_pack` of a fixed 64×1KiB v1 pack into a fresh FileSink (durability Off).
+// Only the receive (parse + verify + file) is counted; encoding + seeding ran
+// in `setup`. The first run sets the baseline.
+#[library_benchmark]
+#[bench::fixed(setup = setup_read_pack)]
+fn bench_read_pack(input: (TempDir, Vec<u8>)) -> PackReadReport {
+    let (dest_dir, pack) = input;
+    let store = FileStore::from_root(dest_dir.path());
+    let mut sink = FileSink::new(&store).with_durability(Durability::Off);
+    let report = read_pack(black_box(pack.as_slice()), black_box(&mut sink)).expect("read_pack");
+    // Keep the dest dir alive until the read (and any filing) completes.
+    drop(dest_dir);
+    black_box(report)
+}
+
+// ---------------------------------------------------------------------------
 // Groups + harness. The 5% Ir / EstimatedCycles soft limit is wired in via the
 // group `config` so every benched fn inherits the regression gate.
 // ---------------------------------------------------------------------------
@@ -149,7 +207,7 @@ fn bench_snapshot_id(manifest: Manifest) -> String {
 library_benchmark_group!(
     name = hot;
     config = callgrind_5pct();
-    benchmarks = bench_blake3, bench_walk, bench_snapshot_id
+    benchmarks = bench_blake3, bench_walk, bench_snapshot_id, bench_read_pack
 );
 
 main!(library_benchmark_groups = hot);

@@ -49,6 +49,112 @@ pub fn deterministic_bytes(len: usize) -> Vec<u8> {
         .collect()
 }
 
+/// Avalanches `seed` into a well-mixed nonzero `xorshift64*` start state.
+///
+/// This is the splitmix64 finalizer. It matters because callers seed objects by
+/// `base + i` for consecutive `i`: feeding those *adjacent* seeds straight into
+/// `xorshift64*` would leave the per-object streams correlated (zstd's window
+/// then finds cross-object redundancy and an "incompressible" corpus compresses
+/// anyway). The finalizer's full avalanche makes `seed` and `seed + 1` produce
+/// statistically independent streams. The `| 1` guarantees the nonzero state
+/// `xorshift64*` requires.
+const fn mix_seed(seed: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (z ^ (z >> 31)) | 1
+}
+
+/// A small, fixed word table used by [`text_like_bytes`] to synthesize
+/// compressible, text-shaped corpora. Common English-ish tokens so the byte
+/// stream has the redundancy a real text snapshot would (and zstd can shrink
+/// it well below v1), with NO RNG, clock, or external data.
+const WORD_TABLE: &[&str] = &[
+    "the",
+    "snapshot",
+    "store",
+    "object",
+    "manifest",
+    "content",
+    "address",
+    "hash",
+    "blake3",
+    "stream",
+    "pack",
+    "verify",
+    "commit",
+    "durable",
+    "file",
+    "directory",
+    "checksum",
+    "snapdir",
+    "transfer",
+    "compress",
+    "and",
+    "of",
+    "into",
+    "a",
+    "with",
+    "every",
+    "record",
+    "bytes",
+    "wire",
+    "format",
+];
+
+/// Builds `len` bytes of **deterministic, compressible, text-like** content by
+/// concatenating space-separated words from [`WORD_TABLE`], chosen by a seeded
+/// xorshift index, then truncated/zero-padded to exactly `len`.
+///
+/// The high token redundancy means zstd compresses this materially better than
+/// the plain v1 wire — the realistic "small-text snapshot" workload the pack
+/// path targets. Fully deterministic (no RNG/clock); two calls with the same
+/// `(len, seed)` are byte-identical. Std-only, no new deps.
+///
+/// Note: [`deterministic_bytes`]' 256-byte ramp is *trivially* compressible and
+/// only suitable as a best-case third data point, not a realistic corpus — use
+/// this for the text scenario.
+#[must_use]
+pub fn text_like_bytes(len: usize, seed: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len);
+    let mut state = mix_seed(seed); // avalanched: adjacent seeds → independent streams
+    while out.len() < len {
+        // xorshift64* step → pick a word.
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        let idx = (state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as usize % WORD_TABLE.len();
+        out.extend_from_slice(WORD_TABLE[idx].as_bytes());
+        out.push(b' ');
+    }
+    out.truncate(len);
+    out
+}
+
+/// Builds `len` bytes of **deterministic, effectively incompressible** content
+/// using a seeded `xorshift64*` PRNG.
+///
+/// `xorshift64*` (seeded through the [`mix_seed`] splitmix64 finalizer so
+/// adjacent object seeds yield INDEPENDENT, non-cross-correlated streams) has
+/// output close to uniform, so zstd cannot shrink it — the worst case for the
+/// wire, proving the compressed path never materially *expands* a payload it
+/// can't help. Fully deterministic: same `(len, seed)` ⇒ same bytes. No RNG
+/// crate, no clock, no new deps.
+#[must_use]
+pub fn incompressible_bytes(len: usize, seed: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len);
+    let mut state = mix_seed(seed); // avalanched: adjacent seeds → independent streams
+    while out.len() < len {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        let word = state.wrapping_mul(0x2545_F491_4F6C_DD1D);
+        let take = (len - out.len()).min(8);
+        out.extend_from_slice(&word.to_le_bytes()[..take]);
+    }
+    out
+}
+
 /// Which tier a [`Scenario`] belongs to.
 ///
 /// `Gate` scenarios are tiny/fast — they run inside `cargo test` (the
