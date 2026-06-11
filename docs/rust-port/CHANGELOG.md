@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **SNAPPACK 1Z — auto-negotiated zstd transport for the `ssh://` accelerated
+  pack stream.** The whole post-magic pack body is sent as a single zstd frame
+  of the unchanged SNAPPACK 1 record grammar; the receiver sniffs the magic
+  (`SNAPPACK 1Z\n`) and accepts both v1 and 1Z forever. Compression is additive
+  (the wire version stays `1`; a new `snappack-zstd` capability token gates it),
+  so it engages only when both ends advertise support — a mixed-version pair
+  falls back to v1 with the v1 acceleration still taken. The level defaults to
+  zstd level 3 and is tunable via `SNAPDIR_SSH_ZSTD_LEVEL` (`1`–`19`, clamped).
+  Every decompressed byte is still BLAKE3-verified and the existing
+  header/manifest bounds apply to the decompressed stream, so a decompression
+  bomb costs CPU only. With SNAPPACK now compressing above the transport,
+  prefer `Compression=no` on the SSH client (WAN / HPN-SSH) to avoid
+  double-compressing.
+- **`SNAPDIR_FSYNC` crash-durability knob on `receive-pack`.** Defaults to
+  `batch`: all received objects are fsynced before the manifest is committed
+  last, so a manifest that survives a crash is backed by durable objects (the
+  manifest-last invariant holds across the crash boundary). `off` skips the
+  barrier and relies on the OS to flush; any other value is a hard error. On a
+  journaling filesystem this matches the crash-consistency guarantee git
+  provides, and claims no more than that.
+
 ## [1.6.0] — 2026-06-11
 
 ### Added

@@ -208,3 +208,112 @@ stores (the dumb-vs-accel oracle gate).
   likely environmental and would hit the dumb path too, and a user retry
   resumes incrementally for free (objects already filed are verified-then-
   skipped; the manifest was never committed).
+
+---
+
+## 5. SNAPPACK 1Z — zstd transport encoding
+
+SNAPPACK 1Z is an **additive** transport encoding: the same record grammar,
+the whole post-magic body compressed once. It is opt-in, sniffed on read, and
+never changes the wire version.
+
+```text
+stream := "SNAPPACK 1Z\n" zstd_frame( record* "end\n" )
+```
+
+- **Magic.** The stream opens with the exact line `SNAPPACK 1Z\n`
+  (`pack::WIRE_MAGIC_ZSTD`). The trailing `Z` is a transport-encoding marker,
+  **not** a new format version: `pack::WIRE_VERSION` stays `1` and the
+  capability line still reports `wire=1` (see negotiation below).
+- **Single-frame framing.** Everything after the magic is **one** zstd frame.
+  Decompressing it yields the *verbatim* SNAPPACK 1 body — `record* "end\n"`,
+  the unchanged v1 record grammar, byte-for-byte. There is no per-record
+  framing, no chunking, no length prefix: the whole body is one frame.
+- **Decompressed-bytes bounds.** The reader sniffs the magic, wraps the
+  remaining input in a streaming zstd decoder, and feeds the **decompressed**
+  bytes to the *same* parser as v1. Every bound applies to the decompressed
+  stream exactly as in §1.1: `MAX_HEADER_BYTES = 128` (header line incl. `\n`),
+  `MAX_MANIFEST_BYTES = 64 MiB` (buffered `manifest` payload), and the
+  lying-`len` preallocation cap. Object payloads still stream through the
+  O(1)-memory temp-sibling path.
+- **Decompression-bomb reasoning.** A hostile peer can craft a frame that
+  decompresses to far more than it sends, but the cost is **CPU only**: every
+  decompressed byte still flows through the incremental BLAKE3 hasher and must
+  match its claimed `hex64`, and the header/manifest caps above bound buffered
+  memory regardless of how large the frame inflates. A bomb cannot file a
+  forged object (the hash will not match), cannot commit a manifest (truncation
+  never reaches `end`), and cannot exhaust memory (the caps are enforced on the
+  decompressed bytes). It can only waste decode CPU on a stream that is then
+  rejected.
+- **Compression level.** The encoder writes at `DEFAULT_ZSTD_LEVEL = 3` by
+  default and accepts `MIN_ZSTD_LEVEL..=MAX_ZSTD_LEVEL` = `1..=19`; the library
+  is environment-free and **clamps** the requested level into that range in
+  `write_pack` (an out-of-range request is clamped, not rejected). The level
+  affects only the sender's frame; the reader needs no level — zstd is
+  self-describing.
+
+### 5.1 Negotiation — sniff on read, advertise to write
+
+The receiver is **always** ready for 1Z: `read_pack` sniffs the magic line and
+accepts `SNAPPACK 1\n` **and** `SNAPPACK 1Z\n` forever — there is no flag, no
+mode, no version gate on the read side. Forward and backward compatible by
+construction.
+
+The **sender** emits 1Z only when negotiation confirms BOTH ends support it:
+
+- `snappack-zstd` is appended to `pack::WIRE_CAPS` (so `version --capabilities`
+  advertises it), but **`wire=1` is unchanged** — an integer version bump would
+  force older peers into a dumb fallback, whereas an additive *capability token*
+  is silently ignored by a peer that lacks it. A 1.5.0 peer simply never sees a
+  1Z stream and the v1 acceleration is still taken.
+- In the `ssh://` engine, `snappack-zstd` (the `ZSTD_CAP` const) is **never**
+  part of the `wire=1`/`objects-needed,receive-pack` acceleration gate; it is a
+  second, independent check layered on top. The emitted push script probes the
+  **local** binary's caps (`snapdir version --capabilities`, guarded so an older
+  local that rejects the flag degrades to v1 cleanly) into `snapdir_local_zstd`,
+  and chooses `--pack-format zstd` only when `snapdir_local_zstd = 1` **AND** the
+  remote's `caps=` list contains `snappack-zstd`. Otherwise it sends v1.
+- The `--pack-format zstd` token is always a **static literal** baked into the
+  script — no environment value is ever interpolated into a baked remote command
+  line. Fetch bakes **two** static remote `send-pack` variants (with and without
+  ` --pack-format zstd`) and picks one at runtime by the same caps check.
+
+The net effect: 1.5.0 ↔ 1.5.0 stays v1 (the cap is absent on both ends),
+1.5.0 ↔ newer falls back to v1 (with the v1 acceleration still taken), and
+newer ↔ newer negotiates 1Z — all without any wire-version change.
+
+---
+
+## 6. Durability
+
+The receive side is batched and manifest-last, and the durability guarantee is
+deliberately scoped to **no more than git claims**.
+
+- **Batch model.** `read_pack` files every verified `obj` as it streams, then
+  in the `end` arm calls a single `flush_barrier()` that forces **every object
+  this pack committed** to stable storage, and only **then** commits the
+  manifest via `put_manifest`. There are exactly two full syncs per pack (the
+  object barrier, then the durable manifest write) — durability is amortized
+  across the whole pack rather than paid per object.
+- **Journal-ordering argument.** Because the barrier runs **before**
+  `put_manifest`, a durable manifest provably implies durable objects: any
+  manifest that survives a crash is backed by objects that also survived. A
+  crash mid-stream can leave (verified) loose objects on disk but never an
+  observable snapshot — the manifest-last invariant (§1.2) holds across the
+  crash boundary, exactly as it holds across a dropped connection. The barrier
+  runs unconditionally (even for a manifest-only / empty pack) so the ordering
+  contract is independent of object count.
+- **`SNAPDIR_FSYNC`.** The receive-pack CLI seam reads `SNAPDIR_FSYNC` and
+  selects the sink's durability mode:
+  - unset / empty / `batch` ⇒ `Durability::Batch` (the **default**) — the
+    batched barrier above is active;
+  - `off` ⇒ `Durability::Off` — the barrier is a no-op (byte-identical to the
+    pre-durability behavior; rely on the OS to flush);
+  - any other value is a **hard error** (fail closed, no silent downgrade).
+- **Non-journaling-fs caveat.** On a journaling filesystem with sane mount
+  options, the fsync ordering above gives the manifest-last crash-consistency
+  argument real teeth. On filesystems or mount configurations that do not order
+  metadata and data the way fsync assumes, the guarantee weakens — this is the
+  **same caveat git carries**, and snapdir claims no more than git does about
+  crash safety. `SNAPDIR_FSYNC` controls when we ask the OS to flush; it cannot
+  make a filesystem honor an ordering it does not implement.

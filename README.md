@@ -137,7 +137,11 @@ Both engines enforce an **un-weakenable, modern-only security floor** on every `
 
 When the remote host has a wire-compatible `snapdir` on its `PATH`, `ssh://` transfers automatically switch to a pack-stream protocol that diffs objects remotely and streams only what's missing in O(1) round trips (falling back gracefully otherwise). Runtime toggles: `SNAPDIR_SSH_NO_ACCEL=1` forces the plain path, `SNAPDIR_SSH_FORCE_ACCEL=1` errors instead of falling back, and `SNAPDIR_SSH_PULL_SENDALL=1` makes an accelerated fetch request the full object list. Protocol details: [docs/rust-port/ssh-wire-protocol.md](docs/rust-port/ssh-wire-protocol.md).
 
+The accelerated pack stream **auto-negotiates zstd compression** (SNAPPACK 1Z): compression engages only when *both* ends are this release or newer, so a mixed-version pair simply stays uncompressed — no flag, no version mismatch. The level defaults to zstd's level 3 and is tunable with `SNAPDIR_SSH_ZSTD_LEVEL` (accepted range `1`–`19`; out-of-range values are clamped). Because SNAPPACK now compresses *above* the transport, on a WAN — or with HPN-SSH — disable the SSH client's own compression to avoid double-compressing already-compressed bytes: `EXTRA_OPTS="Compression=no"` (or `-o Compression=no` in your `~/.ssh/config`).
+
 Limitation: `snapdir sync` does not support `ssh://`/`sftp://` stores (they have no in-process streaming surface) — `push`, `fetch`, `pull`, and `checkout` all work.
+
+Crash durability on the receive side is controlled by `SNAPDIR_FSYNC`: `batch` (the default) fsyncs all received objects before committing the manifest last, so a manifest that survives a crash is backed by durable objects; `off` skips the barrier and relies on the OS to flush. On a journaling filesystem this gives the same crash-consistency story git provides — and no more.
 
 ## Rate limiting & retries
 
