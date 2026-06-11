@@ -3475,7 +3475,9 @@ gates:
     phase: 28
     owner_agent: adversary
     depends_on: [objects-store-cli-impl]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T23:38:58Z
+    git_sha: 8dcae54
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test objects_store --locked"
     pass_criteria:
