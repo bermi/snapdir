@@ -143,4 +143,61 @@ pub trait StreamStore: Store {
         }
         Ok(needed)
     }
+
+    /// Enumerates the snapshot ids present under this store's `.manifests/`
+    /// tree.
+    ///
+    /// Each id is a 64-lowercase-hex snapshot id reconstructed from the frozen
+    /// `3/3/3/rest` shard layout (the same layout
+    /// [`manifest_path`](snapdir_core::store::manifest_path) writes). The
+    /// returned ids are:
+    ///
+    /// - **deduplicated** — each id appears AT MOST once;
+    /// - **validated** — only ids matching `^[0-9a-f]{64}$` are returned; a
+    ///   stray / non-manifest key under `.manifests/` is IGNORED, not an error;
+    /// - **unordered** — the caller sorts; no order is promised.
+    ///
+    /// # Default: fail closed
+    ///
+    /// The default implementation returns a [`StoreError::Backend`] ("listing
+    /// unsupported"): a backend that cannot enumerate its manifests must NOT
+    /// silently claim it has zero snapshots. Backends that can list
+    /// ([`FileStore`](crate::FileStore), `S3Store`, `GcsStore`, `B2Store`, and
+    /// [`SplitStore`](crate::SplitStore) via its manifests side) override this.
+    ///
+    /// # Errors
+    ///
+    /// - [`StoreError::Backend`] from the default impl (listing unsupported).
+    /// - [`StoreError::Io`] / [`StoreError::Backend`] on transport failure for
+    ///   the listing backends.
+    fn list_manifest_ids(&self) -> Result<Vec<String>, StoreError> {
+        Err(StoreError::Backend {
+            message: "listing unsupported: this store cannot enumerate manifest ids".to_owned(),
+            source: None,
+        })
+    }
+}
+
+/// Reconstructs a candidate 64-hex snapshot id from the shard segments of a
+/// store key under `.manifests/` and keeps it only if it is a valid id.
+///
+/// `segments` are the path components AFTER the `.manifests/` prefix (e.g.
+/// `["49d", "c87", "0df", "1de7…db92"]`). They are concatenated verbatim — the
+/// inverse of the frozen `3/3/3/rest` [`sharded_path`] split — and the result
+/// is accepted only when it matches `^[0-9a-f]{64}$` ([`crate::pack::is_hex64`]).
+/// A key with the wrong shard depth, a short/non-hex/uppercase id, or any other
+/// out-of-spec shape yields `None` (the caller skips it WITHOUT erroring).
+pub(crate) fn manifest_id_from_shard_segments(segments: &[&str]) -> Option<String> {
+    // A well-formed manifest key is exactly four segments under `.manifests/`:
+    // the `3 / 3 / 3 / rest` shard split. Anything else (too shallow, an extra
+    // nested level, …) cannot be a clean reconstruction and is skipped.
+    if segments.len() != 4 {
+        return None;
+    }
+    let id: String = segments.concat();
+    if crate::pack::is_hex64(&id) {
+        Some(id)
+    } else {
+        None
+    }
 }

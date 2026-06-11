@@ -190,6 +190,12 @@ impl StreamStore for B2Store {
     fn put_manifest(&self, id: &str, manifest: &Manifest) -> Result<(), StoreError> {
         self.inner.put_manifest(id, manifest)
     }
+
+    fn list_manifest_ids(&self) -> Result<Vec<String>, StoreError> {
+        // B2 has no manifest-listing path of its own — delegate to the wrapped
+        // S3Store (B2's S3-compatible endpoint with path-style addressing).
+        self.inner.list_manifest_ids()
+    }
 }
 
 /// Resolves the S3-compatible endpoint to use, applying the precedence

@@ -56,12 +56,13 @@ use google_cloud_gax::retry_policy::NeverRetry;
 use google_cloud_storage::client::{Storage, StorageControl};
 use snapdir_core::manifest::Manifest;
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
-use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
+use snapdir_core::store::{manifest_path, object_path, Store, StoreError, MANIFESTS_DIR};
 use snapdir_core::Meter;
 
 use crate::fetch::fetch_files_concurrent;
 use crate::push::{push_objects_concurrent, upload_object};
 use crate::retry::{parse_retry_after, retry_network, Attempt, DefaultJitter, TokioSleeper};
+use crate::s3_store::manifest_ids_from_keys;
 use crate::stream::StreamStore;
 use crate::transfer::{classify_error, RateLimiter, TransferConfig};
 use tokio::runtime::Runtime;
@@ -388,6 +389,55 @@ impl GcsStore {
         .await
     }
 
+    /// Lists every object name under `prefix` (a leading-slash-free key
+    /// prefix), following the SDK's `list_objects` page-token pagination to
+    /// completion.
+    ///
+    /// Each page's single SDK call is wrapped in [`retry_network`] — the same
+    /// request-rate + transient-retry discipline as
+    /// [`key_exists`](Self::key_exists) — and `next_page_token` drives the page
+    /// loop until it is empty. Returns the full set of object names (the caller
+    /// filters / reconstructs ids).
+    async fn list_keys_under(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+        let mut keys = Vec::new();
+        let mut page_token = String::new();
+        loop {
+            let token = page_token.clone();
+            let page = retry_network(
+                &self.config.retry,
+                &self.req_limiter,
+                &TokioSleeper,
+                &DefaultJitter::new(),
+                || {
+                    let token = token.clone();
+                    async move {
+                        self.control
+                            .list_objects()
+                            .set_parent(self.location.bucket_resource())
+                            .set_prefix(prefix)
+                            .set_page_token(token)
+                            .send()
+                            .await
+                            .map_err(|err| gcs_attempt_from_err("GCS list_objects failed", err))
+                    }
+                },
+            )
+            .await?;
+
+            for object in &page.objects {
+                keys.push(object.name.clone());
+            }
+
+            // Page on while a non-empty next-token is returned (the SDK signals
+            // end-of-listing with an empty token).
+            if page.next_page_token.is_empty() {
+                break;
+            }
+            page_token = page.next_page_token;
+        }
+        Ok(keys)
+    }
+
     /// Downloads `key`, verifying its BLAKE3 against `expected`, retrying up to
     /// [`MAX_FETCH_RETRIES`] times. Mirrors `_snapdir_gcs_fetch_to_cache`.
     async fn fetch_verified(&self, key: &str, expected: &str) -> Result<Vec<u8>, StoreError> {
@@ -597,6 +647,18 @@ impl StreamStore for GcsStore {
         }
         self.runtime
             .block_on(async { self.put_bytes(&key, text.into_bytes()).await })
+    }
+
+    fn list_manifest_ids(&self) -> Result<Vec<String>, StoreError> {
+        // List every object name under `<prefix>/.manifests/` and reconstruct
+        // the id from the `3/3/3/rest` segments after that prefix, reusing the
+        // SAME key->id logic as `S3Store`. The trailing slash anchors the
+        // listing to the `.manifests/` subtree (never `.objects/`).
+        let list_prefix = format!("{}/", self.location.key_for(MANIFESTS_DIR));
+        let keys = self
+            .runtime
+            .block_on(async { self.list_keys_under(&list_prefix).await })?;
+        Ok(manifest_ids_from_keys(&keys, &list_prefix))
     }
 }
 

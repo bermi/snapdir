@@ -50,13 +50,13 @@ use aws_smithy_http_client::Builder as HttpClientBuilder;
 use aws_smithy_runtime_api::client::orchestrator::HttpResponse;
 use snapdir_core::manifest::Manifest;
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
-use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
+use snapdir_core::store::{manifest_path, object_path, Store, StoreError, MANIFESTS_DIR};
 use snapdir_core::Meter;
 
 use crate::fetch::fetch_files_concurrent;
 use crate::push::{push_objects_concurrent, upload_object};
 use crate::retry::{parse_retry_after, retry_network, Attempt, DefaultJitter, TokioSleeper};
-use crate::stream::StreamStore;
+use crate::stream::{manifest_id_from_shard_segments, StreamStore};
 use crate::transfer::{classify_error, RateLimiter, TransferConfig};
 
 use std::error::Error as StdError;
@@ -385,6 +385,59 @@ impl S3Store {
         .await
     }
 
+    /// Lists every object key under `prefix` (a leading-slash-free key prefix),
+    /// following `list_objects_v2` pagination to completion.
+    ///
+    /// Each page's single SDK call is wrapped in [`retry_network`] — the same
+    /// request-rate + transient-retry discipline as
+    /// [`key_exists`](Self::key_exists) / [`get_bytes`](Self::get_bytes) — and
+    /// the `continuation_token` drives the page loop until the response is no
+    /// longer truncated. Returns the full set of keys (the caller filters /
+    /// reconstructs ids).
+    async fn list_keys_under(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+        let mut keys = Vec::new();
+        let mut continuation: Option<String> = None;
+        loop {
+            let token = continuation.clone();
+            let page = retry_network(
+                &self.config.retry,
+                &self.req_limiter,
+                &TokioSleeper,
+                &DefaultJitter::new(),
+                || {
+                    let token = token.clone();
+                    async move {
+                        self.client
+                            .list_objects_v2()
+                            .bucket(&self.location.bucket)
+                            .prefix(prefix)
+                            .set_continuation_token(token)
+                            .send()
+                            .await
+                            .map_err(|err| s3_attempt_from_err("S3 list objects failed", err))
+                    }
+                },
+            )
+            .await?;
+
+            for object in page.contents() {
+                if let Some(key) = object.key() {
+                    keys.push(key.to_owned());
+                }
+            }
+
+            // Page on while the listing is truncated; the next-token is the
+            // SDK's resumption cursor.
+            match page.next_continuation_token() {
+                Some(next) if page.is_truncated().unwrap_or(false) => {
+                    continuation = Some(next.to_owned());
+                }
+                _ => break,
+            }
+        }
+        Ok(keys)
+    }
+
     /// Downloads `key`, verifying its BLAKE3 against `expected`, retrying up to
     /// [`MAX_FETCH_RETRIES`] times. Mirrors `_snapdir_s3_fetch_to_cache`.
     async fn fetch_verified(&self, key: &str, expected: &str) -> Result<Vec<u8>, StoreError> {
@@ -595,6 +648,41 @@ impl StreamStore for S3Store {
         self.runtime
             .block_on(async { self.put_bytes(&key, text.into_bytes()).await })
     }
+
+    fn list_manifest_ids(&self) -> Result<Vec<String>, StoreError> {
+        // List every key under `<prefix>/.manifests/` and reconstruct the id
+        // from the `3/3/3/rest` segments after that prefix, mirroring the
+        // FileStore walk but over S3 keys. The trailing slash anchors the
+        // listing to the `.manifests/` subtree (never `.objects/`).
+        let list_prefix = format!("{}/", self.location.key_for(MANIFESTS_DIR));
+        let keys = self
+            .runtime
+            .block_on(async { self.list_keys_under(&list_prefix).await })?;
+        Ok(manifest_ids_from_keys(&keys, &list_prefix))
+    }
+}
+
+/// Reconstructs the deduplicated, validated set of 64-hex manifest ids from a
+/// flat list of store keys produced by listing under `list_prefix` (the
+/// leading-slash-free `<prefix>/.manifests/` key prefix WITH a trailing slash).
+///
+/// Each key has `list_prefix` stripped, the remainder is split on `/` into the
+/// `3/3/3/rest` shard segments, and
+/// [`manifest_id_from_shard_segments`](crate::stream::manifest_id_from_shard_segments)
+/// validates + reconstructs the id (a stray / malformed key yields `None` and is
+/// skipped). The `HashSet` dedups. Shared by `S3Store` and `GcsStore`.
+pub(crate) fn manifest_ids_from_keys(keys: &[String], list_prefix: &str) -> Vec<String> {
+    let mut ids = std::collections::HashSet::new();
+    for key in keys {
+        let Some(rel) = key.strip_prefix(list_prefix) else {
+            continue;
+        };
+        let segments: Vec<&str> = rel.split('/').collect();
+        if let Some(id) = manifest_id_from_shard_segments(&segments) {
+            ids.insert(id);
+        }
+    }
+    ids.into_iter().collect()
 }
 
 /// Builds the multi-thread tokio runtime that backs the sync bridge.

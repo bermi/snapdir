@@ -38,7 +38,7 @@ use std::sync::Arc;
 
 use snapdir_core::manifest::{Manifest, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
-use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
+use snapdir_core::store::{manifest_path, object_path, Store, StoreError, MANIFESTS_DIR};
 use snapdir_core::Meter;
 
 use crate::adaptive::{
@@ -505,6 +505,66 @@ impl StreamStore for FileStore {
             &Blake3Hasher::new(),
         )
     }
+
+    fn list_manifest_ids(&self) -> Result<Vec<String>, StoreError> {
+        let manifests_root = self.root.join(MANIFESTS_DIR);
+
+        // Empty prefix: no `.manifests/` tree yet => Ok(empty), never an error.
+        let walk = match fs::read_dir(&manifests_root) {
+            Ok(walk) => walk,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(StoreError::Io(err)),
+        };
+
+        // Walk the shard tree, collecting each file's path components RELATIVE
+        // to `.manifests/` (the inverse of `manifest_path`'s `3/3/3/rest`
+        // split). Dedup via the set; a stray / malformed key reconstructs to a
+        // non-id and is skipped without erroring.
+        let mut ids = std::collections::HashSet::new();
+        let mut stack: Vec<(PathBuf, Vec<String>)> = Vec::new();
+        for entry in walk {
+            let entry = entry?;
+            push_manifest_walk_entry(&entry, &Vec::new(), &mut ids, &mut stack)?;
+        }
+        while let Some((dir, segments)) = stack.pop() {
+            for entry in fs::read_dir(&dir)? {
+                let entry = entry?;
+                push_manifest_walk_entry(&entry, &segments, &mut ids, &mut stack)?;
+            }
+        }
+
+        Ok(ids.into_iter().collect())
+    }
+}
+
+/// Classifies one `.manifests/` walk entry: a directory is pushed onto `stack`
+/// to be descended later (carrying its accumulated shard segments); a file's
+/// full segment path is fed to
+/// [`manifest_id_from_shard_segments`](crate::stream::manifest_id_from_shard_segments)
+/// and, if it reconstructs a valid 64-hex id, inserted into `ids` (the set
+/// dedups). A non-id key is skipped without error.
+fn push_manifest_walk_entry(
+    entry: &fs::DirEntry,
+    parent_segments: &[String],
+    ids: &mut std::collections::HashSet<String>,
+    stack: &mut Vec<(PathBuf, Vec<String>)>,
+) -> Result<(), StoreError> {
+    // A non-UTF-8 component can never be part of a hex id; skip it.
+    let Ok(name) = entry.file_name().into_string() else {
+        return Ok(());
+    };
+    let mut segments = parent_segments.to_vec();
+    segments.push(name);
+
+    if entry.file_type()?.is_dir() {
+        stack.push((entry.path(), segments));
+    } else {
+        let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
+        if let Some(id) = crate::stream::manifest_id_from_shard_segments(&refs) {
+            ids.insert(id);
+        }
+    }
+    Ok(())
 }
 
 /// Copies `source` to `target`, verifying the content BLAKE3 against

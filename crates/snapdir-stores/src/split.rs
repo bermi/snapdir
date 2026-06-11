@@ -180,4 +180,12 @@ impl StreamStore for SplitStore {
         // the fail-closed checksum validation is the pool's.
         self.objects.objects_needed(checksums)
     }
+
+    fn list_manifest_ids(&self) -> Result<Vec<String>, StoreError> {
+        // `list_manifest_ids` is a MANIFEST op: it enumerates the `.manifests/`
+        // ids of the manifests location, NEVER the shared objects pool. Two
+        // split stores sharing one pool therefore each list only their own
+        // manifests (shared-pool isolation).
+        self.manifests.list_manifest_ids()
+    }
 }
