@@ -81,3 +81,5 @@
   release gate.
 
 Ready for PM verification: YES
+
+**Amendment 2026-06-11:** release renumbered 1.5.1 → 1.6.0 (PM decision — removing the binary from snapdir-cli is more than a patch); both "from 1.5.1" mentions (README.md migration note, crates/snapdir-cli/README.md install section) updated to "from 1.6.0"; typos clean. Any "1.5.1" above reads as 1.6.0.

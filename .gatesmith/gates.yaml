@@ -3142,7 +3142,9 @@ gates:
     phase: 26
     owner_agent: packaging
     depends_on: [snapdir-name-crate, snapdir-name-docs]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T02:40:00Z
+    git_sha: 8baefa9
     failure_count: 0
     verification_cmd: "git fetch upstream --quiet && git ls-remote --tags upstream | grep -qE 'v1\\.5\\.1|v1\\.6\\.0' && curl -sf https://index.crates.io/sn/ap/snapdir >/dev/null"
     pass_criteria:
@@ -3156,7 +3158,9 @@ gates:
     phase: 26
     owner_agent: generic
     depends_on: [snapdir-name-crate, snapdir-name-docs, snapdir-name-release-1.5.1]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T02:40:00Z
+    git_sha: 8baefa9
     failure_count: 0
     verification_cmd: "curl -sf https://index.crates.io/sn/ap/snapdir | grep -q '\"vers\"'"
     pass_criteria:
