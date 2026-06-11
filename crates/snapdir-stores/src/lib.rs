@@ -68,6 +68,7 @@ pub mod retry;
 pub mod router;
 pub mod s3_store;
 pub mod shim;
+pub mod split;
 pub mod stream;
 pub mod sync;
 pub mod transfer;
@@ -94,6 +95,7 @@ pub use retry::{
 pub use router::{resolve_adapter, Adapter, RouteError};
 pub use s3_store::{S3Location, S3Store};
 pub use shim::ExternalStore;
+pub use split::SplitStore;
 pub use stream::StreamStore;
 pub use sync::{sync_snapshot, SyncReport};
 pub use transfer::{
