@@ -745,3 +745,281 @@ fn split_put_object_rejects_blob_not_matching_its_address() {
         "nothing may be stored when the blob fails its address check"
     );
 }
+
+// ===========================================================================
+// REVIEW-GATE STRENGTHENING (phase 28, split-store-tests-review)
+//
+// The implementation is now visible (src/split.rs). The black-box suite above
+// could only inject a mid-push failure by deleting a SOURCE file (the
+// `std::fs::read` arm). These tests reach the OTHER failure arm the impl
+// exposes — a pool whose `put_object` itself rejects a blob — plus the precise
+// routing/contract clauses the now-visible delegation reveals. They use a
+// fault-injecting `StreamStore` double that wraps a real `FileStore` objects
+// pool, which only the visible constructor (`SplitStore::new` over any
+// `impl StreamStore + Sync + 'static`) makes possible to assemble.
+// ===========================================================================
+
+use std::sync::atomic::AtomicUsize;
+
+use snapdir_core::store::Store as _StoreTrait;
+
+/// A `StreamStore` that delegates everything to an inner `FileStore` EXCEPT it
+/// makes `put_object` fail (`StoreError::Backend`) for one specific checksum,
+/// and counts how many `put_object` calls landed. Lets us inject a mid-push
+/// failure in the objects-pool `put_object` itself (the SPEC's "mid-push
+/// failure" seam) and assert no manifest lands on the manifests side.
+struct FailingPool {
+    inner: FileStore,
+    fail_checksum: String,
+    puts_attempted: AtomicUsize,
+    puts_succeeded: AtomicUsize,
+}
+
+impl FailingPool {
+    fn new(root: &Path, fail_checksum: &str) -> Self {
+        Self {
+            inner: FileStore::from_root(root.to_path_buf()),
+            fail_checksum: fail_checksum.to_string(),
+            puts_attempted: AtomicUsize::new(0),
+            puts_succeeded: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl _StoreTrait for FailingPool {
+    fn get_manifest(&self, id: &str) -> Result<Manifest, StoreError> {
+        self.inner.get_manifest(id)
+    }
+    fn fetch_files(&self, manifest: &Manifest, dest: &Path) -> Result<(), StoreError> {
+        self.inner.fetch_files(manifest, dest)
+    }
+    fn push(&self, manifest: &Manifest, source: &Path) -> Result<(), StoreError> {
+        self.inner.push(manifest, source)
+    }
+}
+
+impl StreamStore for FailingPool {
+    fn has_object(&self, checksum: &str) -> Result<bool, StoreError> {
+        self.inner.has_object(checksum)
+    }
+    fn get_object(&self, checksum: &str) -> Result<Vec<u8>, StoreError> {
+        self.inner.get_object(checksum)
+    }
+    fn put_object(&self, checksum: &str, bytes: Vec<u8>) -> Result<(), StoreError> {
+        self.puts_attempted.fetch_add(1, Ordering::Relaxed);
+        if checksum == self.fail_checksum {
+            return Err(StoreError::Backend {
+                message: format!("injected put_object failure for {checksum}"),
+                source: None,
+            });
+        }
+        self.inner.put_object(checksum, bytes)?;
+        self.puts_succeeded.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+    fn put_manifest(&self, id: &str, manifest: &Manifest) -> Result<(), StoreError> {
+        self.inner.put_manifest(id, manifest)
+    }
+}
+
+#[test]
+fn split_put_object_failure_midpush_leaves_no_manifest_and_aborts() {
+    // SPEC mid-push failure (objects-before-manifest + all-or-nothing): when the
+    // objects-pool `put_object` itself REJECTS a blob mid-push, the push must
+    // error and NO manifest may land at the manifests location. This exercises
+    // the `self.objects.put_object(...)?` early-return arm in src/split.rs that
+    // the source-deletion test cannot reach.
+    let objects = TempDir::new("putfail-obj");
+    let manifests = TempDir::new("putfail-man");
+    let src = TempDir::new("putfail-src");
+    // Two distinct file objects; we poison the second one's address.
+    let (manifest, id) = build_tree(
+        src.path(),
+        &[("ok", b"good content\n"), ("bad", b"poison content\n")],
+    );
+    let poison_sum = Blake3Hasher::new().hash_hex(b"poison content\n");
+
+    let pool = FailingPool::new(objects.path(), &poison_sum);
+    let mani = FileStore::from_root(manifests.path().to_path_buf());
+    let store = SplitStore::new(pool, mani);
+
+    let err = store
+        .push(&manifest, src.path())
+        .expect_err("a put_object failure mid-push must abort the push");
+    assert!(matches!(err, StoreError::Backend { .. }), "got {err:?}");
+
+    // The crux: NO manifest may be observable at the manifests location.
+    assert!(
+        !manifest_disk(manifests.path(), &id).exists(),
+        "a push that fails in put_object must leave NO manifest (all-or-nothing)"
+    );
+    // And get_manifest must still report it absent (not a half-written slot).
+    assert!(
+        matches!(
+            store.get_manifest(&id),
+            Err(StoreError::ManifestNotFound { .. })
+        ),
+        "no snapshot may resolve after an interrupted push"
+    );
+}
+
+#[test]
+fn split_objects_needed_routes_to_pool_not_manifests_and_keeps_duplicates() {
+    // SPEC: objects_needed delegates to the OBJECTS pool (not manifests) and
+    // preserves the order-preserving / NO-dedup contract. Pins the
+    // `self.objects.objects_needed(checksums)` delegation in src/split.rs: an
+    // object present ONLY on the manifests side must still be reported needed
+    // (proves routing), and an absent checksum supplied TWICE is reported twice.
+    let objects = TempDir::new("needroute-obj");
+    let manifests = TempDir::new("needroute-man");
+    let store = split_over(objects.path(), manifests.path());
+
+    let in_pool = b"lives in pool\n".to_vec();
+    let in_pool_sum = Blake3Hasher::new().hash_hex(&in_pool);
+    // Seed a blob ONLY into the manifests-side store's object pool. If the split
+    // wrongly probed the manifests side, it would (incorrectly) treat this as
+    // present.
+    let decoy = b"decoy in manifests pool\n".to_vec();
+    let decoy_sum = Blake3Hasher::new().hash_hex(&decoy);
+    FileStore::from_root(manifests.path().to_path_buf())
+        .put_object(&decoy_sum, decoy)
+        .expect("seed decoy on manifests side");
+
+    store.put_object(&in_pool_sum, in_pool).expect("seed pool");
+
+    // Order: present-in-pool, decoy (present only on manifests side -> needed),
+    // decoy again (duplicate must be reported twice, no dedup).
+    let needed = store
+        .objects_needed(&[in_pool_sum.clone(), decoy_sum.clone(), decoy_sum.clone()])
+        .expect("objects_needed");
+    assert_eq!(
+        needed,
+        vec![decoy_sum.clone(), decoy_sum],
+        "objects_needed must probe the OBJECTS pool only (decoy on the manifests \
+         side is still needed) and preserve duplicates in input order"
+    );
+}
+
+#[test]
+fn split_fetch_reads_objects_from_pool_regardless_of_which_manifests_side() {
+    // SPEC: fetch_files reads object blobs from the OBJECTS pool while the
+    // manifest is sourced independently. Push to a SHARED pool under manifests
+    // location A, then build a SECOND SplitStore reusing the SAME pool but a
+    // FRESH (empty) manifests side, write the manifest there, and fetch: the
+    // objects must still materialize from the shared pool. Pins that
+    // `fetch_files` delegates to `self.objects` and is decoupled from the
+    // manifests routing.
+    let objects = TempDir::new("fetchroute-obj");
+    let man_a = TempDir::new("fetchroute-man-a");
+    let man_b = TempDir::new("fetchroute-man-b");
+    let src = TempDir::new("fetchroute-src");
+    let dest = TempDir::new("fetchroute-dest");
+    let (manifest, id) = build_tree(
+        src.path(),
+        &[
+            ("alpha", b"alpha bytes\n"),
+            ("beta/gamma", b"gamma bytes\n"),
+        ],
+    );
+
+    // First store: objects land in the shared pool; manifest lands at A.
+    let store_a = split_over(objects.path(), man_a.path());
+    store_a.push(&manifest, src.path()).expect("push to A");
+
+    // Second store: SAME pool, a DIFFERENT empty manifests side. Replicate just
+    // the manifest object there (as a store-to-store copy would).
+    let store_b = split_over(objects.path(), man_b.path());
+    store_b
+        .put_manifest(&id, &manifest)
+        .expect("replicate manifest to B");
+
+    // B has the manifest and shares the pool, so fetch must succeed entirely
+    // from the shared pool's blobs.
+    store_b
+        .fetch_files(&manifest, dest.path())
+        .expect("fetch via B must read objects from the shared pool");
+    assert_eq!(
+        fs::read(dest.path().join("alpha")).unwrap(),
+        b"alpha bytes\n"
+    );
+    assert_eq!(
+        fs::read(dest.path().join("beta/gamma")).unwrap(),
+        b"gamma bytes\n"
+    );
+}
+
+#[test]
+fn split_get_manifest_ignores_a_decoy_manifest_in_the_objects_pool() {
+    // SPEC routing: get_manifest is answered ONLY by the manifests side. A
+    // manifest of the SAME id sitting in the OBJECTS pool's `.manifests` must
+    // NOT satisfy get_manifest — the pool is never consulted for manifests.
+    // Pins `self.manifests.get_manifest(id)` in src/split.rs against being
+    // fooled by a pool-side decoy.
+    let objects = TempDir::new("decoym-obj");
+    let manifests = TempDir::new("decoym-man");
+    let src = TempDir::new("decoym-src");
+    let (manifest, id) = build_tree(src.path(), &[("only", b"only bytes\n")]);
+
+    // Plant the manifest ONLY in the objects-pool store, NOT the manifests side.
+    FileStore::from_root(objects.path().to_path_buf())
+        .put_manifest(&id, &manifest)
+        .expect("plant decoy manifest in pool");
+
+    let store = split_over(objects.path(), manifests.path());
+    assert!(
+        matches!(
+            store.get_manifest(&id),
+            Err(StoreError::ManifestNotFound { .. })
+        ),
+        "get_manifest must ignore a manifest present only in the objects pool"
+    );
+
+    // And the skip-if-present push fast path must likewise NOT be satisfied by
+    // the pool-side decoy: a real push must still write the manifest to the
+    // manifests side.
+    store.push(&manifest, src.path()).expect("push");
+    assert!(
+        manifest_disk(manifests.path(), &id).is_file(),
+        "push must write the manifest to the manifests side despite the pool decoy"
+    );
+}
+
+#[test]
+fn split_fetch_corrupted_blob_retries_then_surfaces_integrity() {
+    // SPEC: fetch_files inherits the objects backend's verify-retry discipline
+    // (copy -> BLAKE3-verify -> retry up to N -> error), reading blobs from the
+    // POOL. A blob corrupted in the shared pool must NOT silently materialize
+    // through the split's fetch delegation; it must surface an Integrity/Io
+    // error and leave no good file at dest. Complements the black-box corruption
+    // test by pinning that the retry/verify path runs on the POOL side via the
+    // split delegation, with the manifest sourced from the manifests side.
+    let objects = TempDir::new("fretry-obj");
+    let manifests = TempDir::new("fretry-man");
+    let src = TempDir::new("fretry-src");
+    let dest = TempDir::new("fretry-dest");
+    let (manifest, id) = build_tree(src.path(), &[("payload", b"authentic bytes\n")]);
+
+    let store = split_over(objects.path(), manifests.path());
+    store.push(&manifest, src.path()).expect("push");
+    // Confirm the manifest is genuinely on the manifests side (decoupled source).
+    assert!(manifest_disk(manifests.path(), &id).is_file());
+
+    // Corrupt the blob in the POOL after a valid push.
+    let sum = Blake3Hasher::new().hash_hex(b"authentic bytes\n");
+    fs::write(object_disk(objects.path(), &sum), b"corrupted!\n").expect("corrupt pool blob");
+
+    let err = store
+        .fetch_files(&manifest, dest.path())
+        .expect_err("a corrupt pool blob must fail fetch, not materialize");
+    assert!(
+        matches!(err, StoreError::Integrity { .. } | StoreError::Io(_)),
+        "expected Integrity/Io from the pool verify-retry, got {err:?}"
+    );
+    // The corrupted bytes must NEVER be passed off as the snapshot file.
+    if let Ok(got) = fs::read(dest.path().join("payload")) {
+        assert_ne!(
+            got, b"corrupted!\n",
+            "corrupted pool bytes must never be materialized at dest"
+        );
+    }
+}
