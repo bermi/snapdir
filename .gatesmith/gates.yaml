@@ -3267,7 +3267,9 @@ gates:
     phase: 27
     owner_agent: ci
     depends_on: [wire2-zstd-format-stores]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T20:09:32Z
+    git_sha: 8ccde8c
     failure_count: 0
     verification_cmd: "rustup target list --installed | grep -q x86_64-unknown-linux-musl && cargo build --target x86_64-unknown-linux-musl -p snapdir-cli --profile dist --locked || echo 'musl target not installed locally; CI musl job is the enforcing check'"
     pass_criteria:
