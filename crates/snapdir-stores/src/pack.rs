@@ -174,6 +174,20 @@ pub trait PackSink {
     /// Commits the manifest under `id`. Called only after the `end` trailer of
     /// a fully verified stream (manifest-last survives truncation).
     fn put_manifest(&mut self, id: &str, manifest: &Manifest) -> Result<(), StoreError>;
+
+    /// Durability barrier: forces every object this pack committed to stable
+    /// storage. [`read_pack`] calls it exactly once, in the `end` arm, BEFORE
+    /// [`put_manifest`](Self::put_manifest) — so a durable manifest provably
+    /// implies durable objects across power loss, not just process crash.
+    ///
+    /// Defaults to a **no-op**: a sink with no crash-durability concern
+    /// (in-memory, network, or a delegating wrapper) keeps the historical
+    /// behavior unchanged. [`FileSink`] overrides it to issue the batched
+    /// object barrier (see [`crate::fsync`]). The default lets the manifest
+    /// commit proceed exactly as before.
+    fn flush_barrier(&mut self) -> Result<(), StoreError> {
+        Ok(())
+    }
 }
 
 /// Generic [`PackSink`] over any [`StreamStore`]: buffers one `obj` payload at
@@ -243,6 +257,28 @@ impl PackSink for StreamSink<'_> {
     }
 }
 
+/// How a [`FileSink`] makes the objects + manifest it files crash-durable.
+///
+/// The library is **env-free**: the CLI lane wires any `SNAPDIR_*` knob and
+/// selects a variant via [`FileSink::with_durability`]. The default
+/// ([`Durability::Off`]) preserves the historical byte-for-byte filing — no
+/// fsync, the existing pinned tests stay green.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Durability {
+    /// No fsync (historical behavior). A present manifest implies present
+    /// objects after a *clean* run / process crash, but not across power loss.
+    #[default]
+    Off,
+    /// Batched durability (Design A): a cheap writeout hint per committed
+    /// object while filing, then exactly two full syncs per pack — one object
+    /// barrier ([`crate::fsync::barrier_objects`]) in [`FileSink::flush_barrier`]
+    /// right before the manifest, and one durable manifest commit
+    /// ([`crate::file_store::write_manifest_durable`]). So a durable manifest
+    /// implies durable objects even across power loss (see the
+    /// non-journaling-fs caveat in [`crate::fsync`]).
+    Batch,
+}
+
 /// File-backed [`PackSink`] over a [`FileStore`]: `obj` payloads stream
 /// through a fixed-size buffer straight into a unique temp sibling of the
 /// final object path, then an atomic rename commits on hash match — O(1)
@@ -252,9 +288,23 @@ impl PackSink for StreamSink<'_> {
 /// (temp file in the SAME directory so the rename is an atomic,
 /// same-filesystem move; a partially-written object is never visible at its
 /// content-address; a failed record removes its temp file).
+///
+/// Durability is selected by [`with_durability`](Self::with_durability)
+/// ([`Durability::Off`] by default — byte-identical historical filing). Under
+/// [`Durability::Batch`] every committed object path is recorded in `written`
+/// so [`flush_barrier`](PackSink::flush_barrier) can sync them all in one pass
+/// before the manifest commits.
 pub struct FileSink<'a> {
     store: &'a FileStore,
     staged: Option<StagedFile>,
+    /// Selected durability mode (default [`Durability::Off`]).
+    durability: Durability,
+    /// Final paths of objects this pack newly committed, in commit order. Only
+    /// populated (and only used) under [`Durability::Batch`]; the barrier syncs
+    /// exactly this set, then it is cleared. Duplicates / pre-seeded objects
+    /// are NOT recorded — they were made durable by whatever pack first wrote
+    /// them.
+    written: Vec<PathBuf>,
 }
 
 /// A staged-but-uncommitted object payload on disk.
@@ -265,13 +315,25 @@ struct StagedFile {
 }
 
 impl<'a> FileSink<'a> {
-    /// Wraps `store` as a streaming, file-backed pack sink.
+    /// Wraps `store` as a streaming, file-backed pack sink with the default
+    /// (historical, no-fsync) [`Durability::Off`].
     #[must_use]
     pub fn new(store: &'a FileStore) -> Self {
         Self {
             store,
             staged: None,
+            durability: Durability::default(),
+            written: Vec::new(),
         }
+    }
+
+    /// Selects the crash-durability mode for this sink (builder style). The
+    /// library reads NO environment — the CLI lane decides the mode (e.g. from
+    /// a `SNAPDIR_*` knob) and threads it in here.
+    #[must_use]
+    pub fn with_durability(mut self, durability: Durability) -> Self {
+        self.durability = durability;
+        self
     }
 }
 
@@ -310,6 +372,12 @@ impl PackSink for FileSink<'_> {
         // `io::copy` streams through a fixed-size buffer (O(1) memory); the
         // reader-side incremental hasher sees every byte we pull here.
         let copied = io::copy(payload, &mut file);
+        if copied.is_ok() && self.durability == Durability::Batch {
+            // Cheap, non-blocking writeout hint so this object's dirty pages
+            // start heading to disk now — amortizes the later batch barrier.
+            // Best-effort: errors are owned by `flush_barrier`, never here.
+            crate::fsync::writeout_hint(&file);
+        }
         drop(file);
         if let Err(err) = copied {
             // Failed mid-write: remove the temp file, leave nothing behind.
@@ -329,8 +397,16 @@ impl PackSink for FileSink<'_> {
             Some(staged) if staged.checksum == checksum => {
                 // Atomic rename into the final content-addressed location; the
                 // reader has already verified the streamed bytes hash to
-                // `checksum`, so this is the rename-on-match step.
+                // `checksum`, so this is the rename-on-match step. PRESERVES
+                // per-record rename visibility (incremental resume) — the
+                // object is observable at its address immediately, exactly as
+                // before, independent of the durability mode.
                 fs::rename(&staged.tmp, &staged.target)?;
+                // Under Batch, remember the path so the single pre-manifest
+                // barrier can sync every object this pack committed in one pass.
+                if self.durability == Durability::Batch {
+                    self.written.push(staged.target);
+                }
                 Ok(())
             }
             other => {
@@ -350,10 +426,40 @@ impl PackSink for FileSink<'_> {
         }
     }
 
+    fn flush_barrier(&mut self) -> Result<(), StoreError> {
+        // Off keeps the historical behavior (no fsync): the pinned filing tests
+        // and `FileStore::push`/`put_object` are byte-identical and untouched.
+        if self.durability == Durability::Off {
+            return Ok(());
+        }
+        // Batch: full sync #1 — force every object this pack committed to
+        // stable storage in ONE pass, then clear the set (so a later
+        // `put_manifest` is the only remaining sync). Called once by
+        // `read_pack` in the `end` arm, strictly BEFORE `put_manifest`.
+        let written = std::mem::take(&mut self.written);
+        crate::fsync::barrier_objects(&written)
+    }
+
     fn put_manifest(&mut self, id: &str, manifest: &Manifest) -> Result<(), StoreError> {
-        // FileStore::put_manifest re-verifies snapshot_id(manifest) == id and
-        // writes via its own temp+atomic-rename path.
-        self.store.put_manifest(id, manifest)
+        match self.durability {
+            // Historical path: FileStore::put_manifest re-verifies
+            // snapshot_id(manifest) == id and writes via its own
+            // temp+atomic-rename (no fsync).
+            Durability::Off => self.store.put_manifest(id, manifest),
+            // Durable path (full sync #2): fsync temp -> rename -> fsync the
+            // parent shard dir, so the manifest's directory entry survives
+            // power loss. The objects were already barriered in
+            // `flush_barrier`, so a durable manifest implies durable objects.
+            Durability::Batch => {
+                let target = self.store.root().join(manifest_path(id));
+                crate::file_store::write_manifest_durable(
+                    manifest,
+                    &target,
+                    id,
+                    &Blake3Hasher::new(),
+                )
+            }
+        }
     }
 }
 
@@ -482,6 +588,14 @@ pub fn read_pack(input: impl Read, sink: &mut dyn PackSink) -> Result<PackReadRe
             // The `end` trailer is the ONLY place a manifest commits:
             // truncation anywhere above has already errored out, so a
             // committed manifest proves the whole stream verified.
+            //
+            // Durability barrier BEFORE the manifest: force every committed
+            // object to stable storage first, so a durable manifest provably
+            // implies durable objects (Design A). The default `flush_barrier`
+            // is a no-op, so non-durable sinks are byte-identical to before.
+            // It runs unconditionally (even for a manifest-only / empty pack)
+            // so the ordering contract holds regardless of object count.
+            sink.flush_barrier()?;
             if let Some((id, manifest)) = pending_manifest.take() {
                 sink.put_manifest(&id, &manifest)?;
                 report.manifest_committed = true;
@@ -1508,5 +1622,323 @@ mod tests {
                 "checksum {bad:?}: got {err}"
             );
         }
+    }
+
+    // --- receiver durability (Design A) --------------------------------------
+
+    /// Recursively snapshots `(relative-path, bytes)` for every regular file
+    /// under `dir`, sorted — the canonical "filing" of a store, used to prove
+    /// Off and Batch produce IDENTICAL on-disk results.
+    fn filing_of(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut out: Vec<(String, Vec<u8>)> = files_under(dir)
+            .into_iter()
+            .map(|p| {
+                let rel = p.strip_prefix(dir).unwrap().to_string_lossy().into_owned();
+                (rel, fs::read(&p).expect("read filed bytes"))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    #[test]
+    fn pack_durability_off_vs_batch_produce_identical_filing() {
+        // A representative pack: a 0-byte object, a small one, a multi-MB one
+        // (streaming path), a duplicate, plus the manifest.
+        let payloads = vec![
+            Vec::new(),
+            b"durable hello\n".to_vec(),
+            big_payload(2 * 1024 * 1024 + 11),
+        ];
+        let (_a_dir, a, mut ids) = seed_store("dura-a", &payloads);
+        ids.push(ids[1].clone()); // duplicate record
+        let (manifest, man_id) = manifest_for(&payloads);
+        a.put_manifest(&man_id, &manifest).expect("seed manifest");
+
+        let mut pack = Vec::new();
+        write_pack(&a, &ids, Some(&man_id), &mut pack).expect("write_pack");
+
+        // Off (historical, no fsync).
+        let off_dir = TempDir::new("dura-off");
+        let off = FileStore::from_root(off_dir.path());
+        let mut off_sink = FileSink::new(&off).with_durability(Durability::Off);
+        let off_report = read_pack(pack.as_slice(), &mut off_sink).expect("off read");
+
+        // Batch (fsync barrier + durable manifest).
+        let batch_dir = TempDir::new("dura-batch");
+        let batch = FileStore::from_root(batch_dir.path());
+        let mut batch_sink = FileSink::new(&batch).with_durability(Durability::Batch);
+        let batch_report = read_pack(pack.as_slice(), &mut batch_sink).expect("batch read");
+
+        // Identical reports AND identical on-disk filing (objects + manifest,
+        // same sharded keys, same bytes) — durability is invisible to output.
+        assert_eq!(off_report, batch_report);
+        assert!(batch_report.manifest_committed);
+        assert_eq!(batch_report.objects_written, 3);
+        assert_eq!(batch_report.objects_skipped, 1, "duplicate skipped");
+        assert_eq!(
+            filing_of(off_dir.path()),
+            filing_of(batch_dir.path()),
+            "Off and Batch must file byte-identical trees"
+        );
+        // No stray temp litter in either.
+        for d in [off_dir.path(), batch_dir.path()] {
+            assert!(
+                !files_under(d)
+                    .iter()
+                    .any(|p| p.to_string_lossy().ends_with(".tmp")),
+                "no stray temp files"
+            );
+        }
+    }
+
+    /// A spy [`PackSink`] that records the ORDER of lifecycle calls so a test
+    /// can prove `flush_barrier` happens-before `put_manifest`. It also files
+    /// objects into a real [`FileStore`] (delegating) so the rest of the read
+    /// path behaves normally.
+    struct OrderSpy<'a> {
+        inner: FileSink<'a>,
+        events: Vec<&'static str>,
+    }
+
+    impl PackSink for OrderSpy<'_> {
+        fn has_object(&mut self, checksum: &str) -> Result<bool, StoreError> {
+            self.inner.has_object(checksum)
+        }
+        fn stage_object(
+            &mut self,
+            checksum: &str,
+            len: u64,
+            payload: &mut dyn Read,
+        ) -> Result<(), StoreError> {
+            self.events.push("stage");
+            self.inner.stage_object(checksum, len, payload)
+        }
+        fn commit_object(&mut self, checksum: &str) -> Result<(), StoreError> {
+            self.events.push("commit");
+            self.inner.commit_object(checksum)
+        }
+        fn abort_object(&mut self, checksum: &str) {
+            self.events.push("abort");
+            self.inner.abort_object(checksum);
+        }
+        fn flush_barrier(&mut self) -> Result<(), StoreError> {
+            self.events.push("barrier");
+            self.inner.flush_barrier()
+        }
+        fn put_manifest(&mut self, id: &str, manifest: &Manifest) -> Result<(), StoreError> {
+            self.events.push("manifest");
+            self.inner.put_manifest(id, manifest)
+        }
+    }
+
+    #[test]
+    fn pack_barrier_happens_before_manifest_via_spy_sink() {
+        let payloads = vec![b"o1\n".to_vec(), b"o2\n".to_vec()];
+        let (_a_dir, a, ids) = seed_store("spy-a", &payloads);
+        let (manifest, man_id) = manifest_for(&payloads);
+        a.put_manifest(&man_id, &manifest).expect("seed manifest");
+
+        let mut pack = Vec::new();
+        write_pack(&a, &ids, Some(&man_id), &mut pack).expect("write_pack");
+
+        let b_dir = TempDir::new("spy-b");
+        let b = FileStore::from_root(b_dir.path());
+        let mut spy = OrderSpy {
+            inner: FileSink::new(&b).with_durability(Durability::Batch),
+            events: Vec::new(),
+        };
+        let report = read_pack(pack.as_slice(), &mut spy).expect("read_pack");
+        assert!(report.manifest_committed);
+
+        // The barrier must appear exactly once, AFTER all commits and strictly
+        // BEFORE the manifest (the core ordering guarantee of Design A).
+        let barrier = spy
+            .events
+            .iter()
+            .position(|e| *e == "barrier")
+            .expect("barrier was called");
+        let manifest_at = spy
+            .events
+            .iter()
+            .position(|e| *e == "manifest")
+            .expect("manifest was committed");
+        assert!(
+            barrier < manifest_at,
+            "flush_barrier must happen-before put_manifest: {:?}",
+            spy.events
+        );
+        let last_commit = spy
+            .events
+            .iter()
+            .rposition(|e| *e == "commit")
+            .expect("at least one commit");
+        assert!(
+            last_commit < barrier,
+            "barrier must follow every object commit: {:?}",
+            spy.events
+        );
+        assert_eq!(
+            spy.events.iter().filter(|e| **e == "barrier").count(),
+            1,
+            "exactly one barrier per pack: {:?}",
+            spy.events
+        );
+    }
+
+    #[test]
+    fn pack_barrier_runs_even_for_empty_and_manifest_only_packs() {
+        // Empty pack: barrier still runs exactly once (no manifest, no objects).
+        let payloads_empty: Vec<Vec<u8>> = Vec::new();
+        let (_a0, a0, ids0) = seed_store("empty-bar-a", &payloads_empty);
+        let mut pack = Vec::new();
+        write_pack(&a0, &ids0, None, &mut pack).expect("write_pack");
+        let b0 = TempDir::new("empty-bar-b");
+        let store0 = FileStore::from_root(b0.path());
+        let mut spy = OrderSpy {
+            inner: FileSink::new(&store0).with_durability(Durability::Batch),
+            events: Vec::new(),
+        };
+        read_pack(pack.as_slice(), &mut spy).expect("read empty");
+        assert_eq!(spy.events, vec!["barrier"]);
+
+        // Manifest-only pack (objects already present): barrier-then-manifest.
+        let payloads = vec![b"present\n".to_vec()];
+        let (_a1, a1, _ids1) = seed_store("mo-bar-a", &payloads);
+        let (manifest, man_id) = manifest_for(&payloads);
+        a1.put_manifest(&man_id, &manifest).expect("seed manifest");
+        let mut pack = Vec::new();
+        write_pack(&a1, &[], Some(&man_id), &mut pack).expect("write_pack");
+        let b1 = TempDir::new("mo-bar-b");
+        let store1 = FileStore::from_root(b1.path());
+        let mut spy = OrderSpy {
+            inner: FileSink::new(&store1).with_durability(Durability::Batch),
+            events: Vec::new(),
+        };
+        let report = read_pack(pack.as_slice(), &mut spy).expect("read manifest-only");
+        assert!(report.manifest_committed);
+        assert_eq!(spy.events, vec!["barrier", "manifest"]);
+        assert_eq!(store1.get_manifest(&man_id).expect("manifest"), manifest);
+    }
+
+    #[test]
+    fn pack_batch_truncated_before_end_files_objects_never_manifest() {
+        // Re-pin the manifest-last / incremental-resume invariant under Batch:
+        // a stream cut before `end` files the verified objects (resume can pick
+        // them up) but NEVER the manifest, and leaves no temp litter — even
+        // though the durable path is selected.
+        let payloads = vec![b"one\n".to_vec(), b"two\n".to_vec()];
+        let (_a_dir, a, ids) = seed_store("btrunc-a", &payloads);
+        let (manifest, man_id) = manifest_for(&payloads);
+        a.put_manifest(&man_id, &manifest).expect("seed manifest");
+
+        let mut pack = Vec::new();
+        write_pack(&a, &ids, Some(&man_id), &mut pack).expect("write_pack");
+        assert!(pack.ends_with(b"end\n"));
+        let cut = &pack[..pack.len() - b"end\n".len()];
+
+        let b_dir = TempDir::new("btrunc-b");
+        let b = FileStore::from_root(b_dir.path());
+        let mut sink = FileSink::new(&b).with_durability(Durability::Batch);
+        let err = read_pack(cut, &mut sink).expect_err("truncation is a hard error");
+        assert!(err.to_string().contains("truncated"), "got: {err}");
+        drop(sink);
+
+        // Verified objects ARE filed (per-record rename visibility preserved for
+        // incremental resume)...
+        for (id, payload) in ids.iter().zip(&payloads) {
+            assert_eq!(b.get_object(id).unwrap(), *payload);
+        }
+        // ...but the manifest must NEVER be committed (barrier never reached).
+        assert!(matches!(
+            b.get_manifest(&man_id),
+            Err(StoreError::ManifestNotFound { .. })
+        ));
+        assert!(
+            !files_under(b_dir.path())
+                .iter()
+                .any(|p| p.to_string_lossy().ends_with(".tmp")),
+            "no stray temp files"
+        );
+    }
+
+    #[test]
+    fn pack_batch_resume_after_truncation_completes_via_second_pack() {
+        // Full incremental-resume cycle under Batch: a truncated first pack
+        // files some objects; a complete second pack verified-skips those and
+        // commits the manifest durably.
+        // First (small) object lands; the SECOND (large) object is the one the
+        // truncation cuts through, so it must NOT survive the first attempt.
+        let payloads = vec![b"head\n".to_vec(), big_payload(300 * 1024)];
+        let (_a_dir, a, ids) = seed_store("bresume-a", &payloads);
+        let (manifest, man_id) = manifest_for(&payloads);
+        a.put_manifest(&man_id, &manifest).expect("seed manifest");
+
+        let mut pack = Vec::new();
+        write_pack(&a, &ids, Some(&man_id), &mut pack).expect("write_pack");
+
+        let b_dir = TempDir::new("bresume-b");
+        let b = FileStore::from_root(b_dir.path());
+
+        // First attempt: cut deep inside the SECOND object's payload.
+        let cut = &pack[..pack.len() - 100_000];
+        {
+            let mut sink = FileSink::new(&b).with_durability(Durability::Batch);
+            assert!(read_pack(cut, &mut sink).is_err(), "truncated first pack");
+        }
+        // Object 1 landed; object 2 + manifest did not.
+        assert_eq!(b.get_object(&ids[0]).unwrap(), payloads[0]);
+        assert!(!StreamStore::has_object(&b, &ids[1]).unwrap());
+        assert!(matches!(
+            b.get_manifest(&man_id),
+            Err(StoreError::ManifestNotFound { .. })
+        ));
+
+        // Second, complete attempt resumes: obj 1 verified-skipped, obj 2
+        // written, manifest committed durably.
+        let mut sink = FileSink::new(&b).with_durability(Durability::Batch);
+        let report = read_pack(pack.as_slice(), &mut sink).expect("resume read");
+        assert_eq!(report.objects_skipped, 1, "already-present obj 1 skipped");
+        assert_eq!(report.objects_written, 1, "obj 2 written on resume");
+        assert!(report.manifest_committed);
+        assert_eq!(b.get_object(&ids[1]).unwrap(), payloads[1]);
+        assert_eq!(b.get_manifest(&man_id).expect("manifest"), manifest);
+    }
+
+    #[test]
+    fn pack_batch_roundtrip_streams_objects_and_manifest_durably() {
+        // End-to-end Batch round-trip incl. a multi-MB streaming object: the
+        // durable path produces a correct, complete store.
+        let payloads = vec![
+            b"alpha\n".to_vec(),
+            big_payload(4 * 1024 * 1024 + 3),
+            b"omega\n".to_vec(),
+        ];
+        let (a_dir, a, ids) = seed_store("brt-a", &payloads);
+        let (manifest, man_id) = manifest_for(&payloads);
+        a.put_manifest(&man_id, &manifest).expect("seed manifest");
+
+        let mut pack = Vec::new();
+        write_pack(&a, &ids, Some(&man_id), &mut pack).expect("write_pack");
+
+        let b_dir = TempDir::new("brt-b");
+        let b = FileStore::from_root(b_dir.path());
+        let mut sink = FileSink::new(&b).with_durability(Durability::Batch);
+        let read = read_pack(pack.as_slice(), &mut sink).expect("read_pack");
+        assert_eq!(read.objects_written, 3);
+        assert!(read.manifest_committed);
+
+        for id in &ids {
+            let key = object_path(id);
+            assert_eq!(
+                fs::read(b_dir.path().join(&key)).expect("b object"),
+                fs::read(a_dir.path().join(&key)).expect("a object"),
+            );
+        }
+        assert_eq!(b.get_manifest(&man_id).expect("manifest"), manifest);
+        assert_eq!(
+            snapshot_id(&b.get_manifest(&man_id).unwrap(), &Blake3Hasher::new()),
+            man_id
+        );
     }
 }

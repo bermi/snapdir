@@ -23,6 +23,15 @@ integration-mock = []
 snapdir-core.workspace = true
 thiserror.workspace = true
 
+# --- Receiver durability (fsync.rs) -----------------------------------------
+# `libc` exposes the raw `sync_file_range`/`fsync` syscalls behind the batched
+# receive-pack durability barrier (cfg-gated per platform). This is NOT a new
+# supply-chain edge: `libc` is already a DIRECT dependency of `snapdir-core` and
+# `snapdir-cli` (and pervasive in the lock graph), so naming it here adds ZERO
+# crates to `Cargo.lock`. The shipped binary stays dependency-free (no shelling
+# out to fsync/sync).
+libc = "0.2"
+
 # --- SNAPPACK wire format (pack.rs) ------------------------------------------
 # `blake3` powers the INCREMENTAL payload hashing in `pack.rs`: obj payloads
 # stream through the hasher in O(1) memory, which the buffer-only

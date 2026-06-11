@@ -31,6 +31,7 @@
 
 use std::fs;
 use std::io;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use std::sync::Arc;
@@ -590,6 +591,62 @@ fn write_manifest(
     let tmp = temp_sibling(target);
     fs::write(&tmp, text.as_bytes())?;
     fs::rename(&tmp, target)?;
+    Ok(())
+}
+
+/// Durable variant of [`write_manifest`] for the batched receive-pack path:
+/// identical verify + atomic-rename discipline, but the temp file's data is
+/// fsynced **before** the rename and the manifest's parent shard directory is
+/// fsynced **after** it, so the manifest's directory entry survives power loss.
+///
+/// This is "full sync #2" of the receive-pack two-sync budget (the matching
+/// object barrier in [`crate::fsync::barrier_objects`] is #1); the caller must
+/// have already barriered the objects this manifest references, so a durable
+/// manifest provably implies durable objects (see the non-journaling-fs caveat
+/// in [`crate::fsync`]).
+///
+/// Used only on the receive-pack path via
+/// [`FileSink`](crate::pack::FileSink); `FileStore::push`/`put_manifest` keep
+/// the historical (non-fsync) [`write_manifest`].
+pub(crate) fn write_manifest_durable(
+    manifest: &Manifest,
+    target: &Path,
+    id: &str,
+    hasher: &impl Hasher,
+) -> Result<(), StoreError> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    // Same verify-before-write discipline as `write_manifest`.
+    let actual = snapdir_core::merkle::snapshot_id(manifest, hasher);
+    if actual != id {
+        return Err(StoreError::Integrity {
+            address: target.display().to_string(),
+            expected: id.to_owned(),
+            actual,
+        });
+    }
+
+    let mut text = manifest.to_string();
+    text.push('\n');
+
+    let tmp = temp_sibling(target);
+    {
+        // Write + fsync the temp file's data, THEN rename. fsyncing before the
+        // rename guarantees the bytes are stable before the directory entry
+        // that publishes them.
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        crate::fsync::sync_file_data(&file)?;
+    }
+    fs::rename(&tmp, target)?;
+
+    // fsync the parent shard directory so the rename (the new directory entry)
+    // is itself durable — this is the single ordering barrier for the manifest.
+    if let Some(parent) = target.parent() {
+        crate::fsync::sync_dir(parent)?;
+    }
     Ok(())
 }
 
