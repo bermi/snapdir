@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 28 IN PROGRESS — 9/17 — objects-store split + `diff` (193/201 total) — FIRST adversarial-triple phase
+## ▶ PHASE 28 IN PROGRESS — 10/17 — objects-store split + `diff` (194/201 total) — FIRST adversarial-triple phase
 
 > **Model in effect:** each testable feature is an `adversary`→lane-impl→`adversary`-review triple (see `PM_PROMPT.md` → "Adversarial test separation").
 > ✅ **3 features COMPLETE** (each a full triple — suite adversary-owned, zero weakening, strengthened on review, no bug found):
@@ -11,7 +11,8 @@
 > &nbsp;&nbsp;• **`manifest-listing`** — `list_manifest_ids` (StreamStore-default-fail-closed + FileStore-shard-walk / S3+GCS / B2 / `SplitStore`→manifests); **17→22** tests. code `84b6a2d`/`a23bf97`.
 > &nbsp;&nbsp;• **`objects-store-cli`** — **`--objects-store` / `$SNAPDIR_OBJECTS_STORE`** (the user-facing "one shared pool, many manifest locations" — scheduled inventories without re-uploading objects; wraps `SplitStore`, external-rejected both sides, unset==unchanged, catalog records `--store`); **11→17** e2e tests (review added error-msg exactness, flag>env-poison, `store_is_external` split-is-in-process). code `9a4e84d`/`8dcae54` (last @ 2026-06-11T23:38:58Z). NON-BUG NOTE: missing-`--store` on push hits the cli.rs:677 guard (names `--store`, clean/no-panic), not the :1270 `$SNAPDIR_STORE` message.
 > **Model proven:** independent spec & impl agree first-run; impl can't weaken the suite (PM-fence rename + adversary diff/help-snapshot audit); review adds coverage a self-tester wouldn't (fault injection, boundary attacks, error-exactness on now-visible internals).
-> **Next gate:** `diff-command-spec-tests` (adversary, black-box authoring) — id-ascending picks it over `sync-objects-split-spec-tests` (both ready, both deps met). The two remaining feature triples — **`diff-command`** (manifests-only `snapdir diff` across multiple paths per side) and **`sync-objects-split`** (bucket-to-bucket `sync --from-objects/--to-objects`) — interleave by id; then `split-diff-docs` + `phase28-complete`.
+> **Feature 4 in progress — `diff-command`:** spec-tests ✅ `diff-command-spec-tests` (adversary, black-box authoring @ 2026-06-11T23:46:57Z, attestation YES) — **19 e2e `#[test]`** staged for `snapdir diff`. Headline **manifests-only contract** pinned by 2 tests (sabotaged + absent `.objects`, fresh cache → diff still succeeds); plus A/D/M + `--all`, `--exit-code` both branches, multi-ref union, intra-side collision (error default + `--on-conflict last-wins`), `--json` shape, mode-only/size-only=`M`, empty/identical, unicode/space stable byte-sort, direction-flip, `--id` pinning.
+> **Next gate:** `diff-command-impl` (cli) — implement `snapdir diff` (manifests-only: `get_manifest` + `list_manifest_ids`, NEVER an object store) + take over the 19 staged tests. Then the LAST feature triple `sync-objects-split` (bucket-to-bucket `sync --from-objects/--to-objects`); then `split-diff-docs` + `phase28-complete`.
 > **Next gate:** `split-store-impl` (stores) — implement `SplitStore` in `crates/snapdir-stores/src/split.rs` (Store + StreamStore delegation, shared push/fetch helper) AND **take over** the staged tests: move `.gatesmith/pending-tests/split.rs` → `crates/snapdir-stores/tests/split.rs`, fixing only wiring/compile (never weakening). Verified by `cargo test -p snapdir-stores --test split` going green + the staged file being consumed.
 
 ## ✅ PHASE 27 COMPLETE — 10/10 — SNAPPACK zstd + recv-pack durability — UNRELEASED (release-gated, see follow-up)
