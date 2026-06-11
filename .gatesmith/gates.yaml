@@ -3282,7 +3282,9 @@ gates:
     phase: 27
     owner_agent: bench
     depends_on: [recv-fsync-batch-stores, wire2-zstd-format-stores]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T20:15:22Z
+    git_sha: f5c42c7
     failure_count: 0
     verification_cmd: "cargo bench -p snapdir-benches --bench snappack -- --test"
     pass_criteria:
