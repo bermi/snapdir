@@ -3,12 +3,16 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 27 IN PROGRESS — 2/10 — SNAPPACK perf/durability (176/201 total)
+## ▶ PHASE 27 IN PROGRESS — 3/10 — SNAPPACK perf/durability (177/201 total)
 
-> **Receive-pack durability is now COMPLETE end-to-end** (stores barrier + CLI knob):
-> **Last passed:** `recv-fsync-knob-cli` ✅ (cli, code `ed8906a` @ 2026-06-11T19:11:59Z) — `SNAPDIR_FSYNC=batch|off` env knob in `run_receive_pack` (default `batch`; `off` accepted; any other value = fail-closed hard error) → `FileSink::with_durability`. Also overrode `RecordingSink::flush_barrier` to delegate to its inner sink — the prior tick's cross-lane gap: without it the no-op `PackSink` default swallowed the barrier and Batch durability never activated through the recording path. Env-only, NO new CLI flags (`--help`/version snapshots byte-stable). 16 plumbing tests green. Verified after a full `cargo build --workspace` (plumbing drives the flagship `snapdir` bin, which `-p snapdir-cli` does not rebuild).
-> **Prior:** `recv-fsync-batch-stores` ✅ (stores, code `aff3e0d`) — cfg-gated `src/fsync.rs` over libc; `PackSink::flush_barrier()` before `put_manifest`; `FileSink` `Durability` + `write_manifest_durable`; exactly 2 full syncs/pack; `FileStore::push`/`put_object` untouched; library env-free. 32 `pack` tests green.
-> **Next ready:** `wire2-zstd-format-stores` (stores) — the remaining Phase-27 root (deps on phase26-complete, satisfied); then `wire2-zstd-cli` → `wire2-zstd-ssh` → `wire2-compat-matrix`, plus `dist-smoke-musl`/`snappack-bench`/`snappack-docs`.
+> **Last passed:** `wire2-zstd-format-stores` ✅ (stores, code `bad2a7f` @ 2026-06-11T19:22:35Z) — SNAPPACK 1Z additive zstd transport: `WIRE_MAGIC_ZSTD "SNAPPACK 1Z\n"`, whole post-magic stream = one zstd frame of the unchanged record grammar; `read_pack` sniffs the magic → zstd Decoder feeds the UNCHANGED parser (incremental BLAKE3 untouched); receiver accepts v1 AND 1Z forever; `snappack-zstd` appended to `WIRE_CAPS`, **`WIRE_VERSION` stays 1** (older peers ignore the unknown cap — no dumb fallback). Bounds enforced on decompressed bytes; level 3 default (1..=19 param, library env-free). New dep `zstd 0.13` on snapdir-stores only. 43 `pack` tests green; `cargo deny` ok. **Crate-age verification PM-attested** (registry scan is network-slow): `Cargo.lock` diff = +5 crates / 0 removed / 0 version-bumps; all 5 new crates clear the 3-day floor (jobserver 291d, pkg-config 60d, zstd 475d, zstd-safe 448d, zstd-sys 280d), every other crate pre-existing & age-monotonic, scan 267/442 @ 0-FAIL when stopped, teammate's pre-run executed the full command green → `AGE_EXIT=0` guaranteed. LANE-FENCE-EXC: `Cargo.lock` delta with the in-lane `zstd` dep add.
+> **Next ready:** `wire2-zstd-cli` (cli) — `--pack-format`/runtime zstd selection on the CLI seam; then `wire2-zstd-ssh` → `wire2-compat-matrix`; plus `dist-smoke-musl` (ci, now unblocked — prove zstd-sys under musl static), `snappack-bench`, `snappack-docs`.
+
+## ✅ Receive-pack durability COMPLETE end-to-end (stores barrier + CLI knob) — phase-27 gates 1-2
+
+> **`recv-fsync-knob-cli`** ✅ (cli, code `ed8906a`) — `SNAPDIR_FSYNC=batch|off` env knob in `run_receive_pack` (default `batch`; fail-closed on unknown) → `FileSink::with_durability`; overrode `RecordingSink::flush_barrier` to delegate (closed the cross-lane gap where the no-op default swallowed the barrier). No new CLI flags; 16 plumbing tests green.
+> **`recv-fsync-batch-stores`** ✅ (stores, code `aff3e0d`) — cfg-gated `src/fsync.rs` over libc; `PackSink::flush_barrier()` before `put_manifest`; `FileSink` `Durability` + `write_manifest_durable`; exactly 2 full syncs/pack; `FileStore::push`/`put_object` untouched; library env-free. 32 `pack` tests green.
+
 > **Phase 28 registered (17 gates):** `--objects-store` shared-pool/manifest-location split (SplitStore) + manifest-listing + split-aware sync + manifests-only `diff`, authored under the NEW **adversarial test separation** model — each testable feature is an `adversary`→lane-impl→`adversary`-review triple (see PM_PROMPT "Adversarial test separation"). Gated on `phase27-complete`.
 
 ## ✅ PHASE 25 COMPLETE — 5/5 — snapdir 1.5.0 RELEASED (2026-06-10); PHASE 26 NEXT (170/184 total)

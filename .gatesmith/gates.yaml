@@ -3213,7 +3213,9 @@ gates:
     phase: 27
     owner_agent: stores
     depends_on: [phase26-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T19:22:35Z
+    git_sha: bad2a7f
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores pack --locked && cargo deny --workspace --all-features check && utils/ci/check-crate-age.sh"
     pass_criteria:
