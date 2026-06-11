@@ -3310,3 +3310,243 @@ gates:
         - human_confirm: "Phase 27 done: receive-pack is crash-durable by default (batched, 2 full syncs per pack, manifest-last now holds across power loss on journaling filesystems) and SNAPPACK 1Z zstd compression auto-negotiates with full back/forward compat (wire stays 1; 1.5.0 peers get v1). Measured bench numbers presented (compression ratio on the small-files scenario; batch-vs-off delta <=5%). Release as 1.6.0 is a separate future phase. Approve?"
     human_checkpoint: true
     description: "PHASE 27 SIGN-OFF: SNAPPACK perf/durability per the operator-approved plan — batched receiver durability (SNAPDIR_FSYNC=batch default) + additive zstd wire (snappack-zstd cap, SNAPPACK 1Z, receiver sniffs) + compat matrix + musl proof + benches + docs. PM presents the measured numbers from snappack-bench evidence at this checkpoint."
+
+  # ===================================================================
+  # Phase 28 — Split object pool from manifest location + `diff`
+  #   (lanes: stores, cli, docs, tests)
+  #
+  # NET-NEW Rust features with NO Bash-oracle equivalent: the frozen oracle
+  # (./snapdir, ./snapdir-manifest, snapdir-*-store) has no --objects-store,
+  # no split store, and no `diff`. There is therefore NO oracle-parity check
+  # for these gates — correctness is pinned by in-tree Rust tests + byte-for-
+  # byte LAYOUT parity against a colocated store (a split push must produce the
+  # exact same .objects/.manifests bytes the oracle would, just under two
+  # prefixes). The objects-before-manifest / manifest-last / all-or-nothing /
+  # BLAKE3-verify invariants are FROZEN and must hold through the split.
+  #
+  # Goal: one shared .objects pool + many manifest locations (caller owns the
+  # layout — date/host/env), so scheduled inventories cost only changed bytes;
+  # then `diff` compares manifest locations (multiple paths per side) reading
+  # MANIFESTS ONLY (never downloads objects). Plan: .claude/plans/
+  # how-can-snapdir-have-binary-lighthouse.md
+  # ===================================================================
+  # --- Feature: split-store (adversary -> stores -> adversary) ---
+  - id: split-store-spec-tests
+    phase: 28
+    owner_agent: adversary
+    depends_on: [phase27-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/split.rs && grep -cF 'test]' .gatesmith/pending-tests/split.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [.gatesmith/pending-tests/split.rs]
+    human_checkpoint: false
+    description: "ADVERSARY (black-box, no impl visibility — SplitStore does not exist yet). Author critical tests to .gatesmith/pending-tests/split.rs from this SPEC. SPEC: a SplitStore wraps two stores — an `objects` pool (only its .objects/ used) and a `manifests` location (only its .manifests/ used); object ops (has_object/get_object/put_object/objects_needed) route to objects, manifest ops (get_manifest/put_manifest) route to manifests; push uploads objects to the pool then writes the manifest LAST to the manifest location (objects-before-manifest, all-or-nothing); fetch reads file objects from the pool. INVARIANTS to pin: (a) two manifest prefixes A/B sharing one objects pool — pushing the same tree to A then B uploads ZERO new objects (count .objects entries unchanged); (b) push->fetch byte-identical round trip; (c) LAYOUT PARITY: .objects bytes + the A-manifest bytes byte-for-byte identical to a single colocated FileStore push. FAILURE MODES: a manifest present but an object missing must error (never a silent half-snapshot); a corrupted/edited blob fails BLAKE3 verify on read; fetch into a non-empty/clashing dest; empty tree; duplicate-content files dedupe to one object; an interrupted push leaves NO manifest. Prefer integration tests over two FileStore temp dirs. These cannot pass until the impl lands — do not weaken them."
+  - id: split-store-impl
+    phase: 28
+    owner_agent: stores
+    depends_on: [split-store-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --test split --locked && test ! -f .gatesmith/pending-tests/split.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-stores/src/split.rs, crates/snapdir-stores/tests/split.rs]
+    human_checkpoint: false
+    description: "Implement SplitStore and TAKE OVER the adversary's staged tests (move .gatesmith/pending-tests/split.rs -> crates/snapdir-stores/tests/split.rs, fixing only compile/shape; never weaken an assertion). Composite SplitStore { objects: Box<dyn StreamStore + Sync>, manifests: Box<dyn StreamStore + Sync> } — objects side serves ONLY its .objects/ pool, manifests side ONLY its .manifests/. Lane exc: crates/snapdir-stores/src/split.rs + the single `pub mod split;`/re-export line in lib.rs + wiring the staged test into crates/snapdir-stores/tests/split.rs. impl StreamStore: has_object/get_object/put_object/objects_needed -> objects; put_manifest -> manifests. impl Store: get_manifest -> manifests; push = manifest-present fast-path probed on MANIFESTS, per-object skip probed on objects.has_object, blobs uploaded to objects, then put_manifest to manifests LAST (objects-before-manifest + all-or-nothing preserved); fetch_files reads file objects from objects and materializes to dest reusing the per-entry materialization path already used by the backends (don't duplicate perms/dir/symlink handling). Factor a shared 'upload local file objects into a StreamStore then put_manifest' helper rather than copy-pasting file_store.rs:386 push / sync.rs copy loop. Source-only otherwise: no NET-NEW test files beyond the staged one, no inline #[cfg(test)] in src. External (custom://) sides are rejected at the CLI seam (objects-store-cli-impl)."
+  - id: split-store-tests-review
+    phase: 28
+    owner_agent: adversary
+    depends_on: [split-store-impl]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --test split --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY REVIEW. Read the landed crates/snapdir-stores/src/split.rs and crates/snapdir-stores/tests/split.rs; diff the test file against the staged original (.gatesmith/pending-tests/split.rs in git history / the spec-tests handoff). Restore any assertion the stores lane weakened or any case it dropped; add cases the now-visible impl reveals (e.g. the objects-before-manifest ordering under a mid-push failure injection, objects_needed delegation, fetch verify-retry). If a strengthened assertion fails against current code, that is a real bug -> PM reopens split-store-impl. Test artifacts only; never edit src."
+  # --- Feature: manifest-listing (adversary -> stores -> adversary) ---
+  - id: manifest-listing-spec-tests
+    phase: 28
+    owner_agent: adversary
+    depends_on: [split-store-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/manifest_list.rs && grep -cF 'test]' .gatesmith/pending-tests/manifest_list.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [.gatesmith/pending-tests/manifest_list.rs]
+    human_checkpoint: false
+    description: "ADVERSARY (black-box). Author tests to .gatesmith/pending-tests/manifest_list.rs from SPEC: a new primitive list_manifest_ids(&self) -> Result<Vec<String>, StoreError> enumerates the snapshot ids under a store prefix's .manifests/ tree. CONTRACT to pin: each id returned at most once; only valid 64-lowercase-hex ids (^[0-9a-f]{64}$) — stray/non-manifest keys ignored, not errored; order unspecified (caller sorts, so SORT in the test before asserting). FAILURE MODES + EDGE CASES: empty prefix -> empty vec (not error); a prefix that SHARES an objects pool with other prefixes lists ONLY its own manifests, never the pool's objects; a malformed/short shard path under .manifests/ is skipped; default impl on a non-listing store fails closed (StoreError). Use FileStore temp dirs round-tripping a known id set. Cannot pass until impl lands."
+  - id: manifest-listing-impl
+    phase: 28
+    owner_agent: stores
+    depends_on: [manifest-listing-spec-tests, split-store-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --test manifest_list --locked && test ! -f .gatesmith/pending-tests/manifest_list.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-stores/tests/manifest_list.rs]
+    human_checkpoint: false
+    description: "Implement the manifest-enumeration primitive and take over the staged tests (move pending-tests/manifest_list.rs -> crates/snapdir-stores/tests/manifest_list.rs). Add list_manifest_ids(&self) -> Result<Vec<String>, StoreError>: FileStore walks .manifests/ and reconstructs the 64-hex id from the 3/3/3/rest shard segments; S3Store/GcsStore List under <prefix>/.manifests/ (reuse the async/block_on + pagination pattern from objects_needed/has_object); B2Store delegates to its inner S3Store. Place on StreamStore with a DEFAULT impl returning StoreError::Backend('listing unsupported') so the external shim fails closed; the four in-process backends override. Validate ids against ^[0-9a-f]{64}$, dedupe, ignore stray keys. Lane exc: crates/snapdir-stores/src/{stream.rs,file_store.rs,s3_store.rs,gcs_store.rs,b2_store.rs} + wiring the staged test. Source-only; no net-new tests, no inline #[cfg(test)] in src."
+  - id: manifest-listing-tests-review
+    phase: 28
+    owner_agent: adversary
+    depends_on: [manifest-listing-impl]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --test manifest_list --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY REVIEW of list_manifest_ids. Diff landed tests vs the staged original; restore weakened assertions; add cases the impl reveals (shard-reconstruction off-by-one, non-hex/short key rejection, default-impl fail-closed path, dedupe). Strengthened failure -> reopen manifest-listing-impl. Test artifacts only."
+  # --- Feature: objects-store-cli (adversary -> cli -> adversary) ---
+  - id: objects-store-cli-spec-tests
+    phase: 28
+    owner_agent: adversary
+    depends_on: [split-store-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/objects_store.rs && grep -cF 'test]' .gatesmith/pending-tests/objects_store.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [.gatesmith/pending-tests/objects_store.rs]
+    human_checkpoint: false
+    description: "ADVERSARY (black-box). Author tests to .gatesmith/pending-tests/objects_store.rs from SPEC: a global --objects-store / $SNAPDIR_OBJECTS_STORE flag holds a shared object pool while --store holds the (per-capture) manifest location; when set, push/fetch/pull route objects to the pool and manifests to --store; when UNSET, behavior is byte-for-byte unchanged. CONTRACT/INVARIANTS to pin via the file:// CLI end-to-end (no creds): (a) push a tree to manifest prefix cap-A then to cap-B with one shared --objects-store -> the .objects pool holds exactly ONE copy of each blob; both manifests resolve + fetch byte-identical; (b) backward compat: an existing colocated push/pull (no --objects-store) still works identically. FAILURE MODES: an external custom:// on either --objects-store or --store is REJECTED with an actionable error (in-process adapters only); --objects-store set but --store missing; pulling cap-B with the WRONG/empty objects pool fails (objects not found), with the right pool succeeds; the catalog records the MANIFEST-side URI. Drive the real `snapdir` binary. Cannot pass until impl lands."
+  - id: objects-store-cli-impl
+    phase: 28
+    owner_agent: cli
+    depends_on: [objects-store-cli-spec-tests, split-store-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test objects_store --locked && test ! -f .gatesmith/pending-tests/objects_store.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-cli/tests/objects_store.rs]
+    human_checkpoint: false
+    description: "Wire --objects-store and take over the staged tests (move pending-tests/objects_store.rs -> crates/snapdir-cli/tests/objects_store.rs). Global --objects-store / $SNAPDIR_OBJECTS_STORE on GlobalArgs (cli.rs:~85), value_name=URI, global=true (same shape as --store). When set: resolve_store (cli.rs:1179) and resolve_stream_store (cli.rs:1669) build BOTH inner stores via stream_store_for_adapter (objects = --objects-store, manifests = --store) and wrap in SplitStore; when unset, behavior is byte-for-byte UNCHANGED. Both sides must be in-process StreamStore adapters (file/s3/b2/gcs); an external custom:// on either side is rejected with the same actionable error class sync uses (stream_store_for_adapter cli.rs:1875). Catalog: record the MANIFEST-side URI (--store). Lane exc: crates/snapdir-cli/src/cli.rs + wiring the staged test. Source-only; no net-new tests, no inline #[cfg(test)] in src."
+  - id: objects-store-cli-tests-review
+    phase: 28
+    owner_agent: adversary
+    depends_on: [objects-store-cli-impl]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test objects_store --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY REVIEW of --objects-store. Diff landed tests vs staged; restore weakened cases; add cases the impl reveals (external-adapter rejection on EACH side, unset==unchanged regression, wrong-pool pull failure, catalog records manifest URI). Strengthened failure -> reopen objects-store-cli-impl. Test artifacts only."
+  # --- Feature: sync-objects-split (adversary -> cli -> adversary) ---
+  - id: sync-objects-split-spec-tests
+    phase: 28
+    owner_agent: adversary
+    depends_on: [objects-store-cli-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/sync_split.rs && grep -cF 'test]' .gatesmith/pending-tests/sync_split.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [.gatesmith/pending-tests/sync_split.rs]
+    human_checkpoint: false
+    description: "ADVERSARY (black-box). Author tests to .gatesmith/pending-tests/sync_split.rs from SPEC: bucket-to-bucket sync gains --from-objects / --to-objects (explicit per-side object-pool URIs, distinct from the global --objects-store because source and dest can be different buckets). When a side's *-objects flag is present that side is a split store (objects=flag, manifests=--from/--to); absent => colocated as today. INVARIANTS to pin (file:// pools, no creds): (a) cross-pool sync where the DEST object pool ALREADY holds the blobs -> the manifest is copied but ZERO objects are re-copied (assert the SyncReport skipped count, not wall-clock); (b) both-sides-split round trip byte-identical. FAILURE MODES/PERF: only --from-objects set (asymmetric); dest manifest already present -> whole sync is a no-op; a missing source object surfaces an error and writes NO dest manifest; assert manifest-last holds (kill-before-manifest leaves dest without the manifest). Cannot pass until impl lands."
+  - id: sync-objects-split-impl
+    phase: 28
+    owner_agent: cli
+    depends_on: [sync-objects-split-spec-tests, objects-store-cli-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test sync_split --locked && test ! -f .gatesmith/pending-tests/sync_split.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-cli/tests/sync_split.rs]
+    human_checkpoint: false
+    description: "Add --from-objects / --to-objects to the Sync subcommand (cli.rs:306) and take over the staged tests (move pending-tests/sync_split.rs -> crates/snapdir-cli/tests/sync_split.rs). When a side's *-objects flag is present, wrap THAT side in a SplitStore(objects=flag, manifests=--from/--to); absent => plain colocated store. sync_snapshot (sync.rs:89) signature is UNCHANGED — a SplitStore IS a StreamStore, so the copy loop routes get_manifest/get_object from the source's manifest/object locations and put_object/put_manifest to the dest's, with the dest manifest-present fast-path and per-object has_object skip resolving against the correct split sides. Lane exc: crates/snapdir-cli/src/cli.rs run_sync (cli.rs:1458) + wiring the staged test. Source-only; no net-new tests, no inline #[cfg(test)] in src."
+  - id: sync-objects-split-tests-review
+    phase: 28
+    owner_agent: adversary
+    depends_on: [sync-objects-split-impl]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test sync_split --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY REVIEW of split-aware sync. Diff landed tests vs staged; restore weakened cases; add cases the impl reveals (asymmetric one-side-split, dest-manifest-present no-op, manifest-last under injected failure, skip-count exactness). Strengthened failure -> reopen sync-objects-split-impl. Test artifacts only."
+  # --- Feature: diff-command (adversary -> cli -> adversary) ---
+  - id: diff-command-spec-tests
+    phase: 28
+    owner_agent: adversary
+    depends_on: [manifest-listing-tests-review, objects-store-cli-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/diff.rs && grep -cF 'test]' .gatesmith/pending-tests/diff.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [.gatesmith/pending-tests/diff.rs]
+    human_checkpoint: false
+    description: "ADVERSARY (black-box). Author tests to .gatesmith/pending-tests/diff.rs from SPEC: a new `snapdir diff` subcommand takes --from <ref> (repeatable) and --to <ref> (repeatable); each ref selects manifests from a manifest-store prefix (via list_manifest_ids) and/or an explicit id; multiple refs per side are UNIONED into a path -> (path_type, permissions, checksum, size) map. Classify by path: in TO not FROM = A, in FROM not TO = D, in both with differing checksum = M (surface mode/size-only deltas too), equal = hidden unless --all. Output porcelain 'X\\t./path' (X in A|D|M) sorted by path, plus --json (array of {status,path,...}). CRITICAL CONTRACT: diff reads MANIFESTS ONLY — it must NEVER construct an object store or download a blob; PIN THIS by running diff against a manifest store whose .objects pool is bogus/absent and asserting success. PERF/EXIT/EDGE: --exit-code makes any difference exit 1 (git semantics), default exit 0; intra-side path collision (same path, differing content across two refs on one side) defaults to ERROR, --on-conflict last-wins overrides; empty-vs-empty = no output exit 0; identical manifests = no output; unicode/space paths sort stably. Use manifest fixtures, NO objects. Cannot pass until impl lands."
+  - id: diff-command-impl
+    phase: 28
+    owner_agent: cli
+    depends_on: [diff-command-spec-tests, manifest-listing-tests-review, objects-store-cli-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test diff --locked && test ! -f .gatesmith/pending-tests/diff.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-cli/tests/diff.rs]
+    human_checkpoint: false
+    description: "Implement `diff` + run_diff and take over the staged tests (move pending-tests/diff.rs -> crates/snapdir-cli/tests/diff.rs). Surface: --from/--to repeatable refs, each selecting manifests from a prefix via list_manifest_ids and/or explicit id; union per side. Reads MANIFESTS ONLY via get_manifest (BLAKE3-verified) — never constructs an object store, never downloads blobs. Build path -> (path_type, permissions, checksum, size) per side; classify A/D/M (+mode/size deltas), equal hidden unless --all. Output porcelain 'X\\t./path' sorted, plus --json. Exit 0 default; --exit-code => 1 on any difference. Intra-side collision: default ERROR, --on-conflict {error|last-wins}. Lane exc: crates/snapdir-cli/src/cli.rs (Diff variant + run_diff + formatting) + wiring the staged test. Source-only; no net-new tests, no inline #[cfg(test)] in src."
+  - id: diff-command-tests-review
+    phase: 28
+    owner_agent: adversary
+    depends_on: [diff-command-impl]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test diff --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY REVIEW of `diff`. Diff landed tests vs staged; restore weakened cases; HARD-VERIFY the manifests-only contract still holds (bogus .objects pool) and that the coder did not relax it; add cases the impl reveals (mode/size-only M, --json schema, multi-ref union dedupe, collision error+last-wins, --exit-code). Strengthened failure -> reopen diff-command-impl. Test artifacts only."
+  - id: split-diff-docs
+    phase: 28
+    owner_agent: docs
+    depends_on: [diff-command-tests-review, sync-objects-split-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "typos README.md crates/snapdir/README.md docs/ CHANGELOG.md && grep -q 'objects-store' crates/snapdir/README.md && grep -Eq 'snapdir diff' crates/snapdir/README.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Document the scheduled-inventory workflow end to end. Lane exc: docs/markdown only (crates/snapdir/README.md, docs/, CHANGELOG.md) + CLI help/usage strings if the help text lives in doc-comment form. Cover: (1) the shared --objects-store + per-capture manifest-path model (caller owns the layout: by date/host/env), with the insight that re-pushing to the same pool only costs changed bytes; (2) bucket-to-bucket `sync --from-objects/--to-objects`; (3) `snapdir diff` (multiple paths per side, manifests-only, A/D/M, --json, --exit-code, --on-conflict). Update flagship crates/snapdir/README.md, the CLI usage/help, and CHANGELOG [Unreleased]. Accuracy rule: verify every flag/env name against the LANDED code (--objects-store, $SNAPDIR_OBJECTS_STORE, --from-objects/--to-objects, diff flags)."
+  - id: phase28-complete
+    phase: 28
+    owner_agent: generic
+    depends_on: [split-store-tests-review, manifest-listing-tests-review, objects-store-cli-tests-review, sync-objects-split-tests-review, diff-command-tests-review, split-diff-docs]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 28 done: --objects-store / $SNAPDIR_OBJECTS_STORE splits one shared .objects pool from many manifest locations (caller owns the layout), composing with push/pull AND bucket-to-bucket sync (--from-objects/--to-objects); `snapdir diff` compares multiple manifest paths per side reading manifests only (A/D/M, --json, --exit-code). Layout stays byte-for-byte oracle-compatible; objects-before-manifest / all-or-nothing / BLAKE3-verify invariants hold through the split. Net-new features (no Bash oracle). Approve? (Release versioning is a separate future phase.)"
+    human_checkpoint: true
+    description: "PHASE 28 SIGN-OFF: split object pool from manifest location (--objects-store, SplitStore) + manifest-only `diff` across multiple paths per side + split-aware sync, per the operator-approved plan (.claude/plans/how-can-snapdir-have-binary-lighthouse.md). PM presents: zero-re-upload evidence across manifest prefixes, sync skip-count evidence, and a diff A/D/M run from the evidence dir."

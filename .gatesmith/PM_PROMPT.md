@@ -26,10 +26,58 @@ area.) Out-of-lane diffs fail the fence.
 | `stores` | `crates/snapdir-stores/` |
 | `cli` | `crates/snapdir-cli/` |
 | `tests` | `tests/` |
+| `adversary` | `.gatesmith/pending-tests/` (authoring), `crates/*/tests/`, `tests/` (review) — TEST artifacts only, never `src/`. The independent test-author; see "Adversarial test separation" below. |
 | `bench` | `benches/` |
 | `docs` | `docs/rust-port/`, `README.md`, `CONTRIBUTING.md`, `docs/` (root-level public docs; the docs lane may delete the bash-era legacy docs here) |
 | `packaging` | `packaging/`, `.github/workflows/release.yml` |
 | `generic` | gate-scoped cross-cutting jobs the PM scopes explicitly |
+
+### Adversarial test separation (test-author ≠ feature-author)
+
+Production code and its tests are written by **different** teammates, and you (the PM)
+coordinate every handover. A lane owner writes **production source only**; an
+independent **`adversary`** teammate authors and finalizes all test code. A testable
+code feature is therefore a **triple** of gates, run in order via the normal one-gate-
+per-tick loop:
+
+1. **`<feature>-spec-tests`** — `owner_agent: adversary`, **depends_on the impl gate's
+   own deps but NOT the impl gate** (it runs FIRST). The adversary writes a critical
+   suite (non-happy paths, edge cases, performance validations, contract correctness)
+   from the **gate SPEC only, with zero visibility into the implementation** (which
+   does not exist yet), into `.gatesmith/pending-tests/<feature>.rs`. Verified
+   structurally (the staged file exists + has `#[test]`s + names the contracted
+   symbols), not by `cargo test` — it is expected to be un-passable until impl lands.
+2. **`<feature>-impl`** — `owner_agent:` the lane (stores/cli/core/…), `depends_on:
+   [<feature>-spec-tests]`. The lane owner implements `src/` **and takes over** the
+   staged tests: moves `.gatesmith/pending-tests/<feature>.rs` into
+   `crates/<crate>/tests/<feature>.rs` and fixes only wiring/shape. Verified by
+   `cargo test` going green + clippy.
+3. **`<feature>-tests-review`** — `owner_agent: adversary`, `depends_on:
+   [<feature>-impl]`. The adversary reviews the landed tests against the staged
+   originals, restores any weakened assertion, and adds cases the now-visible impl
+   reveals. Verified by `cargo test` green + the adversary's weakening-audit handoff.
+
+**Reopen rule (the orchestration you own):** if a `*-tests-review` gate STRENGTHENS a
+test such that it now fails against the current `src/`, that is a real bug, not a test
+failure. Mark `<feature>-impl` `failed` (increment its `failure_count`, journal
+`reopened-by-review: <feature>-tests-review`), leave the strengthened test committed,
+and let the next tick re-spawn the lane owner to fix `src/`. The test belongs to the
+adversary; the lane owner may never weaken it to pass.
+
+**Fence specialization (applied in step 5):**
+- `adversary` gates: the diff must touch **test artifacts only** — `.gatesmith/pending-tests/`
+  (authoring) or `crates/*/tests/` + `tests/` (review). ANY `src/`, `Cargo.toml`, or
+  oracle change fails the fence.
+- `*-impl` gates: the lane owner's diff may touch its lane `src/` and **move/wire** the
+  one staged test file into `crates/<crate>/tests/`, but must **not** (a) add a NET-NEW
+  test file beyond the staged one, nor (b) introduce `#[test]` / `#[cfg(test)]` into
+  `src/`. Before committing, grep the impl diff: a staged `pending-tests/<feature>.rs`
+  must disappear and reappear under `crates/<crate>/tests/`; reject added `#[test]`/
+  `#[cfg(test)]` hunks in `src/`. Reject (mark `failed`, journal `tests-in-impl`) on
+  violation.
+
+This applies to all **testable code** features going forward (Phase 28 onward). Pure-
+docs, packaging, and CI-config gates keep a single owner (no adversary triple).
 
 ### Frozen interfaces
 
@@ -107,7 +155,7 @@ If any of the following is true, use `AskUserQuestion` with a precise single que
 ### 5. VERIFY
 
 - Read the handoff file at the path you specified.
-- **Lane fence:** run `git diff --stat HEAD` (and `--cached`). Every changed path must start with the teammate's lane prefix (one of `the lane directories in the Lanes table above`) or `.gatesmith/evidence/` or `.gatesmith/handoff/`. Out-of-lane diff → reject:
+- **Lane fence:** run `git diff --stat HEAD` (and `--cached`). Every changed path must start with the teammate's lane prefix (one of `the lane directories in the Lanes table above`) or `.gatesmith/evidence/` or `.gatesmith/handoff/` or `.gatesmith/pending-tests/`. For `adversary` and `*-impl` gates, ALSO apply the **fence specialization** in "Adversarial test separation" above (adversary = test artifacts only; impl = source + wiring the one staged test, no net-new/inline tests). Out-of-lane diff → reject:
   - Mark gate `failed`, increment `failure_count`, journal `out-of-lane: <paths>`.
   - **Do not commit.** Leave the diff for the human to inspect; print the offending paths in the tick summary.
 - **Re-run verification:** execute `gate.verification_cmd` from the repo root. Capture stdout+stderr to `.gatesmith/evidence/<gate-id>-<utc-iso>.log`.
