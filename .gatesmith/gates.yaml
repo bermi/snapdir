@@ -3430,7 +3430,9 @@ gates:
     phase: 28
     owner_agent: adversary
     depends_on: [manifest-listing-impl]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T23:16:55Z
+    git_sha: a23bf97
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --test manifest_list --locked"
     pass_criteria:
