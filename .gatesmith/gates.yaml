@@ -3319,7 +3319,9 @@ gates:
     phase: 27
     owner_agent: generic
     depends_on: [recv-fsync-batch-stores, recv-fsync-knob-cli, wire2-zstd-format-stores, wire2-zstd-cli, wire2-zstd-ssh, wire2-compat-matrix, dist-smoke-musl, snappack-bench, snappack-docs]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T22:19:53Z
+    git_sha: db1e90e
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked"
     pass_criteria:
