@@ -3302,7 +3302,9 @@ gates:
     phase: 27
     owner_agent: docs
     depends_on: [wire2-zstd-ssh, recv-fsync-knob-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T21:05:03Z
+    git_sha: 29e892f
     failure_count: 0
     verification_cmd: "typos README.md docs/ && grep -q 'SNAPPACK 1Z' docs/rust-port/ssh-wire-protocol.md && grep -q 'SNAPDIR_FSYNC' docs/rust-port/ssh-wire-protocol.md"
     pass_criteria:
