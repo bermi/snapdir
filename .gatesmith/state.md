@@ -3,6 +3,13 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
+## ▶ PHASE 27 IN PROGRESS — 1/10 — SNAPPACK perf/durability (175/201 total)
+
+> **Last passed:** `recv-fsync-batch-stores` ✅ (stores, code `aff3e0d` @ 2026-06-11T18:54:23Z) — batched receive-pack crash-durability (Design A). New cfg-gated `crates/snapdir-stores/src/fsync.rs` over libc (no new lock crates): Linux `sync_file_range` writeout-hint per object + `WAIT_BEFORE|WRITE|WAIT_AFTER` barrier, macOS `fsync` writeout, `sync_data` fallback. `PackSink::flush_barrier()` (defaulted no-op) fires in `read_pack`'s end arm BEFORE `put_manifest`; `FileSink` gains `Durability` (Off/Batch) + `with_durability`; manifests commit via `write_manifest_durable` (fsync temp→rename→fsync parent shard dir). Exactly 2 full syncs/pack; per-record rename visibility (resume) preserved; `FileStore::push`/`put_object` untouched; library env-free. 32 `pack` tests green. LANE-FENCE-EXC: 1-line `Cargo.lock` delta accompanying the in-lane `libc` dep add.
+> **Cross-lane note (for a later CLI gate):** the CLI `RecordingSink` (`crates/snapdir-cli/src/cli.rs`) does not override `flush_barrier`, so it inherits the no-op default — `recv-fsync-knob-cli` must make it delegate to the inner sink AND call `.with_durability(...)` from its env knob to activate durability end-to-end.
+> **Next ready:** `wire2-zstd-format-stores` (stores) — the other Phase-27 root (deps on phase26-complete, satisfied).
+> **Phase 28 registered (17 gates):** `--objects-store` shared-pool/manifest-location split (SplitStore) + manifest-listing + split-aware sync + manifests-only `diff`, authored under the NEW **adversarial test separation** model — each testable feature is an `adversary`→lane-impl→`adversary`-review triple (see PM_PROMPT "Adversarial test separation"). Gated on `phase27-complete`.
+
 ## ✅ PHASE 25 COMPLETE — 5/5 — snapdir 1.5.0 RELEASED (2026-06-10); PHASE 26 NEXT (170/184 total)
 
 > **snapdir 1.5.0 is RELEASED**: upstream/main `8cc8e0c`, tag `v1.5.0`, GitHub release live (13 signed assets incl. `snapdir-ssh-store` + `snapdir-sftp-store` bins), **all 5 crates** at 1.5.0 on crates.io. snapdir-ssh-store's FIRST publish hit crates.io's "TP tokens cannot create new crates" 403 → recovered: manual publish with the operator's keychain token + idempotent job rerun finished snapdir-cli via TP. OPERATOR FOLLOW-UP: add TP on the snapdir-ssh-store crate page. Phase 27 SNAPPACK recv-fsync-batch + wire2-zstd queued (10 gates, plan-approved; NOTE snapdir fsyncs NOTHING today — fsync gate ADDS crash-durability to manifest-last).
