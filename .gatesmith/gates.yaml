@@ -3198,7 +3198,9 @@ gates:
     phase: 27
     owner_agent: cli
     depends_on: [recv-fsync-batch-stores]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T19:11:59Z
+    git_sha: ed8906a
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test plumbing --locked"
     pass_criteria:
