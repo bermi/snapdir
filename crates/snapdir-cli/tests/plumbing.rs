@@ -624,3 +624,151 @@ fn plumbing_send_pack_malformed_id_emits_nothing() {
         "fail closed: not a single pack byte may be emitted"
     );
 }
+
+// ---------------------------------------------------------------------------
+// SNAPDIR_FSYNC durability knob (env-only; no CLI surface change)
+// ---------------------------------------------------------------------------
+
+/// Builds a minimal, VALID single-object pack stream (correct content address,
+/// terminated with `end\n`) — the smallest input that drives `receive-pack`
+/// all the way through filing + the durability barrier.
+fn valid_single_object_pack() -> (Vec<u8>, String) {
+    let payload = b"snapdir fsync knob payload";
+    let checksum = hex_of(payload);
+    let mut stream = b"SNAPPACK 1\n".to_vec();
+    stream.extend_from_slice(format!("obj {checksum} {}\n", payload.len()).as_bytes());
+    stream.extend_from_slice(payload);
+    stream.extend_from_slice(b"end\n");
+    (stream, checksum)
+}
+
+/// Runs `receive-pack` with `SNAPDIR_FSYNC` either set to `value` (`Some`) or
+/// explicitly removed (`None`), feeding `stdin_bytes` in. Mirrors
+/// `run_with_stdin` but pins the knob so a leaked parent env can't perturb it.
+fn run_recv_with_fsync(
+    cache: &Path,
+    store_url: &str,
+    fsync: Option<&str>,
+    stdin_bytes: &[u8],
+) -> Output {
+    let mut cmd = snapdir(cache);
+    cmd.args(["receive-pack", "--store", store_url]);
+    match fsync {
+        Some(v) => {
+            cmd.env("SNAPDIR_FSYNC", v);
+        }
+        None => {
+            cmd.env_remove("SNAPDIR_FSYNC");
+        }
+    }
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn receive-pack");
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(stdin_bytes)
+        .expect("write stdin");
+    child.wait_with_output().expect("receive-pack output")
+}
+
+/// Default (`SNAPDIR_FSYNC` unset) is the batched-durability path: a valid pack
+/// is accepted and the object lands byte-equal at its sharded address. This
+/// also exercises the end-to-end barrier (`RecordingSink::flush_barrier` must
+/// delegate, or the Batch durability would silently no-op).
+#[test]
+fn plumbing_fsync_default_is_batch_and_files_object() {
+    let cache = TempDir::new().unwrap();
+    let store_dir = TempDir::new().unwrap();
+    let store_url = format!("file://{}", store_dir.path().display());
+    let (stream, checksum) = valid_single_object_pack();
+
+    let out = run_recv_with_fsync(cache.path(), &store_url, None, &stream);
+    assert!(
+        out.status.success(),
+        "default receive-pack must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let filed = store_dir.path().join(object_path(&checksum));
+    assert!(filed.exists(), "object must be filed at its sharded path");
+    assert_eq!(
+        std::fs::read(&filed).unwrap(),
+        b"snapdir fsync knob payload",
+        "filed object must be byte-equal to the payload"
+    );
+}
+
+/// `SNAPDIR_FSYNC=off` is the historical no-fsync path and is accepted: the
+/// same valid pack still files the object correctly.
+#[test]
+fn plumbing_fsync_off_is_accepted_and_files_object() {
+    let cache = TempDir::new().unwrap();
+    let store_dir = TempDir::new().unwrap();
+    let store_url = format!("file://{}", store_dir.path().display());
+    let (stream, checksum) = valid_single_object_pack();
+
+    let out = run_recv_with_fsync(cache.path(), &store_url, Some("off"), &stream);
+    assert!(
+        out.status.success(),
+        "SNAPDIR_FSYNC=off must be accepted: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        store_dir.path().join(object_path(&checksum)).exists(),
+        "object must be filed under SNAPDIR_FSYNC=off"
+    );
+}
+
+/// `SNAPDIR_FSYNC=batch` is accepted explicitly (the named default).
+#[test]
+fn plumbing_fsync_batch_is_accepted_explicitly() {
+    let cache = TempDir::new().unwrap();
+    let store_dir = TempDir::new().unwrap();
+    let store_url = format!("file://{}", store_dir.path().display());
+    let (stream, checksum) = valid_single_object_pack();
+
+    let out = run_recv_with_fsync(cache.path(), &store_url, Some("batch"), &stream);
+    assert!(
+        out.status.success(),
+        "SNAPDIR_FSYNC=batch must be accepted: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        store_dir.path().join(object_path(&checksum)).exists(),
+        "object must be filed under SNAPDIR_FSYNC=batch"
+    );
+}
+
+/// An unknown `SNAPDIR_FSYNC` value FAILS CLOSED: exit != 0 with a clear
+/// message naming the accepted values, and NOTHING is filed (we never silently
+/// downgrade durability the operator asked for).
+#[test]
+fn plumbing_fsync_unknown_value_fails_closed() {
+    let cache = TempDir::new().unwrap();
+    let store_dir = TempDir::new().unwrap();
+    let store_url = format!("file://{}", store_dir.path().display());
+    let (stream, checksum) = valid_single_object_pack();
+
+    let out = run_recv_with_fsync(cache.path(), &store_url, Some("fsyncall"), &stream);
+    assert!(
+        !out.status.success(),
+        "an unknown SNAPDIR_FSYNC value must fail closed"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("SNAPDIR_FSYNC"),
+        "error must name the env var: {stderr}"
+    );
+    assert!(
+        stderr.contains("batch") && stderr.contains("off"),
+        "error must name the accepted values `batch`/`off`: {stderr}"
+    );
+    assert!(
+        !store_dir.path().join(object_path(&checksum)).exists(),
+        "fail closed: nothing may be filed when the knob is rejected"
+    );
+}

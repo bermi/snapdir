@@ -32,9 +32,9 @@ use snapdir_core::{
     PathMode, PathType, Phase, Sha256Hasher, Store, StoreError, WalkOptions,
 };
 use snapdir_stores::{
-    is_hex64, limits, read_pack, resolve_adapter, write_pack, Adapter, B2Store, ExternalStore,
-    FileSink, FileStore, GcsStore, PackReadReport, PackSink, RetryPolicy, S3Store, StreamSink,
-    StreamStore, TransferAdaptivePolicy, TransferConfig, WIRE_CAPS, WIRE_VERSION,
+    is_hex64, limits, read_pack, resolve_adapter, write_pack, Adapter, B2Store, Durability,
+    ExternalStore, FileSink, FileStore, GcsStore, PackReadReport, PackSink, RetryPolicy, S3Store,
+    StreamSink, StreamStore, TransferAdaptivePolicy, TransferConfig, WIRE_CAPS, WIRE_VERSION,
 };
 
 /// Upper bound for the adaptive concurrency ceiling (`--max-jobs` / `--jobs`
@@ -1625,8 +1625,12 @@ impl Cli {
 
         let (report, committed) = if matches!(adapter, Adapter::File) {
             // file:// — the hot ssh path: stream payloads straight to disk.
+            // `SNAPDIR_FSYNC` selects crash-durability (default `batch`); the
+            // barrier fires through `RecordingSink::flush_barrier` before the
+            // manifest commits, so a durable manifest implies durable objects.
+            let durability = fsync_durability_from_env()?;
             let store = FileStore::new_with_config(store_url, config);
-            let mut sink = FileSink::new(&store);
+            let mut sink = FileSink::new(&store).with_durability(durability);
             read_pack_recording(stdin.lock(), &mut sink)?
         } else {
             // Any other StreamStore: one buffered record at a time. External
@@ -1912,6 +1916,29 @@ fn dedupe_preserving_order(ids: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// Resolves the receive-pack crash-durability mode from `SNAPDIR_FSYNC`.
+///
+/// `batch` (the default when unset/empty) enables batched durability — exactly
+/// two full syncs per pack so a durable manifest implies durable objects. `off`
+/// restores the historical no-fsync filing. Any OTHER value is a hard error
+/// (fail closed): we never silently fall back to a weaker durability than the
+/// operator asked for.
+fn fsync_durability_from_env() -> Result<Durability> {
+    match std::env::var("SNAPDIR_FSYNC") {
+        Err(std::env::VarError::NotPresent) => Ok(Durability::Batch),
+        Ok(raw) => match raw.trim() {
+            "" | "batch" => Ok(Durability::Batch),
+            "off" => Ok(Durability::Off),
+            other => anyhow::bail!(
+                "invalid SNAPDIR_FSYNC {other:?}: expected `batch` (default) or `off`"
+            ),
+        },
+        Err(std::env::VarError::NotUnicode(_)) => anyhow::bail!(
+            "invalid SNAPDIR_FSYNC: value is not valid UTF-8; expected `batch` (default) or `off`"
+        ),
+    }
+}
+
 /// A [`PackSink`] decorator that records WHICH manifest id the stream
 /// committed: [`read_pack`]'s report only says WHETHER a manifest committed,
 /// but `receive-pack --require-manifest <id>` must compare the actual id (a
@@ -1950,6 +1977,14 @@ impl PackSink for RecordingSink<'_> {
         self.inner.put_manifest(id, manifest)?;
         self.manifest_id = Some(id.to_owned());
         Ok(())
+    }
+
+    fn flush_barrier(&mut self) -> Result<(), StoreError> {
+        // MUST delegate: `read_pack` fires the barrier through the sink it
+        // drives (the RecordingSink), right before the manifest. Without this
+        // override the no-op trait default would swallow it and the inner
+        // FileSink's durability would silently never activate.
+        self.inner.flush_barrier()
     }
 }
 
