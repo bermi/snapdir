@@ -3355,7 +3355,9 @@ gates:
     phase: 28
     owner_agent: adversary
     depends_on: [phase27-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T22:26:03Z
+    git_sha: 75440d4
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/split.rs && grep -cF 'test]' .gatesmith/pending-tests/split.rs"
     pass_criteria:
