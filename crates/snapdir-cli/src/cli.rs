@@ -34,8 +34,8 @@ use snapdir_core::{
 use snapdir_stores::{
     is_hex64, limits, read_pack, resolve_adapter, write_pack_with_format, Adapter, B2Store,
     Durability, ExternalStore, FileSink, FileStore, GcsStore, PackFormat, PackReadReport, PackSink,
-    RetryPolicy, S3Store, StreamSink, StreamStore, TransferAdaptivePolicy, TransferConfig,
-    DEFAULT_ZSTD_LEVEL, WIRE_CAPS, WIRE_VERSION,
+    RetryPolicy, S3Store, SplitStore, StreamSink, StreamStore, TransferAdaptivePolicy,
+    TransferConfig, DEFAULT_ZSTD_LEVEL, WIRE_CAPS, WIRE_VERSION,
 };
 
 /// Upper bound for the adaptive concurrency ceiling (`--max-jobs` / `--jobs`
@@ -84,6 +84,11 @@ pub struct GlobalArgs {
     /// Store URI: `protocol://location/path`.
     #[arg(long, global = true, value_name = "URI", env = "SNAPDIR_STORE")]
     pub store: Option<String>,
+
+    /// Shared object-pool store URI: when set, content OBJECTS route to this
+    /// pool's `.objects/` while MANIFESTS route to `--store`'s `.manifests/`.
+    #[arg(long, global = true, value_name = "URI", env = "SNAPDIR_OBJECTS_STORE")]
+    pub objects_store: Option<String>,
 
     /// Snapshot ID to operate on.
     #[arg(long, global = true, value_name = "ID")]
@@ -1232,6 +1237,13 @@ impl Cli {
     /// the concrete store cannot be constructed (e.g. credentials/region cannot
     /// be resolved for a remote backend).
     fn resolve_store(&self, meter: Option<Arc<Meter>>) -> Result<Box<dyn Store>> {
+        // When `--objects-store` is set, objects route to the shared pool and
+        // manifests to `--store` via an in-process `SplitStore`. When absent the
+        // store is the colocated `--store` exactly as before — byte-for-byte
+        // unchanged.
+        if self.globals.objects_store.is_some() {
+            return Ok(Box::new(self.resolve_split_store(meter)?));
+        }
         let store_url = self
             .globals
             .store
@@ -1240,6 +1252,38 @@ impl Cli {
         let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
         let config = self.transfer_config_for(Some(adapter.name()))?;
         store_for_adapter(&adapter, store_url, config, meter)
+    }
+
+    /// Builds the `SplitStore` for a split push/fetch/pull: objects go to the
+    /// `--objects-store` pool, manifests to `--store`. BOTH sides are built via
+    /// [`stream_store_for_adapter`], so an external `custom://` on EITHER side is
+    /// rejected with the same actionable error class `sync` uses. `--store`
+    /// missing → a clear error (not a panic).
+    ///
+    /// Only called when `--objects-store` is set.
+    fn resolve_split_store(&self, meter: Option<Arc<Meter>>) -> Result<SplitStore> {
+        let objects_url = self
+            .globals
+            .objects_store
+            .as_deref()
+            .context("missing --objects-store option")?;
+        let store_url = self.globals.store.as_deref().context(
+            "missing --store option: --objects-store sets the object pool, but the manifest \
+             location (--store / $SNAPDIR_STORE) is still required",
+        )?;
+
+        let objects_adapter =
+            resolve_adapter(objects_url).context("resolving --objects-store protocol")?;
+        let objects_config = self.transfer_config_for(Some(objects_adapter.name()))?;
+        let objects =
+            stream_store_for_adapter(&objects_adapter, objects_url, objects_config, meter.clone())?;
+
+        let manifests_adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
+        let manifests_config = self.transfer_config_for(Some(manifests_adapter.name()))?;
+        let manifests =
+            stream_store_for_adapter(&manifests_adapter, store_url, manifests_config, meter)?;
+
+        Ok(SplitStore::from_boxed(objects, manifests))
     }
 
     /// `true` when the resolved `--store` URL routes to a third-party
@@ -1260,6 +1304,12 @@ impl Cli {
     /// the identical errors `resolve_store` surfaces, so calling this after a
     /// successful `resolve_store` introduces no new failure mode.
     fn store_is_external(&self) -> Result<bool> {
+        // A split store (`--objects-store` set) is always in-process: both sides
+        // are built via `stream_store_for_adapter`, which rejects external URLs.
+        // So a split store never takes the external emit-command push/fetch path.
+        if self.globals.objects_store.is_some() {
+            return Ok(false);
+        }
         let store_url = self
             .globals
             .store
@@ -1736,6 +1786,13 @@ impl Cli {
     /// `sync` uses (external `snapdir-*-store` URLs are rejected there — they
     /// have no in-process streaming surface).
     fn resolve_stream_store(&self) -> Result<Box<dyn StreamStore + Sync>> {
+        // When `--objects-store` is set, wrap the pool (objects) + `--store`
+        // (manifests) in an in-process `SplitStore`; both sides go through
+        // `stream_store_for_adapter`, so external URLs are rejected on either
+        // side. When absent, behavior is unchanged.
+        if self.globals.objects_store.is_some() {
+            return Ok(Box::new(self.resolve_split_store(None)?));
+        }
         let store_url = self
             .globals
             .store

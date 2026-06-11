@@ -24,6 +24,11 @@ Options:
           
           [env: SNAPDIR_STORE=]
 
+      --objects-store <URI>
+          Shared object-pool store URI: when set, content OBJECTS route to this pool's `.objects/` while MANIFESTS route to `--store`'s `.manifests/`
+          
+          [env: SNAPDIR_OBJECTS_STORE=]
+
       --id <ID>
           Snapshot ID to operate on
 
