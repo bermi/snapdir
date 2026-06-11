@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::progress::{should_render, use_color, ColorChoice, ProgressReporter};
 use snapdir_catalog::{
@@ -32,9 +32,10 @@ use snapdir_core::{
     PathMode, PathType, Phase, Sha256Hasher, Store, StoreError, WalkOptions,
 };
 use snapdir_stores::{
-    is_hex64, limits, read_pack, resolve_adapter, write_pack, Adapter, B2Store, Durability,
-    ExternalStore, FileSink, FileStore, GcsStore, PackReadReport, PackSink, RetryPolicy, S3Store,
-    StreamSink, StreamStore, TransferAdaptivePolicy, TransferConfig, WIRE_CAPS, WIRE_VERSION,
+    is_hex64, limits, read_pack, resolve_adapter, write_pack_with_format, Adapter, B2Store,
+    Durability, ExternalStore, FileSink, FileStore, GcsStore, PackFormat, PackReadReport, PackSink,
+    RetryPolicy, S3Store, StreamSink, StreamStore, TransferAdaptivePolicy, TransferConfig,
+    DEFAULT_ZSTD_LEVEL, WIRE_CAPS, WIRE_VERSION,
 };
 
 /// Upper bound for the adaptive concurrency ceiling (`--max-jobs` / `--jobs`
@@ -214,6 +215,44 @@ pub struct GlobalArgs {
     pub max_requests: Option<u64>,
 }
 
+/// CLI selector for the SNAPPACK transport encoding `send-pack` emits.
+///
+/// Mirrors [`PackFormat`] one-for-one but stays a CLI-layer type: clap derives
+/// `--pack-format <v1|zstd>` from it (the value-enum tokens are the lowercase
+/// variant names), and [`PackFormatArg::resolve`] maps it to the library
+/// [`PackFormat`], reading the zstd level from the environment at this seam (the
+/// library itself is env-free). The default is [`PackFormatArg::V1`], so an
+/// invocation that omits the hidden flag emits the historical byte-identical v1
+/// stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PackFormatArg {
+    /// Plain `SNAPPACK 1` — the historical byte-for-byte form (default).
+    V1,
+    /// `SNAPPACK 1Z` — the additive zstd-framed form.
+    Zstd,
+}
+
+impl PackFormatArg {
+    /// Maps the CLI selector to the library [`PackFormat`], reading the zstd
+    /// level from `SNAPDIR_SSH_ZSTD_LEVEL` (defaulting to [`DEFAULT_ZSTD_LEVEL`])
+    /// for the `zstd` form. The level is passed through to
+    /// [`PackFormat::Zstd`], which clamps it into the valid range; a malformed
+    /// env value falls back to the default rather than erroring, mirroring the
+    /// oracle's permissive numeric-env handling.
+    fn resolve(self) -> PackFormat {
+        match self {
+            Self::V1 => PackFormat::V1,
+            Self::Zstd => {
+                let level = std::env::var("SNAPDIR_SSH_ZSTD_LEVEL")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<i32>().ok())
+                    .unwrap_or(DEFAULT_ZSTD_LEVEL);
+                PackFormat::Zstd(level)
+            }
+        }
+    }
+}
+
 /// The `snapdir` subcommands, matching the Bash orchestrator one-for-one.
 #[derive(Debug, Subcommand)]
 pub enum Command {
@@ -365,7 +404,8 @@ pub enum Command {
     /// Hidden wire plumbing: the sending half of
     /// `snapdir send-pack | ssh host 'snapdir receive-pack'`. Any failure —
     /// including a missing object — aborts BEFORE the `end` trailer
-    /// ([`write_pack`]), so a consumer of the partial stream fails too.
+    /// ([`write_pack_with_format`]), so a consumer of the partial stream fails
+    /// too.
     #[command(hide = true)]
     SendPack {
         /// File listing one object checksum per line (`-` reads stdin).
@@ -375,6 +415,19 @@ pub enum Command {
         /// Snapshot id whose manifest rides the pack as the LAST record.
         #[arg(long, value_name = "ID")]
         manifest_id: Option<String>,
+
+        /// On-wire SNAPPACK transport encoding to emit.
+        ///
+        /// HIDDEN + defaults to `v1`, so an old `send-pack` invocation stays
+        /// BYTE-IDENTICAL (same magic, same body, same `--help` surface). `zstd`
+        /// opts into the additive `SNAPPACK 1Z` form (same record grammar, whole
+        /// body in one zstd frame); the receiver sniffs the magic and accepts
+        /// either form, so there is no negotiation flag on `receive-pack`. The
+        /// compression level is the library default ([`DEFAULT_ZSTD_LEVEL`]),
+        /// overridable via `SNAPDIR_SSH_ZSTD_LEVEL` (the library is env-free, so
+        /// the level env is read HERE in the CLI seam).
+        #[arg(long, value_name = "FORMAT", value_enum, default_value_t = PackFormatArg::V1, hide = true)]
+        pack_format: PackFormatArg,
     },
 
     /// Consume a SNAPPACK stream from stdin into the store.
@@ -509,9 +562,11 @@ impl Cli {
                 Ok(())
             }
             Command::ObjectsNeeded => self.run_objects_needed(),
-            Command::SendPack { ids, manifest_id } => {
-                self.run_send_pack(ids, manifest_id.as_deref())
-            }
+            Command::SendPack {
+                ids,
+                manifest_id,
+                pack_format,
+            } => self.run_send_pack(ids, manifest_id.as_deref(), pack_format.resolve()),
             Command::ReceivePack { require_manifest } => {
                 self.run_receive_pack(require_manifest.as_deref())
             }
@@ -1552,11 +1607,21 @@ impl Cli {
     /// only, the byte stream is the entire stdout contract.
     ///
     /// The id list gets the same fail-closed validation as `objects-needed`
-    /// (and is deduped — [`write_pack`] documents dedup as the caller's job).
-    /// Any failure, including a missing object, makes [`write_pack`] abort
-    /// BEFORE the `end` trailer, so the piped `receive-pack` fails too: no
-    /// silent partial transfer.
-    fn run_send_pack(&self, ids: &Path, manifest_id: Option<&str>) -> Result<()> {
+    /// (and is deduped — [`write_pack_with_format`] documents dedup as the
+    /// caller's job). Any failure, including a missing object, makes
+    /// [`write_pack_with_format`] abort BEFORE the `end` trailer, so the piped
+    /// `receive-pack` fails too: no silent partial transfer.
+    ///
+    /// `format` is the resolved on-wire encoding ([`PackFormat::V1`] by default
+    /// — byte-identical to the historical stream — or [`PackFormat::Zstd`] when
+    /// the hidden `--pack-format zstd` flag opts in). `receive-pack` needs no
+    /// matching flag: it sniffs the magic and accepts either form.
+    fn run_send_pack(
+        &self,
+        ids: &Path,
+        manifest_id: Option<&str>,
+        format: PackFormat,
+    ) -> Result<()> {
         // Read + validate the id list (file path or `-` = stdin) before any
         // store work; a malformed list emits not a single pack byte.
         let ids = if ids == Path::new("-") {
@@ -1577,7 +1642,7 @@ impl Cli {
         }
         let store = self.resolve_stream_store()?;
         let stdout = std::io::stdout();
-        let report = write_pack(&*store, &ids, manifest_id, stdout.lock())
+        let report = write_pack_with_format(&*store, &ids, manifest_id, format, stdout.lock())
             .context("writing pack stream to stdout")?;
         if !self.globals.quiet {
             eprintln!(
@@ -1907,8 +1972,8 @@ fn read_checksum_lines(reader: impl BufRead) -> Result<Vec<String>> {
 
 /// Drops duplicate checksums, keeping the FIRST occurrence of each and the
 /// relative order of survivors. The pack/diff libs document deduplication as
-/// the caller's job ([`StreamStore::objects_needed`], [`write_pack`]), so the
-/// CLI is where it happens.
+/// the caller's job ([`StreamStore::objects_needed`], [`write_pack_with_format`]),
+/// so the CLI is where it happens.
 fn dedupe_preserving_order(ids: Vec<String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::with_capacity(ids.len());
     ids.into_iter()

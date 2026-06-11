@@ -143,9 +143,11 @@ fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
 // ---------------------------------------------------------------------------
 
 /// The capability line is EXACTLY `snapdir <semver> wire=1
-/// caps=objects-needed,send-pack,receive-pack\n` — pinned both to the literal
-/// wire-1 grammar the remote probe matches AND to the lib constants it must
-/// bake in (so a constant bump can't silently desync the CLI).
+/// caps=objects-needed,send-pack,receive-pack,snappack-zstd\n` — pinned both to
+/// the literal wire-1 grammar the remote probe matches AND to the lib constants
+/// it must bake in (so a constant bump can't silently desync the CLI). The
+/// `snappack-zstd` token is additive: the wire integer stays `1`, so older peers
+/// (whose `_snapdir_caps_ok` ignores unknown tokens) keep negotiating cleanly.
 #[test]
 fn plumbing_capabilities_line_exact() {
     let cache = TempDir::new().unwrap();
@@ -155,13 +157,20 @@ fn plumbing_capabilities_line_exact() {
         .expect("run snapdir");
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
-    // Literal wire-1 pin (the probe negotiates on this exact integer).
+    // Literal wire-1 pin (the probe negotiates on this exact integer); the
+    // `snappack-zstd` token is present and last.
     assert_eq!(
         stdout,
         format!(
-            "snapdir {} wire=1 caps=objects-needed,send-pack,receive-pack\n",
+            "snapdir {} wire=1 caps=objects-needed,send-pack,receive-pack,snappack-zstd\n",
             env!("CARGO_PKG_VERSION")
         )
+    );
+    // The new zstd capability MUST be advertised (and via the lib const, never a
+    // hand-written literal that could drift from `WIRE_CAPS`).
+    assert!(
+        stdout.contains("snappack-zstd"),
+        "version --capabilities must advertise snappack-zstd: {stdout:?}"
     );
     // And the same line re-derived from the lib constants.
     assert_eq!(
@@ -370,6 +379,129 @@ fn plumbing_pack_roundtrip_via_pipe() {
             std::fs::read(store_b.path().join(&rel)).expect("object in B"),
             std::fs::read(store_a.path().join(&rel)).expect("object in A"),
             "object {rel} must be byte-equal"
+        );
+    }
+}
+
+/// Spawns `send-pack --store file://A --ids - --manifest-id <id>` against the
+/// fixture store, feeding the object-id list on its stdin and appending any
+/// `extra` flags (e.g. `--pack-format zstd`), and returns the raw pack bytes it
+/// emitted to stdout (after asserting the command succeeded). The fixture lives
+/// in the caller-owned `store_a`/`id`/`object_ids`.
+fn run_send_pack_bytes(
+    cache: &Path,
+    url_a: &str,
+    id: &str,
+    object_ids: &[String],
+    extra: &[&str],
+) -> Vec<u8> {
+    let mut args = vec![
+        "send-pack",
+        "--store",
+        url_a,
+        "--ids",
+        "-",
+        "--manifest-id",
+        id,
+    ];
+    args.extend_from_slice(extra);
+    let mut send = snapdir(cache)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn send-pack");
+    send.stdin
+        .take()
+        .expect("send-pack stdin")
+        .write_all(format!("{}\n", object_ids.join("\n")).as_bytes())
+        .expect("write id list");
+    let out = send.wait_with_output().expect("send-pack exit");
+    assert!(
+        out.status.success(),
+        "send-pack {extra:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
+}
+
+/// The hidden `--pack-format zstd` flag emits the additive `SNAPPACK 1Z` magic
+/// (distinct from the default v1 `SNAPPACK 1` magic), and that zstd stream
+/// `receive-pack`s into a store that is BYTE-IDENTICAL to the v1 roundtrip — the
+/// receiver sniffs the magic and needs no matching flag.
+#[test]
+fn plumbing_send_pack_zstd_roundtrip_is_byte_identical_to_v1() {
+    let cache = TempDir::new().unwrap();
+    let (store_a, id, object_ids) = pushed_fixture(cache.path());
+    let url_a = format!("file://{}", store_a.path().display());
+
+    // The default (no flag) and the explicit `--pack-format v1` both open with
+    // the plain v1 magic; the zstd form opens with the 1Z magic.
+    let v1_bytes = run_send_pack_bytes(cache.path(), &url_a, &id, &object_ids, &[]);
+    let v1_explicit = run_send_pack_bytes(
+        cache.path(),
+        &url_a,
+        &id,
+        &object_ids,
+        &["--pack-format", "v1"],
+    );
+    let zstd_bytes = run_send_pack_bytes(
+        cache.path(),
+        &url_a,
+        &id,
+        &object_ids,
+        &["--pack-format", "zstd"],
+    );
+    assert!(
+        v1_bytes.starts_with(b"SNAPPACK 1\n"),
+        "default send-pack must emit the plain v1 magic"
+    );
+    assert_eq!(
+        v1_explicit, v1_bytes,
+        "--pack-format v1 must be byte-identical to the default (no flag)"
+    );
+    assert!(
+        zstd_bytes.starts_with(b"SNAPPACK 1Z\n"),
+        "--pack-format zstd must emit the additive 1Z magic"
+    );
+    assert_ne!(
+        zstd_bytes, v1_bytes,
+        "the zstd stream must differ on the wire from the v1 stream"
+    );
+
+    // Receive the zstd stream into a fresh store and compare it object-for-object
+    // and manifest-for-manifest against the v1 source store: the decoded result
+    // must be byte-identical despite the different transport encoding.
+    let store_z = TempDir::new().unwrap();
+    let url_z = format!("file://{}", store_z.path().display());
+    let recv = run_with_stdin(
+        cache.path(),
+        &["receive-pack", "--store", &url_z, "--require-manifest", &id],
+        &zstd_bytes,
+    );
+    assert!(
+        recv.status.success(),
+        "receive-pack of the zstd stream failed: {}",
+        String::from_utf8_lossy(&recv.stderr)
+    );
+    assert!(
+        recv.stdout.is_empty(),
+        "receive-pack must print nothing to stdout"
+    );
+
+    let man_rel = manifest_path(&id);
+    assert_eq!(
+        std::fs::read(store_z.path().join(&man_rel)).expect("manifest in Z"),
+        std::fs::read(store_a.path().join(&man_rel)).expect("manifest in A"),
+        "zstd-decoded manifest must be byte-equal to the v1 source"
+    );
+    for checksum in &object_ids {
+        let rel = object_path(checksum);
+        assert_eq!(
+            std::fs::read(store_z.path().join(&rel)).expect("object in Z"),
+            std::fs::read(store_a.path().join(&rel)).expect("object in A"),
+            "zstd-decoded object {rel} must be byte-equal to the v1 source"
         );
     }
 }
