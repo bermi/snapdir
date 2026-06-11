@@ -3385,7 +3385,9 @@ gates:
     phase: 28
     owner_agent: adversary
     depends_on: [split-store-impl]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T22:42:00Z
+    git_sha: 99ed4e5
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --test split --locked"
     pass_criteria:
