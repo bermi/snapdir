@@ -3370,7 +3370,9 @@ gates:
     phase: 28
     owner_agent: stores
     depends_on: [split-store-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T22:33:04Z
+    git_sha: 0a37039
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --test split --locked && test ! -f .gatesmith/pending-tests/split.rs"
     pass_criteria:
