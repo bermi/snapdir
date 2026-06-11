@@ -3243,7 +3243,9 @@ gates:
     phase: 27
     owner_agent: stores
     depends_on: [wire2-zstd-format-stores, wire2-zstd-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T20:51:36Z
+    git_sha: 4330276
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-ssh-store --test accel --locked"
     pass_criteria:
