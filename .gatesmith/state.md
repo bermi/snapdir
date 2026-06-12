@@ -3,10 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 29 IN PROGRESS — 4/11 — RELEASE 1.7.0 (operator-requested 2026-06-12) — 205/212 total
+## ▶ PHASE 29 IN PROGRESS — 5/11 — RELEASE 1.7.0 (operator-requested 2026-06-12) — 206/212 total
 
-> ✅ **Option-1 reverted:** `recv-fsync-revert-stores` (stores, code `25cd322`) — reverted `0f2cb35`; the per-object `writeout_hint` is restored; working tree byte-identical to the pre-optimization **original +19.5%/+29.9% design** (the best batch impl); 43 pack + 247 whole-crate tests green; barrier + manifest-last untouched.
-> **Next gate:** `durability-cost-docs` (docs, auto) — document the ~20% small-files-receive cost of crash-safe-by-default + the `SNAPDIR_FSYNC=off` escape hatch (ssh-wire-protocol.md Durability section / README / CHANGELOG). Then `release-perf-linux-1.7.0` (human ✋ accept-confirmation) → release-prep → verify-branch → PR → tag+publish → phase29-complete.
+> ✅ Option-1 reverted (`25cd322`, original +19.5%/+29.9% design restored) + ✅ **cost documented** (`durability-cost-docs`, docs, code `0441e25`) — the ~20% small-files-receive cost of `SNAPDIR_FSYNC=batch` + the `off` escape hatch are now in ssh-wire-protocol.md / flagship README / root README / CHANGELOG (receive-pack path only, no overclaim).
+> **Next gate:** `release-perf-linux-1.7.0` — **human ✋** the accept+document CONFIRMATION (operator already chose Option 3 at the escalation). The next tick escalates; it's a quick yes (revert landed + cost documented, both machine-checked). Then `release-prep-1.7.0` (bump 1.6.0→1.7.0 + CHANGELOG [1.7.0]) → verify-branch → PR → tag+publish (6 crates) → `phase29-complete`.
 
 > 🔬 **DURABILITY PERF RESOLVED → Option 3 (accept + document), operator-approved 2026-06-12.** Two Linux measurements settled it:
 > &nbsp;&nbsp;1. ORIGINAL design (with per-object hints), run 27390795784: **v1 +19.5% / zstd +29.9%** (>5%).

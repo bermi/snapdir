@@ -3678,7 +3678,9 @@ gates:
     phase: 29
     owner_agent: docs
     depends_on: [recv-fsync-revert-stores]
-    status: pending
+    status: passed
+    passed_at: 2026-06-12T15:53:44Z
+    git_sha: 0441e25
     failure_count: 0
     verification_cmd: "typos README.md crates/snapdir/README.md docs/ docs/rust-port/CHANGELOG.md && grep -qiE 'SNAPDIR_FSYNC' docs/rust-port/ssh-wire-protocol.md && grep -qiE 'SNAPDIR_FSYNC' crates/snapdir/README.md"
     pass_criteria:
