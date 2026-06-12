@@ -164,6 +164,22 @@ fn count_manifests(loc: &Path) -> usize {
     collect_files(&loc.join(".manifests")).len()
 }
 
+/// True iff the manifest location at `loc` physically holds the snapshot `id` —
+/// i.e. SOME file under `<loc>/.manifests/` whose sharded path (the `3/3/3/rest`
+/// split, separators stripped) reconstructs EXACTLY to `id`. Sharding-agnostic:
+/// it does not hardcode the split widths, only that the on-disk key is the id
+/// with directory separators inserted. Lets a test assert the SPECIFIC failed id
+/// is absent from the dest, not merely that the `.manifests/` count is 0.
+fn dest_serves_manifest_id(loc: &Path, id: &str) -> bool {
+    collect_files(&loc.join(".manifests")).iter().any(|rel| {
+        let joined: String = rel
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .collect();
+        joined == id
+    })
+}
+
 /// Builds a known multi-file tree with deterministic permissions so a checked-out
 /// copy must restore them to re-manifest to the same id. `leaves` is a slice of
 /// `(relative_path, contents)`. Distinct contents => distinct blobs.
@@ -851,6 +867,15 @@ fn sync_split_missing_source_object_errors_and_writes_no_dest_manifest() {
         0,
         "a FAILED sync must NOT publish the manifest to the dest manifest location (manifest-last)"
     );
+    // STRENGTHEN (adversary review): assert the SPECIFIC failed id is physically
+    // absent from the dest `.manifests/` shard tree — not just that the leaf count
+    // is 0. A count of 0 could be satisfied vacuously if manifests landed
+    // elsewhere; this pins that NO on-disk key under the dest reconstructs to the
+    // failed snapshot id (manifest-last, by exact id).
+    assert!(
+        !dest_serves_manifest_id(&dst_mani, &src_id),
+        "the dest .manifests/ tree must NOT physically contain the failed id {src_id}"
+    );
     // Belt-and-suspenders: the specific id must not be resolvable from the dest.
     // (Arg-shape fix: `manifest` is a local-tree describe command and does NOT
     // resolve a pinned id from a store — `fetch` is snapdir's store-resolution
@@ -962,5 +987,238 @@ fn sync_split_source_pool_untouched_objects_land_in_dest_pool() {
     assert_ne!(
         dst_pool, src_pool,
         "source and dest pools must be distinct directories in this test"
+    );
+}
+
+// ===========================================================================
+// PER-SIDE EXTERNAL-ADAPTER REJECTION on --from-objects / --to-objects
+// ===========================================================================
+
+/// SPEC (in-process-only / per-side rejection): an external `snapdir-*-store`
+/// URL (any non file/s3/b2/gcs scheme, here `custom://`) is REJECTED on EITHER
+/// `*-objects` leg — sync requires in-process stores. This pins that the split
+/// is built via the same `stream_store_for_adapter` gate as the rest of sync, so
+/// an external object pool cannot sneak in on a per-side flag. Asserts (1) a
+/// non-zero exit and (2) the actionable in-process error message — and that NO
+/// child `snapdir-*-store` binary is shelled out (the rejection precedes any
+/// subprocess: a `custom://` adapter has no such binary, so a non-rejecting impl
+/// that tried to spawn it would fail with a DIFFERENT, exec-not-found error).
+#[test]
+fn sync_split_external_objects_uri_rejected_per_side() {
+    let src = temp_dir("ext-src");
+    let src_mani = temp_dir("ext-srcmani");
+    let src_pool = temp_dir("ext-srcpool");
+    let dst_mani = temp_dir("ext-dstmani");
+    let dst_pool = temp_dir("ext-dstpool");
+    let cache = temp_dir("ext-cache");
+
+    let leaves = sample_leaves();
+    build_tree(&src, leaves);
+    let src_str = src.to_string_lossy().into_owned();
+
+    let src_mani_url = file_url(&src_mani);
+    let src_pool_url = file_url(&src_pool);
+    let dst_mani_url = file_url(&dst_mani);
+    let dst_pool_url = file_url(&dst_pool);
+
+    let src_id = run_ok(
+        &[
+            "push",
+            "--objects-store",
+            &src_pool_url,
+            "--store",
+            &src_mani_url,
+            &src_str,
+        ],
+        &cache,
+    );
+
+    // An external object pool on the SOURCE side (--from-objects) is rejected.
+    let from_ext = run_raw(
+        &[
+            "sync",
+            "--id",
+            &src_id,
+            "--from",
+            &src_mani_url,
+            "--from-objects",
+            "custom://external/source/pool",
+            "--to",
+            &dst_mani_url,
+            "--to-objects",
+            &dst_pool_url,
+        ],
+        &cache,
+    );
+    assert!(
+        !from_ext.status.success(),
+        "an external --from-objects URL must be rejected (non-zero exit)"
+    );
+    let from_err = String::from_utf8_lossy(&from_ext.stderr);
+    assert!(
+        from_err.contains("in-process") || from_err.contains("not supported"),
+        "the rejection must name the in-process-only contract, got:\n{from_err}"
+    );
+    // The rejection happens BEFORE any store mutation: the dest got nothing.
+    assert_eq!(
+        count_manifests(&dst_mani),
+        0,
+        "a rejected external --from-objects sync must not publish a dest manifest"
+    );
+    assert_eq!(
+        count_pool_objects(&dst_pool),
+        0,
+        "a rejected external --from-objects sync must not write dest objects"
+    );
+
+    // An external object pool on the DEST side (--to-objects) is rejected too.
+    let to_ext = run_raw(
+        &[
+            "sync",
+            "--id",
+            &src_id,
+            "--from",
+            &src_mani_url,
+            "--from-objects",
+            &src_pool_url,
+            "--to",
+            &dst_mani_url,
+            "--to-objects",
+            "custom://external/dest/pool",
+        ],
+        &cache,
+    );
+    assert!(
+        !to_ext.status.success(),
+        "an external --to-objects URL must be rejected (non-zero exit)"
+    );
+    let to_err = String::from_utf8_lossy(&to_ext.stderr);
+    assert!(
+        to_err.contains("in-process") || to_err.contains("not supported"),
+        "the rejection must name the in-process-only contract, got:\n{to_err}"
+    );
+    assert_eq!(
+        count_manifests(&dst_mani),
+        0,
+        "a rejected external --to-objects sync must not publish a dest manifest"
+    );
+}
+
+// ===========================================================================
+// PER-SIDE --from-objects/--to-objects are INDEPENDENT of the global
+// --objects-store (the global must not influence sync routing)
+// ===========================================================================
+
+/// SPEC (per-side distinct from the global `--objects-store`): the SPEC names
+/// `--from-objects`/`--to-objects` as DISTINCT from the global `--objects-store`.
+/// Pin that the global is IGNORED by sync routing: even with a global
+/// `--objects-store` pointed at a bogus/empty pool present on the SAME command,
+/// the per-side flags drive the routing — objects are READ from `--from-objects`
+/// and WRITTEN to `--to-objects`, and the bogus global pool is never touched
+/// (stays empty) and never masks the per-side pools. Proves the per-side flags
+/// are not silently aliased to / overridden by the global.
+#[test]
+fn sync_split_objects_flags_independent_of_global_objects_store() {
+    let src = temp_dir("ind-src");
+    let src_mani = temp_dir("ind-srcmani");
+    let src_pool = temp_dir("ind-srcpool");
+    let dst_mani = temp_dir("ind-dstmani");
+    let dst_pool = temp_dir("ind-dstpool");
+    let bogus_global = temp_dir("ind-bogusglobal");
+    let cache = temp_dir("ind-cache");
+
+    let leaves = sample_leaves();
+    build_tree(&src, leaves);
+    let src_str = src.to_string_lossy().into_owned();
+
+    let src_mani_url = file_url(&src_mani);
+    let src_pool_url = file_url(&src_pool);
+    let dst_mani_url = file_url(&dst_mani);
+    let dst_pool_url = file_url(&dst_pool);
+    let bogus_global_url = file_url(&bogus_global);
+
+    let src_id = run_ok(
+        &[
+            "push",
+            "--objects-store",
+            &src_pool_url,
+            "--store",
+            &src_mani_url,
+            &src_str,
+        ],
+        &cache,
+    );
+
+    // Sync with the per-side flags AND a global --objects-store at a bogus, empty
+    // pool. The global must be ignored: routing follows --from-objects/--to-objects.
+    let out = run_raw(
+        &[
+            "sync",
+            "--objects-store",
+            &bogus_global_url,
+            "--id",
+            &src_id,
+            "--from",
+            &src_mani_url,
+            "--from-objects",
+            &src_pool_url,
+            "--to",
+            &dst_mani_url,
+            "--to-objects",
+            &dst_pool_url,
+        ],
+        &cache,
+    );
+    assert!(
+        out.status.success(),
+        "sync must succeed routing by the per-side flags, ignoring the global \
+         --objects-store\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The blobs landed in the per-side DEST pool, NOT the bogus global pool.
+    assert_eq!(
+        count_pool_objects(&dst_pool),
+        leaves.len(),
+        "objects must land in --to-objects, not the global --objects-store pool"
+    );
+    assert_eq!(
+        count_pool_objects(&bogus_global),
+        0,
+        "the global --objects-store pool must be untouched by sync (ignored)"
+    );
+    // Manifest landed in --to; the dest serves the snapshot's id.
+    assert_eq!(
+        count_manifests(&dst_mani),
+        1,
+        "the manifest must land in --to"
+    );
+    assert!(
+        dest_serves_manifest_id(&dst_mani, &src_id),
+        "the dest .manifests/ tree must physically hold the synced id {src_id}"
+    );
+
+    // And it is fully retrievable from the per-side dest split.
+    let dest = temp_dir("ind-out");
+    let dest_str = dest.to_string_lossy().into_owned();
+    let pullcache = temp_dir("ind-pullcache");
+    run_ok(
+        &[
+            "pull",
+            "--objects-store",
+            &dst_pool_url,
+            "--store",
+            &dst_mani_url,
+            "--id",
+            &src_id,
+            &dest_str,
+        ],
+        &pullcache,
+    );
+    assert_tree_contents(&dest, leaves);
+    assert_eq!(
+        run_ok(&["id", &dest_str], &pullcache),
+        src_id,
+        "the per-side-routed sync must leave the dest fully serving the snapshot"
     );
 }
