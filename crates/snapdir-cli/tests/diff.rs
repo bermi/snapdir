@@ -1160,3 +1160,422 @@ fn from_id_pins_single_manifest_in_multi_manifest_store() {
     fs::remove_dir_all(&cache).ok();
     fs::remove_dir_all(&from_store).ok();
 }
+
+// ===========================================================================
+// (12) DIRECTORY HANDLING — `diff` is FILE-LEVEL. (review-gate strengthening)
+//
+// The impl gate fixed two real bugs the spec suite caught: (1) directory
+// entries leaked as `M`/collisions because a dir's subtree-merkle changes with
+// any descendant, and (2) added/deleted directory entries leaked into the
+// porcelain. `src/diff.rs` now compares directories by `(path_type,
+// permissions)` only and DROPS any path that is a directory on every side it
+// appears in. These tests PIN that file-level intent so a regression in the
+// dir-handling fix is caught: every assertion below states the file-level
+// behavior the spec mandates, and any failure is a real bug to report.
+// ===========================================================================
+
+/// A directory line in porcelain is one whose path ends with `/` (manifests
+/// render directory paths with a trailing slash, e.g. `./sub/`). `diff` is
+/// file-level, so NO porcelain line may carry a trailing-slash directory path.
+fn assert_no_directory_lines(stdout: &str) {
+    for line in stdout.lines().filter(|l| !l.is_empty()) {
+        let path = line.splitn(2, '\t').nth(1).unwrap_or("");
+        assert!(
+            !path.ends_with('/'),
+            "diff is file-level: NO directory line may appear, got {line:?} in:\n{stdout}"
+        );
+    }
+}
+
+/// SPEC file-level (a): a file MODIFIED inside a directory present on both sides
+/// shows the FILE as `M`, and the containing directory does NOT appear — even
+/// though the directory's subtree merkle changed with the descendant. Pins
+/// bug-fix #1 (dir not surfaced as `M` for a descendant change).
+#[test]
+fn modified_file_in_dir_shows_file_not_dir() {
+    let cache = temp_dir("dirM-cache");
+
+    let (_fs, from_url, _fid) = capture(
+        "dirM-from",
+        &cache,
+        &[
+            ("top.txt", b"top-same", 0o644),
+            ("sub/inner.txt", b"inner v1", 0o644),
+        ],
+    );
+    let (_ts, to_url, _tid) = capture(
+        "dirM-to",
+        &cache,
+        &[
+            ("top.txt", b"top-same", 0o644),
+            ("sub/inner.txt", b"inner v2 is longer", 0o644),
+        ],
+    );
+
+    let stdout = run_ok(&["diff", "--from", &from_url, "--to", &to_url], &cache, &[]);
+    // ONLY the file is M; the dir `./sub/` (whose merkle changed) is omitted,
+    // top.txt is unchanged/hidden, and the root `./` is omitted too.
+    assert_porcelain_eq(&stdout, &[("M", "./sub/inner.txt")]);
+    assert_no_directory_lines(&stdout);
+
+    fs::remove_dir_all(&cache).ok();
+}
+
+/// SPEC file-level (b): a directory present on BOTH sides whose ONLY change is a
+/// descendant file (the dir's own type+perms are unchanged) is NOT itself
+/// reported — neither as `M` (its merkle differs) nor under any other letter.
+/// Belt-and-braces for bug-fix #1, asserting via the explicit set + no dir line.
+#[test]
+fn dir_with_only_descendant_change_is_not_reported() {
+    let cache = temp_dir("dirDesc-cache");
+
+    // A nested directory whose ONLY delta is a leaf two levels deep.
+    let (_fs, from_url, _fid) = capture(
+        "dirDesc-from",
+        &cache,
+        &[("a/b/leaf.txt", b"leaf one", 0o644)],
+    );
+    let (_ts, to_url, _tid) = capture(
+        "dirDesc-to",
+        &cache,
+        &[("a/b/leaf.txt", b"leaf two changed", 0o644)],
+    );
+
+    let stdout = run_ok(&["diff", "--from", &from_url, "--to", &to_url], &cache, &[]);
+    // Only the leaf is M; ./, ./a/ and ./a/b/ (all merkle-changed dirs) are gone.
+    assert_porcelain_eq(&stdout, &[("M", "./a/b/leaf.txt")]);
+    assert_no_directory_lines(&stdout);
+    // No ancestor directory entry (matched on the FULL line's path field, not a
+    // substring — `./a/b/leaf.txt` legitimately *contains* `./a/`).
+    assert!(
+        !stdout.lines().any(|l| {
+            let p = l.splitn(2, '\t').nth(1).unwrap_or("");
+            p == "./" || p == "./a/" || p == "./a/b/"
+        }),
+        "no ancestor directory line may surface for a descendant-only change; got:\n{stdout}"
+    );
+
+    fs::remove_dir_all(&cache).ok();
+}
+
+/// SPEC file-level (c): a WHOLE NEW subdirectory of files (TO has a directory
+/// tree FROM lacks) surfaces as `A` for each FILE, with NO directory lines.
+/// Pins bug-fix #2 (added directory entries must NOT leak into porcelain).
+#[test]
+fn new_subdir_appears_as_files_only_no_dir_lines() {
+    let cache = temp_dir("dirNew-cache");
+
+    let (_fs, from_url, _fid) = capture("dirNew-from", &cache, &[("root.txt", b"r", 0o644)]);
+    // TO adds an entire `pkg/` subtree (two files at two depths) plus keeps root.
+    let (_ts, to_url, _tid) = capture(
+        "dirNew-to",
+        &cache,
+        &[
+            ("root.txt", b"r", 0o644),
+            ("pkg/one.txt", b"1", 0o644),
+            ("pkg/nested/two.txt", b"2", 0o644),
+        ],
+    );
+
+    let stdout = run_ok(&["diff", "--from", &from_url, "--to", &to_url], &cache, &[]);
+    // Each NEW FILE is A; the new dirs `./pkg/` and `./pkg/nested/` are omitted.
+    assert_porcelain_eq(
+        &stdout,
+        &[("A", "./pkg/nested/two.txt"), ("A", "./pkg/one.txt")],
+    );
+    assert_no_directory_lines(&stdout);
+
+    fs::remove_dir_all(&cache).ok();
+}
+
+/// SPEC file-level (c, mirror): a whole subdirectory REMOVED (FROM has it, TO
+/// lacks it) surfaces as `D` for each FILE, no dir lines. Confirms bug-fix #2
+/// for the deletion direction (deleted dir entries must not leak as `D`).
+#[test]
+fn removed_subdir_appears_as_files_only_no_dir_lines() {
+    let cache = temp_dir("dirRm-cache");
+
+    let (_fs, from_url, _fid) = capture(
+        "dirRm-from",
+        &cache,
+        &[
+            ("root.txt", b"r", 0o644),
+            ("pkg/one.txt", b"1", 0o644),
+            ("pkg/nested/two.txt", b"2", 0o644),
+        ],
+    );
+    let (_ts, to_url, _tid) = capture("dirRm-to", &cache, &[("root.txt", b"r", 0o644)]);
+
+    let stdout = run_ok(&["diff", "--from", &from_url, "--to", &to_url], &cache, &[]);
+    assert_porcelain_eq(
+        &stdout,
+        &[("D", "./pkg/nested/two.txt"), ("D", "./pkg/one.txt")],
+    );
+    assert_no_directory_lines(&stdout);
+
+    fs::remove_dir_all(&cache).ok();
+}
+
+/// SPEC file-level (d): a directory whose PERMISSIONS change while NO file under
+/// it changes. Per the impl, `diff` is FILE-level — directories are dropped from
+/// file-level output, so a pure directory-mode change yields NO output. We PIN
+/// the impl's documented file-level intent here: a dir-only perm change is NOT a
+/// file-level difference and is omitted. (If the project later decides a dir
+/// perm change SHOULD surface, this is the assertion to flip — and it would then
+/// be a deliberate spec change, not a silent regression.)
+#[test]
+fn dir_only_permission_change_is_omitted_file_level() {
+    let cache = temp_dir("dirPerm-cache");
+
+    // Same file content + same file perms on both sides; ONLY a subdirectory's
+    // mode differs (0o755 vs 0o700). The shared `build_tree`/`capture` helpers
+    // force 0o755 on every dir, so we build the two source trees BY HAND here to
+    // make the nested dir's perms the sole difference.
+    let from_src = temp_dir("dirPerm-from-src");
+    let to_src = temp_dir("dirPerm-to-src");
+    for src in [&from_src, &to_src] {
+        fs::create_dir_all(src.join("d")).unwrap();
+        fs::write(src.join("d/f.txt"), b"same").unwrap();
+        fs::set_permissions(src.join("d/f.txt"), fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(src, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    // The ONLY difference: the `d/` directory's mode.
+    fs::set_permissions(from_src.join("d"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(to_src.join("d"), fs::Permissions::from_mode(0o700)).unwrap();
+
+    let from_store = temp_dir("dirPerm-from-store");
+    let to_store = temp_dir("dirPerm-to-store");
+    let from_url = file_url(&from_store);
+    let to_url = file_url(&to_store);
+    let fid = run_ok(
+        &["push", "--store", &from_url, &from_src.to_string_lossy()],
+        &cache,
+        &[],
+    );
+    let tid = run_ok(
+        &["push", "--store", &to_url, &to_src.to_string_lossy()],
+        &cache,
+        &[],
+    );
+    // The dir-mode delta DOES change the snapshot id (perms are in the merkle),
+    // so the two sides genuinely differ at the manifest level...
+    assert_ne!(
+        fid, tid,
+        "a directory permission change must change the snapshot id (perms are in the merkle)"
+    );
+
+    // ...yet `diff`, being FILE-level, reports NOTHING: the only changed entry is
+    // a directory, and directories are dropped from file-level output.
+    let stdout = run_ok(&["diff", "--from", &from_url, "--to", &to_url], &cache, &[]);
+    assert!(
+        stdout.trim().is_empty(),
+        "a dir-ONLY permission change is not a file-level difference -> no output; got:\n{stdout}"
+    );
+    assert_no_directory_lines(&stdout);
+
+    fs::remove_dir_all(&cache).ok();
+    fs::remove_dir_all(&from_src).ok();
+    fs::remove_dir_all(&to_src).ok();
+    fs::remove_dir_all(&from_store).ok();
+    fs::remove_dir_all(&to_store).ok();
+}
+
+/// SPEC file-level (e): a path that is a FILE on one side and a DIRECTORY on the
+/// other (type change). At the manifest level the file is `./x` and the
+/// directory is `./x/` (dirs carry a trailing slash), so the replacement
+/// surfaces as a DELETED file `./x` plus an ADDED file for the new dir's
+/// leaf(s) — and the directory entry `./x/` itself never appears. Pins the
+/// file<->dir type-change behavior end to end.
+#[test]
+fn file_replaced_by_directory_is_file_level_delete_plus_add() {
+    let cache = temp_dir("dirType-cache");
+
+    // FROM: `x` is a FILE. TO: `x` is a DIRECTORY containing `x/inner.txt`.
+    let (_fs, from_url, _fid) = capture(
+        "dirType-from",
+        &cache,
+        &[("keep.txt", b"k", 0o644), ("x", b"i am a file", 0o644)],
+    );
+    let (_ts, to_url, _tid) = capture(
+        "dirType-to",
+        &cache,
+        &[
+            ("keep.txt", b"k", 0o644),
+            ("x/inner.txt", b"now a dir", 0o644),
+        ],
+    );
+
+    let stdout = run_ok(&["diff", "--from", &from_url, "--to", &to_url], &cache, &[]);
+    // `./x` (file) deleted; `./x/inner.txt` (file under the new dir) added; the
+    // directory entry `./x/` itself is dropped (file-level).
+    assert_porcelain_eq(&stdout, &[("A", "./x/inner.txt"), ("D", "./x")]);
+    assert_no_directory_lines(&stdout);
+
+    // The reverse direction (dir replaced by file) must flip A<->D symmetrically.
+    let rev = run_ok(&["diff", "--from", &to_url, "--to", &from_url], &cache, &[]);
+    assert_porcelain_eq(&rev, &[("A", "./x"), ("D", "./x/inner.txt")]);
+    assert_no_directory_lines(&rev);
+
+    fs::remove_dir_all(&cache).ok();
+}
+
+/// SPEC file-level + `--all`: even under `--all` (which surfaces UNCHANGED
+/// paths), directory entries are STILL dropped — `--all` widens the FILE set,
+/// never re-introduces directory rows. Pins that the dir-drop is unconditional,
+/// not merely a side effect of hiding unchanged rows.
+#[test]
+fn all_flag_still_drops_directory_entries() {
+    let cache = temp_dir("dirAll-cache");
+
+    let (_fs, from_url, fid) = capture(
+        "dirAll-from",
+        &cache,
+        &[("top.txt", b"t", 0o644), ("sub/inner.txt", b"same", 0o644)],
+    );
+    let (_ts, to_url, tid) = capture(
+        "dirAll-to",
+        &cache,
+        &[("top.txt", b"t", 0o644), ("sub/inner.txt", b"same", 0o644)],
+    );
+    assert_eq!(fid, tid, "identical trees share the snapshot id");
+
+    let all = run_ok(
+        &["diff", "--from", &from_url, "--to", &to_url, "--all"],
+        &cache,
+        &[],
+    );
+    // The files appear (unchanged, non-A/D/M marker); the dirs `./` and `./sub/`
+    // must NOT — even under --all.
+    assert!(
+        all.contains("./top.txt") && all.contains("./sub/inner.txt"),
+        "--all must surface the unchanged FILES; got:\n{all}"
+    );
+    assert_no_directory_lines(&all);
+    assert!(
+        !all.lines().any(|l| {
+            let p = l.splitn(2, '\t').nth(1).unwrap_or("");
+            p == "./" || p == "./sub/"
+        }),
+        "--all must not re-introduce the directory entries ./ or ./sub/; got:\n{all}"
+    );
+
+    fs::remove_dir_all(&cache).ok();
+}
+
+/// SPEC dir-drop interaction with collision policy: two FROM refs that BOTH carry
+/// the same directory subtree but DIFFER only in a descendant file's content must
+/// collide on the FILE (default error), NOT on the enclosing directory — proving
+/// the dir's merkle/size are excluded from the collision key (bug-fix #1 applied
+/// to `union_side`, not just `classify`). The error must name the FILE path.
+#[test]
+fn intra_side_collision_keys_on_file_not_enclosing_dir() {
+    let cache = temp_dir("dirCol-cache");
+
+    // Two FROM refs: identical dir layout, but `sub/inner.txt` differs. Their
+    // `./sub/` (and `./`) merkles differ, but those dirs must NOT be the
+    // collision — only the file does.
+    let (_f1, from1_url, _f1id) = capture(
+        "dirCol-from1",
+        &cache,
+        &[("sub/inner.txt", b"left content", 0o644)],
+    );
+    let (_f2, from2_url, _f2id) = capture(
+        "dirCol-from2",
+        &cache,
+        &[("sub/inner.txt", b"RIGHT content", 0o644)],
+    );
+    let (_ts, to_url, _tid) = capture("dirCol-to", &cache, &[("z.txt", b"z", 0o644)]);
+
+    let out = run_raw(
+        &[
+            "diff", "--from", &from1_url, "--from", &from2_url, "--to", &to_url,
+        ],
+        &cache,
+        &[],
+    );
+    assert!(
+        !out.status.success(),
+        "differing descendant content across two FROM refs must collide (error); got success.\nstdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = stderr_of(&out);
+    assert!(
+        stderr.contains("sub/inner.txt"),
+        "the collision must name the FILE ./sub/inner.txt, not the dir; got: {stderr}"
+    );
+    // It must NOT report a directory path as the collision.
+    assert!(
+        !stderr.contains("\"./sub/\"") && !stderr.contains("\"./\""),
+        "the collision must NOT key on the enclosing directory ./sub/ or ./; got: {stderr}"
+    );
+
+    // And under last-wins it resolves to the LAST ref's file content (a real M
+    // vs a TO that holds neither -> the file is added, not the dir).
+    let (_ts2, to2_url, _tid2) = capture(
+        "dirCol-to2",
+        &cache,
+        &[("sub/inner.txt", b"RIGHT content", 0o644)],
+    );
+    let stdout = run_ok(
+        &[
+            "diff",
+            "--on-conflict",
+            "last-wins",
+            "--from",
+            &from1_url,
+            "--from",
+            &from2_url,
+            "--to",
+            &to2_url,
+        ],
+        &cache,
+        &[],
+    );
+    // last-wins picks from2 (RIGHT) == to2 -> file equal -> hidden; no dir lines.
+    assert!(
+        stdout.trim().is_empty(),
+        "last-wins selects the LAST ref's file content, matching TO -> no diff; got:\n{stdout}"
+    );
+    assert_no_directory_lines(&stdout);
+
+    fs::remove_dir_all(&cache).ok();
+}
+
+/// SPEC dir-drop in `--json`: the directory-drop rule applies identically to the
+/// JSON renderer — a descendant-only change yields a JSON array carrying ONLY the
+/// file entry, no directory object. Pins parity between porcelain and JSON for
+/// the dir-handling fix.
+#[test]
+fn json_drops_directory_entries_too() {
+    let cache = temp_dir("dirJson-cache");
+
+    let (_fs, from_url, _fid) = capture("dirJson-from", &cache, &[("d/leaf.txt", b"v1", 0o644)]);
+    let (_ts, to_url, _tid) = capture("dirJson-to", &cache, &[("d/leaf.txt", b"v2 longer", 0o644)]);
+
+    let json = run_ok(
+        &["diff", "--json", "--from", &from_url, "--to", &to_url],
+        &cache,
+        &[],
+    );
+    let paths: Vec<String> = json_array_objects(&json)
+        .iter()
+        .map(|o| {
+            json_str_field(o, "path")
+                .unwrap_or_else(|| panic!("each json entry needs a `path`; got {o}"))
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        paths,
+        vec!["./d/leaf.txt".to_owned()],
+        "json must carry ONLY the file entry, no directory object; got:\n{json}"
+    );
+    for p in &paths {
+        assert!(
+            !p.ends_with('/'),
+            "no json path may be a directory (trailing slash); got {p:?}"
+        );
+    }
+
+    fs::remove_dir_all(&cache).ok();
+}
