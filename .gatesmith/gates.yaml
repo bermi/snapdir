@@ -3632,10 +3632,22 @@ gates:
         - exit_code: 0
     human_checkpoint: false
     description: "ci lane: surface the SNAPPACK Linux perf number from the GitHub runner. The existing .github/workflows/bench-verify.yml runs on ubuntu-latest, is workflow_dispatch-able, and already runs `cargo bench` for iai_hot/pipeline/hot_paths teeing to bench-output.log (uploaded as an artifact). Add a step that runs the snappack RECEIVE bench on the runner — `cargo bench -p snapdir-benches --bench snappack -- 'pack/receive/a'` (scenario (a) = 5k x 4KiB text-like; v1+zstd x off+batch) — and tees its criterion output into bench-output.log so the receive batch-vs-off delta is readable from the run/artifact. NO threshold enforced in CI (the operator reads it at release-perf-linux-1.7.0). Keep it cheap: scenario (a) only is sufficient; skip the 256x1MiB (b) scenario unless trivial. Do NOT change the iai callgrind 5% gate. PM machine-check: actionlint clean (or CI-deferred), bench-verify.yml mentions snappack, and the bench still builds/runs locally in --test mode."
+  - id: release-ci-clean-1.7.0
+    phase: 29
+    owner_agent: ci
+    depends_on: [release-perf-job-ci-1.7.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "typos && cargo fmt --all --check"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Make the workspace typos-clean so dev pushes through the pre-push hook (utils/git-hooks/pre-push runs typos) AND the upstream CI lint job stays green for the release PR. Current failure: 7x `fo` in crates/snapdir-cli/tests/sync_split.rs (temp-dir names like `fo-src`/`fo-srcmani`/`fo-dst`/`fo-cache` — a from-objects abbreviation the gatesmith gates never typos-checked, since they ran cargo test not typos). The gatesmith gates run cargo test, not typos, so this latent lint slipped through. PREFERRED single-lane fix (ci): add `fo` to `_typos.toml` [default.extend-words] (or [default.extend-identifiers]) with a justifying comment matching the existing anc/anc_lines/_snapdir_file_store_persit precedent — these are deliberate test-fixture abbreviations. (If you instead rename the `fo-*` prefixes in sync_split.rs, that touches the cli lane — acceptable ONLY as a mechanical, behavior-preserving, lint-only rename; prefer the _typos.toml allowlist to stay in-lane.) Run a FULL `typos` over the repo to confirm ZERO remaining hits (not just `fo`), and cargo fmt --check. PM machine-check: `typos` exits 0 AND `cargo fmt --all --check` exits 0."
   - id: release-perf-linux-1.7.0
     phase: 29
     owner_agent: generic
-    depends_on: [release-perf-job-ci-1.7.0]
+    depends_on: [release-ci-clean-1.7.0]
     status: pending
     failure_count: 0
     verification_cmd: "cargo bench -p snapdir-benches --bench snappack -- --test"
