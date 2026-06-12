@@ -12,17 +12,12 @@
 //! receive-pack path, batched so the cost is **exactly two full syncs per
 //! pack** rather than one fsync per object:
 //!
-//! 1. While a pack is being filed, each freshly committed object is given a
-//!    cheap, non-blocking *writeout hint* ([`writeout_hint`]) so its dirty
-//!    pages start heading to disk early (Linux `sync_file_range(WRITE)`; on
-//!    Darwin a plain `fsync`, which is writeout-only there — `F_FULLFSYNC`
-//!    would be one full barrier *per object*, exactly what we are batching
-//!    away).
-//! 2. At the barrier ([`barrier_objects`]) — called once, right before the
+//! 1. At the barrier ([`barrier_objects`]) — called once, right before the
 //!    manifest is committed — every written object's data is forced to stable
 //!    storage in one pass (Linux `sync_file_range(WAIT_BEFORE|WRITE|WAIT_AFTER)`;
-//!    elsewhere `fsync`/`sync_data`). This is full sync #1.
-//! 3. The manifest itself is then written via
+//!    elsewhere `fsync`/`sync_data`). This is full sync #1 and is the sole
+//!    thing that makes the objects durable.
+//! 2. The manifest itself is then written via
 //!    [`crate::file_store::write_manifest_durable`]: fsync the temp file,
 //!    rename, fsync the parent shard directory so the rename is durable. That
 //!    is full sync #2.
@@ -58,10 +53,15 @@ use std::path::Path;
 
 use snapdir_core::store::StoreError;
 
-/// Issues a cheap, non-blocking writeout *hint* for a freshly committed object
-/// so its dirty pages start migrating to disk early — amortizing the cost of
-/// the later [`barrier_objects`] pass. This is **not** a durability point on
-/// its own; it never blocks waiting for completion.
+/// Issues a cheap, non-blocking writeout *hint* for a file so its dirty pages
+/// start migrating to disk early. This is **not** a durability point on its
+/// own; it never blocks waiting for completion.
+///
+/// NOTE: the receive-pack path no longer calls this per object. Measured on a
+/// 5k-object pack the per-object hint cost ~+20-30% over `off` while buying no
+/// crash-safety (durability is owned solely by [`barrier_objects`] + the
+/// durable manifest commit). It is retained as a standalone, best-effort
+/// primitive for callers that want to nudge writeback early.
 ///
 /// - **Linux:** `sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE)` — start
 ///   writeback for the whole file, do not wait.

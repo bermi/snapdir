@@ -304,9 +304,9 @@ pub enum Durability {
     /// objects after a *clean* run / process crash, but not across power loss.
     #[default]
     Off,
-    /// Batched durability (Design A): a cheap writeout hint per committed
-    /// object while filing, then exactly two full syncs per pack — one object
-    /// barrier ([`crate::fsync::barrier_objects`]) in [`FileSink::flush_barrier`]
+    /// Batched durability (Design A): exactly two full syncs per pack — one
+    /// object barrier ([`crate::fsync::barrier_objects`]) in
+    /// [`FileSink::flush_barrier`]
     /// right before the manifest, and one durable manifest commit
     /// ([`crate::file_store::write_manifest_durable`]). So a durable manifest
     /// implies durable objects even across power loss (see the
@@ -407,12 +407,13 @@ impl PackSink for FileSink<'_> {
         // `io::copy` streams through a fixed-size buffer (O(1) memory); the
         // reader-side incremental hasher sees every byte we pull here.
         let copied = io::copy(payload, &mut file);
-        if copied.is_ok() && self.durability == Durability::Batch {
-            // Cheap, non-blocking writeout hint so this object's dirty pages
-            // start heading to disk now — amortizes the later batch barrier.
-            // Best-effort: errors are owned by `flush_barrier`, never here.
-            crate::fsync::writeout_hint(&file);
-        }
+        // NOTE: no per-object writeout hint here. The hint was a pipelining
+        // optimization only (start writeback early) and is NOT part of the
+        // durability contract — its ~one-syscall-per-object cost dominated the
+        // batch receive (~+20-30% over `off` on 5k objects) without buying any
+        // crash-safety. Durability is owned entirely by `flush_barrier`'s
+        // single barrier pass over every committed object (full sync #1) plus
+        // the durable manifest-last commit (full sync #2); both are unchanged.
         drop(file);
         if let Err(err) = copied {
             // Failed mid-write: remove the temp file, leave nothing behind.

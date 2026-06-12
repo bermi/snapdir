@@ -41,13 +41,12 @@
 //!   stream through incremental BLAKE3 verification (O(1) memory into a
 //!   [`FileSink`]), the manifest rides last and commits only after the `end`
 //!   trailer, so truncation can never publish a snapshot.
-//! - [`fsync`] ([`barrier_objects`](fsync::barrier_objects),
-//!   [`writeout_hint`](fsync::writeout_hint)) — the batched crash-durability
-//!   primitives behind the receive-pack path: a cheap per-object writeout hint
-//!   while filing, then exactly two full syncs per pack (one object barrier
-//!   before the manifest, one durable manifest commit), so a present manifest
-//!   implies present, on-disk objects even across power loss. cfg-gated over
-//!   `libc` (no new lock crate); env-free.
+//! - [`fsync`] ([`barrier_objects`](fsync::barrier_objects)) — the batched
+//!   crash-durability primitives behind the receive-pack path: exactly two full
+//!   syncs per pack (one object barrier before the manifest, one durable
+//!   manifest commit), so a present manifest implies present, on-disk objects
+//!   even across power loss. cfg-gated over `libc` (no new lock crate);
+//!   env-free.
 //! - [`sync`] ([`sync_snapshot`], [`SyncReport`]) — streaming store-to-store
 //!   snapshot copy: walks a source manifest and copies its raw objects
 //!   source → dest through memory only (no local filesystem staging),
