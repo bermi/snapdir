@@ -34,6 +34,9 @@ anc = "anc"
 # AIMD = Additive Increase Multiplicative Decrease (TCP-style congestion control);
 # the Phase-18 adaptive tuner's algorithm — intentional, not "aimed".
 aimd = "aimd"
+# `fo` = from-objects, a temp-dir-name abbreviation in the sync-split CLI tests
+# (e.g. `temp_dir("fo-src")`); these are deliberate string literals, not "of"/"for".
+fo = "fo"
 
 [default.extend-identifiers]
 # crate / API identifiers that look like typos but are intentional.
