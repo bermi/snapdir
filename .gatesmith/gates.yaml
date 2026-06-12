@@ -3650,7 +3650,9 @@ gates:
     phase: 29
     owner_agent: stores
     depends_on: [release-ci-clean-1.7.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-12T12:27:02Z
+    git_sha: 0f2cb35
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores pack --locked"
     pass_criteria:
