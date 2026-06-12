@@ -92,6 +92,20 @@ jobs:
             -- --warm-up-time 1 --measurement-time 3 --sample-size 10 \
             | tee -a bench-output.log || true
 
+      # snappack RECEIVE perf (informational): the load-bearing batch-vs-off
+      # number for the Phase-27 release gate. Filter `pack/receive/a` matches the
+      # 5k×4KiB text-like receive benches `pack/receive/a/{v1,zstd}/{off,batch}`
+      # only (scenario b — 256×1MiB incompressible — is skipped to keep CI cheap).
+      # The operator reads the batch-vs-off delta from these lines in the artifact.
+      - name: snappack receive perf
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p target
+          cargo bench -p snapdir-benches --bench snappack 2>&1 \
+            -- 'pack/receive/a' --warm-up-time 1 --measurement-time 3 --sample-size 10 \
+            | tee -a bench-output.log || true
+
       - name: Upload bench results
         if: always()
         uses: actions/upload-artifact@v4
