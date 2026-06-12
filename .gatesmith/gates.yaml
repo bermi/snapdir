@@ -3581,7 +3581,8 @@ gates:
     depends_on: [diff-command-tests-review, sync-objects-split-tests-review]
     status: pending
     failure_count: 0
-    verification_cmd: "typos README.md crates/snapdir/README.md docs/ CHANGELOG.md && grep -q 'objects-store' crates/snapdir/README.md && grep -Eq 'snapdir diff' crates/snapdir/README.md"
+    verification_cmd: "typos README.md crates/snapdir/README.md docs/ docs/rust-port/CHANGELOG.md && grep -q 'objects-store' crates/snapdir/README.md && grep -Eq 'snapdir diff' crates/snapdir/README.md"
+    bump_reason: "GATE-BUMP 2026-06-12 (operator-approved): authoring fix — verification_cmd referenced a non-existent root CHANGELOG.md (typos exits 64 on a missing path, making the gate unrunnable). Canonical changelog is docs/rust-port/CHANGELOG.md; pointed the trailing typos arg there explicitly. Pass INTENT unchanged (typos-clean README + flagship README + docs/ + CHANGELOG; README mentions 'objects-store' + 'snapdir diff')."
     pass_criteria:
       and:
         - exit_code: 0
