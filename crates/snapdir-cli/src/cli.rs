@@ -258,6 +258,30 @@ impl PackFormatArg {
     }
 }
 
+/// CLI selector for the intra-side collision policy of `snapdir diff`.
+///
+/// Mirrors [`crate::diff::OnConflict`]; clap derives `--on-conflict
+/// <error|last-wins>` from it. The default is [`OnConflictArg::Error`], so an
+/// omitted flag fails hard on a differing-content path collision within one
+/// side (the SPEC default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OnConflictArg {
+    /// A differing-content collision is a hard error (default).
+    Error,
+    /// The last ref contributing the path wins.
+    LastWins,
+}
+
+impl OnConflictArg {
+    /// Maps the CLI selector to the library [`crate::diff::OnConflict`].
+    fn resolve(self) -> crate::diff::OnConflict {
+        match self {
+            Self::Error => crate::diff::OnConflict::Error,
+            Self::LastWins => crate::diff::OnConflict::LastWins,
+        }
+    }
+}
+
 /// The `snapdir` subcommands, matching the Bash orchestrator one-for-one.
 #[derive(Debug, Subcommand)]
 pub enum Command {
@@ -354,6 +378,39 @@ pub enum Command {
         /// Destination store URI: `protocol://location/path`.
         #[arg(long, value_name = "STORE")]
         to: String,
+    },
+
+    /// Compare two sides, each a set of manifests, reporting file-level
+    /// differences — reading MANIFESTS ONLY.
+    Diff {
+        /// FROM-side ref: a manifest-store URI (enumerated) and/or, with the
+        /// global `--id`, a single pinned manifest. Repeatable; refs are
+        /// UNIONED into the FROM side.
+        #[arg(long, value_name = "REF", action = clap::ArgAction::Append)]
+        from: Vec<String>,
+
+        /// TO-side ref: a manifest-store URI (enumerated) and/or a pinned
+        /// manifest. Repeatable; refs are UNIONED into the TO side.
+        #[arg(long, value_name = "REF", action = clap::ArgAction::Append)]
+        to: Vec<String>,
+
+        /// Also emit unchanged (equal) paths.
+        #[arg(long)]
+        all: bool,
+
+        /// Emit a JSON array of `{status, path}` objects instead of porcelain.
+        #[arg(long)]
+        json: bool,
+
+        /// Exit 1 when any difference is found (git `diff --exit-code`
+        /// semantics); the default exits 0 regardless.
+        #[arg(long)]
+        exit_code: bool,
+
+        /// Policy for an intra-side path collision (same path, differing
+        /// content unioned on one side).
+        #[arg(long, value_name = "POLICY", value_enum, default_value_t = OnConflictArg::Error)]
+        on_conflict: OnConflictArg,
     },
 
     /// Print the version.
@@ -551,6 +608,14 @@ impl Cli {
             }
             Command::Defaults => run_defaults(),
             Command::Sync { from, to } => self.run_sync(from, to),
+            Command::Diff {
+                from,
+                to,
+                all,
+                json,
+                exit_code,
+                on_conflict,
+            } => self.run_diff(from, to, *all, *json, *exit_code, on_conflict.resolve()),
             Command::Completions { shell } => {
                 // Build-time hook: emit the requested shell's completion script
                 // to stdout for the release pipeline to bundle. The bin name is
@@ -1621,6 +1686,124 @@ impl Cli {
             }
         }
         Ok(())
+    }
+
+    /// `snapdir diff --from <ref>… --to <ref>… [--all] [--json] [--exit-code]
+    /// [--on-conflict <error|last-wins>]`: compare two SIDES, each a UNION of
+    /// one-or-more manifests, and report file-level differences.
+    ///
+    /// MANIFESTS ONLY: every ref is resolved via [`Self::resolve_side`], which
+    /// calls EXCLUSIVELY [`StreamStore::list_manifest_ids`] (to enumerate a
+    /// store) and [`Store::get_manifest`] (BLAKE3-verified) — it NEVER
+    /// constructs an object store, calls `get_object`, or fetches a blob. So a
+    /// store whose `.objects/` pool is absent/garbage still diffs correctly.
+    ///
+    /// The comparison itself is the pure map-diff in [`crate::diff`]: each side
+    /// unions to a `path -> ManifestEntry` map (collisions handled per
+    /// `on_conflict`), then [`crate::diff::classify`] yields the A/D/M(/=) rows.
+    fn run_diff(
+        &self,
+        from: &[String],
+        to: &[String],
+        all: bool,
+        json: bool,
+        exit_code: bool,
+        on_conflict: crate::diff::OnConflict,
+    ) -> Result<()> {
+        use crate::diff::{classify, render_json, render_porcelain, union_side};
+
+        // Resolve each side to its set of manifests (manifests-only reads), then
+        // union into a path map. A differing-content intra-side collision under
+        // OnConflict::Error surfaces as an actionable error naming the path.
+        let from_manifests = self.resolve_side(from).context("resolving --from side")?;
+        let to_manifests = self.resolve_side(to).context("resolving --to side")?;
+
+        let from_map = union_side(&from_manifests, on_conflict).map_err(|c| {
+            anyhow::anyhow!(
+                "intra-side conflict on --from: the path {:?} has differing content across \
+                 two refs (collision); pass --on-conflict last-wins to let the last ref win",
+                c.path
+            )
+        })?;
+        let to_map = union_side(&to_manifests, on_conflict).map_err(|c| {
+            anyhow::anyhow!(
+                "intra-side conflict on --to: the path {:?} has differing content across \
+                 two refs (collision); pass --on-conflict last-wins to let the last ref win",
+                c.path
+            )
+        })?;
+
+        let rows = classify(&from_map, &to_map, all);
+
+        // A "difference" for --exit-code is any A/D/M row (never an unchanged
+        // row that only --all surfaces).
+        let has_difference = rows
+            .iter()
+            .any(|r| r.status != crate::diff::Status::Unchanged);
+
+        let out = std::io::stdout();
+        let mut out = out.lock();
+        if json {
+            writeln!(out, "{}", render_json(&rows))?;
+        } else {
+            // render_porcelain already terminates each line with `\n`.
+            write!(out, "{}", render_porcelain(&rows))?;
+        }
+        out.flush()?;
+
+        // git `diff --exit-code` semantics: exit 1 on any difference, AFTER the
+        // porcelain has been written. Without the flag, always exit 0.
+        if exit_code && has_difference {
+            drop(out);
+            std::process::exit(1);
+        }
+        Ok(())
+    }
+
+    /// Resolves one diff SIDE (a list of refs) to its set of manifests, reading
+    /// MANIFESTS ONLY.
+    ///
+    /// For each ref: build the store via the same [`stream_store_for_adapter`]
+    /// resolver the plumbing commands use, then enumerate it with
+    /// [`StreamStore::list_manifest_ids`] and read each manifest with
+    /// [`Store::get_manifest`] (which BLAKE3-verifies the bytes hash back to the
+    /// id). When the global `--id` is set AND that id is present in this ref's
+    /// store, the side is PINNED to exactly that one manifest (otherwise the
+    /// whole store is unioned). An empty/missing manifest store contributes
+    /// nothing (its `list_manifest_ids` yields zero ids).
+    ///
+    /// NO object store is ever constructed and no blob is ever fetched — the
+    /// only store methods called are `list_manifest_ids` and `get_manifest`.
+    fn resolve_side(&self, refs: &[String]) -> Result<Vec<Manifest>> {
+        let pinned_id = self.globals.id.as_deref();
+        let mut manifests = Vec::new();
+        for store_url in refs {
+            let adapter =
+                resolve_adapter(store_url).context("resolving a --from/--to ref protocol")?;
+            let config = self.transfer_config_for(Some(adapter.name()))?;
+            // MANIFESTS-ONLY: a StreamStore exposes both list_manifest_ids and
+            // get_manifest; we never touch its object surface.
+            let store = stream_store_for_adapter(&adapter, store_url, config, None)?;
+
+            let all_ids = store
+                .list_manifest_ids()
+                .with_context(|| format!("listing manifests in {store_url}"))?;
+
+            // If --id is set and this store holds it, pin to that single
+            // manifest; else union the whole store's manifests.
+            let ids: Vec<String> = match pinned_id {
+                Some(id) if all_ids.iter().any(|x| x == id) => vec![id.to_owned()],
+                _ => all_ids,
+            };
+
+            for id in &ids {
+                let manifest = store
+                    .get_manifest(id)
+                    .with_context(|| format!("reading manifest {id} from {store_url}"))?;
+                manifests.push(manifest);
+            }
+        }
+        Ok(manifests)
     }
 
     /// `snapdir objects-needed --store <url>` (hidden plumbing): read candidate

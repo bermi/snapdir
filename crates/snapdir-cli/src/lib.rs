@@ -19,6 +19,9 @@
 //! are made beyond "the `snapdir` binary keeps behaving as documented".
 
 mod cli;
+// Pure `snapdir diff` comparison logic (manifest map-diff + porcelain/JSON
+// rendering); the store reads live in `cli`.
+mod diff;
 // The progress renderer engine, wired into every transfer command and gated by
 // the --no-progress/--quiet/--color flags.
 mod progress;
