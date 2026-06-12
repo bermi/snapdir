@@ -3490,7 +3490,9 @@ gates:
     phase: 28
     owner_agent: adversary
     depends_on: [objects-store-cli-tests-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-12T00:18:10Z
+    git_sha: dbc32a8
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/sync_split.rs && grep -cF 'test]' .gatesmith/pending-tests/sync_split.rs"
     pass_criteria:
