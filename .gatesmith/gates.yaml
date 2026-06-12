@@ -3605,3 +3605,93 @@ gates:
         - human_confirm: "Phase 28 done: --objects-store / $SNAPDIR_OBJECTS_STORE splits one shared .objects pool from many manifest locations (caller owns the layout), composing with push/pull AND bucket-to-bucket sync (--from-objects/--to-objects); `snapdir diff` compares multiple manifest paths per side reading manifests only (A/D/M, --json, --exit-code). Layout stays byte-for-byte oracle-compatible; objects-before-manifest / all-or-nothing / BLAKE3-verify invariants hold through the split. Net-new features (no Bash oracle). Approve? (Release versioning is a separate future phase.)"
     human_checkpoint: true
     description: "PHASE 28 SIGN-OFF: split object pool from manifest location (--objects-store, SplitStore) + manifest-only `diff` across multiple paths per side + split-aware sync, per the operator-approved plan (.claude/plans/how-can-snapdir-have-binary-lighthouse.md). PM presents: zero-re-upload evidence across manifest prefixes, sync skip-count evidence, and a diff A/D/M run from the evidence dir."
+
+  # ===================================================================
+  # Phase 29 — Release 1.7.0 (operator-requested 2026-06-12)
+  # Ships the UNRELEASED Phase-27 (SNAPPACK zstd + recv-pack durability)
+  # and Phase-28 (--objects-store split + manifest-listing + `snapdir diff`
+  # + sync --from-objects/--to-objects) work. Additive features only ->
+  # MINOR bump 1.6.0 -> 1.7.0. Gated on the Phase-27 release follow-up
+  # (Linux batch-vs-off <=5%). Same release machinery as Phase 25 (1.5.0):
+  # release-prep -> verify-branch off upstream/main (cherry-pick gatesmith-
+  # free code commits, ZERO .gatesmith) -> upstream PR + squash-merge ->
+  # tag v1.7.0 + publish all 6 crates. dev carries .gatesmith; main/upstream
+  # never do. Frozen manifest format stays untouched.
+  # ===================================================================
+  - id: release-perf-linux-1.7.0
+    phase: 29
+    owner_agent: ci
+    depends_on: [phase28-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo bench -p snapdir-benches --bench snappack -- --test"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "PHASE-27 RELEASE GATE: the receive `batch`-vs-`off` delta on the SNAPPACK small-files scenario (a) was measured on a LINUX runner and is <=5%. (The local macOS bench showed +28%/+17% — a Darwin per-object-fsync artifact, NOT the acceptance number; Linux uses amortized sync_file_range.) Provide the CI/Linux run id + the measured delta. Approve?"
+    human_checkpoint: true
+    description: "RELEASE-GATING perf check carried over from Phase 27 (see memory phase27-snappack-release-gate). The `snappack` criterion bench (benches/benches/snappack.rs) exists; the standing ci.yaml bench job only does `cargo bench --no-run` (build-only). To produce the number, run the snappack RECEIVE bench (pack/receive/a/{v1,zstd}x{off,batch}) on a LINUX runner and read the batch-vs-off delta on scenario (a) (5k x 4KiB text-like). ci lane: if no Linux perf path exists, add a minimal workflow_dispatch (or bench-verify.yml) job that runs `cargo bench -p snapdir-benches --bench snappack` on ubuntu and prints/uploads the batch-vs-off deltas (NO threshold enforced in CI — the human reads it). Acceptance: receive batch <=5% over off on (a). PM machine-check: the bench builds+runs in --test mode locally; human_confirm presents the LINUX number. If >5%, do NOT proceed to release — escalate (the durability default may need revisiting, out of this phase's scope)."
+  - id: release-prep-1.7.0
+    phase: 29
+    owner_agent: generic
+    depends_on: [release-perf-linux-1.7.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -qE '^version = \"1.7.0\"' Cargo.toml && grep -q '## \\[1.7.0\\]' docs/rust-port/CHANGELOG.md && cargo build --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Prepare the 1.7.0 release (generic lane, gatesmith-free CODE-ONLY commit on dev so it cherry-picks cleanly; the commit must contain NO .gatesmith paths). Bump 1.6.0 -> 1.7.0 in root Cargo.toml: [workspace.package] version AND the internal path-dep versions in [workspace.dependencies] (snapdir-core/snapdir-catalog/snapdir-stores, and snapdir-cli if pinned by the flagship `snapdir` crate); regenerate Cargo.lock (cargo build --workspace). docs/rust-port/CHANGELOG.md: rename the current '## [Unreleased]' -> '## [1.7.0] - 2026-06-12' (its Added entries for --objects-store/$SNAPDIR_OBJECTS_STORE, snapdir diff, and sync --from-objects/--to-objects were written by split-diff-docs — verify they are complete/accurate and ALSO cover the Phase-27 SNAPPACK 1Z zstd transport + SNAPDIR_FSYNC durability if those weren't separately released; add a fresh empty '## [Unreleased]' above [1.7.0]; update the compare-links footer ([Unreleased]: ...compare/v1.7.0...HEAD; [1.7.0]: ...compare/v1.6.0...v1.7.0). Confirm release.yml publishes ALL 6 crates (snapdir-core, snapdir-catalog, snapdir-stores, snapdir-ssh-store, snapdir-cli, snapdir)."
+  - id: release-verify-branch-1.7.0
+    phase: 29
+    owner_agent: generic
+    depends_on: [release-prep-1.7.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git ls-remote --exit-code origin refs/heads/release-verify/1.7.0 >/dev/null"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "release-verify/1.7.0 is built off upstream/main (ZERO .gatesmith tracked), with the Phase-27 + Phase-28 gatesmith-free code commits cherry-picked in order + the release-prep-1.7.0 commit on top (tip shows 1.7.0); pushed to origin; bench-verify.yml is green (determinism + iai + criterion artifact consulted). Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint). git fetch upstream. Create release-verify/1.7.0 off upstream/main and apply ONLY the new release content (dev and upstream are separate lineages — do NOT merge dev). Two acceptable mechanisms: (a) cherry-pick the ordered list of gatesmith-free CODE commits from Phase 27 + Phase 28 — i.e. every `feat(...)`/`test(...)`/`docs:`/`bench(...)` commit recorded as a gate `git_sha` in phases 27-28 (NOT the `gatesmith:` ledger commits) — in commit order, then the release-prep-1.7.0 commit; OR (b) apply the squashed net code diff of phases 27-28 as one commit + release-prep. Either way the branch tip = upstream/main + exactly the 1.7.0 changes, version 1.7.0, ZERO .gatesmith tracked. Reconcile any pre-existing dev<->upstream drift noted at 1.6.0. Push to origin (bermi) -> bench-verify.yml uploads the determinism+iai+criterion artifact; consult it. PM machine-check: origin has refs/heads/release-verify/1.7.0; human_confirm bench-verify green + ZERO .gatesmith."
+  - id: release-pr-upstream-1.7.0
+    phase: 29
+    owner_agent: generic
+    depends_on: [release-verify-branch-1.7.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.7.0\"'"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "PR release-verify/1.7.0 -> snapdir/snapdir was opened, the full CI matrix went green (lint/deny/test-matrix incl. the required loopback-sshd suite on ubuntu+macos, the static-musl leg WITH zstd-sys, coverage, and crate-age >=3 days), and it was squash-merged; upstream/main is now at 1.7.0 with ZERO .gatesmith tracked. Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint, IRREVERSIBLE — merges to the canonical repo). Open PR release-verify/1.7.0 -> snapdir/snapdir main (title 'release: 1.7.0'), wait for the full CI matrix (incl. the REQUIRED loopback-sshd suite on ubuntu+macos and the musl leg that now cc-compiles the bundled libzstd), operator-authorized squash-merge. PM machine-check: upstream/main Cargo.toml shows 1.7.0."
+  - id: release-tag-crates-1.7.0
+    phase: 29
+    owner_agent: packaging
+    depends_on: [release-pr-upstream-1.7.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git ls-remote --tags upstream refs/tags/v1.7.0 | grep -q v1.7.0 && for c in snapdir-core snapdir-catalog snapdir-stores snapdir-ssh-store snapdir-cli snapdir; do curl -sf \"https://index.crates.io/$(printf %s \"$c\" | cut -c1-2)/$(printf %s \"$c\" | cut -c3-4)/$c\" | grep -q '\"vers\":\"1.7.0\"' || exit 1; done"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "v1.7.0 is tagged on snapdir/snapdir, the GitHub release is live (signed archives incl. the snapdir + snapdir-ssh-store + snapdir-sftp-store bins + SHA256SUMS), and ALL 6 crates are at 1.7.0 on crates.io (idempotent publish loop, skip-if-published makes re-runs safe). Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint, IRREVERSIBLE — permanent tag + crates.io publish). All 6 crate names (snapdir, snapdir-core, snapdir-catalog, snapdir-stores, snapdir-ssh-store, snapdir-cli) are already published + Trusted-Publishing-registered from 1.6.0, so no new-crate TP dance this time (but confirm TP is still attached on the snapdir + snapdir-ssh-store pages per the 1.6.0 operator follow-ups). Tag v1.7.0 on the merged upstream/main commit and push -> release.yml builds the per-target archives + GitHub release (signed + SLSA) + the idempotent 6-crate publish loop in dependency order (snapdir-core -> snapdir-catalog -> snapdir-stores -> snapdir-ssh-store -> snapdir-cli -> snapdir; skip-if-published). PM machine-check: upstream tag v1.7.0 AND crates.io sparse index shows 1.7.0 for all SIX crates; human_confirm GH release + crates live."
+  - id: phase29-complete
+    phase: 29
+    owner_agent: generic
+    depends_on: [release-tag-crates-1.7.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.7.0\"'"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 29 done: snapdir 1.7.0 released end-to-end — canonical snapdir/snapdir at 1.7.0, tag v1.7.0, GitHub release live, all 6 crates on crates.io. Ships --objects-store / $SNAPDIR_OBJECTS_STORE shared-pool split, `snapdir diff` (manifests-only), `sync --from-objects/--to-objects`, plus the SNAPPACK 1Z zstd transport + receive-pack durability (Linux batch-vs-off confirmed <=5%). Frozen manifest format untouched; default behavior unchanged when the new flags are unset. Approve?"
+    human_checkpoint: true
+    description: "PHASE 29 SIGN-OFF: snapdir 1.7.0 released end-to-end. Ships the Phase-27 SNAPPACK 1Z zstd transport + SNAPDIR_FSYNC receive-pack durability and the Phase-28 objects-store split (--objects-store), manifest-listing, `snapdir diff` (manifests-only), and `sync --from-objects/--to-objects`. All additive: frozen format untouched, unset-flag behavior byte-for-byte unchanged. 6 crates published; the Phase-27 Linux batch-vs-off <=5% release gate was cleared."
