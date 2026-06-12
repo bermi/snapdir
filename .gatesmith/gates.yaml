@@ -3544,7 +3544,9 @@ gates:
     phase: 28
     owner_agent: cli
     depends_on: [diff-command-spec-tests, manifest-listing-tests-review, objects-store-cli-tests-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-11T23:55:43Z
+    git_sha: 6b7404b
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test diff --locked && test ! -f .gatesmith/pending-tests/diff.rs"
     pass_criteria:
