@@ -23,6 +23,9 @@ Options:
       --to <STORE>
           Destination store URI: `protocol://location/path`
 
+      --from-objects <URI>
+          Explicit SOURCE object pool URI (split source): objects are read from here while manifests come from `--from`. Absent => `--from` is a plain colocated store. Distinct from the global `--objects-store`
+
       --store <URI>
           Store URI: `protocol://location/path`
           
@@ -32,6 +35,9 @@ Options:
           Shared object-pool store URI: when set, content OBJECTS route to this pool's `.objects/` while MANIFESTS route to `--store`'s `.manifests/`
           
           [env: SNAPDIR_OBJECTS_STORE=]
+
+      --to-objects <URI>
+          Explicit DESTINATION object pool URI (split dest): objects are written here while manifests go to `--to`. Absent => `--to` is a plain colocated store. Distinct from the global `--objects-store`
 
       --id <ID>
           Snapshot ID to operate on

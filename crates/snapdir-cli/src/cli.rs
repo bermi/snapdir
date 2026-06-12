@@ -378,6 +378,16 @@ pub enum Command {
         /// Destination store URI: `protocol://location/path`.
         #[arg(long, value_name = "STORE")]
         to: String,
+        /// Explicit SOURCE object pool URI (split source): objects are read from
+        /// here while manifests come from `--from`. Absent => `--from` is a plain
+        /// colocated store. Distinct from the global `--objects-store`.
+        #[arg(long, value_name = "URI")]
+        from_objects: Option<String>,
+        /// Explicit DESTINATION object pool URI (split dest): objects are written
+        /// here while manifests go to `--to`. Absent => `--to` is a plain
+        /// colocated store. Distinct from the global `--objects-store`.
+        #[arg(long, value_name = "URI")]
+        to_objects: Option<String>,
     },
 
     /// Compare two sides, each a set of manifests, reporting file-level
@@ -607,7 +617,12 @@ impl Cli {
                 Ok(())
             }
             Command::Defaults => run_defaults(),
-            Command::Sync { from, to } => self.run_sync(from, to),
+            Command::Sync {
+                from,
+                to,
+                from_objects,
+                to_objects,
+            } => self.run_sync(from, to, from_objects.as_deref(), to_objects.as_deref()),
             Command::Diff {
                 from,
                 to,
@@ -1625,7 +1640,51 @@ impl Cli {
     ///
     /// Output convention (consistent with `push`/`stage`): on a real sync the id
     /// is printed to STDOUT; a human summary always goes to STDERR.
-    fn run_sync(&self, from_url: &str, to_url: &str) -> Result<()> {
+    /// Builds the `StreamStore` for ONE side of a `sync`. When `objects_url` is
+    /// present, that side is a split store: objects route to `objects_url`,
+    /// manifests to `manifest_url` — wrapped in an in-process [`SplitStore`]
+    /// exactly as [`Self::resolve_split_store`] does for `--objects-store`. When
+    /// absent, the side is the plain colocated store at `manifest_url`,
+    /// byte-for-byte as before. BOTH sides of a split are built via
+    /// [`stream_store_for_adapter`], so an external `custom://` on either is
+    /// rejected — identical to non-split sync.
+    ///
+    /// `side` names the side (`--from`/`--to`) for error context only.
+    fn sync_side_store(
+        &self,
+        manifest_url: &str,
+        objects_url: Option<&str>,
+        side: &str,
+    ) -> Result<Box<dyn StreamStore + Sync>> {
+        let Some(objects_url) = objects_url else {
+            let adapter = resolve_adapter(manifest_url)
+                .with_context(|| format!("resolving {side} store protocol"))?;
+            let config = self.transfer_config_for(Some(adapter.name()))?;
+            return stream_store_for_adapter(&adapter, manifest_url, config, None);
+        };
+
+        let objects_adapter = resolve_adapter(objects_url)
+            .with_context(|| format!("resolving {side}-objects protocol"))?;
+        let objects_config = self.transfer_config_for(Some(objects_adapter.name()))?;
+        let objects =
+            stream_store_for_adapter(&objects_adapter, objects_url, objects_config, None)?;
+
+        let manifests_adapter = resolve_adapter(manifest_url)
+            .with_context(|| format!("resolving {side} store protocol"))?;
+        let manifests_config = self.transfer_config_for(Some(manifests_adapter.name()))?;
+        let manifests =
+            stream_store_for_adapter(&manifests_adapter, manifest_url, manifests_config, None)?;
+
+        Ok(Box::new(SplitStore::from_boxed(objects, manifests)))
+    }
+
+    fn run_sync(
+        &self,
+        from_url: &str,
+        to_url: &str,
+        from_objects: Option<&str>,
+        to_objects: Option<&str>,
+    ) -> Result<()> {
         let id = self.require_id()?;
         anyhow::ensure!(
             from_url != to_url,
@@ -1633,14 +1692,16 @@ impl Cli {
         );
 
         let from_adapter = resolve_adapter(from_url).context("resolving --from store protocol")?;
-        let to_adapter = resolve_adapter(to_url).context("resolving --to store protocol")?;
         // Each endpoint gets its own per-backend rate-limit defaults; the shared
         // sync pipe (concurrency, retry, byte budget accounting) is driven by the
         // source-side config below.
-        let from_config = self.transfer_config_for(Some(from_adapter.name()))?;
-        let to_config = self.transfer_config_for(Some(to_adapter.name()))?;
-        let from_store = stream_store_for_adapter(&from_adapter, from_url, from_config, None)?;
-        let to_store = stream_store_for_adapter(&to_adapter, to_url, to_config, None)?;
+        // Per-side stores: when `--from-objects`/`--to-objects` is present, THAT
+        // side is a split store (objects = the flag's pool, manifests = the
+        // `--from`/`--to` URI), built exactly like `resolve_split_store`. Absent =>
+        // a plain colocated store as before. A `SplitStore` IS a `StreamStore`, so
+        // the `sync_snapshot` engine is unchanged.
+        let from_store = self.sync_side_store(from_url, from_objects, "--from")?;
+        let to_store = self.sync_side_store(to_url, to_objects, "--to")?;
         let config = self.transfer_config_for(Some(from_adapter.name()))?;
 
         self.log_transfer_config();
