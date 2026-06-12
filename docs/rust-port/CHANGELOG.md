@@ -54,7 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manifest-last invariant holds across the crash boundary). `off` skips the
   barrier and relies on the OS to flush; any other value is a hard error. On a
   journaling filesystem this matches the crash-consistency guarantee git
-  provides, and claims no more than that.
+  provides, and claims no more than that. Measured cost: the `batch` default
+  adds ~20% on a small-files receive (v1 +19.5% / zstd +29.9% on a 5,000 ×
+  4 KiB push, Linux CI) — a fixed per-object fsync cost on the receive-pack
+  path only, accepted as the crash-safe default with `SNAPDIR_FSYNC=off` as
+  the opt-out.
 
 ## [1.6.0] — 2026-06-11
 

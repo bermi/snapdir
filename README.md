@@ -141,7 +141,7 @@ The accelerated pack stream **auto-negotiates zstd compression** (SNAPPACK 1Z): 
 
 Limitation: `snapdir sync` does not support `ssh://`/`sftp://` stores (they have no in-process streaming surface) — `push`, `fetch`, `pull`, and `checkout` all work.
 
-Crash durability on the receive side is controlled by `SNAPDIR_FSYNC`: `batch` (the default) fsyncs all received objects before committing the manifest last, so a manifest that survives a crash is backed by durable objects; `off` skips the barrier and relies on the OS to flush. On a journaling filesystem this gives the same crash-consistency story git provides — and no more.
+Crash durability on the receive side is controlled by `SNAPDIR_FSYNC`: `batch` (the default) fsyncs all received objects before committing the manifest last, so a manifest that survives a crash is backed by durable objects; `off` skips the barrier and relies on the OS to flush. On a journaling filesystem this gives the same crash-consistency story git provides — and no more. The `batch` default costs ~20% on a small-files receive (measured v1 +19.5% / zstd +29.9% on 5,000 × 4 KiB on Linux) — a fixed per-object fsync cost on the receive-pack path only (the ordinary `file://`/S3/GCS push path is unaffected); `SNAPDIR_FSYNC=off` opts out for speed at the cost of crash-safety.
 
 ## Scheduled inventories — one object pool, many manifest locations
 

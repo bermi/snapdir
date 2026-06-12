@@ -67,6 +67,14 @@ The cloud backends are built in — native SDKs and standard credential chains,
 no bespoke env vars, no CLI shell-outs. The `ssh://` and `sftp://` stores ship
 as two external-store binaries; `cargo install snapdir-ssh-store` provides both.
 
+On the receiving side of an accelerated `ssh://` push, `SNAPDIR_FSYNC` controls
+crash durability: `batch` (the default) fsyncs every received object before
+committing the manifest, so a crash mid-receive can never leave a manifest
+pointing at objects that aren't durably on disk. That safety costs ~20% on a
+small-files receive (measured v1 +19.5% / zstd +29.9% on 5,000 × 4 KiB on
+Linux); `SNAPDIR_FSYNC=off` is faster but not crash-safe. The cost is on the
+receive-pack path only — the ordinary `file://`/S3/GCS push path is unaffected.
+
 ## Scheduled inventories — one object pool, many manifests
 
 A snapshot's manifest and its content objects don't have to live together. The

@@ -310,6 +310,17 @@ deliberately scoped to **no more than git claims**.
   - `off` ⇒ `Durability::Off` — the barrier is a no-op (byte-identical to the
     pre-durability behavior; rely on the OS to flush);
   - any other value is a **hard error** (fail closed, no silent downgrade).
+- **Measured cost.** The default `batch` is not free: fsync-ing many tiny
+  files before the manifest costs **~20%** on a small-files receive — measured
+  **v1 +19.5%, zstd +29.9%** on a 5,000 × 4 KiB push received over this
+  SNAPPACK path on a Linux CI runner. This is the price of crash-safety-by-
+  default, not a bug — it is a fixed per-object fsync cost and is therefore
+  worst on a small-files-dominated receive; a snapshot of fewer/larger objects
+  pays proportionally less. The cost lands **only** on this receive-pack path
+  (the ssh/store side accepting a push); the ordinary `file://`/S3/GCS push
+  path is untouched. `SNAPDIR_FSYNC=off` trades the guarantee for the speed
+  (a crash mid-receive can then leave a corrupt snapshot); the operator
+  decision is to **keep `batch` the default** and accept the cost.
 - **Non-journaling-fs caveat.** On a journaling filesystem with sane mount
   options, the fsync ordering above gives the manifest-last crash-consistency
   argument real teeth. On filesystems or mount configurations that do not order
