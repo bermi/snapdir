@@ -3618,10 +3618,22 @@ gates:
   # tag v1.7.0 + publish all 6 crates. dev carries .gatesmith; main/upstream
   # never do. Frozen manifest format stays untouched.
   # ===================================================================
-  - id: release-perf-linux-1.7.0
+  - id: release-perf-job-ci-1.7.0
     phase: 29
     owner_agent: ci
     depends_on: [phase28-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "(command -v actionlint >/dev/null 2>&1 && actionlint .github/workflows/bench-verify.yml || echo 'actionlint not installed locally - CI lints it') && grep -q 'snappack' .github/workflows/bench-verify.yml && cargo bench -p snapdir-benches --bench snappack -- --test"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ci lane: surface the SNAPPACK Linux perf number from the GitHub runner. The existing .github/workflows/bench-verify.yml runs on ubuntu-latest, is workflow_dispatch-able, and already runs `cargo bench` for iai_hot/pipeline/hot_paths teeing to bench-output.log (uploaded as an artifact). Add a step that runs the snappack RECEIVE bench on the runner — `cargo bench -p snapdir-benches --bench snappack -- 'pack/receive/a'` (scenario (a) = 5k x 4KiB text-like; v1+zstd x off+batch) — and tees its criterion output into bench-output.log so the receive batch-vs-off delta is readable from the run/artifact. NO threshold enforced in CI (the operator reads it at release-perf-linux-1.7.0). Keep it cheap: scenario (a) only is sufficient; skip the 256x1MiB (b) scenario unless trivial. Do NOT change the iai callgrind 5% gate. PM machine-check: actionlint clean (or CI-deferred), bench-verify.yml mentions snappack, and the bench still builds/runs locally in --test mode."
+  - id: release-perf-linux-1.7.0
+    phase: 29
+    owner_agent: generic
+    depends_on: [release-perf-job-ci-1.7.0]
     status: pending
     failure_count: 0
     verification_cmd: "cargo bench -p snapdir-benches --bench snappack -- --test"
@@ -3630,7 +3642,7 @@ gates:
         - exit_code: 0
         - human_confirm: "PHASE-27 RELEASE GATE: the receive `batch`-vs-`off` delta on the SNAPPACK small-files scenario (a) was measured on a LINUX runner and is <=5%. (The local macOS bench showed +28%/+17% — a Darwin per-object-fsync artifact, NOT the acceptance number; Linux uses amortized sync_file_range.) Provide the CI/Linux run id + the measured delta. Approve?"
     human_checkpoint: true
-    description: "RELEASE-GATING perf check carried over from Phase 27 (see memory phase27-snappack-release-gate). The `snappack` criterion bench (benches/benches/snappack.rs) exists; the standing ci.yaml bench job only does `cargo bench --no-run` (build-only). To produce the number, run the snappack RECEIVE bench (pack/receive/a/{v1,zstd}x{off,batch}) on a LINUX runner and read the batch-vs-off delta on scenario (a) (5k x 4KiB text-like). ci lane: if no Linux perf path exists, add a minimal workflow_dispatch (or bench-verify.yml) job that runs `cargo bench -p snapdir-benches --bench snappack` on ubuntu and prints/uploads the batch-vs-off deltas (NO threshold enforced in CI — the human reads it). Acceptance: receive batch <=5% over off on (a). PM machine-check: the bench builds+runs in --test mode locally; human_confirm presents the LINUX number. If >5%, do NOT proceed to release — escalate (the durability default may need revisiting, out of this phase's scope)."
+    description: "RELEASE-GATING perf confirmation carried over from Phase 27 (see memory phase27-snappack-release-gate). The snappack receive bench now runs on the GitHub ubuntu-latest runner via bench-verify.yml (added in release-perf-job-ci-1.7.0). OPERATOR: dispatch bench-verify.yml on the Linux runner (Actions -> bench-verify -> Run workflow), download the bench-output artifact, and read the receive batch-vs-off delta on scenario (a) (5k x 4KiB text-like) for BOTH v1 and zstd. Acceptance: batch <=5% over off on (a). PM machine-check: the snappack bench still builds+runs locally in --test mode; the human_confirm provides the LINUX run id + measured delta. If >5%: do NOT proceed to release — escalate (the batch-default durability cost may need revisiting; out of this phase's release scope)."
   - id: release-prep-1.7.0
     phase: 29
     owner_agent: generic
