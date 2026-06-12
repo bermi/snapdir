@@ -3664,7 +3664,9 @@ gates:
     phase: 29
     owner_agent: stores
     depends_on: [recv-fsync-optimize-stores]
-    status: pending
+    status: passed
+    passed_at: 2026-06-12T15:48:26Z
+    git_sha: 25cd322
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores pack --locked && grep -q 'writeout_hint' crates/snapdir-stores/src/pack.rs"
     pass_criteria:
