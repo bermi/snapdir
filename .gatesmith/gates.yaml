@@ -3636,7 +3636,9 @@ gates:
     phase: 29
     owner_agent: ci
     depends_on: [release-perf-job-ci-1.7.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-12T02:25:31Z
+    git_sha: 32a5a22
     failure_count: 0
     verification_cmd: "typos && cargo fmt --all --check"
     pass_criteria:
