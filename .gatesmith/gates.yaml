@@ -3594,7 +3594,9 @@ gates:
     phase: 28
     owner_agent: generic
     depends_on: [split-store-tests-review, manifest-listing-tests-review, objects-store-cli-tests-review, sync-objects-split-tests-review, diff-command-tests-review, split-diff-docs]
-    status: pending
+    status: passed
+    passed_at: 2026-06-12T01:17:10Z
+    git_sha: 7e80e5d
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked"
     pass_criteria:
