@@ -3622,7 +3622,9 @@ gates:
     phase: 29
     owner_agent: ci
     depends_on: [phase28-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-12T01:56:59Z
+    git_sha: dc90251
     failure_count: 0
     verification_cmd: "(command -v actionlint >/dev/null 2>&1 && actionlint .github/workflows/bench-verify.yml || echo 'actionlint not installed locally - CI lints it') && grep -q 'snappack' .github/workflows/bench-verify.yml && cargo bench -p snapdir-benches --bench snappack -- --test"
     pass_criteria:
