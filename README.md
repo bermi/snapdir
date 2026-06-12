@@ -143,6 +143,48 @@ Limitation: `snapdir sync` does not support `ssh://`/`sftp://` stores (they have
 
 Crash durability on the receive side is controlled by `SNAPDIR_FSYNC`: `batch` (the default) fsyncs all received objects before committing the manifest last, so a manifest that survives a crash is backed by durable objects; `off` skips the barrier and relies on the OS to flush. On a journaling filesystem this gives the same crash-consistency story git provides — and no more.
 
+## Scheduled inventories — one object pool, many manifest locations
+
+A snapshot is a manifest plus the content objects it references, and those two halves don't have to live together. The global `--objects-store` / `$SNAPDIR_OBJECTS_STORE` flag routes **objects** to one shared pool's `.objects/` while **manifests** route to wherever `--store` points (`.manifests/`). One pool, many manifest locations — and **you** own the manifest layout (by date, host, or environment).
+
+```sh
+# Cron: a fresh manifest path per run, all sharing ONE object pool.
+snapdir push \
+  --objects-store s3://inventory/objects \
+  --store "s3://inventory/manifests/$(date +%Y/%m/%d)" \
+  /var/lib/app/data
+```
+
+Because objects are content-addressed, re-pushing to the same pool only costs the **changed bytes** — unchanged objects are already present and are skipped. So a daily inventory of mostly-static data is cheap: each run writes a new manifest and uploads only what actually changed. The catalog records the `--store` (manifest-side) URI. `--objects-store` is global, so it applies to `fetch`/`pull`/`verify` the same way; leave it unset and behavior is byte-for-byte unchanged. An external `custom://` store is rejected on either side (both halves are resolved in-process).
+
+### Bucket-to-bucket sync with split pools
+
+`snapdir sync` copies a snapshot directly between stores. The per-side `--from-objects` / `--to-objects` flags name an explicit object pool for each side, so source and destination can be **different buckets** with their own object pools — and cross-pool dedup still applies: objects already present in the destination pool are skipped.
+
+```sh
+snapdir sync --id "$id" \
+  --from        s3://src/manifests --from-objects s3://src/objects \
+  --to          gs://dst/manifests --to-objects   gs://dst/objects
+```
+
+These flags are distinct from the global `--objects-store`; when a side omits its `--*-objects` flag, that side is a plain colocated store. (`sync` does not support `ssh://`/`sftp://` stores.)
+
+### `snapdir diff` — compare inventories, manifests only
+
+`snapdir diff` compares two sides, each a **set of manifest locations**, and reports file-level changes — `A` (added), `D` (deleted), `M` (modified). It **reads manifests only**: it never downloads an object, so diffing across scheduled inventories is cheap even when the object pool is huge or unreachable.
+
+```sh
+# What changed between yesterday's and today's inventory?
+snapdir diff \
+  --from s3://inventory/manifests/2026/06/10 \
+  --to   s3://inventory/manifests/2026/06/11
+```
+
+- `--from` / `--to` are **repeatable** and the refs on each side are **unioned** — point a side at several manifest stores (or, with the global `--id`, pin one side to a single manifest) and they merge into one logical set.
+- `--all` also emits unchanged (`=`) paths; `--json` emits a `{status, path}` array instead of porcelain `X\t./path` lines.
+- `--exit-code` adopts git's `diff --exit-code` semantics: exit `1` when any difference is found (after writing the report), `0` otherwise.
+- `--on-conflict <error|last-wins>` controls an intra-side collision (the same path with differing content unioned across two refs on one side): `error` (the default) fails hard naming the path; `last-wins` lets the last ref win.
+
 ## Rate limiting & retries
 
 For the network backends (`s3://`, `gs://`, `b2://`), snapdir paces its requests and retries transient failures so transfers stay polite to the provider and survive throttling. The local `file://` store does no network retrying. No extra dependencies are pulled in for any of this — it is all in-process.

@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--objects-store` / `$SNAPDIR_OBJECTS_STORE` — shared object pool, separate
+  manifest locations.** This global flag routes content objects to one shared
+  pool's `.objects/` while manifests go to `--store`'s `.manifests/`, so a
+  scheduled inventory can write a fresh manifest path per run (by date / host /
+  env) against a single deduplicated object pool. Re-pushing to the same pool
+  only costs the changed bytes — unchanged content-addressed objects are
+  skipped. Both halves resolve in-process; an external `custom://` store is
+  rejected on either side. Unset leaves behavior byte-for-byte unchanged; the
+  catalog records the `--store` (manifest-side) URI.
+- **`snapdir sync --from-objects/--to-objects` — split object pools for
+  bucket-to-bucket sync.** Each side names its own explicit object pool, so the
+  source and destination can be different buckets; the streaming sync engine is
+  unchanged, and objects already present in the destination pool are skipped
+  (cross-pool dedup). These per-side flags are distinct from the global
+  `--objects-store`; a side that omits its flag is a plain colocated store.
+- **`snapdir diff` — file-level diff across manifest locations, reading
+  manifests only.** Compares two sides, each a union of one-or-more manifest
+  refs (`--from`/`--to`, both repeatable), classifying every path as `A` (added),
+  `D` (deleted), or `M` (modified). It reads manifests only — it never downloads
+  an object — so it stays cheap over large or unreachable object pools, which
+  makes it well suited to comparing scheduled inventories. With the global
+  `--id` a side pins to a single manifest. Flags: `--all` (also emit unchanged
+  `=` paths), `--json` (a `{status, path}` array instead of porcelain
+  `X\t./path` lines), `--exit-code` (git `diff --exit-code` semantics: exit `1`
+  on any difference), and `--on-conflict <error|last-wins>` (intra-side
+  same-path/differing-content collision policy; defaults to `error`).
 - **SNAPPACK 1Z — auto-negotiated zstd transport for the `ssh://` accelerated
   pack stream.** The whole post-magic pack body is sent as a single zstd frame
   of the unchanged SNAPPACK 1 record grammar; the receiver sniffs the magic
