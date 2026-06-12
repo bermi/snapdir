@@ -3559,7 +3559,9 @@ gates:
     phase: 28
     owner_agent: adversary
     depends_on: [diff-command-impl]
-    status: pending
+    status: passed
+    passed_at: 2026-06-12T00:09:21Z
+    git_sha: b8599b4
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test diff --locked"
     pass_criteria:
