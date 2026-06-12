@@ -3660,19 +3660,43 @@ gates:
         - exit_code: 0
     human_checkpoint: false
     description: "OPTION 1 — investigate + remove the receive-pack durability cost (plan: .gatesmith/plans/recv-fsync-optimize.md). The Linux batch-vs-off measured +19.5%/+29.9% (>>5%). Hypothesis: the ~5k PER-OBJECT writeout hints (Linux sync_file_range(WRITE) / macOS fsync-writeout in src/fsync.rs, called once per object at commit) are the cost — NOT the 2 barrier/manifest syncs. The crash-safety guarantee (every object durable BEFORE the manifest exists) comes from the BARRIER (sync_file_range WAIT pass / sync_data) + manifest-last, NOT from the per-object hints. ACTION (stores lane, crates/snapdir-stores/ only): drop or batch-into-one the per-object writeout hint, keep the barrier + write_manifest_durable + manifest-last ordering BYTE-IDENTICAL. ALL existing `pack` tests must stay green (off-vs-batch identical filing, barrier-before-put_manifest recording-sink ordering, truncation/resume); if a test pins the per-object sync COUNT, update that count (impl detail, not the safety contract) and flag it. Measure locally: `cargo bench -p snapdir-benches --bench snappack -- 'pack/receive/a'` before/after and report the macOS batch-vs-off before/after in the handoff (informative — macOS also does per-object syncs, so a local drop predicts a Linux drop). The ACCEPTANCE is the Linux re-measure at release-perf-linux-1.7.0. Do NOT weaken the durability guarantee to hit a number — if the barrier alone can't be made cheap, that's a real signal to take Option 2/3."
-  - id: release-perf-linux-1.7.0
+  - id: recv-fsync-revert-stores
     phase: 29
-    owner_agent: generic
+    owner_agent: stores
     depends_on: [recv-fsync-optimize-stores]
     status: pending
     failure_count: 0
-    verification_cmd: "cargo bench -p snapdir-benches --bench snappack -- --test"
+    verification_cmd: "cargo test -p snapdir-stores pack --locked && grep -q 'writeout_hint' crates/snapdir-stores/src/pack.rs"
     pass_criteria:
       and:
         - exit_code: 0
-        - human_confirm: "PHASE-27 RELEASE GATE: the receive `batch`-vs-`off` delta on the SNAPPACK small-files scenario (a) was measured on a LINUX runner and is <=5%. (The local macOS bench showed +28%/+17% — a Darwin per-object-fsync artifact, NOT the acceptance number; Linux uses amortized sync_file_range.) Provide the CI/Linux run id + the measured delta. Approve?"
+    human_checkpoint: false
+    description: "REVERT the Option-1 optimization (`git revert 0f2cb35` / re-add the per-object writeout hint). The Linux re-measure (bench-verify run 27417335469) proved dropping the per-object `sync_file_range(WRITE)` writeout hints REGRESSED the batch receive to +56.8%/+64.8% (vs the original +19.5%/+29.9% WITH the hints) — the hints are beneficial async writeback-START that PIPELINE the disk writes; removing them serializes the barrier. macOS misled (its per-object hint was a blocking fsync). Restore the ORIGINAL design: the per-object `writeout_hint(&file)` call in `FileSink::stage_object` under `Durability::Batch` (pack.rs), and any doc-comment reverts. Keep the barrier + write_manifest_durable + manifest-last unchanged. ALL `pack` tests stay green. PM machine-check: `cargo test -p snapdir-stores pack` exits 0 AND `writeout_hint` is referenced again in pack.rs (the hint is restored). Lane: crates/snapdir-stores/ only."
+  - id: durability-cost-docs
+    phase: 29
+    owner_agent: docs
+    depends_on: [recv-fsync-revert-stores]
+    status: pending
+    failure_count: 0
+    verification_cmd: "typos README.md crates/snapdir/README.md docs/ docs/rust-port/CHANGELOG.md && grep -qiE 'SNAPDIR_FSYNC' docs/rust-port/ssh-wire-protocol.md && grep -qiE 'SNAPDIR_FSYNC' crates/snapdir/README.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Document the receive-pack durability cost honestly (operator decision 2026-06-12: ACCEPT the cost, keep SNAPDIR_FSYNC=batch default). The measured Linux cost is ~+20% (v1 +19.5% / zstd +29.9%) on the small-files receive (5k×4KiB; bench-verify run 27390795784, the ORIGINAL design). Update: (1) `docs/rust-port/ssh-wire-protocol.md` Durability section (written by snappack-docs) — add the measured ~20% small-files-receive cost on Linux + that it's the price of crash-safety-by-default + the `SNAPDIR_FSYNC=off` escape hatch for speed-over-safety; (2) `crates/snapdir/README.md` (+ root `README.md` if it has a durability/perf note) — a short SNAPDIR_FSYNC line: batch default = crash-safe (~20% small-files-receive cost), off = fast/no-durability; (3) `docs/rust-port/CHANGELOG.md` [Unreleased] — note the durability cost + the env knob. NO overclaiming; numbers from the run above. Lane: docs/markdown only (README.md, crates/snapdir/README.md, docs/). PM machine-check: typos clean + ssh-wire-protocol.md & crates/snapdir/README.md mention SNAPDIR_FSYNC."
+  - id: release-perf-linux-1.7.0
+    phase: 29
+    owner_agent: generic
+    depends_on: [durability-cost-docs]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -q 'writeout_hint' crates/snapdir-stores/src/pack.rs && grep -qiE 'SNAPDIR_FSYNC' docs/rust-port/ssh-wire-protocol.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "PHASE-27 PERF GATE — RESOLVED by operator decision 2026-06-12: ACCEPT + DOCUMENT. The ≤5% target was unrealistic for batch durability on the 5k-small-files receive (inherent ~20% floor). Option 1 (drop per-object hints) FAILED — it REGRESSED Linux to +56.8%/+64.8%; the optimization was reverted (recv-fsync-revert-stores restored the original +19.5%/+29.9% design). SNAPDIR_FSYNC=batch stays the crash-safe default; the ~20% cost + SNAPDIR_FSYNC=off escape hatch are documented (durability-cost-docs). Confirm: revert restored, cost documented, proceed to release 1.7.0 with batch-default durability + the documented cost. Approve?"
     human_checkpoint: true
-    description: "RELEASE-GATING perf RE-MEASURE after the Option-1 optimization (recv-fsync-optimize-stores). FIRST measurement (before optimize) = v1 +19.5% / zstd +29.9% on the ubuntu-latest runner (bench-verify run 27390795784) — FAILED <=5%; that's why recv-fsync-optimize-stores now precedes this gate. PM re-runs the Linux number: git push origin dev (clean), `gh workflow run bench-verify.yml --ref dev --repo bermi/snapdir`, poll, `gh run download <id> --repo bermi/snapdir`, parse the criterion mean point estimates for pack_receive/a_{v1,zstd}_{off,batch} from target/criterion/.../new/estimates.json and compute (batch-off)/off. Acceptance: receive batch <=5% over off on (a) for v1 AND zstd. human_confirm presents the NEW Linux run id + the before->after deltas. If <=5%: durability-by-default salvaged, proceed to release-prep-1.7.0. If STILL >5%: the per-object hints were not the (whole) cost -> ESCALATE to fall back to Option 2 (default off, opt-in batch) or Option 3 (accept+document). Do NOT relax the gate silently."
+    description: "PHASE-27 perf gate, RESOLVED via Option 3 (accept + document), operator-approved 2026-06-12. The original batch design (+19.5%/+29.9% WITH the per-object pipelining hints) is the best impl; the ≤5% target was unrealistic (batch durability has a ~20% inherent floor on 5k tiny objects). Option-1 (drop hints) regressed to +56.8%/+64.8% and was reverted (recv-fsync-revert-stores). SNAPDIR_FSYNC=batch remains the crash-safe-by-default; the ~20% small-files-receive cost + the SNAPDIR_FSYNC=off escape hatch are documented (durability-cost-docs). This gate is now the confirmation that the revert landed + the cost is documented; the operator already chose accept+document at the escalation. PM machine-check: writeout_hint restored in pack.rs + SNAPDIR_FSYNC documented. Then proceed to release-prep-1.7.0. Evidence: release-perf-linux-1.7.0-LINUX-RESULT.log (original +19.5/+29.9), release-perf-linux-1.7.0-REMEASURE-2.log (Option-1 regression +56.8/+64.8)."
   - id: release-prep-1.7.0
     phase: 29
     owner_agent: generic
