@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--walk-jobs <N>` / `$SNAPDIR_WALK_JOBS` — parallel, memory-mapped directory
+  walk and file hashing.** Snapshotting a tree now hashes files across a bounded
+  rayon pool and uses blake3's memory-mapped path for large files, so `id`,
+  `manifest`, `stage`, and `push` no longer hash every file single-threaded —
+  multiple× faster on large trees. The new global `--walk-jobs <N>` flag (and
+  `$SNAPDIR_WALK_JOBS` env) sizes the walk pool; `0`/auto picks the number of
+  CPUs (capped). This is **distinct from `--jobs` / `$SNAPDIR_JOBS`** (which
+  controls transfer concurrency). Purely a performance win: **snapshot ids are
+  unchanged (byte-identical)** with the feature on or off and across every
+  `--walk-jobs` value — additive, default behavior preserved, the frozen
+  manifest format untouched.
 - **`--objects-store` / `$SNAPDIR_OBJECTS_STORE` — shared object pool, separate
   manifest locations.** This global flag routes content objects to one shared
   pool's `.objects/` while manifests go to `--store`'s `.manifests/`, so a
