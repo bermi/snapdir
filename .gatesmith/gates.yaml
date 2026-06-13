@@ -3688,6 +3688,179 @@ gates:
         - exit_code: 0
     human_checkpoint: false
     description: "Document the receive-pack durability cost honestly (operator decision 2026-06-12: ACCEPT the cost, keep SNAPDIR_FSYNC=batch default). The measured Linux cost is ~+20% (v1 +19.5% / zstd +29.9%) on the small-files receive (5k×4KiB; bench-verify run 27390795784, the ORIGINAL design). Update: (1) `docs/rust-port/ssh-wire-protocol.md` Durability section (written by snappack-docs) — add the measured ~20% small-files-receive cost on Linux + that it's the price of crash-safety-by-default + the `SNAPDIR_FSYNC=off` escape hatch for speed-over-safety; (2) `crates/snapdir/README.md` (+ root `README.md` if it has a durability/perf note) — a short SNAPDIR_FSYNC line: batch default = crash-safe (~20% small-files-receive cost), off = fast/no-durability; (3) `docs/rust-port/CHANGELOG.md` [Unreleased] — note the durability cost + the env knob. NO overclaiming; numbers from the run above. Lane: docs/markdown only (README.md, crates/snapdir/README.md, docs/). PM machine-check: typos clean + ssh-wire-protocol.md & crates/snapdir/README.md mention SNAPDIR_FSYNC."
+  # ---------------------------------------------------------------
+  # Fast walk + hashing (operator-requested 2026-06-12, MUST ship in 1.7.0).
+  # `snapdir id`/manifest/stage/push walk is single-threaded recursion that
+  # slurps each file whole via std::fs::read (walk.rs:390) then one-shot hashes
+  # it (Hasher::hash_hex) — no read concurrency, no streaming, big per-file Vec.
+  # Three wins, all left on the table: (1) BLAKE3 is internally tree-parallel
+  # (update_mmap_rayon) so one large file hashes across cores; (2) mmap removes
+  # the whole-file heap copy; (3) cross-file parallelism saturates NVMe + cores.
+  # KEYSTONE CONSTRAINT: snapshot ids must be BYTE-IDENTICAL before/after every
+  # gate. Determinism is structural — directory_checksum sorts+dedups child
+  # checksums via BTreeSet (merkle.rs:198), member-size is a sum, and
+  # manifest.sort() sorts by path (walk.rs:294) — so the ORDER checksums are
+  # produced never affects output; the Meter is already atomic/Sync (progress.rs).
+  # Plan: .claude/plans/what-s-our-std-fs-read-concurrency-greedy-stearns.md.
+  # Adversary owns tests (black-box, spec-driven); lanes write source only.
+  # ---------------------------------------------------------------
+  - id: fast-walk-spec-tests
+    phase: 29
+    owner_agent: adversary
+    depends_on: [durability-cost-docs]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/fast_walk_core.rs && test -f .gatesmith/pending-tests/fast_walk_cli.rs && grep -qE '#\\[test\\]|proptest' .gatesmith/pending-tests/fast_walk_core.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [.gatesmith/pending-tests/fast_walk_core.rs, .gatesmith/pending-tests/fast_walk_cli.rs]
+    human_checkpoint: false
+    description: "ADVERSARY (black-box). Author the fast-walk spec tests to two staging files (cannot pass until impl lands). (A) .gatesmith/pending-tests/fast_walk_core.rs — snapdir-core integration test (lands at crates/snapdir-core/tests/fast_walk.rs). PIN the KEYSTONE: for each bench Shape in benches/src/lib.rs (ManySmall, FewLarge, WideDir, Mixed, DupContent, EmptyFilesAndDirs) materialize a tree, walk + snapshot_id, assert the id equals a GOLDEN you capture by running the CURRENT (pre-change) binary/oracle and hardcoding it — these goldens anchor every later gate. proptest: random deterministic tree, walk TWICE, assert identical Manifest Display + identical snapshot_id. Per-hasher equivalence: for Blake3/Blake3Keyed/Md5/Sha256, assert the NEW hash_file_hex(path) hex == hash_hex(&fs::read(path)) over an EMPTY file, a sub-threshold small file, and a multi-MB file. mmap-threshold BOUNDARY: files of exactly MMAP_THRESHOLD-1, MMAP_THRESHOLD, MMAP_THRESHOLD+1 bytes hash identically (both branches). Empty/zero-byte file -> blake3 == af1349b9... and is NEVER mmapped. (B) .gatesmith/pending-tests/fast_walk_cli.rs — snapdir-cli black-box test (lands at crates/snapdir-cli/tests/fast_walk.rs): `snapdir id <fixture>` is byte-identical across --walk-jobs 1 vs --walk-jobs 8 vs SNAPDIR_WALK_JOBS unset, and across repeated runs; cover a tree mixing many small files + a few large (>256KiB) files + empty files + unicode/space paths. NO source edits. Tests MUST reference hash_file_hex / --walk-jobs so they fail-to-compile / fail until the lanes implement them."
+  - id: fast-walk-core-hash
+    phase: 29
+    owner_agent: core
+    depends_on: [fast-walk-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --test fast_walk --locked && cargo test -p snapdir-core --locked && test ! -f .gatesmith/pending-tests/fast_walk_core.rs && grep -rq 'update_mmap' crates/snapdir-core/src/ && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-core/tests/fast_walk.rs]
+    human_checkpoint: false
+    description: "CORE lane (crates/snapdir-core/ ONLY), still SINGLE-THREADED. FROZEN-INTERFACE SAFE: crates/snapdir-core/src/merkle.rs is SHA-locked (.gatesmith/manifest-format.sha.lock) — DO NOT edit it; the gate verification re-runs `shasum -c` and FAILS if merkle.rs changes. (1) Add file hashing in a NEW snapdir-core module (e.g. src/hash_file.rs, declare it in lib.rs): a `HashFile` extension trait `fn hash_file_hex(&self, path: &Path) -> std::io::Result<(String, u64)>` with CONCRETE impls for Blake3Hasher/Blake3KeyedHasher/Md5Hasher/Sha256Hasher (no Rust specialization needed). Md5Hasher/Sha256Hasher impls = read whole file + self.hash_hex + return (hex, len) — byte-identical to today (golden md5/sha256 vectors untouched). merkle.rs's Hasher trait / hash_hex / snapshot_id stay BYTE-IDENTICAL (frozen). (2) Wire walk.rs discover_dir (~386-403) to call hasher.hash_file_hex(&entry_path)? (add the HashFile bound on the walk's hasher generic) instead of fs::read+hash_hex, feeding the returned byte count to the Meter (meter stays advisory). (3) Enable blake3 features in crates/snapdir-core/Cargo.toml: `blake3 = { version = \"1.8.5\", features = [\"mmap\", \"rayon\"] }` (NO version bump). The Blake3Hasher/Blake3KeyedHasher HashFile impls: const MMAP_THRESHOLD: u64 = 256 * 1024; if len >= MMAP_THRESHOLD use blake3::Hasher::new()/new_derive_key + update_mmap_rayon(path)? else read+update; finalize().to_hex(). Empty/zero-byte files take the plain-read branch (never mmap). Streaming new()+update+finalize is byte-identical to blake3::hash. Doc-comment the SIGBUS-on-concurrent-truncation caveat (snapshot assumes a static tree; same exposure as the b3sum oracle) — no signal handler. Take over the staged tests: move pending-tests/fast_walk_core.rs -> crates/snapdir-core/tests/fast_walk.rs. NOTE the new transitive deps (memmap2 via blake3 mmap; rayon via blake3 rayon) will churn Cargo.lock — that is expected; CI cargo-deny/crate-age (ADR-0026, >=3-day) runs at release-ci and rayon/memmap2 are mature so it should pass. Source-only; no net-new tests, no inline #[cfg(test)]. KEYSTONE: all golden snapshot_ids in fast_walk.rs unchanged."
+  - id: fast-walk-core-parallel
+    phase: 29
+    owner_agent: core
+    depends_on: [fast-walk-core-hash]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --test fast_walk --locked && cargo test -p snapdir-core --locked && grep -qE 'par_iter|install' crates/snapdir-core/src/walk.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "CORE lane (crates/snapdir-core/ ONLY). Cross-file parallel hashing (plan Stage 4). discover_dir stays single-threaded for DISCOVERY but records each leaf file (slot/path/perms/size) WITHOUT hashing; after discovery, hash all pending files via rayon par_iter, writing each (checksum,len) back into its FIXED FileRecord slot keyed by identity -> order-independent, so directory_checksum (sort+dedup) + manifest.sort() yield byte-identical output. Move Meter updates into the parallel closure (Meter is atomic/Sync — safe). Add `walk_jobs: Option<usize>` to WalkOptions (None => current sequential / default pool); CORE READS NO ENV — the count is passed in by the CLI lane. Build a SCOPED rayon::ThreadPool sized to walk_jobs and run par_iter inside pool.install(...). Oversubscription guard between blake3-rayon (intra-file) and cross-file rayon: when pending.len() >= walk_jobs use per-file update_mmap (no internal rayon); when < walk_jobs use update_mmap_rayon so spare cores still help large files. Preserve WalkError::io(path, e) propagation (collect into Result). KEYSTONE: fast_walk.rs goldens + walk-twice proptest stay green (now under parallelism). Source-only."
+  - id: fast-walk-jobs-cli
+    phase: 29
+    owner_agent: cli
+    depends_on: [fast-walk-core-parallel]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test fast_walk --locked && cargo build --workspace --locked && test ! -f .gatesmith/pending-tests/fast_walk_cli.rs && grep -q 'SNAPDIR_WALK_JOBS' crates/snapdir-cli/src/cli.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-cli/tests/fast_walk.rs]
+    human_checkpoint: false
+    description: "CLI lane (crates/snapdir-cli/ ONLY). Add a `--walk-jobs <N>` global flag + `SNAPDIR_WALK_JOBS` env (default = available_parallelism() via snapdir-core resources.rs, capped by the existing MAX ceiling; 0/auto => default). Keep it SEPARATE from the existing --jobs/SNAPDIR_JOBS (that is TRANSFER concurrency — do not overload it). Resolve the count in the CLI and plumb it into WalkOptions.walk_jobs at the build_manifest walk call (cli.rs ~2085-2148) so `id`, `manifest`, `stage`, `push` all benefit. Take over the staged tests: move pending-tests/fast_walk_cli.rs -> crates/snapdir-cli/tests/fast_walk.rs and make them pass (`snapdir id` byte-identical across --walk-jobs 1/8 and unset). Document the flag/env in the CLI help text. Source-only; no inline #[cfg(test)]. KEYSTONE: ids unchanged across job counts."
+  - id: fast-walk-tests-review
+    phase: 29
+    owner_agent: adversary
+    depends_on: [fast-walk-jobs-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --test fast_walk --locked && cargo test -p snapdir-cli --test fast_walk --locked && cargo test --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY REVIEW. Diff landed tests vs the staged spec; restore any weakened/dropped case. HARD-VERIFY the keystone: golden snapshot_ids per Shape unchanged; walk-twice + cross-job (--walk-jobs 1 vs 8) determinism holds; per-hasher hash_file_hex==hash_hex(read) equivalence intact; mmap-threshold boundary (THRESHOLD-1/THRESHOLD/+1) identical; empty/zero-byte file -> af1349b9... and never mmapped. Add cases the impl reveals (e.g. a single huge file exercising the intra-file update_mmap_rayon path; a many-files tree exercising cross-file rayon; symlink-followed file size accounting). Any strengthened failure -> reopen the relevant impl gate (fast-walk-core-hash / -parallel / -jobs-cli). Test artifacts only."
+  - id: fast-walk-bench
+    phase: 29
+    owner_agent: bench
+    depends_on: [fast-walk-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build -p snapdir-benches --benches --locked && test -f .gatesmith/evidence/fast-walk-bench.log && grep -qiE 'before|baseline' .gatesmith/evidence/fast-walk-bench.log && grep -qiE 'after|speedup' .gatesmith/evidence/fast-walk-bench.log"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [.gatesmith/evidence/fast-walk-bench.log]
+    human_checkpoint: false
+    description: "BENCH lane (benches/ + evidence). QUANTIFY the before/after the operator asked for. Record .gatesmith/evidence/fast-walk-bench.log with: (1) criterion bench_walk (benches/benches/hot_paths.rs) on the FewLarge (mmap + intra-file blake3-rayon win) and ManySmall/WideDir (cross-file win) scenarios, sequential BASELINE vs parallel AFTER; (2) a wall-clock before/after of `snapdir id <DIR>` on a representative LARGE local directory of many sizable files (describe it generically as 'a large directory of sizable files' — do NOT name or describe any specific dataset/source), captured as: baseline = checkout/binary BEFORE the fast-walk gates (or --walk-jobs 1) vs AFTER (default --walk-jobs), reporting both wall-clock times, the speedup factor, and that the printed snapshot id is IDENTICAL before/after. Add a FewLarge/ManySmall regime to the criterion bench if missing. No source/behavior changes outside benches/. The log must contain a clear before/baseline number AND an after/speedup number."
+  - id: fast-walk-complete
+    phase: 29
+    owner_agent: generic
+    depends_on: [fast-walk-bench]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked && grep -qiE 'walk-jobs|SNAPDIR_WALK_JOBS|parallel.*hash|mmap' docs/rust-port/CHANGELOG.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "FAST-WALK SIGN-OFF + changelog (generic lane; gatesmith-free CODE-ONLY changelog commit so it cherry-picks cleanly — NO .gatesmith paths in the commit). Confirm the whole chain is green: hash_file_hex trait + blake3 mmap+rayon + cross-file parallel walk + --walk-jobs/SNAPDIR_WALK_JOBS, snapshot ids byte-identical (fast_walk goldens), and the before/after speedup recorded in .gatesmith/evidence/fast-walk-bench.log. Add a docs/rust-port/CHANGELOG.md [Unreleased] Added entry for the parallel/mmap walk + --walk-jobs/$SNAPDIR_WALK_JOBS (release-prep-1.7.0 folds [Unreleased] into [1.7.0], so this ships in 1.7.0). Frozen manifest format + default ids unchanged; new flag is additive. PM machine-check: workspace tests green + CHANGELOG mentions the walk-jobs/parallel-walk feature."
+
+  # ---------------------------------------------------------------
+  # macOS APFS clonefile fast-path (operator-requested 2026-06-13).
+  # NON-BLOCKING for 1.7.0: sequenced after fast-walk-complete, NOT a
+  # dependency of release-prep-1.7.0 — if it lands before the release
+  # human-checkpoint is approved it ships in 1.7.0, else it lands in 1.8.0.
+  # Targets the COPY paths (stage/push/checkout/pull), NOT `id` (read-only).
+  # Every object byte-copy funnels through copy_file() (file_store.rs:716,
+  # `fs::copy`), called by persist() (file_store.rs:573) for both push
+  # (source->object) and fetch (object->working). temp_sibling() already
+  # gives a fresh non-existent dst in the SAME dir (clonefile needs dst-absent
+  # + same filesystem). Approach: raw libc::clonefile under
+  # #[cfg(target_os = "macos")], try-and-fall-back-on-errno (mirrors the
+  # fsync.rs writeout_hint/barrier_one/sync_dir pattern) — NO new dependency
+  # (reflink-copy crate rejected per supply-chain hardening). Plan note in
+  # .claude/plans/what-s-our-std-fs-read-concurrency-greedy-stearns.md.
+  # ---------------------------------------------------------------
+  - id: apfs-clone-spec-tests
+    phase: 29
+    owner_agent: adversary
+    depends_on: [fast-walk-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/apfs_clone.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/apfs_clone.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [.gatesmith/pending-tests/apfs_clone.rs]
+    human_checkpoint: false
+    description: "ADVERSARY (black-box). Author the clonefile spec to .gatesmith/pending-tests/apfs_clone.rs (lands at crates/snapdir-stores/tests/apfs_clone.rs). KEYSTONE = clone path is OBSERVABLY IDENTICAL to the fs::copy path. Cases: (1) stage a tree into a FileStore then checkout/fetch it back — restored files are byte-identical and the manifest id round-trips, BOTH with the clone fast-path ENABLED and DISABLED via the impl's disable knob (env, e.g. SNAPDIR_CLONEFILE=0) — assert the two object pools have identical object bytes + identical sharded filenames (same hashes). (2) Object PERMISSIONS parity: a source file with an unusual mode (e.g. 0600, 0755) yields the SAME object/restored perms under clone vs copy (clonefile copies all metadata — the impl must match fs::copy's perms-only semantics). (3) BSD-flags safety: a source with the `uchg` (user-immutable, `chflags uchg`) flag must NOT produce an immutable object (the object must stay removable/GC-able) — pins that the impl clears cloned flags. (4) Fallback: a cross-volume copy (source on a different filesystem than the store — skip-if-unavailable in CI, but assert no error + correct bytes when exercised) silently falls back to fs::copy. (5) The impl must expose a test-visible clone-attempt/clone-hit counter (AtomicU64 or a pub(crate) testing hook); on an APFS same-volume stage assert the clone path actually FIRED (so we don't silently always-fall-back); cfg(target_os=\"macos\") only. NO source edits; tests reference the disable knob + counter so they fail until impl lands."
+  - id: apfs-clone-stores
+    phase: 29
+    owner_agent: stores
+    depends_on: [apfs-clone-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --test apfs_clone --locked && cargo test -p snapdir-stores --locked && test ! -f .gatesmith/pending-tests/apfs_clone.rs && grep -q 'clonefile' crates/snapdir-stores/src/file_store.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-stores/tests/apfs_clone.rs]
+    human_checkpoint: false
+    description: "STORES lane (crates/snapdir-stores/ ONLY). Add a macOS APFS clonefile fast-path to copy_file() (file_store.rs:716). Under #[cfg(target_os = \"macos\")] try unsafe libc::clonefile(src, dst, 0) (NO new dependency — raw libc, mirror fsync.rs); on the not-supported / cross-volume errnos (ENOTSUP, EXDEV, ENOSYS, EINVAL, EOPNOTSUPP, and EEXIST -> dst already there) fall back to fs::copy. Non-macOS keeps fs::copy unchanged. CORRECTNESS PARITY with fs::copy: after a successful clone, normalize the temp so it matches the fs::copy path — set permissions to the SOURCE's mode bits (fs::copy copies perms+content only) and CLEAR any cloned BSD flags (chflags(tmp, 0)) so an immutable (`uchg`) source can't produce an immutable/un-GC-able object; cloned xattrs on objects are acceptable only if they don't affect bytes/perms/removability (prefer clearing). Keep persist()'s post-copy hash verification UNCHANGED (defense-in-depth; the clone is bit-identical so it always passes — a future gate may skip re-verify on the clone path, out of scope here). Add a disable knob (env SNAPDIR_CLONEFILE=0 => always fs::copy) AND a test-visible clone-hit counter (AtomicU64) the spec asserts. Scope is copy_file/persist ONLY — the pack.rs streaming receiver has no local source path, so clonefile does NOT apply there. Take over the staged tests: move pending-tests/apfs_clone.rs -> crates/snapdir-stores/tests/apfs_clone.rs. Source-only; no inline #[cfg(test)]. KEYSTONE: clone vs copy produce identical objects + identical checkout, on non-APFS the fallback is byte-for-byte the old behavior."
+  - id: apfs-clone-tests-review
+    phase: 29
+    owner_agent: adversary
+    depends_on: [apfs-clone-stores]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --test apfs_clone --locked && cargo test -p snapdir-stores --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY REVIEW. Diff landed tests vs the staged spec; restore weakened/dropped cases. HARD-VERIFY: clone-vs-copy object pools are byte+filename identical; perms parity; the `uchg`-source object stays removable (no leaked immutable flag); cross-volume falls back without error; the clone-hit counter proves the fast-path actually fired on APFS same-volume (cfg macos); the SNAPDIR_CLONEFILE=0 disable knob forces fs::copy. Add cases the impl reveals (e.g. zero-byte file clone, a read-only source dir, fetch direction object->working perms). Any strengthened failure -> reopen apfs-clone-stores. Test artifacts only."
+  - id: apfs-clone-complete
+    phase: 29
+    owner_agent: generic
+    depends_on: [apfs-clone-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked && test -f .gatesmith/evidence/apfs-clone-bench.log && grep -qiE 'before|baseline' .gatesmith/evidence/apfs-clone-bench.log && grep -qiE 'after|speedup' .gatesmith/evidence/apfs-clone-bench.log && grep -qiE 'clonefile|APFS' docs/rust-port/CHANGELOG.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [.gatesmith/evidence/apfs-clone-bench.log]
+    human_checkpoint: false
+    description: "CLONEFILE SIGN-OFF + before/after + changelog (generic lane; gatesmith-free CODE-ONLY changelog commit). Record .gatesmith/evidence/apfs-clone-bench.log on an APFS volume: wall-clock `snapdir stage <DIR>` (and a checkout) of a representative LARGE local directory of many sizable files (describe it generically — do NOT name any dataset/source) with the clone fast-path ON (default) vs OFF (SNAPDIR_CLONEFILE=0), reporting both times, the speedup factor, and that the resulting object pool + snapshot id are IDENTICAL on/off. Add a docs/rust-port/CHANGELOG.md [Unreleased] Added entry: 'macOS APFS copy-on-write (clonefile) fast-path for stage/push/checkout on the same volume; SNAPDIR_CLONEFILE=0 to disable' (additive, macOS-only, graceful fallback elsewhere). If this lands before release-prep-1.7.0 runs it folds into 1.7.0; otherwise it carries to 1.8.0. PM machine-check: stores tests green + evidence has before/after + CHANGELOG mentions clonefile/APFS."
+
   - id: release-perf-linux-1.7.0
     phase: 29
     owner_agent: generic
@@ -3704,7 +3877,7 @@ gates:
   - id: release-prep-1.7.0
     phase: 29
     owner_agent: generic
-    depends_on: [release-perf-linux-1.7.0]
+    depends_on: [release-perf-linux-1.7.0, fast-walk-complete]
     status: pending
     failure_count: 0
     verification_cmd: "grep -qE '^version = \"1.7.0\"' Cargo.toml && grep -q '## \\[1.7.0\\]' docs/rust-port/CHANGELOG.md && cargo build --workspace --locked"
