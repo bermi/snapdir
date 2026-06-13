@@ -3752,7 +3752,9 @@ gates:
     phase: 29
     owner_agent: cli
     depends_on: [fast-walk-core-parallel]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T01:45:09Z
+    git_sha: 6bc4625
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test fast_walk --locked && cargo build --workspace --locked && test ! -f .gatesmith/pending-tests/fast_walk_cli.rs && grep -q 'SNAPDIR_WALK_JOBS' crates/snapdir-cli/src/cli.rs"
     pass_criteria:
