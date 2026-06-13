@@ -3767,7 +3767,9 @@ gates:
     phase: 29
     owner_agent: adversary
     depends_on: [fast-walk-jobs-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T02:04:53Z
+    git_sha: cfec626
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --test fast_walk --locked && cargo test -p snapdir-cli --test fast_walk --locked && cargo test --workspace --locked"
     pass_criteria:
