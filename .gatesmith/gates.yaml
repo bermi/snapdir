@@ -3723,7 +3723,9 @@ gates:
     phase: 29
     owner_agent: core
     depends_on: [fast-walk-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T01:25:04Z
+    git_sha: 9af911c
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --test fast_walk --locked && cargo test -p snapdir-core --locked && test ! -f .gatesmith/pending-tests/fast_walk_core.rs && grep -rq 'update_mmap' crates/snapdir-core/src/ && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
