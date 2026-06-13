@@ -65,6 +65,17 @@
     clippy::too_many_lines,
     clippy::doc_markdown,
     clippy::similar_names,
+    // These pedantic lints only ever compile on the Linux target (the whole file
+    // is `#![cfg(target_os = "linux")]`), so they are invisible to the macOS dev
+    // host's clippy but fire on CI's Linux `clippy --all-targets -D warnings`:
+    //   * map_unwrap_or / manual_assert — the env-contract gate `reflink_root_or_skip`,
+    //   * cast_possible_truncation — `len() as usize` / errno `as i32` in test asserts,
+    //   * unnested_or_patterns — the skip-on-EPERM/EACCES match arm.
+    // Pure shape; no assertion or test logic is affected.
+    clippy::map_unwrap_or,
+    clippy::manual_assert,
+    clippy::cast_possible_truncation,
+    clippy::unnested_or_patterns,
     dead_code
 )]
 
@@ -874,4 +885,148 @@ fn immutable_source_does_not_produce_an_immutable_object() {
          FS_IMMUTABLE_FL must not propagate (Linux has no un-GC-able-object risk)",
     );
     assert!(!obj.exists(), "object must be gone after removal");
+}
+
+// ===========================================================================
+// CASE 7 (impl-revealed) — Knob OFF on the reflink FS: with `SNAPDIR_CLONEFILE=0`,
+// `copy_file`'s `clonefile_enabled()` guard short-circuits BEFORE `try_reflink`
+// is ever called, so the FICLONE ioctl never runs and the counter must NOT
+// advance — EVEN when src + store are co-located on a genuinely reflink-capable
+// filesystem (the one host where the clone WOULD otherwise fire). This pins that
+// the disable knob is honored on the reflink path (read per-copy, not cached),
+// while a byte-correct object is still produced via `fs::copy`. Complements
+// case 2 (which compares pools) with a direct counter-stays-flat assertion on
+// the reflink FS specifically.
+// ===========================================================================
+
+#[test]
+fn clonefile_disabled_does_not_advance_counter_on_reflink_fs() {
+    // Impl: `copy_file` only enters the Linux branch when `clonefile_enabled()`
+    // is true; with SNAPDIR_CLONEFILE=0 it falls straight through to fs::copy, so
+    // CLONEFILE_HITS must be untouched even on a reflink-capable FS.
+    let Some(root) =
+        reflink_root_or_skip("clonefile_disabled_does_not_advance_counter_on_reflink_fs")
+    else {
+        return;
+    };
+
+    let files_owned = mixed_size_files();
+    let files: Vec<(&str, &[u8], &str)> = files_owned
+        .iter()
+        .map(|(p, c, m)| (*p, c.as_slice(), *m))
+        .collect();
+
+    let _g = env_lock();
+    let _e = CopyModeEnv::set(Some("0"), None); // clone fast-path DISABLED
+
+    let store_dir = TempDir::under(&root, "off-counter-store");
+    let src = TempDir::under(&root, "off-counter-src");
+    let dest = TempDir::under(&root, "off-counter-dest");
+    let (manifest, id) = build_tree(src.path(), &files);
+    let store = FileStore::from_root(store_dir.path().to_path_buf());
+
+    let before = snapdir_stores::clonefile_hits();
+    store
+        .push(&manifest, src.path())
+        .expect("push with clone disabled on reflink FS");
+    store
+        .fetch_files(&manifest, dest.path())
+        .expect("fetch_files with clone disabled on reflink FS");
+    let after = snapdir_stores::clonefile_hits();
+
+    assert_eq!(
+        after, before,
+        "SNAPDIR_CLONEFILE=0 must short-circuit the FICLONE fast-path even on a \
+         reflink-capable FS, so clonefile_hits() must NOT advance: {before} -> {after}"
+    );
+
+    // The fs::copy fallback must still produce a byte-correct object pool + a
+    // round-trippable snapshot (disabling the clone must not corrupt anything).
+    let big_sum = Blake3Hasher::new().hash_hex(&files_owned[0].1);
+    let big_obj = object_disk(store_dir.path(), &big_sum);
+    assert_eq!(
+        fs::read(&big_obj).expect("big object via fs::copy"),
+        files_owned[0].1,
+        "the >256 KiB object must be byte-correct on the fs::copy (clone-off) path"
+    );
+    assert_eq!(
+        store.get_manifest(&id).expect("get_manifest").to_string(),
+        manifest.to_string(),
+        "the snapshot manifest must round-trip on the clone-off path"
+    );
+}
+
+// ===========================================================================
+// CASE 8 (impl-revealed) — Fallback subdir under a NON-reflink mount still
+// produces a correct object with the clone fast-path ENABLED. The impl's
+// `try_reflink` returns `Ok(false)` on EXDEV/EOPNOTSUPP/ENOTTY (FS without
+// reflink) and `copy_file` then falls through to `fs::copy`; this asserts that
+// the fallback object is byte-correct, the manifest commits, AND the counter
+// does NOT advance for that store (no false clone-fire credited to a byte copy).
+// This is the EXDEV/non-reflink path of case 4, but additionally pins the
+// counter-does-not-move invariant on the fallback. Skip if no second FS exists.
+// ===========================================================================
+
+#[test]
+fn non_reflink_fallback_produces_correct_object_without_counter_bump() {
+    // Impl: a store whose objects live on a NON-reflink FS forces try_reflink to
+    // return Ok(false) (EXDEV/EOPNOTSUPP/ENOTTY), so fs::copy runs and the
+    // counter is never bumped for that copy — yet the object is byte-correct.
+    let Some(root) =
+        reflink_root_or_skip("non_reflink_fallback_produces_correct_object_without_counter_bump")
+    else {
+        return;
+    };
+
+    // Put the STORE on a non-reflink FS (e.g. tmpfs /dev/shm or ext4 /tmp) while
+    // the SOURCE is on the reflink FS, so source->object crosses the device
+    // boundary (EXDEV) — FICLONE cannot fire and the impl must fall back.
+    let src = TempDir::under(&root, "fallback-src");
+
+    let other = match other_fs_dir(src.path()) {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "SKIP non_reflink_fallback_produces_correct_object_without_counter_bump: \
+                 no second writable filesystem distinct from the reflink FS detected"
+            );
+            return;
+        }
+    };
+    let store_root = other.join(format!("store-{}", std::process::id()));
+    fs::create_dir_all(&store_root).unwrap();
+
+    let content: Vec<u8> = (0..(290 * 1024u32)).map(|i| (i % 193) as u8).collect();
+    let files: Vec<(&str, &[u8], &str)> = vec![("payload.bin", content.as_slice(), "640")];
+    let (manifest, id) = build_tree(src.path(), &files);
+
+    let _g = env_lock();
+    let _e = CopyModeEnv::set(None, None); // clone ENABLED; impl must still fall back
+
+    let store = FileStore::from_root(store_root.clone());
+
+    let before = snapdir_stores::clonefile_hits();
+    let push_res = store.push(&manifest, src.path());
+    let after = snapdir_stores::clonefile_hits();
+
+    let sum = Blake3Hasher::new().hash_hex(&content);
+    let blob = fs::read(object_disk(&store_root, &sum));
+    let manifest_ok = manifest_disk(&store_root, &id).is_file();
+    let _ = fs::remove_dir_all(&other);
+
+    push_res.expect("push must succeed via the fs::copy fallback on a non-reflink store FS");
+    assert_eq!(
+        after, before,
+        "the EXDEV/non-reflink fallback uses fs::copy, so no clone may be credited \
+         to it — clonefile_hits() must NOT advance: {before} -> {after}"
+    );
+    let blob = blob.expect("object blob must exist after the fallback push");
+    assert_eq!(
+        blob, content,
+        "the fs::copy fallback object must be byte-for-byte the source content"
+    );
+    assert!(
+        manifest_ok,
+        "the manifest must commit (manifest-last) after the non-reflink fs::copy fallback"
+    );
 }
