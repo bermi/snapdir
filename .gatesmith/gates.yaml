@@ -3883,6 +3883,126 @@ gates:
     human_checkpoint: false
     description: "CLONEFILE SIGN-OFF + before/after + changelog (generic lane; gatesmith-free CODE-ONLY changelog commit). Record .gatesmith/evidence/apfs-clone-bench.log on an APFS volume: wall-clock `snapdir stage <DIR>` (and a checkout) of a representative LARGE local directory of many sizable files (describe it generically — do NOT name any dataset/source) with the clone fast-path ON (default) vs OFF (SNAPDIR_CLONEFILE=0), reporting both times, the speedup factor, and that the resulting object pool + snapshot id are IDENTICAL on/off. Add a docs/rust-port/CHANGELOG.md [Unreleased] Added entry: 'macOS APFS copy-on-write (clonefile) fast-path for stage/push/checkout on the same volume; SNAPDIR_CLONEFILE=0 to disable' (additive, macOS-only, graceful fallback elsewhere). If this lands before release-prep-1.7.0 runs it folds into 1.7.0; otherwise it carries to 1.8.0. PM machine-check: stores tests green + evidence has before/after + CHANGELOG mentions clonefile/APFS."
 
+  # ---------------------------------------------------------------
+  # Clone-path verification skip (operator-prioritized 2026-06-13, BLOCKS 1.7.0).
+  # The clonefile fast-path shipped but gave ~1.0x wall-clock (apfs-clone-bench)
+  # because persist() (file_store.rs:573) ALWAYS re-hashes the temp after copy —
+  # a 2nd full read of bytes the walk already hashed. Skip that re-hash on the
+  # CLONE path: FETCH/checkout source is an immutable read-verified object ->
+  # skip is unconditionally safe; STAGE/push source is a mutable user file ->
+  # stat-validated trust (walk records (size,mtime,ctime,ino); persist re-stats
+  # at clone time, skips re-hash iff unchanged, else falls back to re-hash).
+  # Honest posture: stat-guard catches the benign mid-stage race at write-time;
+  # an adversary forging mtime+ctime+size is caught at READ-time (get_object
+  # BLAKE3-verifies, file_store.rs:465) — never silent corruption. APFS-snapshot
+  # "freeze the source" mode = DEFERRED opt-in follow-up (macOS/volume/privilege).
+  # Low-ripple: frozen Store trait UNTOUCHED — stage guards are FileStore state
+  # set by the CLI; network/Split stores (can't clone) unaffected. merkle.rs/
+  # manifest.rs stay frozen-lock-identical; manifest text format never changes.
+  # Plan: .claude/plans/what-s-our-std-fs-read-concurrency-greedy-stearns.md
+  # (Follow-up section). Decoupled adversarial model: author != coder != verifier.
+  # ---------------------------------------------------------------
+  - id: clone-skip-spec-tests
+    phase: 29
+    owner_agent: adversary
+    depends_on: [apfs-clone-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/clone_skip.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/clone_skip.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [.gatesmith/pending-tests/clone_skip.rs]
+    human_checkpoint: false
+    description: "ADVERSARY (black-box). Author .gatesmith/pending-tests/clone_skip.rs (lands at crates/snapdir-stores/tests/clone_skip.rs). Contract the NEW symbols the impl will add (reference them so the suite fails until impl lands): a `CopyMethod { Cloned, Copied }` returned by the internal copy primitive; a persist source-trust mode (TrustedObject for fetch / StatGuarded for stage / Untrusted); a `CopyGuard` (size+mtime+ctime+ino) produced by the walk; and the `SNAPDIR_VERIFY_COPIES=1` strict override env. KEYSTONE = clone-skip is OBSERVABLY IDENTICAL to full-verify. Cases: (1) FETCH/checkout — skip re-hash on clone yields byte-identical restored files + round-trip id, on this APFS host AND under SNAPDIR_CLONEFILE=0 (fs::copy) AND SNAPDIR_VERIFY_COPIES=1 (forced re-hash) — all three produce identical object pools (bytes+sharded filenames) + identical ids. (2) STAGE — same identical-pool/id across skip-on / CLONEFILE=0 / VERIFY_COPIES=1. (3) RACE KEYSTONE (the reason this feature is risky): a source file MODIFIED between the manifest-walk and the stage-clone must NEVER produce a SILENTLY mis-addressed object — assert that staging a tree whose file is mutated after its checksum is computed either (a) errors with Integrity (stat-guard saw the change -> re-hash -> mismatch), or (b) the object that lands is REJECTED by a subsequent get_object/fetch (read-time BLAKE3 verify) — never a wrong-content object silently accepted under the old checksum. (4) escape-hatch: SNAPDIR_VERIFY_COPIES=1 forces write-time re-hash even on the clone path (assert it catches a mutated-source case at write time). NO source edits. Document the contracted symbol names + the env knobs in the handoff for the impl lanes."
+  - id: clone-skip-walkstat-core
+    phase: 29
+    owner_agent: core
+    depends_on: [clone-skip-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --locked && grep -rqE 'mtime|ctime|CopyGuard' crates/snapdir-core/src/ && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "CORE lane (crates/snapdir-core/ ONLY). FROZEN-SAFE: do NOT edit merkle.rs/manifest.rs/excludes.rs (sha-locked; gate re-runs shasum -c); the manifest TEXT format must NOT change (guards are out-of-band, never serialized). (1) Define a pub `CopyGuard { size: u64, mtime_ns: i64, ctime_ns: i64, ino: u64 }` in snapdir-core (new module or in walk.rs), unix-only fields behind #[cfg(unix)] (non-unix => guard not produced -> never skip, no regression). (2) In walk.rs `discover_dir`, capture mtime/ctime/ino from the SAME `Metadata` already read per file (std::os::unix::fs::MetadataExt: .mtime()/.ctime()/.ino(); .len() already used) into the FileRecord. (3) Add a `walk_*_with_guards` variant (or have walk_with_meter optionally emit) returning a `HashMap<String /*abs source path*/, CopyGuard>` SIDE-CHANNEL alongside the Manifest — keep the existing `walk`/`walk_with_meter` Manifest-only signatures untouched for id/manifest callers. KEYSTONE: snapshot ids byte-identical (the guard map is pure addition; no manifest/merkle change). Source-only; no inline #[cfg(test)] in src. Adversary owns tests."
+  - id: clone-skip-stores
+    phase: 29
+    owner_agent: stores
+    depends_on: [clone-skip-walkstat-core]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --test clone_skip --locked && cargo test -p snapdir-stores --locked && test ! -f .gatesmith/pending-tests/clone_skip.rs && grep -qE 'CopyMethod|Cloned' crates/snapdir-stores/src/file_store.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-stores/tests/clone_skip.rs]
+    human_checkpoint: false
+    description: "STORES lane (crates/snapdir-stores/ ONLY). (1) `copy_file` returns `CopyMethod { Cloned, Copied }` (was Ok(())): try_clonefile success => Cloned, fs::copy fallback => Copied. (2) `persist` gains a source-trust input (enum, NOT a Store-trait change): TrustedObject (skip the post-copy re-hash WHENEVER copy was Cloned — for fetch, the source is an immutable read-verified object), StatGuarded(CopyGuard) (re-stat the source; skip re-hash iff (size,mtime,ctime,ino) == guard, else re-hash as today), Untrusted (always re-hash = today's behavior). The fs::copy (Copied) path ALWAYS re-hashes — unchanged (a byte copy can corrupt; a CoW clone cannot). (3) `fetch_files` passes TrustedObject. (4) `FileStore` gains a `copy_guards: HashMap<PathBuf, CopyGuard>` field + a `with_copy_guards`/setter; `push` looks up each source's guard and passes StatGuarded when present else Untrusted. (5) `SNAPDIR_VERIFY_COPIES=1` (read per-copy) forces Untrusted (write-time re-hash) even on the clone path. Keep MAX_PERSIST_RETRIES + Integrity semantics. Take over the staged tests (git mv pending-tests/clone_skip.rs -> tests/). KEYSTONE: object pools+ids byte-identical skip-on vs CLONEFILE=0 vs VERIFY_COPIES=1; a mutated-source stage never silently stores a mis-addressed object. Source-only; do NOT touch the frozen core files."
+  - id: clone-skip-cli
+    phase: 29
+    owner_agent: cli
+    depends_on: [clone-skip-stores]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "CLI lane (crates/snapdir-cli/ ONLY). In `run_stage` (cli.rs ~1090): build the manifest via the new walk `*_with_guards` variant so you get both the Manifest AND the path->CopyGuard side-channel, then set the guard map on the local-cache FileStore (`cache.with_copy_guards(map)` / setter) BEFORE `cache.push(&manifest, &root)`. The guard map key must match the source path push computes (source.join(rel) absolute path). Only the STAGE-to-local-cache path gets guards; push to network/Split stores is unchanged (they can't clone). Document SNAPDIR_VERIFY_COPIES in help if a flag is added (env-only is fine — core/CLI env reads are allowed in the CLI lane). `cargo build --workspace` must be green (closes any signature ripple). Source-only; adversary owns tests."
+  - id: clone-skip-tests-review
+    phase: 29
+    owner_agent: adversary
+    depends_on: [clone-skip-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --test clone_skip --locked && cargo test --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY REVIEW. Diff landed crates/snapdir-stores/tests/clone_skip.rs vs the staged original (git show the spec-tests commit); adjudicate ANY coder edit ON THE MERITS (legit wiring/shape fix vs weakening) and restore weakening. HARD-VERIFY the keystone: identical object pools+ids across skip-on / SNAPDIR_CLONEFILE=0 / SNAPDIR_VERIFY_COPIES=1; fetch-skip byte-identical checkout; the stat-guard re-hashes (not skips) when the source changed. Add cases the visible impl reveals (the TrustedObject vs StatGuarded vs Untrusted branches; the fs::copy-always-rehash path; guard miss => Untrusted). Strengthened failure -> reopen the relevant impl gate (reopen rule). Test artifacts only."
+  - id: clone-skip-race-verify
+    phase: 29
+    owner_agent: adversary
+    depends_on: [clone-skip-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --test clone_skip_race --locked && cargo test --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-stores/tests/clone_skip_race.rs]
+    human_checkpoint: false
+    description: "ADVERSARY — INDEPENDENT VERIFICATION PASS (the 'serious adversarial testing'; a SEPARATE verifier from the spec-tests author conceptually). Author crates/snapdir-stores/tests/clone_skip_race.rs: concurrency/TOCTOU/property fuzz hammering the stat-guard's soundness. Cases: (1) rapid source mutation DURING stage (spawn a thread rewriting a file's content while stage walks+clones) -> the staged snapshot must be self-consistent: every object that lands either matches its manifest checksum OR is rejected by get_object's read-time BLAKE3 verify; NEVER a silently mis-addressed object. (2) mtime+size SPOOFING: mutate content then `touch -t`/set mtime back + pad to same size -> assert this is EITHER caught (ctime moves -> stat-guard re-hashes) OR, if it slips the write-time stat-guard, get_object()/fetch REJECTS it at read time (the documented backstop). (3) mtime-granularity edge: two writes within the same coarse mtime tick. (4) inode reuse across a delete+recreate. (5) property: for N random (mutate?/when?) schedules, the invariant 'no object verifies under a checksum it doesn't hash to' holds. The point is to PROVE the honest posture: stat-guard catches benign races at write-time; read-time verify is the adversarial backstop; corruption is NEVER silent. If any case shows a silently-accepted mis-addressed object -> REAL BUG, reopen clone-skip-stores. Test artifacts only (this is a NET-NEW test file authored by the adversary, which is allowed for the adversary lane — it is not a lane-owner adding tests)."
+  - id: clone-skip-bench
+    phase: 29
+    owner_agent: bench
+    depends_on: [clone-skip-race-verify]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build -p snapdir-benches --benches --locked && test -f .gatesmith/evidence/clone-skip-bench.log && grep -qiE 'before|baseline' .gatesmith/evidence/clone-skip-bench.log && grep -qiE 'after|speedup' .gatesmith/evidence/clone-skip-bench.log"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [.gatesmith/evidence/clone-skip-bench.log]
+    human_checkpoint: false
+    description: "BENCH lane (benches/ + evidence). Re-measure the wall-clock NOW that the redundant re-hash is gone on the clone path. On an APFS volume, time `snapdir stage` AND `snapdir checkout` of a representative LARGE local directory of many sizable files (generic — do NOT name any dataset/source; generate from /dev/urandom into a tempdir, src+cache same volume, warm cache, fresh empty cache per stage run). Compare: BASELINE = clone WITHOUT skip (SNAPDIR_VERIFY_COPIES=1, i.e. the old re-hash-always behavior) vs AFTER = clone WITH skip (default). Report both wall-clock times + the speedup factor for stage and checkout, and confirm the object pool + snapshot id are IDENTICAL baseline vs after. Record .gatesmith/evidence/clone-skip-bench.log (must contain before/baseline AND after/speedup). This is where the real stage/checkout win must finally show (vs the ~1.0x in apfs-clone-bench.log). If it still doesn't speed up, report honestly + investigate what now dominates."
+  - id: clone-skip-complete
+    phase: 29
+    owner_agent: generic
+    depends_on: [clone-skip-bench]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked && grep -qiE 'SNAPDIR_VERIFY_COPIES|re-hash|clone.*skip|copy-on-write' docs/rust-port/CHANGELOG.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "CLONE-SKIP SIGN-OFF + changelog (generic lane; gatesmith-free CODE-ONLY changelog commit). Confirm the whole chain green: copy-skip on fetch (always) + stage (stat-guarded), object pools+ids byte-identical, race-verify proved no silent mis-addressed object, and the before/after speedup recorded in .gatesmith/evidence/clone-skip-bench.log. Add a docs/rust-port/CHANGELOG.md [Unreleased] entry: the clone fast-path now SKIPS the redundant post-copy re-hash (checkout: immutable verified object; stage: stat-validated trust, falls back to re-hash on any change), giving the real stage/checkout speedup; SNAPDIR_VERIFY_COPIES=1 forces strict write-time verification; bytes+ids unchanged; read-time BLAKE3 verify remains the integrity backstop. Keep heading [Unreleased] (release-prep folds -> [1.7.0]). PM machine-check: workspace tests green + CHANGELOG mentions SNAPDIR_VERIFY_COPIES / clone-skip. This is the last pre-1.7.0 perf gate; release-prep-1.7.0 depends on it."
+
   - id: release-perf-linux-1.7.0
     phase: 29
     owner_agent: generic
@@ -3899,7 +4019,7 @@ gates:
   - id: release-prep-1.7.0
     phase: 29
     owner_agent: generic
-    depends_on: [release-perf-linux-1.7.0, fast-walk-complete]
+    depends_on: [release-perf-linux-1.7.0, fast-walk-complete, clone-skip-complete]
     status: pending
     failure_count: 0
     verification_cmd: "grep -qE '^version = \"1.7.0\"' Cargo.toml && grep -q '## \\[1.7.0\\]' docs/rust-port/CHANGELOG.md && cargo build --workspace --locked"
