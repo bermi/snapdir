@@ -4076,7 +4076,9 @@ gates:
     phase: 29
     owner_agent: ci
     depends_on: [reflink-stores]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T17:25:58Z
+    git_sha: 56071b4
     failure_count: 0
     verification_cmd: "command -v actionlint >/dev/null 2>&1 && actionlint .github/workflows/ci.yaml || true; grep -q 'reflink' .github/workflows/ci.yaml && grep -qE 'mkfs.btrfs|btrfs-progs' .github/workflows/ci.yaml && grep -q 'SNAPDIR_REFLINK_TEST_REQUIRE' .github/workflows/ci.yaml && test -f utils/ci/reflink-vm-check.sh"
     pass_criteria:
