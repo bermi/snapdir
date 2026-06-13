@@ -83,13 +83,14 @@ pub struct FileStore {
 /// [`persist`] may skip its post-copy re-hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CopyMethod {
-    /// A genuine macOS APFS `clonefile` copy-on-write success: the target is
+    /// A genuine copy-on-write clone success via the `CoW` clone fast-path
+    /// (`clonefile` on macOS, `FICLONE` reflink on Linux): the target is
     /// bit-identical to the source by construction (a copy-on-write clone can
     /// never corrupt), so — under the right trust — the re-hash can be skipped.
     Cloned,
-    /// A plain `fs::copy` byte copy (the `fs::copy` fallback, non-macOS, or
-    /// `SNAPDIR_CLONEFILE=0`). A byte copy CAN corrupt, so this path ALWAYS
-    /// re-hashes; the skip is never taken here.
+    /// A plain `fs::copy` byte copy (the `fs::copy` fallback, unsupported FS,
+    /// cross-filesystem, or `SNAPDIR_CLONEFILE=0`). A byte copy CAN corrupt, so
+    /// this path ALWAYS re-hashes; the skip is never taken here.
     Copied,
 }
 
@@ -848,15 +849,17 @@ pub(crate) fn write_manifest_durable(
     Ok(())
 }
 
-/// Process-global count of times the macOS `clonefile` copy-on-write fast-path
-/// actually fired (a real `clonefile` success). Used by integration tests to
-/// assert the fast-path is exercised (not silently always falling back).
+/// Process-global count of times the `CoW` clone fast-path (`clonefile` on
+/// macOS, `FICLONE` reflink on Linux) actually fired (a real clone success).
+/// Used by integration tests to assert the fast-path is exercised (not silently
+/// always falling back).
 static CLONEFILE_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Returns the number of times the macOS APFS `clonefile` copy-on-write
-/// fast-path has fired in this process (incremented on each genuine
-/// `clonefile` success in [`copy_file`]). Off macOS or with the fast-path
-/// disabled (`SNAPDIR_CLONEFILE=0`) this stays at its prior value.
+/// Returns the number of times the `CoW` clone fast-path (`clonefile` on macOS,
+/// `FICLONE` reflink on Linux) has fired in this process (incremented on each
+/// genuine clone success in [`copy_file`]). On a non-reflink filesystem, across
+/// filesystems, or with the fast-path disabled (`SNAPDIR_CLONEFILE=0`) this
+/// stays at its prior value.
 ///
 /// Re-exported at the crate root as
 /// [`snapdir_stores::clonefile_hits`](crate::clonefile_hits) so integration
@@ -865,9 +868,10 @@ pub fn clonefile_hits() -> u64 {
     CLONEFILE_HITS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Returns `true` unless `SNAPDIR_CLONEFILE=0` force-disables the clone
-/// fast-path. Read **per copy call** (never cached) so a test can toggle the
-/// knob at runtime under its `ENV_LOCK` and have the very next copy observe it.
+/// Returns `true` unless `SNAPDIR_CLONEFILE=0` force-disables the `CoW` clone
+/// fast-path (`clonefile` on macOS, `FICLONE` reflink on Linux). Read **per copy
+/// call** (never cached) so a test can toggle the knob at runtime under its
+/// `ENV_LOCK` and have the very next copy observe it.
 fn clonefile_enabled() -> bool {
     !matches!(std::env::var("SNAPDIR_CLONEFILE").as_deref(), Ok("0"))
 }
@@ -941,12 +945,14 @@ fn clone_skip_decision(
 /// oracle's `cp -RL -n`: dereference, do not clobber — `target` is a fresh
 /// temp path so the no-clobber aspect is implicit).
 ///
-/// On macOS, when the clone knob is enabled (`SNAPDIR_CLONEFILE != "0"`), it
-/// first attempts a copy-on-write clone via `clonefile(2)`. On the
-/// not-supported / cross-volume / already-exists errnos it transparently falls
-/// back to [`fs::copy`]; on a genuine I/O error it propagates. The clone result
-/// is normalized to be **observably identical** to `fs::copy` (perms-only
-/// metadata, BSD flags cleared). Off macOS, or with the knob disabled, this is
+/// When the clone knob is enabled (`SNAPDIR_CLONEFILE != "0"`), it first
+/// attempts a copy-on-write clone via the platform `CoW` primitive (`clonefile(2)`
+/// on macOS, the `FICLONE` ioctl reflink on Linux). On the not-supported /
+/// cross-filesystem / already-exists errnos it transparently falls back to
+/// [`fs::copy`]; on a genuine I/O error it propagates. The clone result is
+/// normalized to be **observably identical** to `fs::copy` (perms-only metadata;
+/// BSD flags cleared on macOS — Linux inode flags are not cloned, so no
+/// clearing is needed). On other platforms, or with the knob disabled, this is
 /// exactly the historical `fs::copy` path.
 fn copy_file(source: &Path, target: &Path) -> Result<CopyMethod, StoreError> {
     #[cfg(target_os = "macos")]
@@ -955,8 +961,78 @@ fn copy_file(source: &Path, target: &Path) -> Result<CopyMethod, StoreError> {
             return Ok(CopyMethod::Cloned);
         }
     }
+    #[cfg(target_os = "linux")]
+    {
+        if clonefile_enabled() && try_reflink(source, target)? {
+            return Ok(CopyMethod::Cloned);
+        }
+    }
     fs::copy(source, target)?;
     Ok(CopyMethod::Copied)
+}
+
+/// Attempts a Linux `FICLONE` (reflink) copy-on-write clone of `source` →
+/// `target` (the analogue of macOS [`try_clonefile`]).
+///
+/// Returns `Ok(true)` on a successful reflink (counter bumped + perms
+/// normalized to `fs::copy` parity); `Ok(false)` when `FICLONE` reports a
+/// not-supported / cross-filesystem / bad-arg condition and the caller should
+/// fall back to [`fs::copy`]; `Err` only on a genuine I/O failure
+/// (ENOSPC/EDQUOT/EIO/EPERM/…).
+///
+/// `target` is a freshly minted temp sibling and must NOT already exist
+/// (`create_new`), so a collision is a genuine error rather than a fallback.
+/// `FICLONE` clones DATA ONLY — inode flags (e.g. `FS_IMMUTABLE_FL`) are NOT
+/// propagated, so there is no un-GC-able-object risk and no flag-clearing is
+/// needed (unlike the macOS `chflags` normalization).
+#[cfg(target_os = "linux")]
+fn try_reflink(source: &Path, target: &Path) -> Result<bool, StoreError> {
+    use std::os::unix::io::AsRawFd;
+    use std::sync::atomic::Ordering;
+
+    // O_RDONLY source; brand-new (create_new) destination — a fresh temp
+    // sibling that must not exist.
+    let src = fs::File::open(source)?;
+    let dst = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)?;
+
+    // Keep `src` + `dst` alive across the ioctl (do NOT into_raw_fd).
+    let ret = unsafe { libc::ioctl(dst.as_raw_fd(), libc::FICLONE as _, src.as_raw_fd()) };
+    if ret != 0 {
+        let err = io::Error::last_os_error();
+        // Either branch abandons the (empty) destination, so clean it up once
+        // before deciding fall-back vs. propagate.
+        drop(dst);
+        let _ = fs::remove_file(target);
+        // Not supported by the FS / cross-filesystem / bad-arg: fall back to a
+        // plain byte copy. Anything else (ENOSPC/EDQUOT/EIO/EPERM/…) is a
+        // genuine I/O error and propagates.
+        if matches!(
+            err.raw_os_error(),
+            Some(
+                libc::EOPNOTSUPP
+                    | libc::ENOTTY
+                    | libc::EXDEV
+                    | libc::EINVAL
+                    | libc::ENOSYS
+                    | libc::EBADF
+            )
+        ) {
+            return Ok(false);
+        }
+        return Err(StoreError::Io(err));
+    }
+
+    // FICLONE clones DATA only, so match `fs::copy`'s perms-only semantics by
+    // copying the source's permission bits onto the target. No flag-clearing is
+    // needed (Linux inode flags are not cloned).
+    let src_perms = fs::metadata(source)?.permissions();
+    fs::set_permissions(target, src_perms)?;
+
+    CLONEFILE_HITS.fetch_add(1, Ordering::Relaxed);
+    Ok(true)
 }
 
 /// Attempts a macOS `clonefile(2)` copy-on-write clone of `source` → `target`.

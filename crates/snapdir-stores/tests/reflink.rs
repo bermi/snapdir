@@ -13,9 +13,9 @@
 //!
 //! ## SPEC under test (Linux reflink / FICLONE)
 //!
-//! The impl adds a `#[cfg(target_os = "linux")]` branch to the FileStore's
+//! The impl adds a `#[cfg(target_os = "linux")]` branch to the `FileStore`'s
 //! internal copy primitive: when the source and the store/cache share a
-//! reflink-capable filesystem (Btrfs / XFS reflink=1 / OpenZFS 2.2+ / OCFS2 /
+//! reflink-capable filesystem (Btrfs / XFS reflink=1 / `OpenZFS` 2.2+ / OCFS2 /
 //! bcachefs), `stage`/`push`/`checkout` clone objects copy-on-write via the
 //! `FICLONE` ioctl instead of a byte-copy; it falls back to `fs::copy` on
 //! ext4/F2FS/tmpfs, across filesystems (`EXDEV`), or on unsupported kernels.
@@ -383,7 +383,8 @@ fn roundtrip_once(
 fn ficlone_fires_on_reflink_fs_push_and_fetch_bump_counter() {
     // Spec clause (case 1): on a reflink FS, push + fetch each ride FICLONE, so
     // clonefile_hits() must increase by >= 2 across one stage+checkout cycle.
-    let Some(root) = reflink_root_or_skip("ficlone_fires_on_reflink_fs_push_and_fetch_bump_counter")
+    let Some(root) =
+        reflink_root_or_skip("ficlone_fires_on_reflink_fs_push_and_fetch_bump_counter")
     else {
         return;
     };
@@ -404,7 +405,9 @@ fn ficlone_fires_on_reflink_fs_push_and_fetch_bump_counter() {
     let store = FileStore::from_root(store_dir.path().to_path_buf());
 
     let before = snapdir_stores::clonefile_hits();
-    store.push(&manifest, src.path()).expect("push on reflink FS");
+    store
+        .push(&manifest, src.path())
+        .expect("push on reflink FS");
     store
         .fetch_files(&manifest, dest.path())
         .expect("fetch_files on reflink FS");
@@ -772,7 +775,7 @@ fn set_immutable(path: &Path, immutable: bool) -> Result<(), i32> {
     }
     let result = (|| {
         let mut flags: libc::c_long = 0;
-        let rc = unsafe { libc::ioctl(fd, FS_IOC_GETFLAGS, &mut flags) };
+        let rc = unsafe { libc::ioctl(fd, FS_IOC_GETFLAGS as _, &mut flags) };
         if rc != 0 {
             return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(-1));
         }
@@ -781,7 +784,7 @@ fn set_immutable(path: &Path, immutable: bool) -> Result<(), i32> {
         } else {
             flags &= !FS_IMMUTABLE_FL;
         }
-        let rc = unsafe { libc::ioctl(fd, FS_IOC_SETFLAGS, &flags) };
+        let rc = unsafe { libc::ioctl(fd, FS_IOC_SETFLAGS as _, &flags) };
         if rc != 0 {
             return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(-1));
         }
