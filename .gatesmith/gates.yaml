@@ -3796,7 +3796,9 @@ gates:
     phase: 29
     owner_agent: generic
     depends_on: [fast-walk-bench]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T02:27:32Z
+    git_sha: 13feacc
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked && grep -qiE 'walk-jobs|SNAPDIR_WALK_JOBS|parallel.*hash|mmap' docs/rust-port/CHANGELOG.md"
     pass_criteria:
