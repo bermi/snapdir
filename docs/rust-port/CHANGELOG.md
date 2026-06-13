@@ -30,6 +30,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fs::copy` everywhere it cannot apply (non-APFS filesystems, cross-volume
   copies, and non-macOS platforms). Object bytes and snapshot ids are unchanged
   (byte-identical) with the fast-path on or off.
+- **Clone fast-path now skips the redundant post-copy re-hash — a real
+  `stage`/`checkout` speedup.** Previously, even when an object was cloned
+  copy-on-write, `persist()` re-read and re-hashed the result, so the clone
+  saved disk space but not wall-clock time (the copy was never the bottleneck;
+  the second full read was). The clone path now elides that redundant re-hash,
+  turning the copy-on-write fast-path into a genuine speedup — multiple× faster
+  `stage` and meaningfully faster `checkout` on large trees on a clone-capable
+  (APFS, same-volume) setup. Correctness is preserved on two layers: **`stage`
+  uses stat-validated trust** — the walk records the source file's stat and
+  `persist` re-stats it at clone time, skipping the re-hash only if the source
+  is unchanged since the walk (a changed source falls back to a full re-hash, so
+  a mid-stage mutation is caught at write time); **`checkout` still verifies the
+  source object once** (so on-disk object corruption is still detected) and only
+  skips the redundant destination re-hash. Set **`SNAPDIR_VERIFY_COPIES=1`** to
+  force the strict write-time re-hash even on the clone path. Object bytes and
+  snapshot ids remain byte-identical, and the read-time BLAKE3 verification in
+  `get_object`/`fetch` remains the integrity backstop regardless of this
+  setting.
 - **`--objects-store` / `$SNAPDIR_OBJECTS_STORE` — shared object pool, separate
   manifest locations.** This global flag routes content objects to one shared
   pool's `.objects/` while manifests go to `--store`'s `.manifests/`, so a
