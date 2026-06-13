@@ -3857,7 +3857,9 @@ gates:
     phase: 29
     owner_agent: adversary
     depends_on: [apfs-clone-stores]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T02:56:31Z
+    git_sha: 4e80167
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --test apfs_clone --locked && cargo test -p snapdir-stores --locked"
     pass_criteria:
