@@ -165,6 +165,62 @@ jobs:
         run: cargo bench --workspace --no-run --locked
 
   # --------------------------------------------------------------------------
+  # Reflink (Linux FICLONE / copy-on-write): exercise the REAL clone fast-path.
+  # The standard ubuntu-latest runner is ext4, where FICLONE never fires (only
+  # the fs::copy fallback), so the `test` matrix above covers only the Linux
+  # FALLBACK path; APFS clonefile is covered by the macos-latest matrix leg.
+  # This job mounts a loopback Btrfs image (a reflink-capable FS) on the
+  # standard runner — no special/self-hosted runner — so the FICLONE ioctl
+  # genuinely fires and the reflink/clone-skip suites assert clonefile_hits()
+  # actually advanced. Mirrors the loopback-sshd sudo-env precedent in `test`.
+  #
+  # REQUIRED job (no continue-on-error): if the loopback mount ever proves
+  # flaky on the hosted runner, the documented fallback is to add
+  # `continue-on-error: true` here (a 1.7.x hardening step) — but ship it
+  # required so a broken FICLONE path can't merge silently.
+  # --------------------------------------------------------------------------
+  reflink:
+    name: Reflink (Btrfs FICLONE)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: reflink
+
+      # A loopback Btrfs image gives us a real reflink-capable filesystem on the
+      # stock ubuntu-latest runner (its root FS is ext4 → FICLONE never fires).
+      # chmod 1777 lets the unprivileged runner user create the src+store dirs
+      # the tests place under SNAPDIR_REFLINK_TEST_DIR / TMPDIR.
+      - name: Set up Btrfs loopback for reflink tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends btrfs-progs
+          truncate -s 2G /tmp/reflink.img
+          mkfs.btrfs -q /tmp/reflink.img
+          sudo mkdir -p /mnt/reflink
+          sudo mount -o loop /tmp/reflink.img /mnt/reflink
+          sudo chmod 1777 /mnt/reflink        # unprivileged runner user must create dirs
+
+      # reflink.rs is env-gated on SNAPDIR_REFLINK_TEST_DIR (+ _REQUIRE=1 makes a
+      # missing dir a hard panic, so this required leg can't rot into a silent
+      # skip). clone_skip / clone_skip_race use std::env::temp_dir(), so pointing
+      # TMPDIR at the Btrfs mount runs the StatGuarded skip + TOCTOU/race suites
+      # against REAL reflink for free.
+      - name: Reflink tests on Btrfs
+        run: cargo test -p snapdir-stores --test reflink --test clone_skip --test clone_skip_race --locked
+        env:
+          SNAPDIR_REFLINK_TEST_DIR: /mnt/reflink
+          TMPDIR: /mnt/reflink
+          SNAPDIR_REFLINK_TEST_REQUIRE: "1"
+
+  # --------------------------------------------------------------------------
   # Bench (iai-callgrind): deterministic CPU instruction-count perf gate.
   # Runs the real valgrind/callgrind measurement on a native Linux runner using
   # the SAME toolchain + iai-callgrind-runner pins as benches/run-iai-docker.sh
