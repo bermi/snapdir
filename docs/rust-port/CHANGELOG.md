@@ -20,24 +20,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged (byte-identical)** with the feature on or off and across every
   `--walk-jobs` value — additive, default behavior preserved, the frozen
   manifest format untouched.
-- **macOS APFS copy-on-write (`clonefile`) fast-path for object copies on the
-  same volume.** When the source file and the snapdir cache live on the same
-  APFS volume, object copies during `stage`, `push`, and `checkout`/`fetch` now
-  use `clonefile(2)` to make a copy-on-write clone instead of byte-copying, so a
-  large object is materialized for ~zero additional physical bytes (shared
-  extents) and without rewriting its data. This is additive and macOS-only: set
-  `SNAPDIR_CLONEFILE=0` to disable it, and it falls back gracefully to a plain
-  `fs::copy` everywhere it cannot apply (non-APFS filesystems, cross-volume
-  copies, and non-macOS platforms). Object bytes and snapshot ids are unchanged
-  (byte-identical) with the fast-path on or off.
+- **Cross-platform copy-on-write object clones — macOS (APFS `clonefile`) and
+  Linux (`FICLONE` reflink).** When the source file and the snapdir store share
+  a copy-on-write-capable filesystem, object copies during `stage`, `push`, and
+  `checkout`/`fetch` now make a CoW clone instead of byte-copying: on macOS via
+  `clonefile(2)` on the same APFS volume, and on Linux via the `FICLONE` ioctl
+  reflink on Btrfs, XFS (`reflink=1`), OpenZFS 2.2+, OCFS2, and bcachefs. A
+  large object is materialized for ~zero additional physical bytes (the clone
+  shares extents) and without rewriting its data. This is additive and falls
+  back gracefully to a plain `fs::copy` everywhere a reflink/clone cannot apply
+  — non-CoW filesystems (ext4, F2FS, tmpfs), across filesystem boundaries, and
+  on unsupported platforms. Set `SNAPDIR_CLONEFILE=0` to disable the fast-path
+  entirely. Object bytes and snapshot ids are unchanged (byte-identical) with
+  the fast-path on or off.
 - **Clone fast-path now skips the redundant post-copy re-hash — a real
-  `stage`/`checkout` speedup.** Previously, even when an object was cloned
-  copy-on-write, `persist()` re-read and re-hashed the result, so the clone
-  saved disk space but not wall-clock time (the copy was never the bottleneck;
-  the second full read was). The clone path now elides that redundant re-hash,
-  turning the copy-on-write fast-path into a genuine speedup — multiple× faster
-  `stage` and meaningfully faster `checkout` on large trees on a clone-capable
-  (APFS, same-volume) setup. Correctness is preserved on two layers: **`stage`
+  `stage`/`checkout` speedup on both platforms.** Previously, even when an
+  object was cloned copy-on-write, `persist()` re-read and re-hashed the result,
+  so the clone saved disk space but not wall-clock time (the copy was never the
+  bottleneck; the second full read was). The clone path now elides that
+  redundant re-hash, turning the copy-on-write fast-path into a genuine speedup
+  — multiple× faster `stage` and meaningfully faster `checkout` on large trees
+  wherever a CoW clone fires, on macOS (APFS `clonefile`) or Linux (`FICLONE`
+  reflink) alike. Correctness is preserved on two layers: **`stage`
   uses stat-validated trust** — the walk records the source file's stat and
   `persist` re-stats it at clone time, skipping the re-hash only if the source
   is unchanged since the walk (a changed source falls back to a full re-hash, so
