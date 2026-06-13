@@ -3827,7 +3827,9 @@ gates:
     phase: 29
     owner_agent: adversary
     depends_on: [fast-walk-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T02:36:41Z
+    git_sha: 452774b
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/apfs_clone.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/apfs_clone.rs"
     pass_criteria:
