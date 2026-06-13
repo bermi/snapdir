@@ -26,6 +26,7 @@ use crate::progress::{should_render, use_color, ColorChoice, ProgressReporter};
 use snapdir_catalog::{
     ancestors_json_line, locations_json_line, revisions_json_line, Catalog, SystemClock,
 };
+use snapdir_core::hash_file::HashFile;
 use snapdir_core::{
     cache, expand_excludes, snapshot_id, walk_with_meter, Blake3Hasher, Blake3KeyedHasher,
     ExcludeMatcher, ExpandedExclude, FollowMode, Hasher, Manifest, ManifestEntry, Md5Hasher, Meter,
@@ -175,6 +176,11 @@ pub struct GlobalArgs {
         env = "SNAPDIR_JOBS"
     )]
     pub jobs: Option<usize>,
+
+    /// Max parallel file-hashing jobs during the directory walk (0/auto =
+    /// number of CPUs, capped). Distinct from --jobs (transfer concurrency).
+    #[arg(long, global = true, value_name = "N", env = "SNAPDIR_WALK_JOBS")]
+    pub walk_jobs: Option<usize>,
 
     /// Limit total transfer bandwidth, e.g. 10M, 512K, 1G (wget-style; aggregate across all transfers).
     #[arg(long, global = true, value_name = "RATE", env = "SNAPDIR_LIMIT_RATE")]
@@ -2125,6 +2131,7 @@ impl Cli {
             follow,
             path_mode,
             exclude: matcher,
+            walk_jobs: self.globals.walk_jobs,
         };
 
         // Select the checksum function. `b3sum` (or unset) is the default; the
@@ -2487,7 +2494,7 @@ fn reformat_env_default(key: &str, value: &str) -> String {
 /// `anyhow` error with context.
 ///
 /// [`WalkError`]: snapdir_core::WalkError
-fn walk_with<H: Hasher>(
+fn walk_with<H: Hasher + HashFile + Sync>(
     root: &Path,
     options: &WalkOptions,
     hasher: &H,

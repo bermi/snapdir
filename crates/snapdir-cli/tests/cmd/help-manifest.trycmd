@@ -89,6 +89,11 @@ Options:
           
           [env: SNAPDIR_JOBS=]
 
+      --walk-jobs <N>
+          Max parallel file-hashing jobs during the directory walk (0/auto = number of CPUs, capped). Distinct from --jobs (transfer concurrency)
+          
+          [env: SNAPDIR_WALK_JOBS=]
+
       --limit-rate <RATE>
           Limit total transfer bandwidth, e.g. 10M, 512K, 1G (wget-style; aggregate across all transfers)
           

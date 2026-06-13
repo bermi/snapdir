@@ -107,7 +107,9 @@ fn build_fixture(root: &TempDir) {
     ssmall.write_binary(&deterministic_bytes(10)).unwrap();
     pin_mode(ssmall.path(), 0o644);
     let slarge = root.child("sub/s large.bin");
-    slarge.write_binary(&deterministic_bytes(512 * 1024)).unwrap();
+    slarge
+        .write_binary(&deterministic_bytes(512 * 1024))
+        .unwrap();
     pin_mode(slarge.path(), 0o644);
 }
 
@@ -131,7 +133,10 @@ fn id_is_byte_identical_across_walk_jobs_and_unset() {
 
     // Baseline: no walk-jobs flag, no env (the "unset" case) — must equal golden.
     let unset = id_ok(cache.path(), &["id", &src_str]);
-    assert_eq!(unset, GOLDEN_ID, "baseline id must equal the recorded golden");
+    assert_eq!(
+        unset, GOLDEN_ID,
+        "baseline id must equal the recorded golden"
+    );
 
     // --walk-jobs 1 and 8 must each equal the baseline (and golden).
     let j1 = id_ok(cache.path(), &["id", "--walk-jobs", "1", &src_str]);
@@ -217,7 +222,10 @@ fn walk_jobs_is_separate_from_transfer_jobs() {
         cache.path(),
         &["id", "--walk-jobs", "4", "--jobs", "2", &src_str],
     );
-    assert_eq!(both, GOLDEN_ID, "combining --walk-jobs and --jobs must not change the id");
+    assert_eq!(
+        both, GOLDEN_ID,
+        "combining --walk-jobs and --jobs must not change the id"
+    );
 
     // --walk-jobs alone must not error even though it differs from --jobs.
     let walk_only = id_ok(cache.path(), &["id", "--walk-jobs", "4", &src_str]);
