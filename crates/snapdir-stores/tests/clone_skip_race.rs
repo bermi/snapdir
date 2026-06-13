@@ -42,6 +42,16 @@
 // schedule generators do arithmetic-mod-256 byte fills (cast truncation is the
 // intent), use large multiplier literals, and define small walk helpers after
 // statements — none of which bear on what the suite proves.
+//
+// The last two only ever fire on the LINUX target (`cfg(target_os="linux")`
+// cases / the musl `libc::time_t` alias), so they are invisible to the macOS
+// dev host's clippy but fail CI's ubuntu `clippy --all-targets -D warnings`
+// (process note in `.gatesmith/state.md` — `reflink-tests-review` caught the
+// same class). Pure shape; no assertion or test logic is affected:
+//   * `map_unwrap_or` — the env-contract gate `reflink_root_or_skip` (mirrors
+//     `reflink.rs`'s allow),
+//   * `deprecated` — `set_mtime_atime`'s `libc::time_t` (musl 1.2 64-bit
+//     migration warning; the existing helper, unchanged).
 #![allow(
     clippy::type_complexity,
     clippy::too_many_lines,
@@ -51,7 +61,9 @@
     clippy::single_match_else,
     clippy::cast_possible_truncation,
     clippy::unreadable_literal,
-    clippy::items_after_statements
+    clippy::items_after_statements,
+    clippy::map_unwrap_or,
+    deprecated
 )]
 
 use std::collections::HashMap;
@@ -787,4 +799,421 @@ fn honest_skip_rides_clone_and_stores_correct_bytes() {
         "the >256 KiB object is full length (skip is not vacuous)"
     );
     assert_no_readable_misaddress(&store, store_dir.path(), &[sum]);
+}
+
+// ===========================================================================
+// LINUX REFLINK (FICLONE) — real-reflink TOCTOU / race edges.
+//
+// COVERAGE NOTE (spec clause 4): the cases ABOVE (CASE 1 concurrent mid-stage
+// mutation, CASE 2 ctime stale-guard catch, CASE 3 fully-defeated-guard read-
+// time backstop, CASE 5 same-mtime forge, CASE 6 property loop) are all
+// platform-agnostic and use `std::env::temp_dir()` for their fixtures. On the
+// CI `Reflink (Btrfs FICLONE)` job that dir is `TMPDIR=/mnt/reflink` (a real
+// Btrfs loopback), so EVERY one of those races runs against GENUINE FICLONE
+// reflink with NO new code — the `CopyMethod::Cloned` path the Linux
+// `try_reflink` returns flows through the SAME `clone_skip_decision`
+// StatGuarded/read-time-backstop machinery the cross-platform cases pin. The
+// Linux-specific cases BELOW add reflink-only edges (concurrent mutation +
+// co-located src/store on a real reflink FS, `chattr +i` source, EXDEV
+// cross-mount fallback) that cannot be expressed platform-agnostically.
+//
+// All three are `#[cfg(target_os = "linux")]` + env-gated on
+// `SNAPDIR_REFLINK_TEST_DIR` (skip-on-unset / `panic!` if
+// `SNAPDIR_REFLINK_TEST_REQUIRE=1`), mirroring `reflink.rs`'s gating and the
+// shared `ENV_LOCK`. They compile to nothing on macOS/ext4 and RUN on the CI
+// Btrfs leg, which sets `SNAPDIR_REFLINK_TEST_DIR=/mnt/reflink` +
+// `SNAPDIR_REFLINK_TEST_REQUIRE=1`.
+// ===========================================================================
+
+/// Resolves the reflink-capable root for this run, honoring the env contract
+/// (mirrors `reflink.rs`):
+///   * `SNAPDIR_REFLINK_TEST_DIR` set -> `Some(path)` (place src + store under it
+///     so FICLONE co-locates and actually fires — cross-FS would be EXDEV).
+///   * unset + `SNAPDIR_REFLINK_TEST_REQUIRE=1` -> `panic!` (Btrfs leg enforce).
+///   * unset + not required -> `None` (caller `eprintln!`s a skip note + returns).
+#[cfg(target_os = "linux")]
+fn reflink_root_or_skip(test_name: &str) -> Option<PathBuf> {
+    match std::env::var("SNAPDIR_REFLINK_TEST_DIR") {
+        Ok(dir) if !dir.is_empty() => {
+            let p = PathBuf::from(dir);
+            assert!(
+                p.is_dir(),
+                "SNAPDIR_REFLINK_TEST_DIR={} must be an existing mounted reflink directory",
+                p.display()
+            );
+            Some(p)
+        }
+        _ => {
+            let required = std::env::var("SNAPDIR_REFLINK_TEST_REQUIRE")
+                .map(|v| v == "1")
+                .unwrap_or(false);
+            assert!(
+                !required,
+                "reflink FS required but SNAPDIR_REFLINK_TEST_DIR unset"
+            );
+            eprintln!(
+                "SKIP {test_name}: SNAPDIR_REFLINK_TEST_DIR unset and \
+                 SNAPDIR_REFLINK_TEST_REQUIRE != 1 (no reflink FS on this host)"
+            );
+            None
+        }
+    }
+}
+
+/// A unique temp dir created UNDER `parent` (the reflink root), removed on drop
+/// — co-locating src + store so a same-FS FICLONE can fire. (`TempDir::new`
+/// uses `std::env::temp_dir()`, which is ALSO the reflink dir on the CI Btrfs
+/// leg via `TMPDIR`, but the Linux cases use an explicit parent to be robust
+/// to a `TMPDIR` that differs from `SNAPDIR_REFLINK_TEST_DIR`.)
+#[cfg(target_os = "linux")]
+fn temp_dir_under(parent: &Path, tag: &str) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = parent.join(format!(
+        "snapdir-clone-skip-race-reflink-{}-{tag}-{n}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&path);
+    fs::create_dir_all(&path).expect("create temp dir under reflink root");
+    path
+}
+
+// FS_IOC_SETFLAGS / FS_IOC_GETFLAGS ioctl request numbers (asm-generic values
+// used by Btrfs/ext*/XFS on Linux); FS_IMMUTABLE_FL is the immutable bit. This
+// is `chattr +i` at the syscall level (mirrors `reflink.rs`).
+#[cfg(target_os = "linux")]
+const FS_IOC_GETFLAGS: libc::c_ulong = 0x8008_6601;
+#[cfg(target_os = "linux")]
+const FS_IOC_SETFLAGS: libc::c_ulong = 0x4008_6602;
+#[cfg(target_os = "linux")]
+const FS_IMMUTABLE_FL: libc::c_long = 0x0000_0010;
+
+/// Sets/clears FS_IMMUTABLE_FL (the `chattr +i` immutable inode flag) on `path`.
+/// Returns `Ok(())`, or `Err(errno)` — `EPERM`/`EACCES` signal "no privilege"
+/// (needs root; the CI Btrfs job runs as root), `ENOTTY`/`EOPNOTSUPP` signal
+/// "FS does not support flags".
+#[cfg(target_os = "linux")]
+fn set_immutable(path: &Path, immutable: bool) -> Result<(), i32> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c = CString::new(path.as_os_str().as_bytes()).expect("path has no NUL");
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(-1));
+    }
+    let result = (|| {
+        let mut flags: libc::c_long = 0;
+        let rc = unsafe { libc::ioctl(fd, FS_IOC_GETFLAGS as _, &mut flags) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(-1));
+        }
+        if immutable {
+            flags |= FS_IMMUTABLE_FL;
+        } else {
+            flags &= !FS_IMMUTABLE_FL;
+        }
+        let rc = unsafe { libc::ioctl(fd, FS_IOC_SETFLAGS as _, &flags) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(-1));
+        }
+        Ok(())
+    })();
+    unsafe { libc::close(fd) };
+    result
+}
+
+/// A writable dir on a DIFFERENT device than `same_dev_path`, or `None`
+/// (mirrors `reflink.rs`). Used to force the source onto a different FS than
+/// the store so FICLONE returns EXDEV and the impl falls back to `fs::copy`.
+#[cfg(target_os = "linux")]
+fn other_fs_dir(same_dev_path: &Path) -> Option<PathBuf> {
+    let base_dev = fs::metadata(same_dev_path).ok()?.dev();
+    for cand in ["/dev/shm", "/tmp", "/var/tmp", "/run"] {
+        let p = Path::new(cand);
+        if let Ok(md) = fs::metadata(p) {
+            if md.dev() != base_dev {
+                let scratch = p.join(format!(
+                    "snapdir-clone-skip-race-xdev-{}",
+                    std::process::id()
+                ));
+                if fs::create_dir_all(&scratch).is_ok() {
+                    return Some(scratch);
+                }
+            }
+        }
+    }
+    None
+}
+
+// ===========================================================================
+// LINUX CASE A — Concurrent mid-stage source mutation on a REAL reflink FS.
+// src + store co-located under the reflink root so push rides FICLONE
+// (`CopyMethod::Cloned`); a racer thread rewrites the source while `push` runs
+// (guards captured just before). Whatever schedule lands, the resulting
+// snapshot MUST be self-consistent: every object readable via `get_object`
+// hashes to its address, OR the push errored — NEVER a readable object whose
+// bytes != its address. Looped over several schedules.
+//
+// Spec clause: this is CASE 1 (concurrent mid-stage mutation) re-run with the
+// fixtures FORCED under a genuine reflink FS, so the StatGuarded-skip race is
+// proven against the FICLONE clone path (not just APFS / fs::copy), pinning
+// "no silently mis-addressed object on Linux reflink".
+// ===========================================================================
+
+#[cfg(target_os = "linux")]
+#[test]
+fn reflink_concurrent_mid_stage_mutation_never_silently_misaddresses() {
+    let Some(root) =
+        reflink_root_or_skip("reflink_concurrent_mid_stage_mutation_never_silently_misaddresses")
+    else {
+        return;
+    };
+
+    let _g = env_lock();
+    let _e = CopyModeEnv::set(None, None); // clone + skip live (the FICLONE path)
+
+    for schedule in 0..6u32 {
+        let store_root = temp_dir_under(&root, &format!("reflink-conc-store-{schedule}"));
+        let src_root = temp_dir_under(&root, &format!("reflink-conc-src-{schedule}"));
+
+        let base_len = 300 * 1024 + (schedule as usize) * 7919; // >256KiB so FICLONE shares extents
+        let content_a: Vec<u8> = (0..base_len)
+            .map(|i| ((i as u32).wrapping_mul(2654435761).wrapping_add(schedule)) as u8)
+            .collect();
+
+        let rel = "racey.bin";
+        let target = src_root.join(rel);
+        fs::write(&target, &content_a).unwrap();
+
+        let (manifest, sum_a) = single_file_manifest(rel, &content_a);
+        let guard_a = CopyGuard::from_metadata(&fs::metadata(&target).unwrap()).expect("guard A");
+        let mut guards = HashMap::new();
+        guards.insert(target.clone(), guard_a);
+
+        let store = FileStore::from_root(store_root.clone()).with_copy_guards(guards);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let racer_target = target.clone();
+        let racer_barrier = Arc::clone(&barrier);
+        let len_b = if schedule % 2 == 0 {
+            base_len // same length (the hard case)
+        } else {
+            base_len + 4096
+        };
+        let sched = schedule;
+        let racer = std::thread::spawn(move || {
+            racer_barrier.wait();
+            for round in 0..40u32 {
+                let content_b: Vec<u8> = (0..len_b)
+                    .map(|i| {
+                        ((i as u32)
+                            .wrapping_mul(40503)
+                            .wrapping_add(round)
+                            .wrapping_add(sched)) as u8
+                            ^ 0xa5
+                    })
+                    .collect();
+                let _ = fs::write(&racer_target, &content_b);
+            }
+        });
+
+        barrier.wait();
+        let push_res = store.push(&manifest, &src_root);
+        racer.join().expect("racer thread joined");
+
+        match push_res {
+            Err(ref e) => assert!(
+                is_integrity(e) || is_rejected_or_absent(e),
+                "schedule {schedule}: a raced reflink stage that errors must be Integrity / \
+                 absent, got {e:?}"
+            ),
+            Ok(()) => {}
+        }
+        // Whatever landed (or didn't) on the REAL reflink path, no object filed
+        // under checksum(A) may be readable with bytes that don't hash to it.
+        assert_no_readable_misaddress(&store, &store_root, &[sum_a]);
+
+        let _ = fs::remove_dir_all(&store_root);
+        let _ = fs::remove_dir_all(&src_root);
+    }
+}
+
+// ===========================================================================
+// LINUX CASE B — `chattr +i` (FS_IMMUTABLE_FL) source during the stage on a
+// real reflink FS. FICLONE is a DATA-ONLY clone, so the source inode's
+// immutable flag must NOT propagate to the cloned object. Assert the resulting
+// OBJECT (a) is byte-correct AND (b) is REMOVABLE (no un-GC-able object). Needs
+// privilege to set the flag (root on the CI Btrfs job) — skip-with-eprintln on
+// EPERM/EACCES/ENOTTY/EOPNOTSUPP. The source flag is cleared in teardown so the
+// tempdir cleans up.
+//
+// Spec clause: pins "FICLONE data-only clone does NOT propagate the immutable
+// flag — no un-GC-able object on Linux reflink", AND (additionally) that the
+// cloned bytes are correct (no silent mis-address while the source was locked).
+// ===========================================================================
+
+#[cfg(target_os = "linux")]
+#[test]
+fn reflink_immutable_source_clones_correct_and_removable_object() {
+    let Some(root) =
+        reflink_root_or_skip("reflink_immutable_source_clones_correct_and_removable_object")
+    else {
+        return;
+    };
+
+    let store_root = temp_dir_under(&root, "reflink-immut-store");
+    let src_root = temp_dir_under(&root, "reflink-immut-src");
+
+    let content: Vec<u8> = (0..(300 * 1024u32)).map(|i| (i % 251) as u8).collect();
+    let rel = "locked.bin";
+    let target = src_root.join(rel);
+    fs::write(&target, &content).unwrap();
+
+    // Try to set FS_IMMUTABLE_FL on the source. No-privilege / no-FS-support =>
+    // skip (the CI Btrfs job runs as root and exercises this for real).
+    match set_immutable(&target, true) {
+        Ok(()) => {}
+        Err(e) if e == libc::EPERM || e == libc::EACCES => {
+            eprintln!(
+                "SKIP reflink_immutable_source_clones_correct_and_removable_object: \
+                 setting FS_IMMUTABLE_FL needs privilege (errno {e})"
+            );
+            let _ = fs::remove_dir_all(&store_root);
+            let _ = fs::remove_dir_all(&src_root);
+            return;
+        }
+        Err(e) if e == libc::ENOTTY || e == libc::EOPNOTSUPP => {
+            eprintln!(
+                "SKIP reflink_immutable_source_clones_correct_and_removable_object: \
+                 filesystem does not support FS_IOC_SETFLAGS (errno {e})"
+            );
+            let _ = fs::remove_dir_all(&store_root);
+            let _ = fs::remove_dir_all(&src_root);
+            return;
+        }
+        Err(e) => {
+            let _ = fs::remove_dir_all(&store_root);
+            let _ = fs::remove_dir_all(&src_root);
+            panic!("unexpected errno setting FS_IMMUTABLE_FL: {e}");
+        }
+    }
+
+    let (manifest, sum) = single_file_manifest(rel, &content);
+
+    let _g = env_lock();
+    let _e = CopyModeEnv::set(None, None); // fast-path on so a real FICLONE fires
+
+    let store = FileStore::from_root(store_root.clone());
+    let push_res = store.push(&manifest, &src_root);
+
+    // Clear the SOURCE flag NOW so teardown can remove the src tempdir regardless
+    // of the outcome below.
+    let _ = set_immutable(&target, false);
+
+    push_res.expect("push of an immutable source must succeed on a reflink FS");
+
+    // (a) the cloned object is byte-correct (no silent mis-address while the
+    // source was immutable) ...
+    let got = store
+        .get_object(&sum)
+        .expect("the cloned object must be readable + byte-correct");
+    assert_eq!(
+        got, content,
+        "FICLONE of an immutable source must still produce byte-correct object content"
+    );
+    assert_no_readable_misaddress(&store, &store_root, std::slice::from_ref(&sum));
+
+    // ... and (b) KEYSTONE: the object must be REMOVABLE — FICLONE (data-only)
+    // must NOT have propagated FS_IMMUTABLE_FL onto the object inode, so there
+    // is no un-GC-able object.
+    let obj = store_root.join(snapdir_core::store::object_path(&sum));
+    assert!(obj.is_file(), "object must have landed");
+    fs::remove_file(&obj).expect(
+        "the cloned object must NOT be immutable — FICLONE clones data only, so \
+         FS_IMMUTABLE_FL must not propagate (Linux has no un-GC-able-object risk)",
+    );
+    assert!(!obj.exists(), "object must be gone after removal");
+
+    let _ = fs::remove_dir_all(&store_root);
+    let _ = fs::remove_dir_all(&src_root);
+}
+
+// ===========================================================================
+// LINUX CASE C — EXDEV cross-mount. Source on a DIFFERENT filesystem than the
+// store (source under /tmp|/dev/shm|... while the store is on the reflink FS)
+// => FICLONE returns EXDEV => clean `fs::copy` fallback. Assert the object is
+// byte-correct, the snapshot id matches, and NO mis-addressed object results.
+// Skip if a second writable FS distinct from the reflink FS cannot be arranged.
+//
+// Spec clause: pins "cross-mount EXDEV => graceful fs::copy fallback, byte-
+// correct object + matching snapshot id, no mis-address" on Linux reflink.
+// ===========================================================================
+
+#[cfg(target_os = "linux")]
+#[test]
+fn reflink_exdev_cross_mount_falls_back_clean_no_misaddress() {
+    let Some(root) =
+        reflink_root_or_skip("reflink_exdev_cross_mount_falls_back_clean_no_misaddress")
+    else {
+        return;
+    };
+
+    // STORE on the reflink FS; SOURCE on a different FS => source->object is a
+    // cross-mount FICLONE => EXDEV => fs::copy fallback.
+    let store_root = temp_dir_under(&root, "reflink-xdev-store");
+
+    let Some(other) = other_fs_dir(&store_root) else {
+        eprintln!(
+            "SKIP reflink_exdev_cross_mount_falls_back_clean_no_misaddress: \
+             no second writable filesystem distinct from the reflink FS detected"
+        );
+        let _ = fs::remove_dir_all(&store_root);
+        return;
+    };
+
+    let src_root = other.join(format!("src-{}", std::process::id()));
+    fs::create_dir_all(&src_root).unwrap();
+
+    let content: Vec<u8> = (0..(300 * 1024u32)).map(|i| (i % 197) as u8).collect();
+    let rel = "payload.bin";
+    let target = src_root.join(rel);
+    fs::write(&target, &content).unwrap();
+
+    let (manifest, sum) = single_file_manifest(rel, &content);
+
+    let _g = env_lock();
+    let _e = CopyModeEnv::set(None, None); // clone on; impl must fall back on EXDEV
+
+    let store = FileStore::from_root(store_root.clone());
+    let res = store.push(&manifest, &src_root);
+
+    let cleanup = |a: &Path, b: &Path| {
+        let _ = fs::remove_dir_all(a);
+        let _ = fs::remove_dir_all(b);
+    };
+
+    match res {
+        Ok(()) => {
+            // The EXDEV fallback must file a byte-correct object addressed
+            // exactly as the walk hashed it — no mis-address.
+            let got = store.get_object(&sum);
+            assert_no_readable_misaddress(&store, &store_root, std::slice::from_ref(&sum));
+            match got {
+                Ok(bytes) => assert_eq!(
+                    bytes, content,
+                    "cross-FS EXDEV fallback must produce byte-correct object content"
+                ),
+                Err(e) => {
+                    cleanup(&other, &store_root);
+                    panic!("the object filed under its true checksum must be readable, got {e:?}");
+                }
+            }
+            cleanup(&other, &store_root);
+        }
+        Err(e) => {
+            cleanup(&other, &store_root);
+            panic!("cross-FS (EXDEV) push must succeed via the fs::copy fallback, got {e:?}");
+        }
+    }
 }
