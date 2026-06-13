@@ -76,11 +76,16 @@ fn build_few_large(count: usize, bytes_each: usize) -> TempDir {
     tmp
 }
 
-/// Runs a default-options BLAKE3 walk over `root`, black-boxing the result.
-fn run_walk(root: &Path) {
+/// Runs a BLAKE3 walk over `root` with the given `walk_jobs` setting,
+/// black-boxing the result.
+fn run_walk(root: &Path, walk_jobs: Option<usize>) {
+    let options = WalkOptions {
+        walk_jobs,
+        ..WalkOptions::default()
+    };
     let manifest = walk(
         black_box(root),
-        black_box(&WalkOptions::default()),
+        black_box(&options),
         black_box(&Blake3Hasher::new()),
     )
     .expect("walk corpus");
@@ -88,7 +93,12 @@ fn run_walk(root: &Path) {
 }
 
 /// 2. Walk hot path: build the two corpora ONCE (outside the timed loop), then
-///    bench `walk()` over each.
+///    bench `walk()` over each, contrasting the **sequential baseline**
+///    (`walk_jobs = Some(1)`, honest single-threaded) against the **parallel
+///    default** (`walk_jobs = None`, `available_parallelism` clamped) and an
+///    explicit `Some(8)`. The fast-walk feature's win is exactly this
+///    seq-vs-parallel delta; the corpora behave very differently (per-file
+///    syscall overhead vs raw hashing throughput) so they keep separate IDs.
 fn bench_walk(c: &mut Criterion) {
     // many-small: a few thousand tiny files across nested dirs — dominated by
     // per-file syscall/metadata overhead.
@@ -97,13 +107,22 @@ fn bench_walk(c: &mut Criterion) {
     // throughput.
     let large = build_few_large(8, 4 * 1024 * 1024);
 
+    // (id suffix, walk_jobs): baseline first, then the parallel variants.
+    let variants: &[(&str, Option<usize>)] = &[
+        ("seq_baseline", Some(1)),
+        ("parallel_default", None),
+        ("parallel_8", Some(8)),
+    ];
+
     let mut group = c.benchmark_group("walk");
-    group.bench_function("many_small", |b| {
-        b.iter(|| run_walk(many.path()));
-    });
-    group.bench_function("few_large", |b| {
-        b.iter(|| run_walk(large.path()));
-    });
+    for &(label, jobs) in variants {
+        group.bench_function(format!("many_small/{label}"), |b| {
+            b.iter(|| run_walk(many.path(), jobs));
+        });
+        group.bench_function(format!("few_large/{label}"), |b| {
+            b.iter(|| run_walk(large.path(), jobs));
+        });
+    }
     group.finish();
     // `many` / `large` drop here, removing the scratch trees.
 }
