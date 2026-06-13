@@ -3738,7 +3738,9 @@ gates:
     phase: 29
     owner_agent: core
     depends_on: [fast-walk-core-hash]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T01:35:52Z
+    git_sha: a29b197
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --test fast_walk --locked && cargo test -p snapdir-core --locked && grep -qE 'par_iter|install' crates/snapdir-core/src/walk.rs"
     pass_criteria:
