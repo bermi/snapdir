@@ -602,3 +602,271 @@ fn walk_jobs_does_not_change_golden_shapes() {
         );
     }
 }
+
+// ===========================================================================
+// 7. REVIEW-MODE additions (impl now visible). The landed walk has TWO distinct
+//    hashing engines selected by `pending.len() >= jobs` (walk.rs hash_pending):
+//      - fewer pending files than jobs -> `hash_file_hex` (blake3 `update_mmap_rayon`,
+//        intra-file rayon fan-out on a lone big file);
+//      - at least `jobs` pending files  -> `hash_file_hex_seq` (blake3 `update_mmap`,
+//        single-threaded per file).
+//    Both MUST yield byte-identical ids. These cases drive each branch on purpose
+//    and pin the NEW `hash_file_hex_seq` symbol the impl revealed.
+// ===========================================================================
+
+/// One huge file (> MMAP_THRESHOLD), ALONE in a dir. With a high `walk_jobs`
+/// (so `pending.len() (==1) < walk_jobs`) the walk takes the intra-file
+/// `update_mmap_rayon` branch; with `walk_jobs = Some(1)` it takes the
+/// single-threaded engine. Both ids must match each other AND the default walk.
+#[test]
+fn single_huge_file_intra_file_rayon_matches_seq() {
+    // Spec clause (review): the intra-file `update_mmap_rayon` path (pending < jobs)
+    // must produce the SAME id as the sequential/`walk_jobs=1` path for one big file.
+    let scratch = Scratch::new("huge_alone");
+    // Strictly above the threshold so the mmap branch (not plain-read) is taken,
+    // and multi-MB so update_mmap_rayon genuinely has work to fan out.
+    let content = deterministic_bytes(MMAP_THRESHOLD as usize * 12 + 123);
+    write_file(&scratch.path().join("only_big.bin"), &content);
+
+    let hasher = Blake3Hasher::new();
+    // Many jobs, ONE pending file => pending.len() (1) < jobs => update_mmap_rayon.
+    let opts_rayon = WalkOptions {
+        walk_jobs: Some(8),
+        ..WalkOptions::default()
+    };
+    // One job => the honest single-threaded engine (update_mmap, no pool).
+    let opts_seq = WalkOptions {
+        walk_jobs: Some(1),
+        ..WalkOptions::default()
+    };
+
+    let m_rayon = walk(scratch.path(), &opts_rayon, &hasher).expect("walk rayon branch");
+    let m_seq = walk(scratch.path(), &opts_seq, &hasher).expect("walk seq branch");
+    let m_default = walk(scratch.path(), &WalkOptions::default(), &hasher).expect("walk default");
+
+    assert_eq!(
+        m_rayon.to_string(),
+        m_seq.to_string(),
+        "intra-file rayon manifest must equal the single-threaded manifest"
+    );
+    assert_eq!(
+        snapshot_id(&m_rayon, &hasher),
+        snapshot_id(&m_seq, &hasher),
+        "intra-file rayon id must equal the single-threaded id"
+    );
+    assert_eq!(
+        snapshot_id(&m_rayon, &hasher),
+        snapshot_id(&m_default, &hasher),
+        "intra-file rayon id must equal the default-walk id"
+    );
+
+    // And the lone big file's checksum must equal a one-shot blake3 of its bytes
+    // (the manifest row carries the per-file content hash).
+    let oneshot = ::blake3::hash(&content).to_hex().to_string();
+    assert!(
+        m_rayon.to_string().contains(&oneshot),
+        "the big file's row must carry the one-shot blake3 of its bytes"
+    );
+}
+
+/// A tree with FAR more files than worker threads (`pending.len() >= jobs`) so the
+/// cross-file rayon pool + per-file `hash_file_hex_seq` (`update_mmap` for the big
+/// ones) branch is exercised. Determinism + golden-stability across job counts.
+#[test]
+fn many_files_cross_file_seq_branch_is_deterministic() {
+    // Spec clause (review): the cross-file rayon + per-file `hash_file_hex_seq`
+    // (update_mmap) path (pending >= jobs) must be deterministic and id-stable
+    // across job counts, including some large files forced through update_mmap.
+    let scratch = Scratch::new("many_files_seq");
+    // 50 small files (sub-threshold, plain-read) ...
+    for i in 0..50 {
+        write_file(
+            &scratch.path().join(format!("s_{i:03}.bin")),
+            &deterministic_bytes(48 + (i % 7)),
+        );
+    }
+    // ... plus several > MMAP_THRESHOLD files so the per-file update_mmap engine
+    // (the seq branch, NOT update_mmap_rayon) hashes a big file. With many pending
+    // files and only a few jobs, pending.len() >= jobs holds for every count below.
+    for i in 0..4 {
+        write_file(
+            &scratch.path().join(format!("big_{i:02}.bin")),
+            &deterministic_bytes(MMAP_THRESHOLD as usize + 1024 * (i + 1)),
+        );
+    }
+
+    let hasher = Blake3Hasher::new();
+    // job counts well below the file count (54), so pending >= jobs => seq engine.
+    let mut ids = Vec::new();
+    for jobs in [1usize, 2, 4, 8] {
+        let opts = WalkOptions {
+            walk_jobs: Some(jobs),
+            ..WalkOptions::default()
+        };
+        let m = walk(scratch.path(), &opts, &hasher).expect("walk seq branch");
+        ids.push(snapshot_id(&m, &hasher));
+    }
+    for id in &ids {
+        assert_eq!(
+            id, &ids[0],
+            "cross-file seq-branch id must be identical across job counts"
+        );
+    }
+    // Stable across a re-run too (golden-stability without a hardcoded value:
+    // the tree mixes sizes the bench Shapes don't, so the id is computed, not
+    // pinned — but it MUST be reproducible).
+    let opts1 = WalkOptions {
+        walk_jobs: Some(1),
+        ..WalkOptions::default()
+    };
+    let rerun = snapshot_id(
+        &walk(scratch.path(), &opts1, &hasher).expect("rerun"),
+        &hasher,
+    );
+    assert_eq!(
+        rerun, ids[0],
+        "seq-branch id must be reproducible across runs"
+    );
+}
+
+/// Pins the NEW symbol the impl revealed: `HashFile::hash_file_hex_seq`. It must
+/// produce hex byte-identical to `hash_file_hex` (the rayon path) AND to a one-shot
+/// blake3, across the MMAP_THRESHOLD boundary (-1 / 0 / +1 and well above).
+#[test]
+fn hash_file_hex_seq_equals_rayon_and_oneshot_across_threshold() {
+    // Spec clause (review): hash_file_hex_seq (update_mmap / non-rayon mmap) ==
+    // hash_file_hex (update_mmap_rayon) == one-shot blake3, for every size around
+    // and above the threshold. The seq engine is a perf variant ONLY; its bytes
+    // must never diverge.
+    let blake3 = Blake3Hasher::new();
+    let threshold = MMAP_THRESHOLD as usize;
+    let sizes = [
+        0usize,
+        1,
+        threshold - 1,
+        threshold,
+        threshold + 1,
+        threshold * 4 + 7,
+    ];
+    for len in sizes {
+        let content = deterministic_bytes(len);
+        let (_s, path) = scratch_file(&format!("seq_eq_{len}"), &content);
+
+        let (rayon_hex, rayon_len) = blake3.hash_file_hex(&path).expect("hash_file_hex");
+        let (seq_hex, seq_len) = blake3.hash_file_hex_seq(&path).expect("hash_file_hex_seq");
+        let oneshot = ::blake3::hash(&content).to_hex().to_string();
+
+        assert_eq!(
+            seq_hex, rayon_hex,
+            "hash_file_hex_seq must equal hash_file_hex at len {len}"
+        );
+        assert_eq!(
+            seq_hex, oneshot,
+            "hash_file_hex_seq must equal one-shot blake3 at len {len}"
+        );
+        assert_eq!(seq_len, len as u64, "seq byte len at {len}");
+        assert_eq!(rayon_len, len as u64, "rayon byte len at {len}");
+    }
+}
+
+// ===========================================================================
+// 8. walk_jobs = Some(0) (auto) must be deterministic and == Some(1).
+// ===========================================================================
+
+#[test]
+fn walk_jobs_auto_zero_matches_one_and_default() {
+    // Spec clause (review): `Some(0)` resolves to the auto (available_parallelism,
+    // capped) worker count — it must still be deterministic and produce the
+    // identical id as `Some(1)` and the default walk. (walk.rs resolve_jobs treats
+    // Some(0) like None.)
+    let scratch = Scratch::new("auto_zero");
+    materialize_small_and_large(scratch.path());
+
+    let hasher = Blake3Hasher::new();
+    let opts_auto = WalkOptions {
+        walk_jobs: Some(0),
+        ..WalkOptions::default()
+    };
+    let opts_one = WalkOptions {
+        walk_jobs: Some(1),
+        ..WalkOptions::default()
+    };
+
+    let m_auto = walk(scratch.path(), &opts_auto, &hasher).expect("walk jobs=0");
+    let m_one = walk(scratch.path(), &opts_one, &hasher).expect("walk jobs=1");
+    let m_default = walk(scratch.path(), &WalkOptions::default(), &hasher).expect("walk default");
+
+    assert_eq!(
+        m_auto.to_string(),
+        m_one.to_string(),
+        "walk_jobs=Some(0) (auto) manifest must equal Some(1)"
+    );
+    assert_eq!(
+        snapshot_id(&m_auto, &hasher),
+        snapshot_id(&m_one, &hasher),
+        "walk_jobs=Some(0) id must equal Some(1)"
+    );
+    assert_eq!(
+        snapshot_id(&m_auto, &hasher),
+        snapshot_id(&m_default, &hasher),
+        "walk_jobs=Some(0) id must equal the default (None) walk"
+    );
+
+    // Auto is itself stable run-over-run (no thread-count nondeterminism).
+    let rerun = walk(scratch.path(), &opts_auto, &hasher).expect("rerun jobs=0");
+    assert_eq!(snapshot_id(&m_auto, &hasher), snapshot_id(&rerun, &hasher));
+}
+
+// ===========================================================================
+// 9. Symlink-followed file: the walk follows symlinks by DEFAULT (find -L). A
+//    followed symlink-to-file hashes the TARGET's content (checksum read through
+//    the link), while its SIZE column is the symlink's own lstat length. The
+//    parallel hasher must hash through the link, not the symlink bytes. (Pins the
+//    `content_path = entry_path` + `size = link_meta.len()` split in walk.rs.)
+// ===========================================================================
+
+#[cfg(unix)]
+#[test]
+fn followed_symlink_file_hashes_target_content() {
+    // Spec clause (review): a symlink-to-file, followed by default, appears as an
+    // `F` row whose CHECKSUM is the blake3 of the TARGET's bytes (hashed through
+    // the link by the parallel hasher), proving the walk hashes the target, not
+    // the symlink. Drive a > MMAP_THRESHOLD target so the followed link is hashed
+    // through the mmap path.
+    let scratch = Scratch::new("symlink_file");
+    let root = scratch.path();
+
+    // A real target file, large enough to take the mmap branch through the link.
+    let target_content = deterministic_bytes(MMAP_THRESHOLD as usize + 4096);
+    write_file(&root.join("real.bin"), &target_content);
+
+    // A symlink to it (relative target name, same dir).
+    std::os::unix::fs::symlink("real.bin", root.join("link.bin")).expect("symlink file");
+
+    let hasher = Blake3Hasher::new();
+    // Force the cross-file seq engine AND the intra-file rayon engine; both must
+    // hash the target through the link to the same checksum.
+    let target_hex = ::blake3::hash(&target_content).to_hex().to_string();
+    for jobs in [Some(1usize), Some(8), Some(0), None] {
+        let opts = WalkOptions {
+            walk_jobs: jobs,
+            ..WalkOptions::default()
+        };
+        let manifest = walk(root, &opts, &hasher).expect("walk follows symlinks by default");
+        let text = manifest.to_string();
+        // The real file row.
+        assert!(
+            text.lines().any(|l| l.starts_with("F ")
+                && l.contains(&target_hex)
+                && l.ends_with(" ./real.bin")),
+            "real file row must carry the target's blake3 [{jobs:?}]: {text}"
+        );
+        // The followed symlink row: SAME content checksum (hashed through the link).
+        assert!(
+            text.lines().any(|l| l.starts_with("F ")
+                && l.contains(&target_hex)
+                && l.ends_with(" ./link.bin")),
+            "followed symlink row must carry the TARGET's blake3 [{jobs:?}]: {text}"
+        );
+    }
+}
