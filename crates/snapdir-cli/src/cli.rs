@@ -28,9 +28,10 @@ use snapdir_catalog::{
 };
 use snapdir_core::hash_file::HashFile;
 use snapdir_core::{
-    cache, expand_excludes, snapshot_id, walk_with_meter, Blake3Hasher, Blake3KeyedHasher,
-    ExcludeMatcher, ExpandedExclude, FollowMode, Hasher, Manifest, ManifestEntry, Md5Hasher, Meter,
-    PathMode, PathType, Phase, Sha256Hasher, Store, StoreError, WalkOptions,
+    cache, expand_excludes, snapshot_id, walk_with_guards, walk_with_meter, Blake3Hasher,
+    Blake3KeyedHasher, CopyGuard, ExcludeMatcher, ExpandedExclude, FollowMode, Hasher, Manifest,
+    ManifestEntry, Md5Hasher, Meter, PathMode, PathType, Phase, Sha256Hasher, Store, StoreError,
+    WalkOptions,
 };
 use snapdir_stores::{
     is_hex64, limits, read_pack, resolve_adapter, write_pack_with_format, Adapter, B2Store,
@@ -1095,8 +1096,12 @@ impl Cli {
             m.set_phase(Phase::Hashing);
         }
         // Stage uses the same default checksum surface as `push`/`id`: b3sum
-        // (or keyed-b3sum), relative paths, follow symlinks.
-        let manifest = self.build_manifest(
+        // (or keyed-b3sum), relative paths, follow symlinks. We take the walk's
+        // CopyGuard side channel too: setting it on the cache FileStore lets
+        // `persist` stat-validate each unchanged source and SKIP the redundant
+        // post-copy re-hash (the stage clone-skip win). The guard map never
+        // changes the manifest, the object bytes, or the snapshot id.
+        let (manifest, copy_guards) = self.build_manifest_with_guards(
             path,
             false,
             false,
@@ -1120,7 +1125,14 @@ impl Cli {
             m.set_total(total_object_bytes(&manifest));
             m.set_phase(Phase::Transfer);
         }
-        let cache = self.cache_store_with_meter(meter.clone())?;
+        // The walk's guard map is keyed by each plain regular file's absolute
+        // working-tree path (`root.join(rel)`); `push` looks up
+        // `source.join(rel)` with `source == root`, so the keys align exactly
+        // and the StatGuarded clone-skip engages. An empty/missing guard for a
+        // source ⇒ `Untrusted` ⇒ today's re-hash behavior.
+        let cache = self
+            .cache_store_with_meter(meter.clone())?
+            .with_copy_guards(copy_guards);
         cache
             .push(&manifest, &root)
             .with_context(|| format!("staging snapshot {id} into the local cache"))?;
@@ -2097,7 +2109,82 @@ impl Cli {
         exclude: &[String],
         meter: Option<&Meter>,
     ) -> Result<Manifest> {
-        let root = resolve_root(path).context("resolving manifest path")?;
+        let (root, options) = self.resolve_walk(
+            path,
+            absolute,
+            no_follow,
+            exclude,
+            "resolving manifest path",
+        )?;
+
+        // Select the checksum function. `b3sum` (or unset) is the default; the
+        // CLI reads `SNAPDIR_MANIFEST_CONTEXT` (core stays env-pure) to switch
+        // to keyed BLAKE3. `--checksum-bin` selects md5sum / sha256sum.
+        match checksum_bin {
+            None | Some("b3sum") => {
+                let context = std::env::var("SNAPDIR_MANIFEST_CONTEXT").unwrap_or_default();
+                if context.is_empty() {
+                    walk_with(&root, &options, &Blake3Hasher::new(), meter)
+                } else {
+                    walk_with(&root, &options, &Blake3KeyedHasher::new(context), meter)
+                }
+            }
+            Some("md5sum") => walk_with(&root, &options, &Md5Hasher::new(), meter),
+            Some("sha256sum") => walk_with(&root, &options, &Sha256Hasher::new(), meter),
+            Some(other) => {
+                anyhow::bail!("snapdir: unsupported --checksum-bin '{other}'")
+            }
+        }
+    }
+
+    /// Sibling of [`Self::build_manifest`] that ALSO returns the walk's
+    /// [`CopyGuard`] side channel — used ONLY by `run_stage` so the local-cache
+    /// [`FileStore`]'s stat-validated clone-skip can engage. The resolved
+    /// `(root, options, hasher)` are identical to [`Self::build_manifest`] (both
+    /// route through [`Self::resolve_walk`]), so the returned [`Manifest`] — and
+    /// hence the snapshot id — is byte-identical. The map keys are the walk's
+    /// absolute file paths (`root.join(rel)`), exactly what `push` looks up.
+    fn build_manifest_with_guards(
+        &self,
+        path: Option<&Path>,
+        absolute: bool,
+        no_follow: bool,
+        checksum_bin: Option<&str>,
+        exclude: &[String],
+        meter: Option<&Meter>,
+    ) -> Result<(Manifest, std::collections::HashMap<PathBuf, CopyGuard>)> {
+        let (root, options) =
+            self.resolve_walk(path, absolute, no_follow, exclude, "resolving stage path")?;
+
+        match checksum_bin {
+            None | Some("b3sum") => {
+                let context = std::env::var("SNAPDIR_MANIFEST_CONTEXT").unwrap_or_default();
+                if context.is_empty() {
+                    walk_with_guards_ctx(&root, &options, &Blake3Hasher::new(), meter)
+                } else {
+                    walk_with_guards_ctx(&root, &options, &Blake3KeyedHasher::new(context), meter)
+                }
+            }
+            Some("md5sum") => walk_with_guards_ctx(&root, &options, &Md5Hasher::new(), meter),
+            Some("sha256sum") => walk_with_guards_ctx(&root, &options, &Sha256Hasher::new(), meter),
+            Some(other) => {
+                anyhow::bail!("snapdir: unsupported --checksum-bin '{other}'")
+            }
+        }
+    }
+
+    /// Resolves the walk root and [`WalkOptions`] shared by
+    /// [`Self::build_manifest`] and [`Self::build_manifest_with_guards`] so both
+    /// derive an IDENTICAL traversal (`follow`/`path_mode`/`exclude`/`walk_jobs`).
+    fn resolve_walk(
+        &self,
+        path: Option<&Path>,
+        absolute: bool,
+        no_follow: bool,
+        exclude: &[String],
+        context: &'static str,
+    ) -> Result<(PathBuf, WalkOptions)> {
+        let root = resolve_root(path).context(context)?;
 
         // Expand the exclude patterns. Each `--exclude` value is expanded
         // independently — `%system%` / `%common%` macros must be expanded
@@ -2133,25 +2220,7 @@ impl Cli {
             exclude: matcher,
             walk_jobs: self.globals.walk_jobs,
         };
-
-        // Select the checksum function. `b3sum` (or unset) is the default; the
-        // CLI reads `SNAPDIR_MANIFEST_CONTEXT` (core stays env-pure) to switch
-        // to keyed BLAKE3. `--checksum-bin` selects md5sum / sha256sum.
-        match checksum_bin {
-            None | Some("b3sum") => {
-                let context = std::env::var("SNAPDIR_MANIFEST_CONTEXT").unwrap_or_default();
-                if context.is_empty() {
-                    walk_with(&root, &options, &Blake3Hasher::new(), meter)
-                } else {
-                    walk_with(&root, &options, &Blake3KeyedHasher::new(context), meter)
-                }
-            }
-            Some("md5sum") => walk_with(&root, &options, &Md5Hasher::new(), meter),
-            Some("sha256sum") => walk_with(&root, &options, &Sha256Hasher::new(), meter),
-            Some(other) => {
-                anyhow::bail!("snapdir: unsupported --checksum-bin '{other}'")
-            }
-        }
+        Ok((root, options))
     }
 }
 
@@ -2501,6 +2570,20 @@ fn walk_with<H: Hasher + HashFile + Sync>(
     meter: Option<&Meter>,
 ) -> Result<Manifest> {
     walk_with_meter(root, options, hasher, meter)
+        .with_context(|| format!("walking {}", root.display()))
+}
+
+/// Like [`walk_with`], but ALSO returns the walk's [`CopyGuard`] side channel
+/// (keyed by each plain regular file's absolute working-tree path). Used only by
+/// the stage→local-cache push so [`FileStore`]'s stat-validated clone-skip can
+/// engage; the [`Manifest`] is byte-identical to [`walk_with`]'s.
+fn walk_with_guards_ctx<H: Hasher + HashFile + Sync>(
+    root: &Path,
+    options: &WalkOptions,
+    hasher: &H,
+    meter: Option<&Meter>,
+) -> Result<(Manifest, std::collections::HashMap<PathBuf, CopyGuard>)> {
+    walk_with_guards(root, options, hasher, meter)
         .with_context(|| format!("walking {}", root.display()))
 }
 
