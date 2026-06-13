@@ -4008,7 +4008,9 @@ gates:
     phase: 29
     owner_agent: generic
     depends_on: [clone-skip-bench]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T14:05:48Z
+    git_sha: 4c419dc
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked && grep -qiE 'SNAPDIR_VERIFY_COPIES|re-hash|clone.*skip|copy-on-write' docs/rust-port/CHANGELOG.md"
     pass_criteria:
