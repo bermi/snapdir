@@ -3708,7 +3708,9 @@ gates:
     phase: 29
     owner_agent: adversary
     depends_on: [durability-cost-docs]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T01:12:07Z
+    git_sha: 4c6107a
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/fast_walk_core.rs && test -f .gatesmith/pending-tests/fast_walk_cli.rs && grep -qE '#\\[test\\]|proptest' .gatesmith/pending-tests/fast_walk_core.rs"
     pass_criteria:
