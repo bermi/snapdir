@@ -3950,7 +3950,9 @@ gates:
     phase: 29
     owner_agent: cli
     depends_on: [clone-skip-stores]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T13:12:23Z
+    git_sha: 8fc6328
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --locked"
     pass_criteria:
