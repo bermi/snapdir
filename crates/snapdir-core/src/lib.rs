@@ -19,6 +19,7 @@
 
 pub mod cache;
 pub mod excludes;
+pub mod hash_file;
 pub mod manifest;
 pub mod merkle;
 pub mod progress;

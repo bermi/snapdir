@@ -49,6 +49,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::excludes::{ExcludeMatcher, FollowMode};
+use crate::hash_file::HashFile;
 use crate::manifest::{Manifest, ManifestEntry, PathType};
 use crate::merkle::Hasher;
 use crate::progress::{Meter, Phase};
@@ -81,6 +82,18 @@ pub struct WalkOptions {
     /// An optional compiled exclude matcher. When `Some`, any directory or
     /// file whose absolute path matches is dropped (`grep -E -v`).
     pub exclude: Option<ExcludeMatcher>,
+    /// Desired cross-file hashing parallelism (`--walk-jobs` /
+    /// `$SNAPDIR_WALK_JOBS`).
+    ///
+    /// `None` (the default) lets the implementation choose. This field is
+    /// **accepted but honored sequentially** for now: the walk still hashes one
+    /// file at a time, so the value does not change the output (the snapshot id
+    /// is structurally deterministic regardless of hashing order). Real
+    /// cross-file parallelism lands in a later gate; the field exists now so the
+    /// CLI surface and tests can pin it. Each large file is still hashed in
+    /// parallel internally via the BLAKE3 mmap+rayon path (see
+    /// [`hash_file`](crate::hash_file)).
+    pub walk_jobs: Option<usize>,
 }
 
 /// Errors raised while walking the filesystem.
@@ -171,7 +184,7 @@ struct DirRecord {
 ///
 /// Returns [`WalkError`] if `root` is not absolute, is not a directory, holds a
 /// non-UTF-8 path, or if an I/O error occurs while reading the tree.
-pub fn walk<H: Hasher>(
+pub fn walk<H: Hasher + HashFile>(
     root: &Path,
     options: &WalkOptions,
     hasher: &H,
@@ -194,7 +207,7 @@ pub fn walk<H: Hasher>(
 /// # Errors
 ///
 /// Returns [`WalkError`] under the same conditions as [`walk`].
-pub fn walk_with_meter<H: Hasher>(
+pub fn walk_with_meter<H: Hasher + HashFile>(
     root: &Path,
     options: &WalkOptions,
     hasher: &H,
@@ -298,7 +311,7 @@ pub fn walk_with_meter<H: Hasher>(
 /// Recursively discovers the directory at `abs_path` (already known to be a
 /// directory), recording its direct files and child directories, then recurses
 /// into each child directory.
-fn discover_dir<H: Hasher>(
+fn discover_dir<H: Hasher + HashFile>(
     dir: &Path,
     abs_path: &str,
     permissions: String,
@@ -384,15 +397,20 @@ fn discover_dir<H: Hasher>(
                 dirs,
             )?;
         } else if file_type.is_file() {
-            // Read content through the link for the checksum; take SIZE from the
-            // entry's own `lstat` (for a symlink that is the target-path length,
-            // matching the oracle's `%z` / `%s` on the un-dereferenced symlink).
-            let bytes = std::fs::read(&entry_path).map_err(|e| WalkError::io(&entry_path, e))?;
-            let checksum = hasher.hash_hex(&bytes);
+            // Hash the content through the link by path (memory-friendly: large
+            // files are mmap+rayon hashed, never fully read into the heap). The
+            // checksum is byte-identical to hashing fs::read(&entry_path). SIZE
+            // still comes from the entry's own `lstat` (for a symlink that is the
+            // target-path length, matching the oracle's `%z` / `%s` on the
+            // un-dereferenced symlink) — NOT the dereferenced content length the
+            // hasher reports.
+            let (checksum, hashed_bytes) = hasher
+                .hash_file_hex(&entry_path)
+                .map_err(|e| WalkError::io(&entry_path, e))?;
             // Advisory progress: record the bytes hashed and count this file as
             // one finished object. This never affects the manifest output.
             if let Some(meter) = meter {
-                meter.add_in(bytes.len() as u64);
+                meter.add_in(hashed_bytes);
                 meter.object_finished();
             }
             record.files.push(FileRecord {
@@ -561,6 +579,7 @@ mod tests {
             follow,
             path_mode,
             exclude: exclude.map(|p| ExcludeMatcher::new(p).expect("valid exclude regex")),
+            ..WalkOptions::default()
         }
     }
 
