@@ -3871,7 +3871,9 @@ gates:
     phase: 29
     owner_agent: generic
     depends_on: [apfs-clone-tests-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T03:13:42Z
+    git_sha: 5a9135b
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked && test -f .gatesmith/evidence/apfs-clone-bench.log && grep -qiE 'before|baseline' .gatesmith/evidence/apfs-clone-bench.log && grep -qiE 'after|speedup' .gatesmith/evidence/apfs-clone-bench.log && grep -qiE 'clonefile|APFS' docs/rust-port/CHANGELOG.md"
     pass_criteria:
