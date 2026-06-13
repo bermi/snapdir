@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged (byte-identical)** with the feature on or off and across every
   `--walk-jobs` value — additive, default behavior preserved, the frozen
   manifest format untouched.
+- **macOS APFS copy-on-write (`clonefile`) fast-path for object copies on the
+  same volume.** When the source file and the snapdir cache live on the same
+  APFS volume, object copies during `stage`, `push`, and `checkout`/`fetch` now
+  use `clonefile(2)` to make a copy-on-write clone instead of byte-copying, so a
+  large object is materialized for ~zero additional physical bytes (shared
+  extents) and without rewriting its data. This is additive and macOS-only: set
+  `SNAPDIR_CLONEFILE=0` to disable it, and it falls back gracefully to a plain
+  `fs::copy` everywhere it cannot apply (non-APFS filesystems, cross-volume
+  copies, and non-macOS platforms). Object bytes and snapshot ids are unchanged
+  (byte-identical) with the fast-path on or off.
 - **`--objects-store` / `$SNAPDIR_OBJECTS_STORE` — shared object pool, separate
   manifest locations.** This global flag routes content objects to one shared
   pool's `.objects/` while manifests go to `--store`'s `.manifests/`, so a
