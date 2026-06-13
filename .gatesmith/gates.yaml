@@ -3921,7 +3921,9 @@ gates:
     phase: 29
     owner_agent: core
     depends_on: [clone-skip-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T12:40:46Z
+    git_sha: 37a0b95
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --locked && grep -rqE 'mtime|ctime|CopyGuard' crates/snapdir-core/src/ && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
