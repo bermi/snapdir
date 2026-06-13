@@ -77,6 +77,26 @@ pub trait HashFile {
     /// Returns the underlying [`io::Error`] if the file's metadata cannot be
     /// read or its contents cannot be read / mapped.
     fn hash_file_hex(&self, path: &Path) -> io::Result<(String, u64)>;
+
+    /// Like [`hash_file_hex`](HashFile::hash_file_hex), but guaranteed not to
+    /// spawn its own nested `rayon` tasks for a single file.
+    ///
+    /// The byte-identical result is the same as [`hash_file_hex`]; only the
+    /// *engine* differs. The cross-file parallel walk uses this variant when it
+    /// already has at least as many pending files as worker threads, so each
+    /// worker hashes one file single-threaded and the bounded walk pool is not
+    /// oversubscribed by intra-file BLAKE3 `rayon` tasks. The default
+    /// implementation forwards to [`hash_file_hex`]; only the unkeyed BLAKE3
+    /// hasher (whose [`hash_file_hex`] uses `update_mmap_rayon`) overrides it to
+    /// drop down to the single-threaded `update_mmap` engine.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying [`io::Error`] under the same conditions as
+    /// [`hash_file_hex`].
+    fn hash_file_hex_seq(&self, path: &Path) -> io::Result<(String, u64)> {
+        self.hash_file_hex(path)
+    }
 }
 
 /// Hashes a BLAKE3 `hasher` over the file at `path`, choosing the mmap+rayon
@@ -100,9 +120,29 @@ fn blake3_hash_file(mut hasher: blake3::Hasher, path: &Path) -> io::Result<(Stri
     Ok((hasher.finalize().to_hex().to_string(), len))
 }
 
+/// Single-threaded BLAKE3 file hash: same mmap/plain-read selection as
+/// [`blake3_hash_file`] but using `update_mmap` (no nested `rayon`) for large
+/// files. Byte-identical output; only the engine differs.
+fn blake3_hash_file_seq(mut hasher: blake3::Hasher, path: &Path) -> io::Result<(String, u64)> {
+    let len = fs::metadata(path)?.len();
+    if len >= MMAP_THRESHOLD {
+        // Large file: memory-map + hash single-threaded (no intra-file rayon
+        // fan-out). Empty files never reach this branch (len 0 < threshold).
+        hasher.update_mmap(path)?;
+    } else {
+        let bytes = fs::read(path)?;
+        hasher.update(&bytes);
+    }
+    Ok((hasher.finalize().to_hex().to_string(), len))
+}
+
 impl HashFile for Blake3Hasher {
     fn hash_file_hex(&self, path: &Path) -> io::Result<(String, u64)> {
         blake3_hash_file(blake3::Hasher::new(), path)
+    }
+
+    fn hash_file_hex_seq(&self, path: &Path) -> io::Result<(String, u64)> {
+        blake3_hash_file_seq(blake3::Hasher::new(), path)
     }
 }
 

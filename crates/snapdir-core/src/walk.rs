@@ -46,6 +46,7 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
 use thiserror::Error;
 
 use crate::excludes::{ExcludeMatcher, FollowMode};
@@ -85,14 +86,23 @@ pub struct WalkOptions {
     /// Desired cross-file hashing parallelism (`--walk-jobs` /
     /// `$SNAPDIR_WALK_JOBS`).
     ///
-    /// `None` (the default) lets the implementation choose. This field is
-    /// **accepted but honored sequentially** for now: the walk still hashes one
-    /// file at a time, so the value does not change the output (the snapshot id
-    /// is structurally deterministic regardless of hashing order). Real
-    /// cross-file parallelism lands in a later gate; the field exists now so the
-    /// CLI surface and tests can pin it. Each large file is still hashed in
-    /// parallel internally via the BLAKE3 mmap+rayon path (see
-    /// [`hash_file`](crate::hash_file)).
+    /// Resolution: `Some(n)` with `n > 0` uses exactly `n` worker threads;
+    /// `Some(0)` and `None` fall back to a default of
+    /// [`available_parallelism`](std::thread::available_parallelism) capped by
+    /// [`MAX_WALK_JOBS`]. `Some(1)` is an honest single-threaded path. The walk
+    /// enumerates the tree single-threaded, then hashes every discovered file in
+    /// parallel inside a *bounded*, scoped [`rayon::ThreadPool`] sized to the
+    /// resolved count (never the global pool).
+    ///
+    /// The value **never changes the output**: results are written back into a
+    /// fixed per-file slot keyed by discovery identity, so the manifest and the
+    /// snapshot id are byte-identical regardless of hash-completion order (the
+    /// directory checksum sorts+dedups its children and the manifest sorts by
+    /// path). Large files are still hashed memory-mapped (see
+    /// [`hash_file`](crate::hash_file)); when there are at least as many pending
+    /// files as worker threads each file is hashed single-threaded to avoid
+    /// oversubscribing the bounded pool, otherwise BLAKE3's intra-file `rayon`
+    /// path is allowed so spare cores still help a lone big file.
     pub walk_jobs: Option<usize>,
 }
 
@@ -148,13 +158,48 @@ fn path_str(path: &Path) -> Result<&str, WalkError> {
         .ok_or_else(|| WalkError::NonUtf8Path(path.to_path_buf()))
 }
 
-/// A discovered file entry, before path rewriting.
+/// Upper bound on the auto-resolved cross-file hashing parallelism.
+///
+/// When `walk_jobs` is `None`/`Some(0)` the walk uses
+/// [`available_parallelism`](std::thread::available_parallelism) capped at this
+/// value, so a many-core host does not spawn an unbounded hashing pool. An
+/// explicit `Some(n)` is honored verbatim (the caller asked for exactly `n`).
+const MAX_WALK_JOBS: usize = 16;
+
+/// Resolves the desired [`WalkOptions::walk_jobs`] to a concrete worker count
+/// (always `>= 1`). `Some(n>0)` → `n` (honored verbatim); `Some(0)`/`None` →
+/// `available_parallelism` capped by [`MAX_WALK_JOBS`], falling back to `1`.
+fn resolve_jobs(walk_jobs: Option<usize>) -> usize {
+    match walk_jobs {
+        Some(n) if n > 0 => n,
+        _ => std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .clamp(1, MAX_WALK_JOBS),
+    }
+}
+
+/// A discovered file entry, before path rewriting. During discovery the
+/// `checksum`/`size` slots are left empty and the file's content is hashed in a
+/// later parallel pass keyed by `(dir_key, file_index)`, then written back here.
 struct FileRecord {
     /// Absolute path of the file.
     abs_path: String,
     permissions: String,
+    /// Filled by the parallel hashing pass (empty during discovery).
     checksum: String,
     size: u64,
+}
+
+/// A file discovered but not yet hashed: its content path plus the identity of
+/// the [`FileRecord`] slot (its owning directory key + index in that
+/// directory's `files` vec) to write the `(checksum, size)` result back into.
+struct PendingHash {
+    /// Absolute path of the directory owning this file (the `dirs` map key).
+    dir_key: String,
+    /// Index of this file in its directory's `files` vec.
+    file_index: usize,
+    /// Path to hash the content through (follows symlinks).
+    content_path: PathBuf,
 }
 
 /// A discovered directory, holding its absolute path and (filled during the
@@ -184,7 +229,7 @@ struct DirRecord {
 ///
 /// Returns [`WalkError`] if `root` is not absolute, is not a directory, holds a
 /// non-UTF-8 path, or if an I/O error occurs while reading the tree.
-pub fn walk<H: Hasher + HashFile>(
+pub fn walk<H: Hasher + HashFile + Sync>(
     root: &Path,
     options: &WalkOptions,
     hasher: &H,
@@ -207,7 +252,7 @@ pub fn walk<H: Hasher + HashFile>(
 /// # Errors
 ///
 /// Returns [`WalkError`] under the same conditions as [`walk`].
-pub fn walk_with_meter<H: Hasher + HashFile>(
+pub fn walk_with_meter<H: Hasher + HashFile + Sync>(
     root: &Path,
     options: &WalkOptions,
     hasher: &H,
@@ -238,17 +283,25 @@ pub fn walk_with_meter<H: Hasher + HashFile>(
     // Discover every directory (depth-first, following symlinks per `follow`),
     // recording its direct files and direct child directories. We collect into
     // an ordered map keyed by absolute path so the post-order pass can compute
-    // directory checksums bottom-up.
+    // directory checksums bottom-up. Discovery is SINGLE-THREADED and does NOT
+    // hash file contents — each leaf file is recorded as a `PendingHash` whose
+    // `(dir_key, file_index)` identifies the fixed `FileRecord` slot to fill.
     let mut dirs: BTreeMap<String, DirRecord> = BTreeMap::new();
+    let mut pending: Vec<PendingHash> = Vec::new();
     discover_dir(
         root,
         &root_str,
         root_permissions,
         options,
-        hasher,
-        meter,
         &mut dirs,
+        &mut pending,
     )?;
+
+    // Hash every discovered file in parallel, writing each `(checksum, size)`
+    // result back into its FIXED slot. The result is order-independent, so the
+    // manifest and snapshot id are byte-identical regardless of which worker
+    // finishes first. Bounded by a scoped pool sized to the resolved job count.
+    hash_pending(&pending, options.walk_jobs, hasher, meter, &mut dirs)?;
 
     // Compute each directory's checksum + member-size bottom-up. `dirs` is keyed
     // by path in a BTreeMap (lexicographic), so a child path always sorts after
@@ -311,14 +364,13 @@ pub fn walk_with_meter<H: Hasher + HashFile>(
 /// Recursively discovers the directory at `abs_path` (already known to be a
 /// directory), recording its direct files and child directories, then recurses
 /// into each child directory.
-fn discover_dir<H: Hasher + HashFile>(
+fn discover_dir(
     dir: &Path,
     abs_path: &str,
     permissions: String,
     options: &WalkOptions,
-    hasher: &H,
-    meter: Option<&Meter>,
     dirs: &mut BTreeMap<String, DirRecord>,
+    pending: &mut Vec<PendingHash>,
 ) -> Result<(), WalkError> {
     // `permissions` is the directory's own `lstat` octal mode (a symlinked
     // directory keeps the symlink's perms, matching the oracle's non-following
@@ -392,32 +444,28 @@ fn discover_dir<H: Hasher + HashFile>(
                 &entry_abs,
                 own_permissions,
                 options,
-                hasher,
-                meter,
                 dirs,
+                pending,
             )?;
         } else if file_type.is_file() {
-            // Hash the content through the link by path (memory-friendly: large
-            // files are mmap+rayon hashed, never fully read into the heap). The
-            // checksum is byte-identical to hashing fs::read(&entry_path). SIZE
-            // still comes from the entry's own `lstat` (for a symlink that is the
-            // target-path length, matching the oracle's `%z` / `%s` on the
-            // un-dereferenced symlink) — NOT the dereferenced content length the
-            // hasher reports.
-            let (checksum, hashed_bytes) = hasher
-                .hash_file_hex(&entry_path)
-                .map_err(|e| WalkError::io(&entry_path, e))?;
-            // Advisory progress: record the bytes hashed and count this file as
-            // one finished object. This never affects the manifest output.
-            if let Some(meter) = meter {
-                meter.add_in(hashed_bytes);
-                meter.object_finished();
-            }
+            // Record the file with an EMPTY checksum slot and queue a pending
+            // hash job. The content is hashed (through the link) in the later
+            // parallel pass; the result is written back into this exact slot,
+            // identified by `(abs_path, file_index)`. SIZE comes from the
+            // entry's own `lstat` (for a symlink the target-path length,
+            // matching the oracle's `%z` / `%s` on the un-dereferenced symlink)
+            // — NOT the dereferenced content length the hasher would report.
+            let file_index = record.files.len();
             record.files.push(FileRecord {
                 abs_path: entry_abs,
                 permissions: own_permissions,
-                checksum,
+                checksum: String::new(),
                 size: link_meta.len(),
+            });
+            pending.push(PendingHash {
+                dir_key: abs_path.to_owned(),
+                file_index,
+                content_path: entry_path,
             });
         }
         // Anything else (sockets, fifos, devices) is neither `-type d` nor
@@ -425,6 +473,84 @@ fn discover_dir<H: Hasher + HashFile>(
     }
 
     dirs.insert(record.abs_path.clone(), record);
+    Ok(())
+}
+
+/// Hashes every [`PendingHash`] in parallel inside a bounded, scoped
+/// [`rayon::ThreadPool`] sized to the resolved [`WalkOptions::walk_jobs`] count,
+/// writing each `(checksum, len)` back into its fixed `FileRecord` slot.
+///
+/// The write-back is keyed by the discovery identity (`dir_key` + `file_index`),
+/// so the manifest is byte-identical regardless of completion order. Advisory
+/// [`Meter`] updates (`add_in` + `object_finished`) happen once per file inside
+/// the worker closure; the meter is atomic/`Sync`, so only interleaving changes.
+///
+/// # Errors
+///
+/// Returns the first [`WalkError::io`] if any file fails to hash; the *which*
+/// error is unspecified but the walk deterministically fails.
+fn hash_pending<H: Hasher + HashFile + Sync>(
+    pending: &[PendingHash],
+    walk_jobs: Option<usize>,
+    hasher: &H,
+    meter: Option<&Meter>,
+    dirs: &mut BTreeMap<String, DirRecord>,
+) -> Result<(), WalkError> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let jobs = resolve_jobs(walk_jobs);
+    // Oversubscription guard (perf, not correctness): when there are at least as
+    // many pending files as worker threads, every thread already has a whole
+    // file to hash — so hash each file SINGLE-THREADED (no intra-file BLAKE3
+    // rayon fan-out) to keep the bounded pool from oversubscribing. When there
+    // are fewer files than threads, let BLAKE3 use its rayon path so the spare
+    // cores still accelerate a lone big file.
+    let per_file_seq = pending.len() >= jobs;
+
+    let hash_one = |item: &PendingHash| -> Result<(String, usize, String), WalkError> {
+        let (checksum, hashed_bytes) = if per_file_seq {
+            hasher.hash_file_hex_seq(&item.content_path)
+        } else {
+            hasher.hash_file_hex(&item.content_path)
+        }
+        .map_err(|e| WalkError::io(&item.content_path, e))?;
+        if let Some(meter) = meter {
+            meter.add_in(hashed_bytes);
+            meter.object_finished();
+        }
+        Ok((item.dir_key.clone(), item.file_index, checksum))
+    };
+
+    // A single honest single-threaded path when only one job is requested:
+    // hash in place with no pool at all.
+    let results: Vec<(String, usize, String)> = if jobs == 1 {
+        pending.iter().map(hash_one).collect::<Result<_, _>>()?
+    } else {
+        // Build a bounded, scoped pool sized to the resolved job count and run
+        // the parallel hash inside `install`, so total threads are explicitly
+        // capped (never the global pool).
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(jobs)
+            .build()
+            .map_err(|e| WalkError::io(PathBuf::from("<walk thread pool>"), io::Error::other(e)))?;
+        pool.install(|| {
+            pending
+                .par_iter()
+                .map(hash_one)
+                .collect::<Result<Vec<_>, _>>()
+        })?
+    };
+
+    // Write each result back into its fixed slot. Order-independent: the slot is
+    // addressed by (dir_key, file_index), so completion order is irrelevant.
+    for (dir_key, file_index, checksum) in results {
+        let record = dirs
+            .get_mut(&dir_key)
+            .expect("pending file's owning dir was discovered");
+        record.files[file_index].checksum = checksum;
+    }
     Ok(())
 }
 

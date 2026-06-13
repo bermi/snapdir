@@ -3531,6 +3531,7 @@ dependencies = [
  "libc",
  "md-5",
  "proptest",
+ "rayon",
  "regex",
  "sha2 0.11.0",
  "thiserror",
