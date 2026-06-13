@@ -3978,7 +3978,9 @@ gates:
     phase: 29
     owner_agent: adversary
     depends_on: [clone-skip-tests-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T13:43:00Z
+    git_sha: 3b9968d
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --test clone_skip_race --locked && cargo test --workspace --locked"
     pass_criteria:
