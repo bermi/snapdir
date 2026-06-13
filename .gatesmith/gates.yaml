@@ -4105,7 +4105,9 @@ gates:
     phase: 29
     owner_agent: adversary
     depends_on: [reflink-tests-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T17:50:00Z
+    git_sha: dbd8860
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked && grep -qE 'reflink|FICLONE|EXDEV|chattr|immutable' crates/snapdir-stores/tests/clone_skip_race.rs"
     pass_criteria:
