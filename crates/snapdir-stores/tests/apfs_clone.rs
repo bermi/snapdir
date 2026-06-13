@@ -773,3 +773,302 @@ fn duplicate_content_dedups_to_one_object_under_both_paths() {
         "dedup behavior must be identical between the clone and fs::copy paths"
     );
 }
+
+// ===========================================================================
+// CASE 8 (review/impl-revealed) — Clone-path Copy-on-Write determinism for a
+// >256 KiB object: with the fast-path ON the clone branch ACTUALLY fires for
+// the large blob, and the on-disk sharded path AND the on-disk bytes are
+// byte-for-byte identical to the SNAPDIR_CLONEFILE=0 (plain fs::copy) path.
+// This is the branch where an APFS CoW divergence (a stale/aliased extent,
+// truncated clone, sparse-hole mishandling) would hide. The landed impl files
+// the object via copy_file(source -> temp -> rename), so a CoW bug surfaces as
+// wrong object bytes here even though the small-file equivalence (case 1) would
+// not catch a size-dependent fault.
+// ===========================================================================
+
+#[cfg(target_os = "macos")]
+#[test]
+fn large_file_clone_path_is_byte_identical_to_fscopy_path() {
+    // Spec/impl clause: the >256 KiB clone branch produces an object whose
+    // sharded path and bytes equal the fs::copy path's, AND the clone really
+    // fired (not a silent fallback that would make the comparison vacuous).
+    // 1 MiB so it spans many APFS extents; deterministic so the checksum is
+    // stable across both runs.
+    let big: Vec<u8> = (0..(1024 * 1024u32)).map(|i| (i % 251) as u8).collect();
+    let files: Vec<(&str, &[u8], &str)> = vec![("big/cow.bin", big.as_slice(), "640")];
+    let sum = Blake3Hasher::new().hash_hex(&big);
+
+    let _g = env_lock();
+
+    // Clone ON: capture the object's sharded path + bytes, and prove the clone
+    // fast-path fired for THIS push (delta >= 1 covers the single object).
+    let (on_rel, on_bytes) = {
+        let before = snapdir_stores::clonefile_hits();
+        let _e = CloneEnv::set(None);
+        let store_dir = TempDir::new("cow-on-store");
+        let src = TempDir::new("cow-on-src");
+        let (manifest, _id) = build_tree(src.path(), &files);
+        FileStore::from_root(store_dir.path().to_path_buf())
+            .push(&manifest, src.path())
+            .expect("push clone-on");
+        let after = snapdir_stores::clonefile_hits();
+        assert!(
+            after > before,
+            "the >256 KiB object must travel the clone fast-path (so the byte \
+             comparison below is not vacuously over a silent fs::copy fallback): \
+             {before} -> {after}"
+        );
+        let obj = object_disk(store_dir.path(), &sum);
+        let rel = obj.strip_prefix(store_dir.path()).unwrap().to_path_buf();
+        (rel, fs::read(&obj).expect("clone-on object bytes"))
+    };
+
+    // Clone OFF: same object via plain fs::copy.
+    let (off_rel, off_bytes) = {
+        let _e = CloneEnv::set(Some("0"));
+        let store_dir = TempDir::new("cow-off-store");
+        let src = TempDir::new("cow-off-src");
+        let (manifest, _id) = build_tree(src.path(), &files);
+        FileStore::from_root(store_dir.path().to_path_buf())
+            .push(&manifest, src.path())
+            .expect("push clone-off");
+        let obj = object_disk(store_dir.path(), &sum);
+        let rel = obj.strip_prefix(store_dir.path()).unwrap().to_path_buf();
+        (rel, fs::read(&obj).expect("clone-off object bytes"))
+    };
+
+    assert_eq!(
+        on_rel, off_rel,
+        "the large object's sharded path must be identical under clone vs fs::copy"
+    );
+    assert_eq!(
+        on_bytes.len(),
+        big.len(),
+        "cloned large object must have the full source length (no truncated CoW)"
+    );
+    assert_eq!(
+        on_bytes, off_bytes,
+        "cloned >256 KiB object bytes must be byte-for-byte identical to the \
+         fs::copy path (a CoW extent-aliasing/truncation bug would diverge here)"
+    );
+    assert_eq!(
+        on_bytes, big,
+        "cloned large object must equal the original source content"
+    );
+}
+
+// ===========================================================================
+// CASE 9 (review/impl-revealed) — Counter PRECISION: N distinct objects staged
+// on the same APFS volume bump clonefile_hits() by EXACTLY N (the fast-path is
+// fired once per object, never double-counted and never bumped on a fallback).
+// Under SNAPDIR_CLONEFILE=0 the same stage bumps the counter by EXACTLY 0.
+// (Push copies each distinct object once; dedup means N distinct contents.)
+// ===========================================================================
+
+#[cfg(target_os = "macos")]
+#[test]
+fn clonefile_hits_counts_exactly_one_per_distinct_object() {
+    // Impl clause: CLONEFILE_HITS.fetch_add(1) fires once per genuine clone
+    // success and never on the fallback path. Five DISTINCT contents => five
+    // objects => exactly five hits with the fast-path on, zero with it off.
+    let n: usize = 5;
+    let owned: Vec<(String, Vec<u8>)> = (0u32..5)
+        .map(|i| {
+            (
+                format!("d{i}/obj{i}.bin"),
+                // Distinct content per file so each is its own object (no dedup),
+                // each > a trivial size so it is a real copy. The `+ i` byte
+                // offset makes every file's bytes unique while staying bounded.
+                (0..(4096u32 + i)).map(|b| ((b + i) % 251) as u8).collect(),
+            )
+        })
+        .collect();
+    let files: Vec<(&str, &[u8], &str)> = owned
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_slice(), "644"))
+        .collect();
+
+    let _g = env_lock();
+
+    // Fast-path ON: exactly N hits for N distinct objects (push only — fetch
+    // would add another N, so we deliberately do NOT checkout here).
+    let on_delta = {
+        let _e = CloneEnv::set(None);
+        let store_dir = TempDir::new("count-on-store");
+        let src = TempDir::new("count-on-src");
+        let (manifest, _id) = build_tree(src.path(), &files);
+        let before = snapdir_stores::clonefile_hits();
+        FileStore::from_root(store_dir.path().to_path_buf())
+            .push(&manifest, src.path())
+            .expect("push count-on");
+        // Sanity: exactly N objects landed (no dedup collapse, no extras).
+        assert_eq!(
+            count_objects(store_dir.path()),
+            n,
+            "expected N distinct objects"
+        );
+        snapdir_stores::clonefile_hits() - before
+    };
+    assert_eq!(
+        on_delta, n as u64,
+        "clonefile_hits() must increase by EXACTLY N for N distinct objects \
+         (not over-counted, not bumped on any fallback): got {on_delta}, want {n}"
+    );
+
+    // Fast-path OFF: zero hits.
+    let off_delta = {
+        let _e = CloneEnv::set(Some("0"));
+        let store_dir = TempDir::new("count-off-store");
+        let src = TempDir::new("count-off-src");
+        let (manifest, _id) = build_tree(src.path(), &files);
+        let before = snapdir_stores::clonefile_hits();
+        FileStore::from_root(store_dir.path().to_path_buf())
+            .push(&manifest, src.path())
+            .expect("push count-off");
+        snapdir_stores::clonefile_hits() - before
+    };
+    assert_eq!(
+        off_delta, 0,
+        "with SNAPDIR_CLONEFILE=0 no clone may fire: counter moved by {off_delta}"
+    );
+}
+
+// ===========================================================================
+// CASE 10 (review/impl-revealed) — FETCH direction uses the clone path too
+// (object -> working file via copy_file/persist). A checkout with the
+// fast-path ON must restore byte-identical content AND the manifest-recorded
+// permission bits, and the fetch must itself fire the clone fast-path (the
+// counter advances ACROSS the checkout, isolated from the push).
+// ===========================================================================
+
+#[cfg(target_os = "macos")]
+#[test]
+fn fetch_direction_clones_and_restores_identical_content_and_perms() {
+    // Impl clause: copy_file is shared by fetch_files; a clone-ON checkout
+    // restores correct bytes + perms and bumps the counter on the fetch side.
+    let content: Vec<u8> = (0..(300 * 1024u32)).map(|i| (i % 241) as u8).collect();
+    let files: Vec<(&str, &[u8], &str)> = vec![("restore/me.bin", content.as_slice(), "640")];
+
+    let _g = env_lock();
+    let _e = CloneEnv::set(None); // fast-path on for both push and fetch
+
+    let store_dir = TempDir::new("fetch-store");
+    let src = TempDir::new("fetch-src");
+    let dest = TempDir::new("fetch-dest");
+    let (manifest, _id) = build_tree(src.path(), &files);
+    let store = FileStore::from_root(store_dir.path().to_path_buf());
+
+    store.push(&manifest, src.path()).expect("push for fetch");
+
+    // Isolate the FETCH side: measure the counter delta across only fetch_files.
+    let before_fetch = snapdir_stores::clonefile_hits();
+    store
+        .fetch_files(&manifest, dest.path())
+        .expect("fetch_files clone-on");
+    let fetch_delta = snapdir_stores::clonefile_hits() - before_fetch;
+    assert!(
+        fetch_delta >= 1,
+        "the object -> working-file checkout must also travel the clone \
+         fast-path (copy_file is shared by fetch_files): delta={fetch_delta}"
+    );
+
+    let restored_path = dest.path().join("restore/me.bin");
+    let restored = fs::read(&restored_path).expect("restored file");
+    assert_eq!(
+        restored, content,
+        "clone-restored working file must be byte-identical to the source"
+    );
+    assert_eq!(
+        mode_bits(&restored_path),
+        Some(0o640),
+        "clone-restored working file must carry the manifest-recorded mode 0o640"
+    );
+}
+
+// ===========================================================================
+// CASE 11 (review/impl-revealed) — xattr non-leak / content-addressing
+// invariant. clonefile(2) copies xattrs from the source; objects are content-
+// addressed, so a user xattr on the SOURCE must NOT change the object's
+// checksum or its stored bytes (it files under the SAME sharded path with the
+// SAME content as an xattr-free source). Skip-if-the-fs-rejects-xattrs.
+// ===========================================================================
+
+#[cfg(target_os = "macos")]
+#[test]
+fn source_xattr_does_not_affect_object_checksum_or_bytes() {
+    // Impl/spec clause: content addressing is over file BYTES only; a cloned
+    // xattr must not perturb the object's address or content.
+    let content = b"xattr-bearing-source-but-content-addressed\n".to_vec();
+    let rel = "tagged.bin";
+    let sum = Blake3Hasher::new().hash_hex(&content);
+
+    let _g = env_lock();
+    let _e = CloneEnv::set(None); // fast-path on so clonefile copies the xattr
+
+    let store_dir = TempDir::new("xattr-store");
+    let src = TempDir::new("xattr-src");
+    let target = src.path().join(rel);
+    fs::write(&target, &content).unwrap();
+
+    // Tag the SOURCE with a user xattr via the `xattr` CLI (test harness only).
+    let set = std::process::Command::new("xattr")
+        .arg("-w")
+        .arg("com.snapdir.test.flavor")
+        .arg("vanilla")
+        .arg(&target)
+        .status();
+    match set {
+        Ok(s) if s.success() => {}
+        _ => {
+            eprintln!(
+                "SKIP source_xattr_does_not_affect_object_checksum_or_bytes: \
+                 could not set a user xattr on this filesystem"
+            );
+            return;
+        }
+    }
+
+    let hasher = Blake3Hasher::new();
+    let mut manifest = Manifest::new();
+    manifest.push(ManifestEntry::new(
+        PathType::File,
+        "644",
+        sum.clone(),
+        content.len() as u64,
+        format!("./{rel}"),
+    ));
+    let root_sum = directory_checksum(std::iter::once(sum.as_str()), &hasher);
+    manifest.push(ManifestEntry::new(
+        PathType::Directory,
+        "700",
+        root_sum,
+        content.len() as u64,
+        "./",
+    ));
+    manifest.sort();
+
+    let store = FileStore::from_root(store_dir.path().to_path_buf());
+    store
+        .push(&manifest, src.path())
+        .expect("push xattr-bearing source");
+
+    // The object files under the BYTES' checksum (unaffected by the xattr) and
+    // its stored bytes are exactly the source content.
+    let obj = object_disk(store_dir.path(), &sum);
+    assert!(
+        obj.is_file(),
+        "object must file under the content checksum regardless of source xattrs"
+    );
+    assert_eq!(
+        fs::read(&obj).expect("object bytes"),
+        content,
+        "object bytes must equal the source content (xattrs are not part of the blob)"
+    );
+    assert_eq!(
+        count_objects(store_dir.path()),
+        1,
+        "exactly one object — the xattr must not split or duplicate the address"
+    );
+    // And it remains removable (chflags(0) parity also leaves it GC-able).
+    fs::remove_file(&obj).expect("xattr-tagged-source object must be GC-able");
+}
