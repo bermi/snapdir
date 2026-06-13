@@ -41,7 +41,7 @@
 //! for behavior: the root, options, excludes and hasher all arrive as
 //! parameters, and errors surface as the typed [`WalkError`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -49,6 +49,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use thiserror::Error;
 
+use crate::copy_guard::CopyGuard;
 use crate::excludes::{ExcludeMatcher, FollowMode};
 use crate::hash_file::HashFile;
 use crate::manifest::{Manifest, ManifestEntry, PathType};
@@ -258,6 +259,59 @@ pub fn walk_with_meter<H: Hasher + HashFile + Sync>(
     hasher: &H,
     meter: Option<&Meter>,
 ) -> Result<Manifest, WalkError> {
+    // Discard the guard side channel: the manifest is byte-identical whether or
+    // not guards are captured. The existing entry points return just the
+    // `Manifest`, unchanged.
+    walk_inner(root, options, hasher, meter, false).map(|(manifest, _guards)| manifest)
+}
+
+/// Like [`walk_with_meter`], but ALSO returns a [`CopyGuard`] side channel: a
+/// `HashMap` keyed by the **absolute working-tree path** of each captured file
+/// (`FileRecord.abs_path`, i.e. the path a store later clones from), valued by
+/// its `(size, mtime, ctime, ino)` [`CopyGuard`].
+///
+/// This is an *additive* second return: the [`Manifest`] is **byte-identical**
+/// to what [`walk`] / [`walk_with_meter`] produce for the same tree — the guard
+/// map is never serialized into the manifest and never influences traversal,
+/// ordering, checksums or the snapshot id. A store may re-`stat` a guarded
+/// source path at clone time and skip the redundant post-copy re-hash iff all
+/// four fields still match (see [`copy_guard`](crate::copy_guard)).
+///
+/// ## Which entries get a guard (symlink-conservative)
+///
+/// A guard is emitted **only for a plain regular file whose hashed content
+/// path equals its own path** — i.e. a real (non-symlink) file. Followed
+/// symlinks (`find -L`), where the manifest entry path and the dereferenced
+/// content path differ, are **omitted**: the path the store would re-`stat`
+/// (the symlink's own `lstat`) is not the path whose bytes were hashed, so
+/// trusting it would be unsound. Omitting them simply means the store re-hashes
+/// (no skip) — always safe. Directories, broken symlinks, and special files
+/// never get a guard. On non-unix targets the map is always empty
+/// ([`CopyGuard::from_metadata`] returns `None`), so the optimization is inert.
+///
+/// # Errors
+///
+/// Returns [`WalkError`] under the same conditions as [`walk`].
+pub fn walk_with_guards<H: Hasher + HashFile + Sync>(
+    root: &Path,
+    options: &WalkOptions,
+    hasher: &H,
+    meter: Option<&Meter>,
+) -> Result<(Manifest, HashMap<PathBuf, CopyGuard>), WalkError> {
+    walk_inner(root, options, hasher, meter, true)
+}
+
+/// Shared implementation behind [`walk`], [`walk_with_meter`] and
+/// [`walk_with_guards`]. When `capture_guards` is `true` it populates and
+/// returns the [`CopyGuard`] map; otherwise the map is empty. The traversal,
+/// hashing and emitted [`Manifest`] are identical regardless of the flag.
+fn walk_inner<H: Hasher + HashFile + Sync>(
+    root: &Path,
+    options: &WalkOptions,
+    hasher: &H,
+    meter: Option<&Meter>,
+    capture_guards: bool,
+) -> Result<(Manifest, HashMap<PathBuf, CopyGuard>), WalkError> {
     if let Some(meter) = meter {
         meter.set_phase(Phase::Hashing);
     }
@@ -288,6 +342,11 @@ pub fn walk_with_meter<H: Hasher + HashFile + Sync>(
     // `(dir_key, file_index)` identifies the fixed `FileRecord` slot to fill.
     let mut dirs: BTreeMap<String, DirRecord> = BTreeMap::new();
     let mut pending: Vec<PendingHash> = Vec::new();
+    // The out-of-band guard side channel: populated only when requested, and
+    // only for plain regular files (see `walk_with_guards`). Keyed by the
+    // file's absolute working-tree path (what a store later clones from).
+    let mut guards: HashMap<PathBuf, CopyGuard> = HashMap::new();
+    let mut guard_sink = capture_guards.then_some(&mut guards);
     discover_dir(
         root,
         &root_str,
@@ -295,6 +354,7 @@ pub fn walk_with_meter<H: Hasher + HashFile + Sync>(
         options,
         &mut dirs,
         &mut pending,
+        &mut guard_sink,
     )?;
 
     // Hash every discovered file in parallel, writing each `(checksum, size)`
@@ -358,7 +418,7 @@ pub fn walk_with_meter<H: Hasher + HashFile + Sync>(
         }
     }
     manifest.sort();
-    Ok(manifest)
+    Ok((manifest, guards))
 }
 
 /// Recursively discovers the directory at `abs_path` (already known to be a
@@ -371,6 +431,7 @@ fn discover_dir(
     options: &WalkOptions,
     dirs: &mut BTreeMap<String, DirRecord>,
     pending: &mut Vec<PendingHash>,
+    guards: &mut Option<&mut HashMap<PathBuf, CopyGuard>>,
 ) -> Result<(), WalkError> {
     // `permissions` is the directory's own `lstat` octal mode (a symlinked
     // directory keeps the symlink's perms, matching the oracle's non-following
@@ -446,6 +507,7 @@ fn discover_dir(
                 options,
                 dirs,
                 pending,
+                guards,
             )?;
         } else if file_type.is_file() {
             // Record the file with an EMPTY checksum slot and queue a pending
@@ -455,6 +517,23 @@ fn discover_dir(
             // entry's own `lstat` (for a symlink the target-path length,
             // matching the oracle's `%z` / `%s` on the un-dereferenced symlink)
             // — NOT the dereferenced content length the hasher would report.
+            // SYMLINK SAFETY: capture a `CopyGuard` ONLY for a plain regular
+            // file whose hashed content path equals its own path — i.e. NOT a
+            // followed symlink. For a real file `link_meta` (the entry's own
+            // `lstat`) equals its `stat`, and `entry_path` is exactly the path
+            // a store would later re-`stat` before cloning. For a followed
+            // symlink-to-file the path the store re-stats (the symlink's own
+            // `lstat`) is not the path whose bytes were hashed, so trusting it
+            // would be unsound: we OMIT the guard and the store re-hashes (no
+            // skip = always safe). On non-unix `from_metadata` returns `None`.
+            if !is_symlink {
+                if let Some(sink) = guards.as_deref_mut() {
+                    if let Some(guard) = CopyGuard::from_metadata(&link_meta) {
+                        sink.insert(entry_path.clone(), guard);
+                    }
+                }
+            }
+
             let file_index = record.files.len();
             record.files.push(FileRecord {
                 abs_path: entry_abs,

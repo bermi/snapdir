@@ -18,6 +18,7 @@
 //! follow/no-follow option semantics.
 
 pub mod cache;
+pub mod copy_guard;
 pub mod excludes;
 pub mod hash_file;
 pub mod manifest;
@@ -31,6 +32,7 @@ pub use cache::{
     check_manifest_integrity, check_snapshot_integrity, flush_cache, load_cached_manifest,
     verify_cache, CacheError, CacheReport,
 };
+pub use copy_guard::CopyGuard;
 pub use excludes::{
     expand_excludes, ExcludeError, ExcludeMatcher, ExpandedExclude, FollowMode,
     COMMON_EXCLUDE_DIRS, SYSTEM_EXCLUDE_DIRS,
@@ -43,4 +45,4 @@ pub use merkle::{
 pub use progress::{Meter, MeterSnapshot, Phase};
 pub use resources::{resident_set_bytes, total_ram_bytes, CpuSampler};
 pub use store::{manifest_path, object_path, Store, StoreError, MANIFESTS_DIR, OBJECTS_DIR};
-pub use walk::{walk, walk_with_meter, PathMode, WalkError, WalkOptions};
+pub use walk::{walk, walk_with_guards, walk_with_meter, PathMode, WalkError, WalkOptions};
