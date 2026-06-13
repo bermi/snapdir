@@ -4134,7 +4134,9 @@ gates:
     phase: 29
     owner_agent: generic
     depends_on: [reflink-bench]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T18:10:00Z
+    git_sha: ae79b1d
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked && grep -qiE 'reflink|FICLONE|cross-platform|copy-on-write' docs/rust-port/CHANGELOG.md"
     pass_criteria:
