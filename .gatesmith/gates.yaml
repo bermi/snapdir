@@ -4019,6 +4019,118 @@ gates:
     human_checkpoint: false
     description: "CLONE-SKIP SIGN-OFF + changelog (generic lane; gatesmith-free CODE-ONLY changelog commit). Confirm the whole chain green: copy-skip on fetch (always) + stage (stat-guarded), object pools+ids byte-identical, race-verify proved no silent mis-addressed object, and the before/after speedup recorded in .gatesmith/evidence/clone-skip-bench.log. Add a docs/rust-port/CHANGELOG.md [Unreleased] entry: the clone fast-path now SKIPS the redundant post-copy re-hash (checkout: immutable verified object; stage: stat-validated trust, falls back to re-hash on any change), giving the real stage/checkout speedup; SNAPDIR_VERIFY_COPIES=1 forces strict write-time verification; bytes+ids unchanged; read-time BLAKE3 verify remains the integrity backstop. Keep heading [Unreleased] (release-prep folds -> [1.7.0]). PM machine-check: workspace tests green + CHANGELOG mentions SNAPDIR_VERIFY_COPIES / clone-skip. This is the last pre-1.7.0 perf gate; release-prep-1.7.0 depends on it."
 
+  # ---------------------------------------------------------------
+  # Linux reflink (FICLONE) copy-on-write (operator-prioritized 2026-06-13, BLOCKS 1.7.0).
+  # Cross-platform CoW: the Linux analogue of macOS clonefile is the reflink via the
+  # FICLONE ioctl (what `cp --reflink=auto` uses) — shared extents, near-instant, ~zero
+  # extra physical bytes. Drops into copy_file (file_store.rs ~L951) as a
+  # #[cfg(target_os="linux")] branch mirroring try_clonefile. SIMPLER than macOS: FICLONE
+  # clones DATA EXTENTS ONLY (no mode/xattr/inode-flag copy) -> no BSD-flag/uchg hazard, just
+  # set_permissions to source for fs::copy parity; chattr +i is NOT cloned (no un-GC-able
+  # object). NO new dependency (libc::FICLONE, arch-correct, musl-safe). Inherits the
+  # clone-skip stage/checkout WIN FOR FREE: CopyMethod/CopyTrust/persist-skip/CopyGuard are
+  # platform-agnostic — a Linux FICLONE returning CopyMethod::Cloned gets StatGuarded/
+  # TrustedObject skip with ZERO changes to persist. Counter+knob = OPTION B (minimal churn):
+  # reuse SNAPDIR_CLONEFILE=0 (unified disable) + the existing clonefile_hits() counter
+  # (reflink bumps it too; doc-generalized), avoiding a rename the adversary suites contract.
+  # VERIFICATION (operator: local VM + ext4 + Btrfs): standard ubuntu-latest is ext4 (no
+  # reflink -> only the fallback) so a NEW required `reflink` CI job creates a loopback Btrfs
+  # image (sudo mkfs.btrfs + mount -o loop; loopback-sshd is the sudo-env precedent — NO
+  # special/self-hosted runner needed) and runs reflink + clone_skip + clone_skip_race with
+  # SNAPDIR_REFLINK_TEST_DIR=/mnt/reflink + TMPDIR=/mnt/reflink + SNAPDIR_REFLINK_TEST_REQUIRE=1
+  # (enforce-don't-skip) so the clone_skip*.rs suites exercise REAL reflink for free; plus a
+  # utils/ci/reflink-vm-check.sh local-VM pre-flight. Plan: .claude/plans/what-s-our-std-fs-
+  # read-concurrency-greedy-stearns.md (Follow-up 3). Adversarial decoupling: author!=coder!=verifier.
+  # ---------------------------------------------------------------
+  - id: reflink-spec-tests
+    phase: 29
+    owner_agent: adversary
+    depends_on: [clone-skip-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/reflink.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/reflink.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [.gatesmith/pending-tests/reflink.rs]
+    human_checkpoint: false
+    description: "ADVERSARY (black-box). Author .gatesmith/pending-tests/reflink.rs (lands at crates/snapdir-stores/tests/reflink.rs, #[cfg(target_os=\"linux\")]). ENV-GATED so it is safe on the ext4 matrix: read SNAPDIR_REFLINK_TEST_DIR — if unset and SNAPDIR_REFLINK_TEST_REQUIRE=1 -> panic (enforce on the Btrfs CI leg); if unset and not required -> eprintln-skip + return (so the standard ubuntu/ext4 matrix passes). When set, place BOTH the source tree AND the FileStore/cache UNDER that dir (FICLONE returns EXDEV across filesystems — co-location is mandatory). Pin: (1) clonefile_hits() advances by >=2 across a push + fetch on the reflink dir (PROVES FICLONE fired, not silently fell back); (2) object pool (sharded filenames+bytes) + snapshot id IDENTICAL to an SNAPDIR_CLONEFILE=0 reference run on the same dir; (3) >256 KiB file + 0-byte file both clone correctly; (4) EXDEV cross-fs fallback: a source OUTSIDE the reflink mount still copies correctly (graceful fs::copy); (5) perms parity (unusual source mode preserved); (6) a `chattr +i`/FS_IOC_SETFLAGS immutable source must NOT yield an immutable/un-GC-able object (Linux flag is data-only-clone-exempt — assert the object stays removable). Contract the EXISTING snapdir_stores::clonefile_hits() + SNAPDIR_CLONEFILE knob (option b — no new symbol). NO source edits; tests reference clonefile_hits()/SNAPDIR_REFLINK_TEST_DIR so they fail until impl+CI land. Document the env contract for the impl + ci lanes in the handoff."
+  - id: reflink-stores
+    phase: 29
+    owner_agent: stores
+    depends_on: [reflink-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked && cargo build --workspace --target x86_64-unknown-linux-musl --locked 2>/dev/null || cargo build -p snapdir-stores --locked; test ! -f .gatesmith/pending-tests/reflink.rs && grep -qE 'FICLONE|try_reflink' crates/snapdir-stores/src/file_store.rs && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [crates/snapdir-stores/tests/reflink.rs]
+    human_checkpoint: false
+    description: "STORES lane (crates/snapdir-stores/ ONLY). Add a #[cfg(target_os=\"linux\")] reflink branch to copy_file (file_store.rs ~L951), mirroring the macOS try_clonefile block: `if clonefile_enabled() && try_reflink(source,target)? { return Ok(CopyMethod::Cloned); }` above the fs::copy fallback. try_reflink: open source O_RDONLY; create the fresh temp target with OpenOptions::new().write(true).create_new(true); `unsafe { libc::ioctl(dst.as_raw_fd(), libc::FICLONE as _, src.as_raw_fd()) }` (keep both File handles alive across the call). Errno: fall back to fs::copy (return Ok(false) AFTER fs::remove_file(target) to clear the empty temp) on EOPNOTSUPP/ENOTTY/EXDEV/EINVAL/ENOSYS/EBADF; propagate StoreError::Io on genuine errors (ENOSPC/EDQUOT/EIO/EPERM/...). On success: fs::set_permissions(target, source_perms) for fs::copy parity (FICLONE is data-only — NO chflags/flag-clearing needed, NO un-GC-able-object risk), bump CLONEFILE_HITS, Ok(true). Use the fsync.rs libc/last_os_error/raw_os_error pattern. OPTION B: reuse clonefile_enabled()/SNAPDIR_CLONEFILE + clonefile_hits() (doc-generalize their comments + CopyMethod::Cloned to 'clonefile on macOS, FICLONE reflink on Linux'). NO changes to persist/CopyTrust/clone_skip_decision/CopyGuard/verify_copies_forced (platform-agnostic — reused for free). Take over the staged test (git mv pending-tests/reflink.rs -> tests/reflink.rs). Frozen core untouched (shasum -c). KEYSTONE: object pools+ids byte-identical; on ext4 the reflink falls back = today's behavior. Source-only; no inline #[cfg(test)] in src."
+  - id: reflink-ci-leg
+    phase: 29
+    owner_agent: ci
+    depends_on: [reflink-stores]
+    status: pending
+    failure_count: 0
+    verification_cmd: "command -v actionlint >/dev/null 2>&1 && actionlint .github/workflows/ci.yaml || true; grep -q 'reflink' .github/workflows/ci.yaml && grep -qE 'mkfs.btrfs|btrfs-progs' .github/workflows/ci.yaml && grep -q 'SNAPDIR_REFLINK_TEST_REQUIRE' .github/workflows/ci.yaml && test -f utils/ci/reflink-vm-check.sh"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [utils/ci/reflink-vm-check.sh]
+    human_checkpoint: false
+    description: "CI lane (.github/workflows/ + utils/ci/ ONLY). Add a NEW required `reflink` job to .github/workflows/ci.yaml (runs-on: ubuntu-latest), mirroring the loopback-sshd sudo-env precedent: install btrfs-progs (sudo apt-get), `truncate -s 1G /tmp/reflink.img && mkfs.btrfs -q /tmp/reflink.img`, `sudo mkdir -p /mnt/reflink && sudo mount -o loop /tmp/reflink.img /mnt/reflink && sudo chmod 1777 /mnt/reflink`, then `cargo test -p snapdir-stores --test reflink --test clone_skip --test clone_skip_race --locked` with env SNAPDIR_REFLINK_TEST_DIR=/mnt/reflink, TMPDIR=/mnt/reflink, SNAPDIR_REFLINK_TEST_REQUIRE=1 (enforce-don't-skip; TMPDIR redirects the clone_skip*.rs temp_dir() fixtures onto Btrfs so they exercise REAL reflink + stat-guard skip + race safety for free). Keep the existing ubuntu/macos test matrix UNCHANGED (ext4 fallback coverage + macOS clonefile). Also add utils/ci/reflink-vm-check.sh: a local-VM (Lima/colima/multipass) pre-flight that builds snapdir, sets up a Btrfs loopback, runs the reflink test, and reports clonefile_hits() advanced (operator-run; documented, not a CI gate). actionlint clean. If loopback-mount proves flaky on the runner, continue-on-error is the documented fallback (note it in the job). Lane: workflows + utils/ci only — NO crate/src/test edits."
+  - id: reflink-tests-review
+    phase: 29
+    owner_agent: adversary
+    depends_on: [reflink-ci-leg]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY REVIEW. Diff landed crates/snapdir-stores/tests/reflink.rs vs the staged original (git show the reflink-spec-tests commit); adjudicate any coder edit (legit wiring/shape vs weakening) and restore weakening. HARD-VERIFY the contract: the clonefile_hits() >=2 firing assertion is intact (so a silent always-fallback can't pass on the Btrfs leg); object-pool+id identity vs SNAPDIR_CLONEFILE=0; EXDEV cross-fs fallback; perms parity; the chattr +i source -> still-removable-object case. Confirm the env-gating is correct (ext4 matrix skips cleanly; SNAPDIR_REFLINK_TEST_REQUIRE=1 panics if unset). Add cases the visible impl reveals (the errno fallback branches; create_new temp ordering). Strengthened failure -> reopen reflink-stores. Test artifacts only. NOTE: PM cannot run the Btrfs leg on this macOS host — the firing assertion is verified in CI (reflink-ci-leg); here verify the suite compiles + the non-reflink-path logic + that nothing was weakened."
+  - id: reflink-race-verify
+    phase: 29
+    owner_agent: adversary
+    depends_on: [reflink-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --locked && grep -qE 'reflink|FICLONE|EXDEV|chattr|immutable' crates/snapdir-stores/tests/clone_skip_race.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY — INDEPENDENT VERIFICATION. Extend the race/TOCTOU coverage to REAL Linux reflink. The existing clone_skip_race.rs runs on the Btrfs CI leg for free (via TMPDIR=/mnt/reflink) — confirm its two-layer model (write-time stat-guard via ctime + read-time BLAKE3 backstop) holds against genuine FICLONE clones, and ADD Linux-specific edges to clone_skip_race.rs (or a linux-gated companion): (1) concurrent mid-stage source mutation while a reflink stage runs on Btrfs -> snapshot self-consistent (no silently mis-addressed object); (2) chattr +i (FS_IOC_SETFLAGS immutable) source during stage -> object still correct + removable; (3) EXDEV: a source on a different mount than the store cleanly falls back, never mis-addresses. PROVE no silent mis-address on Linux reflink; read-time get_object rejects any forged-stat case. Real silent mis-address -> reopen reflink-stores. Test artifacts only (adversary may author the net-new linux cases). NOTE: the FICLONE-fired races run in the reflink CI leg; locally on macOS these linux-gated cases compile but no-op."
+  - id: reflink-bench
+    phase: 29
+    owner_agent: bench
+    depends_on: [reflink-race-verify]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build -p snapdir-benches --benches --locked && test -f benches/reflink-compare.sh"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: [benches/reflink-compare.sh]
+    human_checkpoint: false
+    description: "BENCH lane (benches/ + evidence). Author benches/reflink-compare.sh (sibling of clone-skip-compare.sh): on a Btrfs (or XFS reflink=1) mount, time `snapdir stage` + `checkout` of a representative LARGE local dir of many sizable files (GENERIC — no dataset/host named; /dev/urandom into the reflink mount, src+cache co-located) with reflink ON (default) vs OFF (SNAPDIR_CLONEFILE=0), reporting both times + speedup + IDENTICAL object pool & snapshot id on/off. The script is designed to run on the Btrfs CI leg AND in the local-VM (it detects a reflink-capable dir, else skips with a clear message). Expect a stage/checkout win mirroring macOS clone-skip (~2x stage). The script + harness must build (`cargo build -p snapdir-benches --benches`); the actual numbers are captured when run on a reflink FS (CI leg / local VM) into .gatesmith/evidence/reflink-bench.log. Honest reporting: if run only on this macOS host (no Btrfs), record that the measurement is deferred to the Btrfs CI leg/VM and why. Lane: benches/ + evidence only; no crate src edits."
+  - id: reflink-complete
+    phase: 29
+    owner_agent: generic
+    depends_on: [reflink-bench]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked && grep -qiE 'reflink|FICLONE|cross-platform|copy-on-write' docs/rust-port/CHANGELOG.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "REFLINK SIGN-OFF + changelog (generic lane; gatesmith-free CODE-ONLY changelog commit). GENERALIZE the existing docs/rust-port/CHANGELOG.md [Unreleased] clonefile bullet from macOS-only to CROSS-PLATFORM copy-on-write: macOS APFS clonefile + Linux reflink (FICLONE) on Btrfs / XFS(reflink=1) / OpenZFS 2.2+ / OCFS2 / bcachefs — same SNAPDIR_CLONEFILE=0 disable + SNAPDIR_VERIFY_COPIES=1 strict; graceful fs::copy fallback on ext4/F2FS/tmpfs, across filesystems, and on unsupported platforms. Confirm the whole chain green: try_reflink impl + the reflink CI leg (FICLONE fires on Btrfs, clonefile_hits asserted) + race-verify on real reflink + reflink-bench. Keep heading [Unreleased] (release-prep folds -> [1.7.0]). PM machine-check: cargo test --workspace green + CHANGELOG mentions reflink/FICLONE/cross-platform. This is the last pre-1.7.0 perf gate; release-prep-1.7.0 depends on it."
+
   - id: release-perf-linux-1.7.0
     phase: 29
     owner_agent: generic
@@ -4035,7 +4147,7 @@ gates:
   - id: release-prep-1.7.0
     phase: 29
     owner_agent: generic
-    depends_on: [release-perf-linux-1.7.0, fast-walk-complete, clone-skip-complete]
+    depends_on: [release-perf-linux-1.7.0, fast-walk-complete, clone-skip-complete, reflink-complete]
     status: pending
     failure_count: 0
     verification_cmd: "grep -qE '^version = \"1.7.0\"' Cargo.toml && grep -q '## \\[1.7.0\\]' docs/rust-port/CHANGELOG.md && cargo build --workspace --locked"
