@@ -4119,7 +4119,9 @@ gates:
     phase: 29
     owner_agent: bench
     depends_on: [reflink-race-verify]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T17:51:23Z
+    git_sha: 95db1e0
     failure_count: 0
     verification_cmd: "cargo build -p snapdir-benches --benches --locked && test -f benches/reflink-compare.sh"
     pass_criteria:
