@@ -4061,7 +4061,9 @@ gates:
     phase: 29
     owner_agent: stores
     depends_on: [reflink-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T17:15:47Z
+    git_sha: ff7e98c
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --locked && cargo build --workspace --target x86_64-unknown-linux-musl --locked 2>/dev/null || cargo build -p snapdir-stores --locked; test ! -f .gatesmith/pending-tests/reflink.rs && grep -qE 'FICLONE|try_reflink' crates/snapdir-stores/src/file_store.rs && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
