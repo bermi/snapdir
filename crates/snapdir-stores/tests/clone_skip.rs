@@ -100,6 +100,9 @@ use snapdir_core::manifest::{Manifest, ManifestEntry, PathType};
 use snapdir_core::merkle::{directory_checksum, Blake3Hasher, Hasher};
 use snapdir_core::snapshot_id;
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
+use snapdir_core::CopyGuard;
+
+use std::collections::HashMap;
 
 use snapdir_stores::{FileStore, StreamStore};
 
@@ -983,4 +986,440 @@ fn set_file_times(path: &Path, t: FileTimes) {
     // AT_FDCWD = use the path relative to cwd (the path is absolute here anyway).
     let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), 0) };
     assert_eq!(rc, 0, "utimensat must succeed to forge the mtime");
+}
+
+// ===========================================================================
+// REVIEW-MODE ADDITIONS (gate `clone-skip-tests-review`). The StatGuarded skip
+// is now live and `FileStore::with_copy_guards` is a public API; these cases
+// exercise the now-visible branches the black-box authoring gate could not
+// reach (it could not populate the guard map directly).
+//
+// Builds a `HashMap<PathBuf, CopyGuard>` from the LIVE metadata of each source
+// file, keyed by the same absolute path `push` joins (`source.join(rel)`), so
+// the StatGuarded SKIP genuinely engages.
+// ===========================================================================
+
+/// Builds the guard map `push` consumes (`source.join(rel)` keys) from the
+/// CURRENT on-disk metadata of every regular file the manifest references.
+#[cfg(unix)]
+fn guards_from_sources(manifest: &Manifest, source: &Path) -> HashMap<PathBuf, CopyGuard> {
+    let mut map = HashMap::new();
+    for entry in manifest.entries() {
+        if entry.path_type != PathType::File {
+            continue;
+        }
+        let rel = entry.path.strip_prefix("./").unwrap_or(entry.path.as_str());
+        let abs = source.join(rel);
+        let meta = fs::metadata(&abs).expect("source file metadata");
+        if let Some(g) = CopyGuard::from_metadata(&meta) {
+            map.insert(abs, g);
+        }
+    }
+    map
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW CASE A — TrustedObject DEVIATION ADJUDICATION: a CORRUPT store object
+// must STILL be detected on the FETCH/checkout path on a clone-capable host.
+//
+// The stores coder did NOT implement the literal "zero-read fetch skip" the
+// plan first described; instead `TrustedObject` re-hashes the SOURCE object
+// once (catching on-disk corruption) and only skips the redundant TEMP re-hash.
+// This case independently CONFIRMS that choice is *safer, not weaker*: it
+// corrupts a committed store object in place, then fetches it on THIS APFS host
+// (clone fast-path live, skip optimization on) and asserts the corruption is
+// STILL rejected (Integrity) — i.e. clone-skip did NOT open a silent
+// corrupt-checkout hole. If this ever FAILS, clone-skip opened a real hole and
+// the impl gate `clone-skip-stores` must reopen.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fetch_of_corrupted_store_object_still_detected_on_clone_path() {
+    // Spec/adjudication clause: clone-skip's TrustedObject path must preserve
+    // the store's verify-on-fetch corruption discipline. A store object whose
+    // on-disk bytes no longer hash to its content address must NEVER be cloned
+    // (skip) into a checkout — the source-verify must surface Integrity.
+    let _g = env_lock();
+    // Default mode: clone fast-path enabled + skip optimization LIVE (the
+    // exact configuration under which a "zero-read fetch skip" would have been
+    // dangerous).
+    let _e = CopyModeEnv::set(None, None);
+
+    let store_dir = TempDir::new("corrupt-fetch-store");
+    let src = TempDir::new("corrupt-fetch-src");
+    let dest = TempDir::new("corrupt-fetch-dest");
+
+    // A >256 KiB file so the clone fast-path is firmly in play on APFS.
+    let content: Vec<u8> = (0..(300 * 1024u32)).map(|i| (i % 251) as u8).collect();
+    let files: Vec<(&str, &[u8], &str)> = vec![("payload.bin", content.as_slice(), "644")];
+    let (manifest, _id) = build_tree(src.path(), &files);
+
+    let store = FileStore::from_root(store_dir.path().to_path_buf());
+    store
+        .push(&manifest, src.path())
+        .expect("push clean object");
+
+    // Corrupt the committed store object IN PLACE (out-of-band on-disk rot):
+    // same byte length, different content, so a size check alone cannot catch
+    // it — only a real content re-hash can.
+    let checksum = Blake3Hasher::new().hash_hex(&content);
+    let obj = object_disk(store_dir.path(), &checksum);
+    assert!(
+        obj.is_file(),
+        "the store object must exist before corruption"
+    );
+    let mut corrupt = content.clone();
+    corrupt[0] ^= 0xff;
+    corrupt[content.len() - 1] ^= 0xff;
+    assert_eq!(corrupt.len(), content.len(), "corruption preserves length");
+    assert_ne!(corrupt, content, "corruption changes content");
+    fs::write(&obj, &corrupt).expect("corrupt the store object in place");
+
+    // Fetch/checkout on the clone-capable host. The corruption MUST be detected
+    // (Integrity), NOT silently cloned into the destination.
+    let res = store.fetch_files(&manifest, dest.path());
+    let err = res.expect_err(
+        "fetching a corrupted store object on the clone path must be REJECTED, \
+         not silently cloned — clone-skip must not open a silent-corrupt-checkout hole",
+    );
+    assert!(
+        is_integrity(&err),
+        "a corrupt store object must surface as StoreError::Integrity on the clone \
+         fetch path, got {err:?}"
+    );
+
+    // And the destination must NOT hold the corrupt bytes (no partial silent
+    // materialization of a mis-addressed object).
+    let restored = fs::read(dest.path().join("payload.bin")).unwrap_or_default();
+    assert_ne!(
+        restored, corrupt,
+        "FORBIDDEN: the corrupt store bytes were cloned into the checkout"
+    );
+
+    // Read-time backstop is also intact (get_object rejects the corrupt blob).
+    match store.get_object(&checksum) {
+        Err(e) => assert!(
+            is_integrity(&e),
+            "get_object of the corrupt blob must be Integrity-rejected, got {e:?}"
+        ),
+        Ok(_) => panic!("FORBIDDEN: get_object returned the corrupt blob as valid"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW CASE B — StatGuarded SKIP genuinely TAKEN. With a guard map populated
+// from the source files' real metadata, the stage clone-skip engages: the
+// object pool + id must be correct, equal to the SNAPDIR_VERIFY_COPIES=1 run
+// (skip ≡ verify for honest input), and (cfg macos) the clone fast-path must
+// have fired (clonefile_hits advanced) — proving the skip rode the clone path,
+// not a silent fs::copy fallback.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn stage_statguarded_skip_taken_equals_verify_and_correct_pool() {
+    // Spec clause (StatGuarded skip taken): a matching guard makes `persist`
+    // skip the temp re-hash with NO read; the result must equal the strict
+    // (VERIFY_COPIES=1, full re-hash) run object-for-object and id-for-id.
+    let files_owned = mixed_size_files();
+    let files: Vec<(&str, &[u8], &str)> = files_owned
+        .iter()
+        .map(|(p, c, m)| (*p, c.as_slice(), *m))
+        .collect();
+
+    let _g = env_lock();
+
+    // Strict reference run (forced re-hash, no skip) WITHOUT guards.
+    let (verify_inv, verify_id) = {
+        let _e = CopyModeEnv::set(None, Some("1"));
+        let store_dir = TempDir::new("sg-verify-store");
+        let src = TempDir::new("sg-verify-src");
+        let (manifest, id) = build_tree(src.path(), &files);
+        let store = FileStore::from_root(store_dir.path().to_path_buf());
+        store.push(&manifest, src.path()).expect("strict push");
+        (object_inventory(store_dir.path()), id)
+    };
+
+    // Skip run: guards captured from the live sources => StatGuarded SKIP.
+    let (skip_inv, skip_id, clone_delta) = {
+        let _e = CopyModeEnv::set(None, None);
+        let store_dir = TempDir::new("sg-skip-store");
+        let src = TempDir::new("sg-skip-src");
+        let (manifest, id) = build_tree(src.path(), &files);
+        let guards = guards_from_sources(&manifest, src.path());
+        assert!(
+            !guards.is_empty(),
+            "the guard map must be populated so the StatGuarded skip can engage"
+        );
+        let store = FileStore::from_root(store_dir.path().to_path_buf()).with_copy_guards(guards);
+        let before = snapdir_stores::clonefile_hits();
+        store.push(&manifest, src.path()).expect("skip push");
+        let delta = snapdir_stores::clonefile_hits() - before;
+        (object_inventory(store_dir.path()), id, delta)
+    };
+
+    assert_eq!(
+        skip_inv, verify_inv,
+        "StatGuarded skip object pool must be byte-identical to the strict verify run"
+    );
+    assert_eq!(
+        skip_id, verify_id,
+        "StatGuarded skip snapshot id must equal the strict verify run"
+    );
+
+    // The >256 KiB object is present at full length (skip is not vacuous).
+    let big_sum = Blake3Hasher::new().hash_hex(&files_owned[0].1);
+    let big_rel = object_path(&big_sum);
+    assert!(
+        skip_inv
+            .iter()
+            .any(|(rel, bytes)| *rel == big_rel && bytes.len() == files_owned[0].1.len()),
+        "the >256 KiB object must be present at full length under the skip path"
+    );
+
+    // On macOS/APFS the skip must have RIDDEN the clone fast-path (>=1 regular
+    // file cloned), not silently fallen back to fs::copy.
+    #[cfg(target_os = "macos")]
+    assert!(
+        clone_delta >= 1,
+        "StatGuarded skip must ride the clone fast-path on APFS (clonefile_hits \
+         must advance): delta={clone_delta}"
+    );
+    #[cfg(not(target_os = "macos"))]
+    let _ = clone_delta;
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW CASE C — StatGuarded MISMATCH falls back to the re-hash. A guard whose
+// (size/mtime/ctime/ino) no longer matches the source (because the source was
+// mutated after the guard was captured) must NOT skip: it falls through to the
+// temp re-hash, which surfaces a true content change as Integrity. A stale
+// guard must NEVER cause a silent mis-addressed object.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn stage_statguarded_stale_guard_never_silently_misaddresses() {
+    // Spec clause (StatGuarded mismatch -> re-hash): a guard captured for
+    // content A, with the source then overwritten by content B (records A's
+    // checksum but holds B), must fall back to the re-hash and reject the
+    // mismatch — never file B under checksum(A).
+    let _g = env_lock();
+    let _e = CopyModeEnv::set(None, None); // default skip mode
+
+    let store_dir = TempDir::new("sg-stale-store");
+    let src = TempDir::new("sg-stale-src");
+
+    let content_a: Vec<u8> = (0..(64 * 1024u32)).map(|i| (i % 211) as u8).collect();
+    // Same length, different bytes (size-only guard cannot catch this).
+    let content_b: Vec<u8> = content_a.iter().map(|b| b ^ 0xff).collect();
+    let hasher = Blake3Hasher::new();
+    let sum_a = hasher.hash_hex(&content_a);
+
+    let rel = "stale.bin";
+    let target = src.path().join(rel);
+    fs::write(&target, &content_a).unwrap();
+
+    // Capture the guard for A (this is what the walk would have recorded).
+    let guard_a = CopyGuard::from_metadata(&fs::metadata(&target).unwrap()).expect("guard for A");
+
+    let mut manifest = Manifest::new();
+    manifest.push(ManifestEntry::new(
+        PathType::File,
+        "644",
+        sum_a.clone(),
+        content_a.len() as u64,
+        format!("./{rel}"),
+    ));
+    let root_sum = directory_checksum(std::iter::once(sum_a.as_str()), &hasher);
+    manifest.push(ManifestEntry::new(
+        PathType::Directory,
+        "700",
+        root_sum,
+        content_a.len() as u64,
+        "./",
+    ));
+    manifest.sort();
+
+    // Overwrite with B. The guard is now STALE (the live metadata no longer
+    // matches guard_a: at minimum ctime advances on the rewrite).
+    fs::write(&target, &content_b).unwrap();
+
+    let mut guards = HashMap::new();
+    guards.insert(target.clone(), guard_a);
+    let store = FileStore::from_root(store_dir.path().to_path_buf()).with_copy_guards(guards);
+
+    let res = store.push(&manifest, src.path());
+
+    // The stale guard must NOT cause a silent mis-address. Either the guard
+    // mismatch is detected and the re-hash surfaces Integrity (the expected
+    // outcome), or — never — an object readable at checksum(A) holding B.
+    match res {
+        Err(ref e) => assert!(
+            is_integrity(e),
+            "a stale guard must fall back to the re-hash and reject the mutated \
+             source with Integrity, got {e:?}"
+        ),
+        Ok(()) => match store.get_object(&sum_a) {
+            Ok(bytes) => {
+                assert_ne!(
+                    bytes, content_b,
+                    "FORBIDDEN: a stale guard let bytes(B) be filed under checksum(A)"
+                );
+                assert_eq!(
+                    Blake3Hasher::new().hash_hex(&bytes),
+                    sum_a,
+                    "any object readable at checksum(A) must hash to checksum(A)"
+                );
+            }
+            Err(e) => assert!(
+                is_integrity(&e) || matches!(e, StoreError::ObjectNotFound { .. }),
+                "reading checksum(A) after a stale-guard stage must be rejected or \
+                 absent, got {e:?}"
+            ),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW CASE D — SNAPDIR_VERIFY_COPIES=1 OVERRIDES a MATCHING guard. Even when
+// the guard still matches the source's current metadata, strict mode must
+// re-hash (and therefore catch a mutated source whose metadata was forged back
+// to match). This proves the strict override is a true write-time re-hash, not
+// a guard-driven skip. Contrast with the same setup under default mode, where
+// the matching guard would skip (the read-time backstop is the safety net there
+// — covered by case B's race-keystone family).
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn verify_copies_overrides_a_matching_guard() {
+    // Spec clause (strict overrides guard): build a guard that MATCHES the
+    // current source metadata, but whose content no longer matches the recorded
+    // checksum (metadata forged back via utimensat); under VERIFY_COPIES=1 the
+    // strict re-hash must catch it (Integrity) regardless of the matching guard.
+    use std::os::unix::fs::MetadataExt;
+
+    let _g = env_lock();
+    let _e = CopyModeEnv::set(None, Some("1")); // STRICT
+
+    let store_dir = TempDir::new("strict-guard-store");
+    let src = TempDir::new("strict-guard-src");
+
+    let content_a: Vec<u8> = (0..(72 * 1024u32)).map(|i| (i % 197) as u8).collect();
+    let content_b: Vec<u8> = content_a.iter().map(|b| b ^ 0x6b).collect(); // same length
+    let hasher = Blake3Hasher::new();
+    let sum_a = hasher.hash_hex(&content_a);
+
+    let rel = "forged.bin";
+    let target = src.path().join(rel);
+
+    // Write A, capture A's mtime/atime for later forgery.
+    fs::write(&target, &content_a).unwrap();
+    let md_a = fs::metadata(&target).unwrap();
+    let a_times = filetime_pair(
+        md_a.atime(),
+        md_a.atime_nsec(),
+        md_a.mtime(),
+        md_a.mtime_nsec(),
+    );
+
+    let mut manifest = Manifest::new();
+    manifest.push(ManifestEntry::new(
+        PathType::File,
+        "644",
+        sum_a.clone(),
+        content_a.len() as u64,
+        format!("./{rel}"),
+    ));
+    let root_sum = directory_checksum(std::iter::once(sum_a.as_str()), &hasher);
+    manifest.push(ManifestEntry::new(
+        PathType::Directory,
+        "700",
+        root_sum,
+        content_a.len() as u64,
+        "./",
+    ));
+    manifest.sort();
+
+    // Overwrite with B (same length) and force mtime/atime back to A's.
+    fs::write(&target, &content_b).unwrap();
+    set_file_times(&target, a_times);
+
+    // Build a guard from the CURRENT (post-forge) metadata so it MATCHES what
+    // `persist` will re-stat — proving strict mode ignores the matching guard.
+    let matching_guard =
+        CopyGuard::from_metadata(&fs::metadata(&target).unwrap()).expect("guard for forged");
+    let mut guards = HashMap::new();
+    guards.insert(target.clone(), matching_guard);
+
+    let store = FileStore::from_root(store_dir.path().to_path_buf()).with_copy_guards(guards);
+    let res = store.push(&manifest, src.path());
+
+    let err = res
+        .expect_err("SNAPDIR_VERIFY_COPIES=1 must re-hash and reject even with a MATCHING guard");
+    assert!(
+        is_integrity(&err),
+        "strict mode must surface Integrity despite the matching guard, got {err:?}"
+    );
+    match store.get_object(&sum_a) {
+        Ok(bytes) => assert_ne!(
+            bytes, content_b,
+            "FORBIDDEN: strict mode with a matching guard left a mis-addressed object"
+        ),
+        Err(_) => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW CASE E — Untrusted (EMPTY guard map) is byte-for-byte today's
+// behavior. A FileStore with no guards (the default) must produce an object
+// pool + id identical to a CLONEFILE=0 (always-fs::copy+rehash) run for the
+// SAME input — i.e. the optimization is inert without guards.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stage_untrusted_empty_guards_equals_clone_off() {
+    // Spec clause (Untrusted == today): empty `copy_guards` reproduces today's
+    // always-rehash behavior; its object pool + id must equal the CLONEFILE=0
+    // (fs::copy + rehash) reference run.
+    let files_owned = mixed_size_files();
+    let files: Vec<(&str, &[u8], &str)> = files_owned
+        .iter()
+        .map(|(p, c, m)| (*p, c.as_slice(), *m))
+        .collect();
+
+    let _g = env_lock();
+
+    // Reference: CLONEFILE=0, no guards.
+    let (off_inv, off_id) = {
+        let _e = CopyModeEnv::set(Some("0"), None);
+        let store_dir = TempDir::new("untrusted-off-store");
+        let src = TempDir::new("untrusted-off-src");
+        let (manifest, id) = build_tree(src.path(), &files);
+        let store = FileStore::from_root(store_dir.path().to_path_buf());
+        store.push(&manifest, src.path()).expect("off push");
+        (object_inventory(store_dir.path()), id)
+    };
+
+    // Default mode but an EXPLICIT empty guard map => every source Untrusted.
+    let (untrusted_inv, untrusted_id) = {
+        let _e = CopyModeEnv::set(None, None);
+        let store_dir = TempDir::new("untrusted-def-store");
+        let src = TempDir::new("untrusted-def-src");
+        let (manifest, id) = build_tree(src.path(), &files);
+        let store =
+            FileStore::from_root(store_dir.path().to_path_buf()).with_copy_guards(HashMap::new());
+        store.push(&manifest, src.path()).expect("untrusted push");
+        (object_inventory(store_dir.path()), id)
+    };
+
+    assert_eq!(
+        untrusted_inv, off_inv,
+        "Untrusted (empty guards) object pool must equal the CLONEFILE=0 reference"
+    );
+    assert_eq!(
+        untrusted_id, off_id,
+        "Untrusted (empty guards) snapshot id must equal the CLONEFILE=0 reference"
+    );
 }
