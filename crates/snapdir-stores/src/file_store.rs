@@ -29,6 +29,7 @@
 //!
 //! All I/O is native in-process filesystem I/O; nothing shells out.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::io::Write as _;
@@ -39,6 +40,7 @@ use std::sync::Arc;
 use snapdir_core::manifest::{Manifest, PathType};
 use snapdir_core::merkle::{Blake3Hasher, Hasher};
 use snapdir_core::store::{manifest_path, object_path, Store, StoreError, MANIFESTS_DIR};
+use snapdir_core::CopyGuard;
 use snapdir_core::Meter;
 
 use crate::adaptive::{
@@ -66,6 +68,46 @@ pub struct FileStore {
     /// default from every constructor) means zero recording and byte-identical
     /// behavior. Set by the CLI via [`FileStore::with_meter`].
     meter: Option<Arc<Meter>>,
+    /// Per-source [`CopyGuard`] side channel (keyed by the user file's absolute
+    /// or join-base-relative path, exactly as the walk recorded it). Populated
+    /// by the CLI before a stage `push` via [`FileStore::with_copy_guards`]; on
+    /// the clone fast-path a source whose live `stat` still matches its recorded
+    /// guard skips the redundant post-copy re-hash (stat-validated trust).
+    ///
+    /// EMPTY (every constructor's default) ⇒ every push source is `Untrusted`
+    /// ⇒ the re-hash is never skipped on stage ⇒ byte-for-byte today's behavior.
+    copy_guards: HashMap<PathBuf, CopyGuard>,
+}
+
+/// How [`copy_file`] actually moved the bytes — the trust input to whether
+/// [`persist`] may skip its post-copy re-hash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopyMethod {
+    /// A genuine macOS APFS `clonefile` copy-on-write success: the target is
+    /// bit-identical to the source by construction (a copy-on-write clone can
+    /// never corrupt), so — under the right trust — the re-hash can be skipped.
+    Cloned,
+    /// A plain `fs::copy` byte copy (the `fs::copy` fallback, non-macOS, or
+    /// `SNAPDIR_CLONEFILE=0`). A byte copy CAN corrupt, so this path ALWAYS
+    /// re-hashes; the skip is never taken here.
+    Copied,
+}
+
+/// Why (or whether) a clone of a given source may be trusted enough to skip the
+/// post-copy re-hash. Threaded through the copy jobs alongside the expected
+/// checksum; only ever consulted on the [`CopyMethod::Cloned`] path.
+#[derive(Debug, Clone, Copy)]
+enum CopyTrust {
+    /// The source is an immutable, read-verified content-addressed store object
+    /// (the FETCH/checkout path): a clone of it is provably bit-identical to a
+    /// blob that already verified, so the re-hash is always skipped.
+    TrustedObject,
+    /// The source is a mutable user file the walk recorded a [`CopyGuard`] for
+    /// (the STAGE/push path): re-`stat` it at clone time and skip the re-hash
+    /// IFF it still matches; otherwise re-hash (→ Integrity if it now differs).
+    StatGuarded(CopyGuard),
+    /// No trust basis (a stage source with no recorded guard): always re-hash.
+    Untrusted,
 }
 
 impl FileStore {
@@ -103,6 +145,7 @@ impl FileStore {
             root: root.into(),
             config,
             meter: None,
+            copy_guards: HashMap::new(),
         }
     }
 
@@ -115,6 +158,28 @@ impl FileStore {
     pub fn with_meter(mut self, meter: Option<Arc<Meter>>) -> Self {
         self.meter = meter;
         self
+    }
+
+    /// Attaches the per-source [`CopyGuard`] map the walk recorded, enabling the
+    /// stat-validated clone-skip on the stage `push` path. The keys are the
+    /// source file paths exactly as passed to [`push`](Store::push) joins
+    /// (i.e. `source.join(rel)`); a source present in the map and whose live
+    /// `stat` still matches skips the redundant post-copy re-hash on a clone.
+    ///
+    /// Builder form: the CLI calls this with the
+    /// [`walk_with_guards`](snapdir_core::walk_with_guards) map before staging.
+    /// The default (no call) is an empty map ⇒ every push source is
+    /// [`CopyTrust::Untrusted`] ⇒ byte-for-byte today's always-rehash behavior.
+    #[must_use]
+    pub fn with_copy_guards(mut self, copy_guards: HashMap<PathBuf, CopyGuard>) -> Self {
+        self.copy_guards = copy_guards;
+        self
+    }
+
+    /// Replaces the [`CopyGuard`] map in place (setter companion to the
+    /// [`with_copy_guards`](Self::with_copy_guards) builder).
+    pub fn set_copy_guards(&mut self, copy_guards: HashMap<PathBuf, CopyGuard>) {
+        self.copy_guards = copy_guards;
     }
 
     /// Returns the store's root directory.
@@ -149,7 +214,10 @@ impl FileStore {
     /// work (`try_for_each`). A `concurrency` of 1 yields a single-threaded
     /// sequential copy. Each task uses a fresh, cheap, stateless
     /// [`Blake3Hasher`] to sidestep any `Sync` concern.
-    fn parallel_copy(&self, jobs: &[(PathBuf, PathBuf, String)]) -> Result<(), StoreError> {
+    fn parallel_copy(
+        &self,
+        jobs: &[(PathBuf, PathBuf, String, CopyTrust)],
+    ) -> Result<(), StoreError> {
         if jobs.is_empty() {
             return Ok(());
         }
@@ -163,7 +231,10 @@ impl FileStore {
 
     /// Fixed-concurrency rayon copy: pool sized to `config.concurrency`, no gate
     /// or driver. The historical (byte-identical) local-copy path.
-    fn parallel_copy_fixed(&self, jobs: &[(PathBuf, PathBuf, String)]) -> Result<(), StoreError> {
+    fn parallel_copy_fixed(
+        &self,
+        jobs: &[(PathBuf, PathBuf, String, CopyTrust)],
+    ) -> Result<(), StoreError> {
         use rayon::prelude::*;
 
         // `&Meter` is `Sync`, so it is shared across the rayon closures. `None`
@@ -179,22 +250,24 @@ impl FileStore {
             })?;
 
         pool.install(|| {
-            jobs.par_iter().try_for_each(|(source, target, expected)| {
-                if let Some(m) = meter {
-                    m.object_started();
-                }
-                // `persist` reads `source` and writes `target`. Record the
-                // source size as both bytes-in (read) and bytes-out (written);
-                // a missing source surfaces as the persist error below.
-                let len = std::fs::metadata(source).map_or(0, |md| md.len());
-                persist(source, target, expected, &Blake3Hasher::new())?;
-                if let Some(m) = meter {
-                    m.add_in(len);
-                    m.add_out(len);
-                    m.object_finished();
-                }
-                Ok(())
-            })
+            jobs.par_iter()
+                .try_for_each(|(source, target, expected, trust)| {
+                    if let Some(m) = meter {
+                        m.object_started();
+                    }
+                    // `persist` reads `source` and writes `target`. Record the
+                    // source size as both bytes-in (read) and bytes-out
+                    // (written); a missing source surfaces as the persist error
+                    // below.
+                    let len = std::fs::metadata(source).map_or(0, |md| md.len());
+                    persist(source, target, expected, *trust, &Blake3Hasher::new())?;
+                    if let Some(m) = meter {
+                        m.add_in(len);
+                        m.add_out(len);
+                        m.object_finished();
+                    }
+                    Ok(())
+                })
         })
     }
 
@@ -209,7 +282,7 @@ impl FileStore {
     /// differs.
     fn parallel_copy_adaptive(
         &self,
-        jobs: &[(PathBuf, PathBuf, String)],
+        jobs: &[(PathBuf, PathBuf, String, CopyTrust)],
         fraction: f64,
         ceiling: usize,
     ) -> Result<(), StoreError> {
@@ -219,7 +292,7 @@ impl FileStore {
 
         let sizes: Vec<u64> = jobs
             .iter()
-            .map(|(source, _, _)| std::fs::metadata(source).map_or(0, |md| md.len()))
+            .map(|(source, _, _, _)| std::fs::metadata(source).map_or(0, |md| md.len()))
             .collect();
         let p95 = p95_object_size(&sizes);
         let total_ram = snapdir_core::resources::total_ram_bytes().unwrap_or(0);
@@ -252,33 +325,34 @@ impl FileStore {
             })?;
 
         let result = pool.install(|| {
-            jobs.par_iter().try_for_each(|(source, target, expected)| {
-                // Gate to the controller's live limit (effective concurrency).
-                let _permit = gate.acquire_blocking();
-                if let Some(m) = meter {
-                    m.object_started();
-                }
-                let len = std::fs::metadata(source).map_or(0, |md| md.len());
-                let started = std::time::Instant::now();
-                let outcome = persist(source, target, expected, &Blake3Hasher::new());
-                let latency = started.elapsed();
-                let (bytes, op_result) = match &outcome {
-                    Ok(()) => (len, OpResult::Ok),
-                    Err(err) => (0, classify_error(err)),
-                };
-                driver.record_op(OpSample {
-                    bytes,
-                    latency,
-                    result: op_result,
-                });
-                outcome?;
-                if let Some(m) = meter {
-                    m.add_in(len);
-                    m.add_out(len);
-                    m.object_finished();
-                }
-                Ok(())
-            })
+            jobs.par_iter()
+                .try_for_each(|(source, target, expected, trust)| {
+                    // Gate to the controller's live limit (effective concurrency).
+                    let _permit = gate.acquire_blocking();
+                    if let Some(m) = meter {
+                        m.object_started();
+                    }
+                    let len = std::fs::metadata(source).map_or(0, |md| md.len());
+                    let started = std::time::Instant::now();
+                    let outcome = persist(source, target, expected, *trust, &Blake3Hasher::new());
+                    let latency = started.elapsed();
+                    let (bytes, op_result) = match &outcome {
+                        Ok(()) => (len, OpResult::Ok),
+                        Err(err) => (0, classify_error(err)),
+                    };
+                    driver.record_op(OpSample {
+                        bytes,
+                        latency,
+                        result: op_result,
+                    });
+                    outcome?;
+                    if let Some(m) = meter {
+                        m.add_in(len);
+                        m.add_out(len);
+                        m.object_finished();
+                    }
+                    Ok(())
+                })
         });
 
         // Stop the tick thread and join it before returning.
@@ -334,7 +408,7 @@ impl Store for FileStore {
         // the `ObjectNotFound` error when a needed source is missing). The file
         // entries that actually need copying are collected as `(source, target,
         // checksum)` jobs for the parallel phase.
-        let mut jobs: Vec<(PathBuf, PathBuf, String)> = Vec::new();
+        let mut jobs: Vec<(PathBuf, PathBuf, String, CopyTrust)> = Vec::new();
         for entry in manifest.entries() {
             let rel = strip_leading_dot_slash(&entry.path);
             let target = dest.join(rel);
@@ -363,7 +437,15 @@ impl Store for FileStore {
                             checksum: entry.checksum.clone(),
                         });
                     }
-                    jobs.push((source, target, entry.checksum.clone()));
+                    // FETCH: the source is an immutable, content-addressed store
+                    // object → a clone of it is provably bit-identical → always
+                    // skip the re-hash (read-time `get_object` is the backstop).
+                    jobs.push((
+                        source,
+                        target,
+                        entry.checksum.clone(),
+                        CopyTrust::TrustedObject,
+                    ));
                 }
             }
         }
@@ -373,7 +455,7 @@ impl Store for FileStore {
         if let Some(m) = self.meter.as_deref() {
             let total: u64 = jobs
                 .iter()
-                .map(|(source, _, _)| fs::metadata(source).map_or(0, |md| md.len()))
+                .map(|(source, _, _, _)| fs::metadata(source).map_or(0, |md| md.len()))
                 .sum();
             m.set_total(total);
         }
@@ -401,7 +483,7 @@ impl Store for FileStore {
         // Collect every referenced object that is absent (skip-if-present per
         // object: an object already filed under its content address is trusted,
         // it is content-addressable). These are copied BEFORE the manifest.
-        let mut jobs: Vec<(PathBuf, PathBuf, String)> = Vec::new();
+        let mut jobs: Vec<(PathBuf, PathBuf, String, CopyTrust)> = Vec::new();
         for entry in manifest.entries() {
             if entry.path_type != PathType::File {
                 continue;
@@ -416,7 +498,16 @@ impl Store for FileStore {
             }
             let rel = strip_leading_dot_slash(&entry.path);
             let object_source = source.join(rel);
-            jobs.push((object_source, object_target, entry.checksum.clone()));
+            // STAGE: a recorded `CopyGuard` for this source enables the
+            // stat-validated clone-skip (`persist` re-stats + compares); no
+            // guard ⇒ `Untrusted` ⇒ always re-hash (today's behavior). An empty
+            // `copy_guards` map therefore reproduces today's behavior exactly.
+            let trust = self
+                .copy_guards
+                .get(&object_source)
+                .copied()
+                .map_or(CopyTrust::Untrusted, CopyTrust::StatGuarded);
+            jobs.push((object_source, object_target, entry.checksum.clone(), trust));
         }
 
         // Total to push (bytes over the to-push set), recorded so the bar can
@@ -424,7 +515,7 @@ impl Store for FileStore {
         if let Some(m) = self.meter.as_deref() {
             let total: u64 = jobs
                 .iter()
-                .map(|(src, _, _)| fs::metadata(src).map_or(0, |md| md.len()))
+                .map(|(src, _, _, _)| fs::metadata(src).map_or(0, |md| md.len()))
                 .sum();
             m.set_total(total);
         }
@@ -574,6 +665,7 @@ fn persist(
     source: &Path,
     target: &Path,
     expected: &str,
+    trust: CopyTrust,
     hasher: &impl Hasher,
 ) -> Result<(), StoreError> {
     if let Some(parent) = target.parent() {
@@ -585,7 +677,53 @@ fn persist(
         // Copy to a unique temp path beside the target so the final rename is
         // an atomic, same-filesystem move (the oracle's `.tmp` discipline).
         let tmp = temp_sibling(target);
-        copy_file(source, &tmp)?;
+        let method = copy_file(source, &tmp)?;
+
+        // CLONE-SKIP: a genuine CoW clone is bit-identical to its source by
+        // construction, so the cloned temp need never be re-hashed — the only
+        // question is whether the SOURCE is trustworthy. On the clone path
+        // (unless the strict `SNAPDIR_VERIFY_COPIES=1` override forces a temp
+        // re-hash) we substitute a single SOURCE check for the redundant temp
+        // re-hash, decided by `CopyTrust`:
+        //
+        //   * `StatGuarded` — the walk already hashed this user file; a fresh
+        //     `stat` that still matches the recorded guard proves it is
+        //     unchanged, so the clone is trusted with NO read at all (the real
+        //     win: the walk's hash is the only read). A changed source falls
+        //     through to the temp re-hash → Integrity on a true content change.
+        //   * `TrustedObject` — a fetch source is an immutable content-addressed
+        //     store blob; we still verify the SOURCE's bytes hash to `expected`
+        //     (catching an out-of-band on-disk corruption) but, since the clone
+        //     equals the source, skip the SECOND (temp) re-hash. This preserves
+        //     the store's verify-on-fetch discipline while dropping the
+        //     redundant re-read of the cloned bytes.
+        //   * `Untrusted` — never skips (falls through to the temp re-hash).
+        //
+        // The `fs::copy` (Copied) path NEVER skips: a byte copy can corrupt, so
+        // it always re-hashes the temp (today's behavior + retry loop, below).
+        if method == CopyMethod::Cloned && !verify_copies_forced() {
+            match clone_skip_decision(source, expected, trust, hasher) {
+                CloneSkip::Skip => {
+                    // Source trusted + clone is bit-identical → rename straight
+                    // into place; the temp re-hash (and its retry loop) is
+                    // unnecessary because a CoW clone cannot corrupt.
+                    fs::rename(&tmp, target)?;
+                    return Ok(());
+                }
+                CloneSkip::SourceCorrupt { actual } => {
+                    // A `TrustedObject` whose on-disk source bytes no longer hash
+                    // to `expected`: the source itself is bad, so retrying cannot
+                    // help (mirrors the source-verify branch below).
+                    let _ = fs::remove_file(&tmp);
+                    return Err(StoreError::Integrity {
+                        address: source.display().to_string(),
+                        expected: expected.to_owned(),
+                        actual,
+                    });
+                }
+                CloneSkip::Rehash => { /* fall through to the temp re-hash */ }
+            }
+        }
 
         let actual = hash_file(&tmp, hasher)?;
         if actual == expected {
@@ -734,6 +872,71 @@ fn clonefile_enabled() -> bool {
     !matches!(std::env::var("SNAPDIR_CLONEFILE").as_deref(), Ok("0"))
 }
 
+/// Returns `true` when `SNAPDIR_VERIFY_COPIES=1` forces the write-time re-hash
+/// even on the clone fast-path (strict mode). Read **per copy call** (never
+/// cached), mirroring [`clonefile_enabled`], so a test can toggle it at runtime
+/// under its `ENV_LOCK` and have the very next copy observe it. When set, a
+/// clone still FIRES (the fast-path is not disabled) but `persist` re-hashes the
+/// cloned temp exactly as the `fs::copy` path does.
+fn verify_copies_forced() -> bool {
+    matches!(std::env::var("SNAPDIR_VERIFY_COPIES").as_deref(), Ok("1"))
+}
+
+/// The outcome of [`clone_skip_decision`]: whether a successful clone may skip
+/// the post-copy temp re-hash, must fall back to it, or has already proven the
+/// source corrupt.
+enum CloneSkip {
+    /// Trust the clone: rename straight into place, no temp re-hash.
+    Skip,
+    /// Fall through to the historical temp re-hash + retry loop.
+    Rehash,
+    /// A `TrustedObject` source's own bytes no longer hash to `expected` (an
+    /// out-of-band on-disk corruption); carries the source's actual hash for the
+    /// [`StoreError::Integrity`] the caller raises.
+    SourceCorrupt { actual: String },
+}
+
+/// Decides whether a successful clone of `source` may skip the redundant
+/// post-copy temp re-hash, given its [`CopyTrust`]. Only ever called on the
+/// [`CopyMethod::Cloned`] path with `SNAPDIR_VERIFY_COPIES` not forcing.
+///
+///   * [`CopyTrust::TrustedObject`] — verify the SOURCE's bytes hash to
+///     `expected` (one read, preserving the store's verify-on-fetch corruption
+///     discipline); on a match → [`CloneSkip::Skip`] (the bit-identical clone
+///     needs no second re-hash), on a mismatch → [`CloneSkip::SourceCorrupt`].
+///     A `stat`/read error falls back to [`CloneSkip::Rehash`].
+///   * [`CopyTrust::StatGuarded`] — re-`stat` the source and, IFF the fresh
+///     [`CopyGuard`] still equals the recorded one, [`CloneSkip::Skip`] with NO
+///     read (the walk already hashed it); any change / `stat` failure →
+///     [`CloneSkip::Rehash`] (which surfaces a true content change as
+///     [`StoreError::Integrity`]).
+///   * [`CopyTrust::Untrusted`] — [`CloneSkip::Rehash`] (never skips).
+fn clone_skip_decision(
+    source: &Path,
+    expected: &str,
+    trust: CopyTrust,
+    hasher: &impl Hasher,
+) -> CloneSkip {
+    match trust {
+        CopyTrust::Untrusted => CloneSkip::Rehash,
+        CopyTrust::StatGuarded(recorded) => match fs::metadata(source) {
+            Ok(meta) if CopyGuard::from_metadata(&meta) == Some(recorded) => CloneSkip::Skip,
+            _ => CloneSkip::Rehash,
+        },
+        CopyTrust::TrustedObject => {
+            // Verify the immutable store source once (catches on-disk
+            // corruption), but skip the redundant re-hash of the bit-identical
+            // clone. A read error (e.g. source vanished) falls back to the temp
+            // re-hash path, which will surface the same failure.
+            match hash_file(source, hasher) {
+                Ok(actual) if actual == expected => CloneSkip::Skip,
+                Ok(actual) => CloneSkip::SourceCorrupt { actual },
+                Err(_) => CloneSkip::Rehash,
+            }
+        }
+    }
+}
+
 /// Copies a regular file's bytes from `source` to `target` (mirrors the
 /// oracle's `cp -RL -n`: dereference, do not clobber — `target` is a fresh
 /// temp path so the no-clobber aspect is implicit).
@@ -745,15 +948,15 @@ fn clonefile_enabled() -> bool {
 /// is normalized to be **observably identical** to `fs::copy` (perms-only
 /// metadata, BSD flags cleared). Off macOS, or with the knob disabled, this is
 /// exactly the historical `fs::copy` path.
-fn copy_file(source: &Path, target: &Path) -> Result<(), StoreError> {
+fn copy_file(source: &Path, target: &Path) -> Result<CopyMethod, StoreError> {
     #[cfg(target_os = "macos")]
     {
         if clonefile_enabled() && try_clonefile(source, target)? {
-            return Ok(());
+            return Ok(CopyMethod::Cloned);
         }
     }
     fs::copy(source, target)?;
-    Ok(())
+    Ok(CopyMethod::Copied)
 }
 
 /// Attempts a macOS `clonefile(2)` copy-on-write clone of `source` → `target`.

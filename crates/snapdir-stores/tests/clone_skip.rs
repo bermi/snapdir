@@ -83,6 +83,8 @@
     clippy::single_match,
     clippy::manual_let_else,
     clippy::too_many_lines,
+    clippy::doc_markdown,
+    clippy::similar_names,
     dead_code
 )]
 
@@ -340,8 +342,16 @@ fn mixed_size_files() -> Vec<(&'static str, Vec<u8>, &'static str)> {
         ("big.bin", big, "644"),
         ("tiny.txt", b"x".to_vec(), "644"),
         ("empty", Vec::new(), "644"),
-        ("nested/deep/leaf.bin", vec![0u8, 1, 2, 3, 255, 254, 0], "600"),
-        ("uni \u{2728}/space name.txt", "snowman \u{2603}\n".as_bytes().to_vec(), "644"),
+        (
+            "nested/deep/leaf.bin",
+            vec![0u8, 1, 2, 3, 255, 254, 0],
+            "600",
+        ),
+        (
+            "uni \u{2728}/space name.txt",
+            "snowman \u{2603}\n".as_bytes().to_vec(),
+            "644",
+        ),
     ]
 }
 
@@ -517,7 +527,9 @@ fn assert_no_silent_misaddress(mode: Mode, content_b_len_differs: bool) {
 
     let content_a: Vec<u8> = (0..(64 * 1024u32)).map(|i| (i % 211) as u8).collect();
     let content_b: Vec<u8> = if content_b_len_differs {
-        (0..(96 * 1024u32)).map(|i| (i % 199) as u8 ^ 0x5a).collect()
+        (0..(96 * 1024u32))
+            .map(|i| (i % 199) as u8 ^ 0x5a)
+            .collect()
     } else {
         // Same length as A, different bytes (the hard case for a size-only guard).
         content_a.iter().map(|b| b ^ 0xff).collect()
@@ -702,9 +714,8 @@ fn verify_copies_strict_catches_mutated_source_at_write_time() {
     let store = FileStore::from_root(store_dir.path().to_path_buf());
     let res = store.push(&manifest, src.path());
 
-    let err = res.expect_err(
-        "SNAPDIR_VERIFY_COPIES=1 must reject a mutated-source stage at write time",
-    );
+    let err =
+        res.expect_err("SNAPDIR_VERIFY_COPIES=1 must reject a mutated-source stage at write time");
     assert!(
         is_integrity(&err),
         "VERIFY_COPIES strict must fail with StoreError::Integrity, got {err:?}"
@@ -807,7 +818,10 @@ fn zero_byte_file_skip_path_roundtrips_under_all_modes() {
     let base = &runs[0];
     for (i, run) in runs.iter().enumerate() {
         assert_eq!(run.0, base.0, "mode {i}: 0-byte object pool must match");
-        assert_eq!(run.1, base.1, "mode {i}: restored 0-byte content must match");
+        assert_eq!(
+            run.1, base.1,
+            "mode {i}: restored 0-byte content must match"
+        );
         assert_eq!(run.3, base.3, "mode {i}: 0-byte snapshot id must match");
         // The empty object exists and is exactly empty.
         let empty_rel = object_path(&sum);
@@ -866,7 +880,12 @@ fn same_mtime_different_content_never_silently_misaddresses() {
     // Write A, capture its mtime/atime, build the manifest over A.
     fs::write(&target, &content_a).unwrap();
     let md_a = fs::metadata(&target).unwrap();
-    let a_mtime = filetime_pair(md_a.atime(), md_a.atime_nsec(), md_a.mtime(), md_a.mtime_nsec());
+    let a_mtime = filetime_pair(
+        md_a.atime(),
+        md_a.atime_nsec(),
+        md_a.mtime(),
+        md_a.mtime_nsec(),
+    );
 
     let mut manifest = Manifest::new();
     manifest.push(ManifestEntry::new(
