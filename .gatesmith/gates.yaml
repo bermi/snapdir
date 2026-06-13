@@ -3842,7 +3842,9 @@ gates:
     phase: 29
     owner_agent: stores
     depends_on: [apfs-clone-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T02:47:12Z
+    git_sha: 709d998
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --test apfs_clone --locked && cargo test -p snapdir-stores --locked && test ! -f .gatesmith/pending-tests/apfs_clone.rs && grep -q 'clonefile' crates/snapdir-stores/src/file_store.rs"
     pass_criteria:
