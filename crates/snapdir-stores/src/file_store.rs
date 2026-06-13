@@ -710,12 +710,117 @@ pub(crate) fn write_manifest_durable(
     Ok(())
 }
 
+/// Process-global count of times the macOS `clonefile` copy-on-write fast-path
+/// actually fired (a real `clonefile` success). Used by integration tests to
+/// assert the fast-path is exercised (not silently always falling back).
+static CLONEFILE_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Returns the number of times the macOS APFS `clonefile` copy-on-write
+/// fast-path has fired in this process (incremented on each genuine
+/// `clonefile` success in [`copy_file`]). Off macOS or with the fast-path
+/// disabled (`SNAPDIR_CLONEFILE=0`) this stays at its prior value.
+///
+/// Re-exported at the crate root as
+/// [`snapdir_stores::clonefile_hits`](crate::clonefile_hits) so integration
+/// tests can observe the fast-path firing.
+pub fn clonefile_hits() -> u64 {
+    CLONEFILE_HITS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Returns `true` unless `SNAPDIR_CLONEFILE=0` force-disables the clone
+/// fast-path. Read **per copy call** (never cached) so a test can toggle the
+/// knob at runtime under its `ENV_LOCK` and have the very next copy observe it.
+fn clonefile_enabled() -> bool {
+    !matches!(std::env::var("SNAPDIR_CLONEFILE").as_deref(), Ok("0"))
+}
+
 /// Copies a regular file's bytes from `source` to `target` (mirrors the
 /// oracle's `cp -RL -n`: dereference, do not clobber — `target` is a fresh
 /// temp path so the no-clobber aspect is implicit).
+///
+/// On macOS, when the clone knob is enabled (`SNAPDIR_CLONEFILE != "0"`), it
+/// first attempts a copy-on-write clone via `clonefile(2)`. On the
+/// not-supported / cross-volume / already-exists errnos it transparently falls
+/// back to [`fs::copy`]; on a genuine I/O error it propagates. The clone result
+/// is normalized to be **observably identical** to `fs::copy` (perms-only
+/// metadata, BSD flags cleared). Off macOS, or with the knob disabled, this is
+/// exactly the historical `fs::copy` path.
 fn copy_file(source: &Path, target: &Path) -> Result<(), StoreError> {
+    #[cfg(target_os = "macos")]
+    {
+        if clonefile_enabled() && try_clonefile(source, target)? {
+            return Ok(());
+        }
+    }
     fs::copy(source, target)?;
     Ok(())
+}
+
+/// Attempts a macOS `clonefile(2)` copy-on-write clone of `source` → `target`.
+///
+/// Returns `Ok(true)` on a successful clone (counter bumped + clone normalized
+/// to `fs::copy` parity); `Ok(false)` when `clonefile` reports a not-supported /
+/// cross-volume / already-exists condition and the caller should fall back to
+/// [`fs::copy`]; `Err` only on a genuine I/O failure.
+#[cfg(target_os = "macos")]
+fn try_clonefile(source: &Path, target: &Path) -> Result<bool, StoreError> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::atomic::Ordering;
+
+    let src_c = std::ffi::CString::new(source.as_os_str().as_bytes())
+        .map_err(|e| StoreError::Io(io::Error::new(io::ErrorKind::InvalidInput, e)))?;
+    let dst_c = std::ffi::CString::new(target.as_os_str().as_bytes())
+        .map_err(|e| StoreError::Io(io::Error::new(io::ErrorKind::InvalidInput, e)))?;
+
+    // `clonefile` with flags=0: copy-on-write clone of a regular file. It also
+    // copies ALL metadata (mode, xattrs, BSD flags), which we normalize below.
+    let ret = unsafe { libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) };
+    if ret != 0 {
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            // Not supported by the FS / cross-volume / bad-arg / dst exists:
+            // fall back to a plain byte copy.
+            Some(
+                libc::ENOTSUP
+                | libc::EXDEV
+                | libc::ENOSYS
+                | libc::EINVAL
+                | libc::EOPNOTSUPP
+                | libc::EEXIST,
+            ) => return Ok(false),
+            // A genuine I/O error (permissions, ENOSPC, …): propagate.
+            _ => return Err(StoreError::Io(err)),
+        }
+    }
+
+    // --- Parity normalization: make the clone observably identical to fs::copy.
+    // `fs::copy` sets the destination's permission bits to the source's and
+    // copies no other metadata. `clonefile` copied EVERYTHING, so we (1) clear
+    // BSD flags so an immutable (uchg/UF_IMMUTABLE) source cannot yield an
+    // immutable, un-GC-able object and (2) re-set the perms to exactly the
+    // source's mode bits. chflags(…, 0) does not break the CoW sharing.
+    //
+    // Order matters: clear the flags FIRST. If the source was uchg, the clone
+    // is immutable too, and `set_permissions` (chmod) on an immutable file
+    // returns EPERM — so flags must come down before we touch the perms.
+    let cleared = unsafe { libc::chflags(dst_c.as_ptr(), 0) };
+    if cleared != 0 {
+        let err = io::Error::last_os_error();
+        // EOPNOTSUPP/ENOTSUP: the FS has no BSD flags, so there is nothing to
+        // clear and the object is inherently removable — tolerate. Any other
+        // failure means we may have left flags on a would-be object, so fail
+        // loudly rather than ship an un-GC-able object.
+        match err.raw_os_error() {
+            Some(libc::EOPNOTSUPP | libc::ENOTSUP) => {}
+            _ => return Err(StoreError::Io(err)),
+        }
+    }
+
+    let src_perms = fs::metadata(source)?.permissions();
+    fs::set_permissions(target, src_perms)?;
+
+    CLONEFILE_HITS.fetch_add(1, Ordering::Relaxed);
+    Ok(true)
 }
 
 /// Builds a unique temp sibling path for `target` (same directory, so the

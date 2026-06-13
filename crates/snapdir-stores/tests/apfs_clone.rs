@@ -39,6 +39,18 @@
 //! skip-if-unavailable (detected at runtime, `return`s with an eprintln note)
 //! because CI may have only one filesystem.
 
+// Wiring (shape only, no assertion change): silence workspace `-D warnings`
+// clippy lints on this adversary-authored suite. `StreamStore` is imported as a
+// contracted-symbol presence check; the round-trip return tuple and the
+// skip-if-unavailable match are intentional in the adversary's style.
+#![allow(
+    unused_imports,
+    clippy::type_complexity,
+    clippy::single_match_else,
+    clippy::single_match,
+    clippy::manual_let_else
+)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -249,7 +261,11 @@ fn mixed_size_files() -> Vec<(&'static str, Vec<u8>, &'static str)> {
         ("big.bin", big, "644"),
         ("tiny.txt", b"x".to_vec(), "644"),
         ("empty", Vec::new(), "644"),
-        ("nested/deep/leaf.bin", vec![0u8, 1, 2, 3, 255, 254, 0], "600"),
+        (
+            "nested/deep/leaf.bin",
+            vec![0u8, 1, 2, 3, 255, 254, 0],
+            "600",
+        ),
     ]
 }
 
@@ -265,7 +281,12 @@ fn mixed_size_files() -> Vec<(&'static str, Vec<u8>, &'static str)> {
 fn roundtrip_once(
     tag: &str,
     files: &[(&str, &[u8], &str)],
-) -> (Vec<(String, Vec<u8>)>, Vec<(String, Vec<u8>)>, Vec<(String, Option<u32>)>, String) {
+) -> (
+    Vec<(String, Vec<u8>)>,
+    Vec<(String, Vec<u8>)>,
+    Vec<(String, Option<u32>)>,
+    String,
+) {
     let store_dir = TempDir::new(&format!("rt-store-{tag}"));
     let src = TempDir::new(&format!("rt-src-{tag}"));
     let dest = TempDir::new(&format!("rt-dest-{tag}"));
@@ -335,9 +356,13 @@ fn clone_on_and_off_produce_identical_objects_filenames_and_restored_content() {
     // Sanity: the >256 KiB file actually produced a distinct large blob, so the
     // equivalence above is not vacuously over only tiny inputs.
     let big_sum = Blake3Hasher::new().hash_hex(&files_owned[0].1);
+    // The inventory `rel` is the object's sharded relative path under the store
+    // root (`object_path` inserts `/` separators between the shard segments), so
+    // match the full sharded path rather than a raw checksum substring (wiring).
+    let big_rel = object_path(&big_sum);
     assert!(
-        on.0.iter().any(|(rel, bytes)| rel.contains(&big_sum[6..])
-            && bytes.len() == files_owned[0].1.len()),
+        on.0.iter()
+            .any(|(rel, bytes)| *rel == big_rel && bytes.len() == files_owned[0].1.len()),
         "the >256 KiB object must be present in the pool with its full length"
     );
 }
@@ -354,10 +379,14 @@ fn clone_on_and_off_produce_identical_objects_filenames_and_restored_content() {
 fn clone_and_fscopy_yield_identical_restored_permissions() {
     // Spec clause: identical resulting restored-file mode between the clone path
     // and the fs::copy path for unusual source modes (0o600, 0o755).
-    let files_owned: Vec<(&str, Vec<u8>, &str)> = vec![
+    // Sorted by path so this vec lines up with `on.2`/`off.2` (which
+    // `roundtrip_once` sorts by rel) when zipped below — wiring only; every
+    // file's recorded mode is still asserted against its own restored mode.
+    let mut files_owned: Vec<(&str, Vec<u8>, &str)> = vec![
         ("secret", b"private\n".to_vec(), "600"),
         ("script.sh", b"#!/bin/sh\necho hi\n".to_vec(), "755"),
     ];
+    files_owned.sort_by(|a, b| a.0.cmp(b.0));
     let files: Vec<(&str, &[u8], &str)> = files_owned
         .iter()
         .map(|(p, c, m)| (*p, c.as_slice(), *m))
@@ -653,7 +682,10 @@ fn zero_byte_file_clones_correctly() {
     let restored = fs::read(dest.path().join("empty")).expect("restored empty file");
     assert!(restored.is_empty(), "restored 0-byte file must be empty");
     // And the snapshot round-trips.
-    assert_eq!(store.get_manifest(&id).expect("get_manifest").to_string(), manifest.to_string());
+    assert_eq!(
+        store.get_manifest(&id).expect("get_manifest").to_string(),
+        manifest.to_string()
+    );
 }
 
 #[test]
@@ -672,7 +704,9 @@ fn read_only_source_still_produces_a_correct_object() {
     let (manifest, _id) = build_tree(src.path(), &files);
 
     let store = FileStore::from_root(store_dir.path().to_path_buf());
-    store.push(&manifest, src.path()).expect("push read-only source");
+    store
+        .push(&manifest, src.path())
+        .expect("push read-only source");
     store
         .fetch_files(&manifest, dest.path())
         .expect("fetch read-only source");
@@ -730,7 +764,10 @@ fn duplicate_content_dedups_to_one_object_under_both_paths() {
         count_objects(store_dir.path())
     };
 
-    assert_eq!(on_count, 1, "three identical-content files must dedup to ONE object");
+    assert_eq!(
+        on_count, 1,
+        "three identical-content files must dedup to ONE object"
+    );
     assert_eq!(
         on_count, off_count,
         "dedup behavior must be identical between the clone and fs::copy paths"

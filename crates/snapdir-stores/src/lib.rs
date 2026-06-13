@@ -79,7 +79,7 @@ pub use adaptive::{
     OpResult, OpSample,
 };
 pub use b2_store::B2Store;
-pub use file_store::FileStore;
+pub use file_store::{clonefile_hits, FileStore};
 pub use gcs_store::{GcsLocation, GcsStore};
 pub use limits::{for_scheme, BackendLimits};
 pub use pack::{
