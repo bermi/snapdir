@@ -3781,7 +3781,9 @@ gates:
     phase: 29
     owner_agent: bench
     depends_on: [fast-walk-tests-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T02:19:52Z
+    git_sha: 44fee8e
     failure_count: 0
     verification_cmd: "cargo build -p snapdir-benches --benches --locked && test -f .gatesmith/evidence/fast-walk-bench.log && grep -qiE 'before|baseline' .gatesmith/evidence/fast-walk-bench.log && grep -qiE 'after|speedup' .gatesmith/evidence/fast-walk-bench.log"
     pass_criteria:
