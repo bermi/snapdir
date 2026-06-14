@@ -4149,7 +4149,9 @@ gates:
     phase: 29
     owner_agent: generic
     depends_on: [durability-cost-docs]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T22:40:00Z
+    git_sha: ae79b1d
     failure_count: 0
     verification_cmd: "grep -q 'writeout_hint' crates/snapdir-stores/src/pack.rs && grep -qiE 'SNAPDIR_FSYNC' docs/rust-port/ssh-wire-protocol.md"
     pass_criteria:
