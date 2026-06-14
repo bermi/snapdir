@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+## [1.7.0] - 2026-06-14
+
+### Added
+
 - **`--walk-jobs <N>` / `$SNAPDIR_WALK_JOBS` — parallel, memory-mapped directory
   walk and file hashing.** Snapshotting a tree now hashes files across a bounded
   rayon pool and uses blake3's memory-mapped path for large files, so `id`,
@@ -445,7 +449,8 @@ Bash-written caches and remote buckets stay mutually readable.
   `gcloud`) in the shipped binary. External tools are used only by the test/oracle
   harness.
 
-[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/snapdir/snapdir/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/snapdir/snapdir/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/snapdir/snapdir/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/snapdir/snapdir/compare/v1.3.0...v1.4.0
