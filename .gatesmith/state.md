@@ -3,7 +3,7 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 29 IN PROGRESS — 31/37 — RELEASE 1.7.0 + perf (operator-requested 2026-06-12) — 232/238 total
+## ▶ PHASE 29 IN PROGRESS — 33/37 — RELEASE 1.7.0 + perf (operator-requested 2026-06-12) — 234/238 total
 
 > ⚙️ **PROCESS NOTE (cfg(linux) test gates):** native macOS clippy compiles a `#![cfg(target_os="linux")]` test to nothing, and a lib-only musl clippy misses test lints — so a Linux-target-only `clippy::pedantic` violation can slip impl gates and only fail CI's ubuntu `clippy --workspace --all-targets -D warnings`. `reflink-tests-review` caught 6 such in reflink.rs. Going forward, cfg(linux) test gates should run `cargo clippy --target x86_64-unknown-linux-musl --all-targets -D warnings` (zig wrapper) locally.
 
