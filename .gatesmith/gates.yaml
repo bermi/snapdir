@@ -4164,7 +4164,9 @@ gates:
     phase: 29
     owner_agent: generic
     depends_on: [release-perf-linux-1.7.0, fast-walk-complete, clone-skip-complete, reflink-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-13T22:50:00Z
+    git_sha: 0ffbbc7
     failure_count: 0
     verification_cmd: "grep -qE '^version = \"1.7.0\"' Cargo.toml && grep -q '## \\[1.7.0\\]' docs/rust-port/CHANGELOG.md && cargo build --workspace --locked"
     pass_criteria:
