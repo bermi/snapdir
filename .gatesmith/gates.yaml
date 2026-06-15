@@ -4257,7 +4257,9 @@ gates:
     phase: 30
     owner_agent: generic
     depends_on: [phase29-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T02:32:00Z
+    git_sha: 80896de
     failure_count: 0
     verification_cmd: "test -f utils/dx/build-sandbox.sh && test -f .gatesmith/reviews/dx-scenario-catalog.md && test -d .gatesmith/evidence/dx-sandbox/tree && snapdir id .gatesmith/evidence/dx-sandbox/tree >/dev/null 2>&1"
     pass_criteria:
