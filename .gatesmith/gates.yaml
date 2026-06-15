@@ -4178,7 +4178,9 @@ gates:
     phase: 29
     owner_agent: generic
     depends_on: [release-prep-1.7.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T00:42:00Z
+    git_sha: ddb710f
     failure_count: 0
     bump_reason: "GATE-BUMP 2026-06-14 (operator-directed: complete the 1.7.0 release incl. release notes + crates.io). Extended the cherry-pick scope + human_confirm from Phases 27-28 to 27-28-29 to carry the FOUR Phase-29 perf features (fast-walk, clonefile, clone-skip, Linux reflink) + the new required `reflink` CI job. Pass INTENT unchanged (release-verify/1.7.0 off upstream/main, ZERO .gatesmith, tip 1.7.0, bench-verify green) — only the commit list it must carry grew to include the perf work."
     verification_cmd: "git ls-remote --exit-code origin refs/heads/release-verify/1.7.0 >/dev/null"
