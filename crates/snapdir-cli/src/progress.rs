@@ -70,18 +70,6 @@ pub(crate) enum ColorChoice {
     Never,
 }
 
-impl ColorChoice {
-    /// Parses `"auto"`/`"always"`/`"never"` (case-insensitive). Unknown values
-    /// fall back to [`ColorChoice::Auto`].
-    pub(crate) fn parse(s: &str) -> Self {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "always" => ColorChoice::Always,
-            "never" => ColorChoice::Never,
-            _ => ColorChoice::Auto,
-        }
-    }
-}
-
 /// Whether the progress line should be rendered at all.
 ///
 /// Pure on purpose: `is_tty` is a parameter so callers can unit-test every
@@ -1129,12 +1117,6 @@ mod tests {
         assert!(use_color(ColorChoice::Auto, true, false)); // tty, no NO_COLOR
         assert!(!use_color(ColorChoice::Auto, true, true)); // NO_COLOR set
         assert!(!use_color(ColorChoice::Auto, false, false)); // not a tty
-
-        // ColorChoice::parse.
-        assert_eq!(ColorChoice::parse("always"), ColorChoice::Always);
-        assert_eq!(ColorChoice::parse("NEVER"), ColorChoice::Never);
-        assert_eq!(ColorChoice::parse("auto"), ColorChoice::Auto);
-        assert_eq!(ColorChoice::parse("garbage"), ColorChoice::Auto);
     }
 
     #[test]

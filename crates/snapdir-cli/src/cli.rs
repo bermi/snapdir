@@ -56,46 +56,72 @@ const ADAPTIVE_CEILING_CAP: usize = 64;
     long_about = None
 )]
 pub struct Cli {
-    /// Global options shared across every subcommand.
+    /// Universal options accepted by EVERY subcommand.
     #[command(flatten)]
-    pub globals: GlobalArgs,
+    pub universal: UniversalArgs,
 
     /// The subcommand to run.
     #[command(subcommand)]
     pub command: Command,
 }
 
-/// Options accepted by (and meaningful to) most subcommands.
-///
-/// Mirrors the Bash flag surface. Not every flag applies to every command;
-/// validation per command lands with the business logic in later gates.
+/// `--color` tri-state, derived by clap as `--color <auto|always|never>` so a
+/// bogus value (`--color bogus`) is rejected at parse time (exit 2) instead of
+/// silently falling back to `auto`. Maps 1:1 to [`progress::ColorChoice`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum ColorArg {
+    /// Color when attached to a TTY and `NO_COLOR` is unset (default).
+    #[default]
+    Auto,
+    /// Always emit color.
+    Always,
+    /// Never emit color.
+    Never,
+}
+
+impl ColorArg {
+    /// Maps the CLI selector to the renderer's [`ColorChoice`].
+    fn resolve(self) -> ColorChoice {
+        match self {
+            Self::Auto => ColorChoice::Auto,
+            Self::Always => ColorChoice::Always,
+            Self::Never => ColorChoice::Never,
+        }
+    }
+}
+
+/// The four UNIVERSAL flags every subcommand accepts (output discipline only —
+/// they never touch a store, the cache, or a walk). Flattened with
+/// `global = true` on [`Cli`] so they apply to (and are accepted by) every
+/// command, while the per-family groups below are attached ONLY to the commands
+/// they apply to — so clap natively rejects an inapplicable flag and each
+/// command's `--help` shows only its own flags.
 #[derive(Debug, Args)]
-// The bool flags are a faithful 1:1 mirror of the Bash orchestrator's CLI
-// surface (`--linked --force --purge --keep --dryrun --verbose --debug`); a
-// state machine would obscure that mapping rather than clarify it.
-#[allow(clippy::struct_excessive_bools)]
-pub struct GlobalArgs {
-    /// Directory where the object cache is stored.
-    #[arg(long, global = true, value_name = "DIR", env = "SNAPDIR_CACHE_DIR")]
-    pub cache_dir: Option<PathBuf>,
+pub struct UniversalArgs {
+    /// Suppress stderr banners and the live progress line.
+    #[arg(long, short = 'q', global = true)]
+    pub quiet: bool,
 
-    /// Catalog adapter to use.
-    #[arg(long, global = true, value_name = "NAME", env = "SNAPDIR_CATALOG")]
-    pub catalog: Option<String>,
+    /// When to colorize progress output: auto, always, or never.
+    #[arg(long, global = true, value_name = "WHEN", value_enum, default_value_t = ColorArg::Auto)]
+    pub color: ColorArg,
 
-    /// Store URI: `protocol://location/path`.
-    #[arg(long, global = true, value_name = "URI", env = "SNAPDIR_STORE")]
-    pub store: Option<String>,
+    /// Disable the live progress line (transfers still run).
+    #[arg(long, global = true, env = "SNAPDIR_NO_PROGRESS")]
+    pub no_progress: bool,
 
-    /// Shared object-pool store URI: when set, content OBJECTS route to this
-    /// pool's `.objects/` while MANIFESTS route to `--store`'s `.manifests/`.
-    #[arg(long, global = true, value_name = "URI", env = "SNAPDIR_OBJECTS_STORE")]
-    pub objects_store: Option<String>,
+    /// Enable verbose output. Honored by the transfer commands
+    /// (push/fetch/pull/checkout/stage/sync emit an effective-config banner and
+    /// CACHED/SAVED notices) and verify-cache (purge notices); inert elsewhere.
+    #[arg(long, global = true)]
+    pub verbose: bool,
+}
 
-    /// Snapshot ID to operate on.
-    #[arg(long, global = true, value_name = "ID")]
-    pub id: Option<String>,
-
+/// The walk/hash family: flags that shape the directory walk + hashing, applied
+/// to `manifest`/`id`/`stage`/`push`. Disjoint from [`TransferArgs`] (no field
+/// name overlaps), so `push`/`stage` can flatten BOTH.
+#[derive(Debug, Default, Args)]
+pub struct WalkArgs {
     /// Exclude paths matching PATTERN.
     // Accepts both repeated occurrences (`--exclude a --exclude b`) and
     // comma-delimited values (`--exclude a,b`); the collected patterns are
@@ -103,88 +129,51 @@ pub struct GlobalArgs {
     // comment is kept to a single line so `--help` output is byte-stable.
     #[arg(
         long,
-        global = true,
         value_name = "PATTERN",
         action = clap::ArgAction::Append,
         value_delimiter = ','
     )]
     pub exclude: Vec<String>,
 
-    /// Only include paths matching PATTERN.
-    // Accepts both repeated occurrences and comma-delimited values, matching
-    // `--exclude`'s arity. NOTE: this flag is currently UNWIRED — no `--paths`
-    // filtering is performed yet (wiring it is out of scope for this gate).
-    // Single-line doc comment keeps `--help` byte-stable.
-    #[arg(
-        long,
-        global = true,
-        value_name = "PATTERN",
-        action = clap::ArgAction::Append,
-        value_delimiter = ','
-    )]
-    pub paths: Vec<String>,
+    /// Max parallel file-hashing jobs during the directory walk (0/auto =
+    /// number of CPUs, capped). Distinct from transfer concurrency.
+    #[arg(long, value_name = "N", env = "SNAPDIR_WALK_JOBS")]
+    pub walk_jobs: Option<usize>,
+}
 
-    /// Use symlinks instead of copies.
-    #[arg(long, global = true)]
-    pub linked: bool,
+/// The transfer family: store selection, concurrency/bandwidth tuning, retry
+/// policy, and the staging/transfer bool flags. Applied to
+/// `push`/`fetch`/`pull`/`checkout`/`stage`/`sync`. Disjoint from
+/// [`WalkArgs`].
+#[derive(Debug, Default, Args)]
+// The bool flags are a faithful 1:1 mirror of the Bash orchestrator's transfer
+// surface (`--linked --force --keep --dryrun`); a state machine would obscure
+// that mapping rather than clarify it.
+#[allow(clippy::struct_excessive_bools)]
+pub struct TransferArgs {
+    /// Store URI: `protocol://location/path`.
+    #[arg(long, value_name = "URI", env = "SNAPDIR_STORE")]
+    pub store: Option<String>,
 
-    /// Force an action to run.
-    #[arg(long, global = true)]
-    pub force: bool,
+    /// Shared object-pool store URI: when set, content OBJECTS route to this
+    /// pool's `.objects/` while MANIFESTS route to `--store`'s `.manifests/`.
+    #[arg(long, value_name = "URI", env = "SNAPDIR_OBJECTS_STORE")]
+    pub objects_store: Option<String>,
 
-    /// Purge objects with invalid checksums.
-    #[arg(long, global = true)]
-    pub purge: bool,
+    /// Directory where the object cache is stored.
+    #[arg(long, value_name = "DIR", env = "SNAPDIR_CACHE_DIR")]
+    pub cache_dir: Option<PathBuf>,
 
-    /// Keep the staging directory.
-    #[arg(long, global = true)]
-    pub keep: bool,
-
-    /// Run without making any changes.
-    #[arg(long, global = true)]
-    pub dryrun: bool,
-
-    /// Enable verbose output.
-    #[arg(long, global = true)]
-    pub verbose: bool,
-
-    /// Enable debug output.
-    #[arg(long, global = true)]
-    pub debug: bool,
-
-    /// Disable the live progress line (transfers still run).
-    #[arg(long, global = true, env = "SNAPDIR_NO_PROGRESS")]
-    pub no_progress: bool,
-
-    /// Suppress stderr banners and the live progress line.
-    #[arg(long, short = 'q', global = true)]
-    pub quiet: bool,
-
-    /// When to colorize progress output: auto, always, or never.
-    #[arg(long, global = true, value_name = "WHEN", default_value = "auto")]
-    pub color: String,
-
-    /// Context (directory or store) for catalog queries.
-    #[arg(long, global = true, value_name = "DIR|STORE")]
-    pub location: Option<String>,
+    /// Snapshot ID to operate on.
+    #[arg(long, value_name = "ID")]
+    pub id: Option<String>,
 
     /// Max concurrent object transfers (0/auto = number of CPUs, capped).
-    #[arg(
-        long,
-        short = 'j',
-        global = true,
-        value_name = "N",
-        env = "SNAPDIR_JOBS"
-    )]
+    #[arg(long, short = 'j', value_name = "N", env = "SNAPDIR_JOBS")]
     pub jobs: Option<usize>,
 
-    /// Max parallel file-hashing jobs during the directory walk (0/auto =
-    /// number of CPUs, capped). Distinct from --jobs (transfer concurrency).
-    #[arg(long, global = true, value_name = "N", env = "SNAPDIR_WALK_JOBS")]
-    pub walk_jobs: Option<usize>,
-
     /// Limit total transfer bandwidth, e.g. 10M, 512K, 1G (wget-style; aggregate across all transfers).
-    #[arg(long, global = true, value_name = "RATE", env = "SNAPDIR_LIMIT_RATE")]
+    #[arg(long, value_name = "RATE", env = "SNAPDIR_LIMIT_RATE", value_parser = parse_rate_arg)]
     pub limit_rate: Option<String>,
 
     /// Adaptively tune transfer concurrency/bandwidth toward a fraction
@@ -195,7 +184,6 @@ pub struct GlobalArgs {
     /// politeness fraction in `(0.0, 1.0]`.
     #[arg(
         long,
-        global = true,
         value_name = "FRACTION",
         num_args = 0..=1,
         require_equals = true,
@@ -207,24 +195,158 @@ pub struct GlobalArgs {
 
     /// Adaptive concurrency ceiling (only meaningful with `--adaptive`). When
     /// unset, defaults to the auto concurrency; clamped to a sane upper bound.
-    #[arg(long, global = true, value_name = "N", env = "SNAPDIR_MAX_JOBS")]
+    #[arg(long, value_name = "N", env = "SNAPDIR_MAX_JOBS")]
     pub max_jobs: Option<usize>,
 
     /// Total retry attempts per network request, including the first (default 5).
-    #[arg(long, global = true, value_name = "N")]
+    #[arg(long, value_name = "N")]
     pub max_retries: Option<u32>,
 
     /// Base backoff delay in milliseconds for request retries (default 250).
-    #[arg(long, global = true, value_name = "MS")]
+    #[arg(long, value_name = "MS")]
     pub retry_base_ms: Option<u64>,
 
     /// Maximum backoff delay in milliseconds for request retries (default 30000).
-    #[arg(long, global = true, value_name = "MS")]
+    #[arg(long, value_name = "MS")]
     pub retry_max_ms: Option<u64>,
 
     /// Cap request rate (req/s); 0/unset uses the per-backend default.
-    #[arg(long, global = true, value_name = "N")]
+    #[arg(long, value_name = "N")]
     pub max_requests: Option<u64>,
+
+    /// Use symlinks instead of copies.
+    #[arg(long)]
+    pub linked: bool,
+
+    /// Force an action to run.
+    #[arg(long)]
+    pub force: bool,
+
+    /// Keep the staging directory.
+    #[arg(long)]
+    pub keep: bool,
+
+    /// Run without making any changes.
+    #[arg(long)]
+    pub dryrun: bool,
+}
+
+/// The catalog-query family: applied to `locations`/`ancestors`/`revisions`.
+#[derive(Debug, Default, Args)]
+pub struct CatalogArgs {
+    /// Catalog adapter to use.
+    #[arg(long, value_name = "NAME", env = "SNAPDIR_CATALOG")]
+    pub catalog: Option<String>,
+
+    /// Context (directory or store) for catalog queries.
+    #[arg(long, value_name = "DIR|STORE")]
+    pub location: Option<String>,
+
+    /// Snapshot ID to operate on.
+    #[arg(long, value_name = "ID")]
+    pub id: Option<String>,
+
+    /// Store URI: `protocol://location/path` (revisions location fallback).
+    #[arg(long, value_name = "URI", env = "SNAPDIR_STORE")]
+    pub store: Option<String>,
+}
+
+/// The cache-management family: applied to `verify`/`verify-cache`/`flush-cache`.
+#[derive(Debug, Default, Args)]
+pub struct CacheMgmtArgs {
+    /// Store URI: `protocol://location/path`.
+    #[arg(long, value_name = "URI", env = "SNAPDIR_STORE")]
+    pub store: Option<String>,
+
+    /// Snapshot ID to operate on.
+    #[arg(long, value_name = "ID")]
+    pub id: Option<String>,
+
+    /// Purge objects with invalid checksums.
+    #[arg(long)]
+    pub purge: bool,
+
+    /// Force an action to run.
+    #[arg(long)]
+    pub force: bool,
+
+    /// Run without making any changes.
+    #[arg(long)]
+    pub dryrun: bool,
+
+    /// Directory where the object cache is stored.
+    #[arg(long, value_name = "DIR", env = "SNAPDIR_CACHE_DIR")]
+    pub cache_dir: Option<PathBuf>,
+}
+
+/// The single transfer/catalog flag `diff` shares: a pinned `--id` selects one
+/// manifest from each side instead of unioning the whole store. The rest of
+/// `diff`'s flags are local to the [`Command::Diff`] variant.
+#[derive(Debug, Default, Args)]
+pub struct DiffIdArgs {
+    /// Pin each side to this single manifest id (else the whole store is
+    /// unioned).
+    #[arg(long, value_name = "ID")]
+    pub id: Option<String>,
+}
+
+/// The resolved per-invocation configuration the dispatch layer reads. Built
+/// once by [`Cli::run`] by merging the [`UniversalArgs`] with whichever
+/// per-family group the parsed subcommand carried, so every downstream helper
+/// keeps reading a single flat `self.globals.<field>` exactly as before — only
+/// the PARSE shape changed, not the resolved values for a valid invocation.
+#[derive(Debug, Default)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct Resolved {
+    pub cache_dir: Option<PathBuf>,
+    pub catalog: Option<String>,
+    pub store: Option<String>,
+    pub objects_store: Option<String>,
+    pub id: Option<String>,
+    pub exclude: Vec<String>,
+    pub linked: bool,
+    pub force: bool,
+    pub purge: bool,
+    pub keep: bool,
+    pub dryrun: bool,
+    pub verbose: bool,
+    pub no_progress: bool,
+    pub quiet: bool,
+    pub color: ColorArg,
+    pub location: Option<String>,
+    pub jobs: Option<usize>,
+    pub walk_jobs: Option<usize>,
+    pub limit_rate: Option<String>,
+    pub adaptive: Option<f64>,
+    pub max_jobs: Option<usize>,
+    pub max_retries: Option<u32>,
+    pub retry_base_ms: Option<u64>,
+    pub retry_max_ms: Option<u64>,
+    pub max_requests: Option<u64>,
+}
+
+impl Resolved {
+    /// Seeds a `Resolved` with the universal flags; per-family fields default to
+    /// empty/`None` until merged in by [`Cli::run`].
+    fn from_universal(u: &UniversalArgs) -> Self {
+        Resolved {
+            quiet: u.quiet,
+            color: u.color,
+            no_progress: u.no_progress,
+            verbose: u.verbose,
+            ..Resolved::default()
+        }
+    }
+}
+
+/// The dispatch context: the resolved flat config plus the parsed subcommand.
+/// Every helper method that previously hung off `Cli` now hangs off `Ctx` and
+/// reads `self.globals.<field>` from the resolved config — so the ~60 read sites
+/// are byte-identical to before the per-command flag split.
+#[derive(Debug)]
+pub struct Ctx {
+    globals: Resolved,
+    command: Command,
 }
 
 /// CLI selector for the SNAPPACK transport encoding `send-pack` emits.
@@ -318,60 +440,121 @@ pub enum Command {
         )]
         exclude: Vec<String>,
 
+        /// Max parallel file-hashing jobs during the directory walk (0/auto =
+        /// number of CPUs, capped). Distinct from transfer concurrency.
+        #[arg(long, value_name = "N", env = "SNAPDIR_WALK_JOBS")]
+        walk_jobs: Option<usize>,
+
         /// Directory to describe.
         path: Option<PathBuf>,
     },
 
     /// Print the manifest ID of a directory or a manifest piped via stdin.
     Id {
+        /// Walk/hash flags (`--exclude`, `--walk-jobs`).
+        #[command(flatten)]
+        walk: WalkArgs,
+
         /// Directory to describe (omit to read a manifest from stdin).
         path: Option<PathBuf>,
     },
 
     /// Save a snapshot of a directory into the local cache.
     Stage {
+        /// Walk/hash flags (`--exclude`, `--walk-jobs`).
+        #[command(flatten)]
+        walk: WalkArgs,
+
+        /// Transfer flags (`--store`, `--cache-dir`, `--jobs`, …).
+        #[command(flatten)]
+        transfer: TransferArgs,
+
         /// Directory to stage.
         dir: Option<PathBuf>,
     },
 
     /// Push a snapshot to a store given its path or a staged manifest ID.
     Push {
+        /// Walk/hash flags (`--exclude`, `--walk-jobs`).
+        #[command(flatten)]
+        walk: WalkArgs,
+
+        /// Transfer flags (`--store`, `--cache-dir`, `--jobs`, …).
+        #[command(flatten)]
+        transfer: TransferArgs,
+
         /// Directory to push (omit when using `--id`).
         path: Option<PathBuf>,
     },
 
     /// Fetch a snapshot from a store into the local cache.
-    Fetch,
+    Fetch {
+        /// Transfer flags (`--store`, `--id`, `--cache-dir`, `--jobs`, …).
+        #[command(flatten)]
+        transfer: TransferArgs,
+    },
 
     /// Fetch a snapshot from a store and check it out to the given path.
     Pull {
+        /// Transfer flags (`--store`, `--id`, `--cache-dir`, `--jobs`, …).
+        #[command(flatten)]
+        transfer: TransferArgs,
+
         /// Destination directory.
         path: Option<PathBuf>,
     },
 
     /// Check out a snapshot to a directory.
     Checkout {
+        /// Transfer flags (`--id`, `--cache-dir`, `--linked`, …).
+        #[command(flatten)]
+        transfer: TransferArgs,
+
         /// Destination directory.
         dir: Option<PathBuf>,
     },
 
     /// Verify the integrity of a staged snapshot.
-    Verify,
+    Verify {
+        /// Cache-management flags (`--store`, `--id`, `--purge`, …).
+        #[command(flatten)]
+        cache_mgmt: CacheMgmtArgs,
+    },
 
     /// Verify the integrity of the local cache.
-    VerifyCache,
+    VerifyCache {
+        /// Cache-management flags (`--id`, `--purge`, `--cache-dir`, …).
+        #[command(flatten)]
+        cache_mgmt: CacheMgmtArgs,
+    },
 
     /// Flush the local cache.
-    FlushCache,
+    FlushCache {
+        /// Cache-management flags (`--cache-dir`, …).
+        #[command(flatten)]
+        cache_mgmt: CacheMgmtArgs,
+    },
 
     /// List directories and stores where snapshots have been recorded.
-    Locations,
+    Locations {
+        /// Catalog-query flags (`--catalog`, `--location`, `--id`, `--store`).
+        #[command(flatten)]
+        catalog: CatalogArgs,
+    },
 
     /// List ancestor snapshot IDs and their locations.
-    Ancestors,
+    Ancestors {
+        /// Catalog-query flags (`--catalog`, `--location`, `--id`, `--store`).
+        #[command(flatten)]
+        catalog: CatalogArgs,
+    },
 
     /// List snapshot IDs created on a location (store or absolute path).
-    Revisions,
+    Revisions {
+        /// Catalog-query flags (`--catalog`, `--location`, `--id`, `--store`).
+        #[command(flatten)]
+        catalog: CatalogArgs,
+    },
 
     /// Print default settings and arguments.
     Defaults,
@@ -379,8 +562,12 @@ pub enum Command {
     /// Copy a snapshot (its manifest + objects) directly between two stores,
     /// streaming through memory — no local staging.
     Sync {
+        /// Transfer flags (`--id`, `--jobs`, `--limit-rate`, `--dryrun`, …).
+        #[command(flatten)]
+        transfer: TransferArgs,
+
         /// Source store URI: `protocol://location/path`.
-        #[arg(long, value_name = "STORE", env = "SNAPDIR_STORE")]
+        #[arg(long, value_name = "STORE")]
         from: String,
         /// Destination store URI: `protocol://location/path`.
         #[arg(long, value_name = "STORE")]
@@ -400,9 +587,13 @@ pub enum Command {
     /// Compare two sides, each a set of manifests, reporting file-level
     /// differences — reading MANIFESTS ONLY.
     Diff {
-        /// FROM-side ref: a manifest-store URI (enumerated) and/or, with the
-        /// global `--id`, a single pinned manifest. Repeatable; refs are
-        /// UNIONED into the FROM side.
+        /// `--id`: pin each side to one manifest instead of unioning the store.
+        #[command(flatten)]
+        id_arg: DiffIdArgs,
+
+        /// FROM-side ref: a manifest-store URI (enumerated) and/or, with
+        /// `--id`, a single pinned manifest. Repeatable; refs are UNIONED into
+        /// the FROM side.
         #[arg(long, value_name = "REF", action = clap::ArgAction::Append)]
         from: Vec<String>,
 
@@ -525,6 +716,110 @@ pub enum Command {
 }
 
 impl Cli {
+    /// Merges the universal flags with whichever per-family group the parsed
+    /// subcommand carried into a single flat [`Resolved`] config, then hands the
+    /// command + config to [`Ctx::run`]. The per-command flag split lives ONLY
+    /// at the clap parse boundary (so clap natively rejects inapplicable flags
+    /// and per-command `--help` is scoped); from here down a valid invocation
+    /// resolves to byte-identical values, dispatched through `Ctx`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from the dispatched command (see [`Ctx::run`]).
+    pub fn run(self) -> Result<()> {
+        let mut globals = Resolved::from_universal(&self.universal);
+        // Fold the active command's per-family group(s) into the flat config.
+        match &self.command {
+            Command::Manifest {
+                exclude, walk_jobs, ..
+            } => {
+                globals.exclude.clone_from(exclude);
+                globals.walk_jobs = *walk_jobs;
+            }
+            Command::Id { walk, .. } => merge_walk(&mut globals, walk),
+            Command::Stage {
+                walk, transfer, ..
+            }
+            | Command::Push {
+                walk, transfer, ..
+            } => {
+                merge_walk(&mut globals, walk);
+                merge_transfer(&mut globals, transfer);
+            }
+            Command::Fetch { transfer }
+            | Command::Pull { transfer, .. }
+            | Command::Checkout { transfer, .. }
+            | Command::Sync { transfer, .. } => merge_transfer(&mut globals, transfer),
+            Command::Verify { cache_mgmt }
+            | Command::VerifyCache { cache_mgmt }
+            | Command::FlushCache { cache_mgmt } => merge_cache_mgmt(&mut globals, cache_mgmt),
+            Command::Locations { catalog }
+            | Command::Ancestors { catalog }
+            | Command::Revisions { catalog } => merge_catalog(&mut globals, catalog),
+            Command::Diff { id_arg, .. } => globals.id.clone_from(&id_arg.id),
+            // The remaining commands (defaults/version + the hidden plumbing)
+            // take universal flags only.
+            Command::Defaults
+            | Command::Version { .. }
+            | Command::Completions { .. }
+            | Command::Man
+            | Command::ObjectsNeeded
+            | Command::SendPack { .. }
+            | Command::ReceivePack { .. } => {}
+        }
+        Ctx {
+            globals,
+            command: self.command,
+        }
+        .run()
+    }
+}
+
+/// Folds a parsed [`WalkArgs`] group into the resolved config.
+fn merge_walk(g: &mut Resolved, w: &WalkArgs) {
+    g.exclude.clone_from(&w.exclude);
+    g.walk_jobs = w.walk_jobs;
+}
+
+/// Folds a parsed [`TransferArgs`] group into the resolved config.
+fn merge_transfer(g: &mut Resolved, t: &TransferArgs) {
+    g.store.clone_from(&t.store);
+    g.objects_store.clone_from(&t.objects_store);
+    g.cache_dir.clone_from(&t.cache_dir);
+    g.id.clone_from(&t.id);
+    g.jobs = t.jobs;
+    g.limit_rate.clone_from(&t.limit_rate);
+    g.adaptive = t.adaptive;
+    g.max_jobs = t.max_jobs;
+    g.max_retries = t.max_retries;
+    g.retry_base_ms = t.retry_base_ms;
+    g.retry_max_ms = t.retry_max_ms;
+    g.max_requests = t.max_requests;
+    g.linked = t.linked;
+    g.force = t.force;
+    g.keep = t.keep;
+    g.dryrun = t.dryrun;
+}
+
+/// Folds a parsed [`CatalogArgs`] group into the resolved config.
+fn merge_catalog(g: &mut Resolved, c: &CatalogArgs) {
+    g.catalog.clone_from(&c.catalog);
+    g.location.clone_from(&c.location);
+    g.id.clone_from(&c.id);
+    g.store.clone_from(&c.store);
+}
+
+/// Folds a parsed [`CacheMgmtArgs`] group into the resolved config.
+fn merge_cache_mgmt(g: &mut Resolved, c: &CacheMgmtArgs) {
+    g.store.clone_from(&c.store);
+    g.id.clone_from(&c.id);
+    g.purge = c.purge;
+    g.force = c.force;
+    g.dryrun = c.dryrun;
+    g.cache_dir.clone_from(&c.cache_dir);
+}
+
+impl Ctx {
     /// Dispatch the parsed command.
     ///
     /// `manifest`/`id`, the store commands, the cache commands
@@ -537,6 +832,11 @@ impl Cli {
     /// Returns any error raised while resolving the path, building the exclude
     /// matcher, walking the tree, talking to the store/cache, opening the
     /// catalog, or resolving the running binary path for `defaults`.
+    // A flat one-arm-per-subcommand dispatch: every arm just routes to a
+    // `run_*` helper (or, for `manifest`/`id`/`version`, a short inline body).
+    // Splitting it would only scatter the routing table across helpers without
+    // making any single arm clearer, so the length is inherent.
+    #[allow(clippy::too_many_lines)]
     pub fn run(&self) -> Result<()> {
         match &self.command {
             Command::Manifest {
@@ -545,9 +845,11 @@ impl Cli {
                 checksum_bin,
                 exclude,
                 path,
+                ..
             } => {
                 // Precedence: the subcommand's `--exclude` list overrides the
-                // global one when non-empty, else fall back to the global list.
+                // resolved one when non-empty, else fall back to the resolved
+                // list (they are the same value here — kept for parity).
                 let exclude: &[String] = if exclude.is_empty() {
                     &self.globals.exclude
                 } else {
@@ -578,7 +880,7 @@ impl Cli {
                 self.log_event("manifest", &id, &abs.to_string_lossy())?;
                 Ok(())
             }
-            Command::Id { path } => {
+            Command::Id { path, .. } => {
                 // `snapdir id` reproduces the original `snapdir id`: the snapshot id is the
                 // b3sum of the comment-stripped manifest text. The wrapper
                 // walks with the default checksum (b3sum) and default
@@ -595,17 +897,17 @@ impl Cli {
                 println!("{id}");
                 Ok(())
             }
-            Command::Push { path } => self.run_push(path.as_deref()),
-            Command::Fetch => self.run_fetch(),
-            Command::Checkout { dir } => self.run_checkout(dir.as_deref()),
-            Command::Pull { path } => self.run_pull(path.as_deref()),
-            Command::Verify => self.run_verify(),
-            Command::Stage { dir } => self.run_stage(dir.as_deref()),
-            Command::VerifyCache => self.run_verify_cache(),
-            Command::FlushCache => self.run_flush_cache(),
-            Command::Locations => self.run_locations(),
-            Command::Ancestors => self.run_ancestors(),
-            Command::Revisions => self.run_revisions(),
+            Command::Push { path, .. } => self.run_push(path.as_deref()),
+            Command::Fetch { .. } => self.run_fetch(),
+            Command::Checkout { dir, .. } => self.run_checkout(dir.as_deref()),
+            Command::Pull { path, .. } => self.run_pull(path.as_deref()),
+            Command::Verify { .. } => self.run_verify(),
+            Command::Stage { dir, .. } => self.run_stage(dir.as_deref()),
+            Command::VerifyCache { .. } => self.run_verify_cache(),
+            Command::FlushCache { .. } => self.run_flush_cache(),
+            Command::Locations { .. } => self.run_locations(),
+            Command::Ancestors { .. } => self.run_ancestors(),
+            Command::Revisions { .. } => self.run_revisions(),
             Command::Version { capabilities } => {
                 if *capabilities {
                     // The acceleration probe's capability line: space-separated
@@ -629,6 +931,7 @@ impl Cli {
                 to,
                 from_objects,
                 to_objects,
+                ..
             } => self.run_sync(from, to, from_objects.as_deref(), to_objects.as_deref()),
             Command::Diff {
                 from,
@@ -637,6 +940,7 @@ impl Cli {
                 json,
                 exit_code,
                 on_conflict,
+                ..
             } => self.run_diff(from, to, *all, *json, *exit_code, on_conflict.resolve()),
             Command::Completions { shell } => {
                 // Build-time hook: emit the requested shell's completion script
@@ -736,7 +1040,7 @@ fn run_defaults() -> Result<()> {
     Ok(())
 }
 
-impl Cli {
+impl Ctx {
     /// `snapdir push [--store file://DIR] <path>`: walk `<path>` into a manifest
     /// and push its objects (objects-before-manifest, skip-if-present) to the
     /// resolved store. Prints the resulting snapshot id, matching the oracle.
@@ -1598,10 +1902,12 @@ impl Cli {
         }
     }
 
-    /// The effective [`ColorChoice`] from the `--color` flag (`auto`/`always`/
-    /// `never`, case-insensitive; unknown values fall back to `auto`).
+    /// The effective [`ColorChoice`] from the `--color` flag. The value is
+    /// already validated to `auto`/`always`/`never` at parse time (clap
+    /// `ValueEnum`), so a bogus `--color bogus` was rejected (exit 2) before we
+    /// get here.
     fn color_choice(&self) -> ColorChoice {
-        ColorChoice::parse(&self.globals.color)
+        self.globals.color.resolve()
     }
 
     /// Builds the live progress dashboard for a transfer command.
@@ -2497,6 +2803,22 @@ fn parse_rate(s: &str) -> Result<u64> {
     Ok((value * multiplier) as u64)
 }
 
+/// clap `value_parser` for `--limit-rate`: validates the wget-style byte-rate
+/// string AT PARSE TIME so a malformed value (`--limit-rate bogus`) is rejected
+/// with exit 2 and a message naming the accepted forms, instead of slipping
+/// through to a later transfer-config error. Returns the ORIGINAL string on
+/// success (the field stays `Option<String>`; [`parse_rate`] re-parses it where
+/// the byte value is actually needed) and a clap-friendly `String` error
+/// naming `10M`/`512K`/`1G` otherwise.
+fn parse_rate_arg(s: &str) -> Result<String, String> {
+    match parse_rate(s) {
+        Ok(_) => Ok(s.to_owned()),
+        Err(_) => Err(format!(
+            "invalid --limit-rate '{s}': expected a wget-style byte rate, e.g. 10M, 512K, or 1G"
+        )),
+    }
+}
+
 /// Reads an environment variable as a `u64`, returning `None` when the variable
 /// is unset, empty, or does not parse as a non-negative integer. Used by the
 /// rate-limit / retry resolvers for their `SNAPDIR_*` env fallbacks.
@@ -2868,10 +3190,17 @@ mod tests {
         assert!(resolve_adapter("NotAScheme://x").is_err());
     }
 
-    /// Builds a `Cli` from args, forcing the transfer-tuning env vars unset so
-    /// the parse reflects ONLY the explicit flags (clap's `env` would otherwise
-    /// let a leaked `SNAPDIR_JOBS` / `SNAPDIR_LIMIT_RATE` perturb the result).
-    fn cli_with(args: &[&str]) -> Cli {
+    /// Builds a dispatch [`Ctx`] from transfer-family `args`, forcing the
+    /// transfer-tuning env vars unset so the parse reflects ONLY the explicit
+    /// flags (clap's `env` would otherwise let a leaked `SNAPDIR_JOBS` /
+    /// `SNAPDIR_LIMIT_RATE` perturb the result).
+    ///
+    /// The flags exercised here (`--jobs`/`--limit-rate`/`--adaptive`/
+    /// `--max-jobs`/`--max-retries`/…) are the TRANSFER family, so the carrier
+    /// subcommand is `fetch` (which flattens [`TransferArgs`]); `Cli::run`'s
+    /// merge then folds them into the flat [`Resolved`] the helpers read — the
+    /// same path a real `snapdir fetch …` invocation takes.
+    fn cli_with(args: &[&str]) -> Ctx {
         // SAFETY: tests in this module that touch these vars run in-process;
         // we remove them before parsing so the flags alone drive the config.
         unsafe {
@@ -2880,11 +3209,50 @@ mod tests {
             std::env::remove_var("SNAPDIR_ADAPTIVE");
             std::env::remove_var("SNAPDIR_MAX_JOBS");
         }
-        let mut full = vec!["snapdir"];
+        let mut full = vec!["snapdir", "fetch"];
         full.extend_from_slice(args);
-        // `defaults` is a no-arg subcommand, satisfying the required subcommand.
-        full.push("defaults");
-        Cli::try_parse_from(full).expect("parse cli")
+        ctx_from(Cli::try_parse_from(full).expect("parse cli"))
+    }
+
+    /// Folds a parsed [`Cli`] into the dispatch [`Ctx`] exactly as
+    /// [`Cli::run`] does, for tests that need the resolved config / helpers
+    /// without running the command.
+    fn ctx_from(cli: Cli) -> Ctx {
+        let mut globals = Resolved::from_universal(&cli.universal);
+        match &cli.command {
+            Command::Manifest {
+                exclude, walk_jobs, ..
+            } => {
+                globals.exclude.clone_from(exclude);
+                globals.walk_jobs = *walk_jobs;
+            }
+            Command::Id { walk, .. } => merge_walk(&mut globals, walk),
+            Command::Stage {
+                walk, transfer, ..
+            }
+            | Command::Push {
+                walk, transfer, ..
+            } => {
+                merge_walk(&mut globals, walk);
+                merge_transfer(&mut globals, transfer);
+            }
+            Command::Fetch { transfer }
+            | Command::Pull { transfer, .. }
+            | Command::Checkout { transfer, .. }
+            | Command::Sync { transfer, .. } => merge_transfer(&mut globals, transfer),
+            Command::Verify { cache_mgmt }
+            | Command::VerifyCache { cache_mgmt }
+            | Command::FlushCache { cache_mgmt } => merge_cache_mgmt(&mut globals, cache_mgmt),
+            Command::Locations { catalog }
+            | Command::Ancestors { catalog }
+            | Command::Revisions { catalog } => merge_catalog(&mut globals, catalog),
+            Command::Diff { id_arg, .. } => globals.id.clone_from(&id_arg.id),
+            _ => {}
+        }
+        Ctx {
+            globals,
+            command: cli.command,
+        }
     }
 
     #[test]
@@ -2952,9 +3320,16 @@ mod tests {
 
     #[test]
     fn transfer_flags_bad_limit_rate_errors() {
-        assert!(cli_with(&["--limit-rate", "nope"])
-            .transfer_config()
-            .is_err());
+        // A bogus `--limit-rate` is now rejected at PARSE time by the clap
+        // `parse_rate_arg` value-parser (exit 2), not deferred to
+        // `transfer_config`. So the parse itself fails on a transfer command.
+        assert!(
+            Cli::try_parse_from(["snapdir", "fetch", "--limit-rate", "nope"]).is_err(),
+            "a malformed --limit-rate must be rejected at parse time"
+        );
+        // A well-formed value still threads through to the resolved byte rate.
+        let cfg = cli_with(&["--limit-rate", "1M"]).transfer_config().unwrap();
+        assert_eq!(cfg.max_bytes_per_sec, Some(1_048_576));
     }
 
     #[test]
@@ -2996,8 +3371,10 @@ mod tests {
                 std::env::remove_var("SNAPDIR_MAX_JOBS");
             }
             let arg = format!("--adaptive={bad}");
+            // `--adaptive` is a transfer flag: carry it on `fetch` so the ONLY
+            // parse failure is the value_parser rejecting the bad fraction.
             assert!(
-                Cli::try_parse_from(["snapdir", &arg, "defaults"]).is_err(),
+                Cli::try_parse_from(["snapdir", "fetch", &arg]).is_err(),
                 "expected --adaptive={bad} to be rejected"
             );
         }
