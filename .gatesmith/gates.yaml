@@ -4440,7 +4440,9 @@ gates:
     phase: 30
     owner_agent: adversary
     depends_on: [dx-findings-signoff]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T07:37:00Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/dx_progress.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/dx_progress.rs"
     pass_criteria:
@@ -4467,7 +4469,8 @@ gates:
     depends_on: [dx-progress-impl-core]
     status: pending
     failure_count: 0
-    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli && test ! -f .gatesmith/pending-tests/dx_progress.rs && test -f crates/snapdir-cli/tests/dx_progress.rs"
+    bump_reason: "GATE-BUMP 2026-06-15 (correctness): the adversary's dx_progress.rs PTY-render clauses SKIP unless SNAPDIR_PTY_TEST is set in the OUTER env (CI-safety, mirroring progress_e2e.rs). Added `SNAPDIR_PTY_TEST=1 cargo test -p snapdir-cli --test dx_progress` to the verification so the progress clauses ACTUALLY RUN (without it the gate would pass trivially while the fix is unverified). The full-suite leg stays env-free (PTY clauses skip there, harmless)."
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli && SNAPDIR_PTY_TEST=1 cargo test -p snapdir-cli --test dx_progress && test ! -f .gatesmith/pending-tests/dx_progress.rs && test -f crates/snapdir-cli/tests/dx_progress.rs"
     pass_criteria:
       and:
         - exit_code: 0
@@ -4480,7 +4483,8 @@ gates:
     depends_on: [dx-progress-impl-cli]
     status: pending
     failure_count: 0
-    verification_cmd: "cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    bump_reason: "GATE-BUMP 2026-06-15 (correctness): added `SNAPDIR_PTY_TEST=1 cargo test -p snapdir-cli --test dx_progress` so the PTY-render progress clauses actually run during review (they skip without the env). Frozen-lock + workspace legs unchanged."
+    verification_cmd: "SNAPDIR_PTY_TEST=1 cargo test -p snapdir-cli --test dx_progress && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
       and:
         - exit_code: 0
