@@ -1622,27 +1622,44 @@ impl Ctx {
     /// once (from `run_pull`), not once per leg. The optional `meter` drives the
     /// live progress line (set on the resolved store + the cache push leg).
     fn fetch_inner(&self, meter: Option<&Arc<Meter>>) -> Result<()> {
-        // Fast path: if the local cache already holds the manifest, the whole
-        // snapshot is cached. By snapdir's manifest-written-last invariant a
-        // present manifest implies every object it references is present (the
-        // same invariant `FileStore::push`'s skip-if-manifest-present relies
-        // on), and `get_manifest` re-verifies the cached manifest hashes back
-        // to `id`, so this is a sound integrity gate. Skipping here means a
-        // repeat `fetch`/`pull` of the same id performs ZERO store reads — no
-        // network round-trip to re-download objects already on disk. The early
-        // return is itself write-free, so it composes cleanly with `--dryrun`.
+        // Fast path: a repeat `fetch`/`pull` of an id already fully cached
+        // should perform ZERO store reads. But "manifest present" alone is NOT
+        // sufficient: a cache OBJECT can be deleted out from under a present
+        // manifest (a recovery scenario), and short-circuiting on the manifest
+        // would leave that hole — a later `checkout` then fails with `object
+        // not found`. So the fast path only fires when the manifest is cached
+        // AND every object it references is present in the cache. If the
+        // manifest is cached but some objects are missing, we fall through to
+        // the store-resolution path below, which re-invokes the proven
+        // store→cache fetch/transfer and HEALS the cache (objects-before-
+        // manifest discipline preserved). The check is write-free, so the
+        // early `CACHED` return still composes cleanly with `--dryrun`.
         //
         // We only consult the cache when an `--id` is actually present; with no
         // id there is nothing to look up, so we fall through and let the
         // original store-resolution path surface the canonical "missing --store
         // option" error first (preserving the frozen CLI error precedence).
         let cache = self.cache_store_with_meter(meter.cloned())?;
+        let mut healing = false;
         if let Some(id) = self.globals.id.as_deref() {
-            if cache.get_manifest(id).is_ok() {
-                if self.globals.verbose && !self.globals.quiet {
-                    eprintln!("CACHED: {id}");
+            if let Ok(manifest) = cache.get_manifest(id) {
+                if Self::missing_cache_objects(&manifest, &self.cache_dir()).is_empty() {
+                    if self.globals.verbose && !self.globals.quiet {
+                        eprintln!("CACHED: {id}");
+                    }
+                    return Ok(());
                 }
-                return Ok(());
+                // Manifest is cached but at least one object is missing: do not
+                // short-circuit. Fall through to fetch from the store, which
+                // restores the absent objects (and re-commits the manifest).
+                // The non-external cache write goes through `FileStore::push`,
+                // which itself skips-if-manifest-present — so to let the heal
+                // re-copy the missing objects we must drop the stale cached
+                // manifest first (the re-fetched manifest is byte-identical:
+                // same id). Do this only when actually healing, so the healthy
+                // fast path above is untouched and a real `--dryrun` below stays
+                // write-free (the removal happens after the dryrun guard).
+                healing = true;
             }
         }
 
@@ -1696,6 +1713,22 @@ impl Ctx {
                     .with_context(|| format!("fetching objects for snapshot {id}")),
             )?;
 
+            // Heal: drop the stale cached manifest so `push`'s
+            // skip-if-manifest-present does not short-circuit the re-copy of
+            // the missing objects. `push` rewrites the byte-identical manifest
+            // last, restoring the manifest-written-last invariant.
+            if healing {
+                let manifest_file = self.cache_dir().join(snapdir_core::store::manifest_path(id));
+                if manifest_file.exists() {
+                    std::fs::remove_file(&manifest_file).with_context(|| {
+                        format!(
+                            "removing stale cached manifest {} before re-fetch",
+                            manifest_file.display()
+                        )
+                    })?;
+                }
+            }
+
             cache
                 .push(&manifest, scratch.path())
                 .with_context(|| format!("saving snapshot {id} to the local cache"))?;
@@ -1746,6 +1779,20 @@ impl Ctx {
         let manifest = cache.get_manifest(id).with_context(|| {
             format!("manifest {id} not found locally; did you forget to fetch it?")
         })?;
+        // Pre-flight the object pool so a checkout that cannot complete fails
+        // with a message that locates the gap by FILE PATH (from the manifest),
+        // not the bare object-not-found hash the store would surface mid-copy.
+        // This is purely the offline/unhealable case: `pull` heals via its
+        // fetch leg before reaching here, so a missing object at checkout means
+        // the cache is genuinely incomplete and must be re-fetched.
+        let missing = Self::missing_cache_objects(&manifest, &self.cache_dir());
+        if let Some((checksum, path)) = missing.first() {
+            anyhow::bail!(
+                "snapdir: cannot check out {id}: object {checksum} for {path} is missing from the \
+                 cache ({} object(s) absent); re-run `fetch`/`pull` to restore it",
+                missing.len()
+            );
+        }
         if let Some(m) = meter {
             m.set_total(total_object_bytes(&manifest));
         }
@@ -1904,14 +1951,59 @@ impl Ctx {
             }
         }
 
-        if report.is_clean() {
+        // Presence check: `verify_cache` above re-hashes the objects that ARE
+        // on disk (catching corruption) but is blind to a manifest entry whose
+        // object was DELETED — that is a silent gap a whole-cache byte scan
+        // cannot see. Cross-check each cached manifest's file entries against
+        // the cache and flag any object that is absent, naming both the object
+        // address and the affected file path from the manifest (distinct from
+        // the "Checksum mismatch" corrupt wording). Scoped to `--id` when given,
+        // else every manifest in the cache.
+        let missing = self.missing_cache_objects_for_verify(&cache_dir)?;
+        for (checksum, path) in &missing {
+            eprintln!("Missing object {checksum} for {path}");
+        }
+
+        if report.is_clean() && missing.is_empty() {
             return Ok(());
         }
-        // Oracle: `failed=true` → `return 1`, even after purging.
+        // Oracle: `failed=true` → `return 1`, even after purging. A missing
+        // object is likewise a failure (the cache cannot reconstruct the tree).
         anyhow::bail!(
-            "snapdir: {} corrupt object(s) in the cache",
-            report.corrupt.len()
+            "snapdir: {} corrupt + {} missing object(s) in the cache",
+            report.corrupt.len(),
+            missing.len()
         )
+    }
+
+    /// Collects the `(object, path)` pairs that `verify-cache` should report as
+    /// MISSING: file entries referenced by a cached manifest whose object is
+    /// absent from the cache. Scoped to `--id` when set; otherwise the union
+    /// across every manifest in the cache, de-duplicated by object address
+    /// (keeping the first affected path) and sorted for deterministic output.
+    fn missing_cache_objects_for_verify(&self, cache_dir: &Path) -> Result<Vec<(String, String)>> {
+        let cache = self.cache_store()?;
+        let ids: Vec<String> = if let Some(id) = self.globals.id.as_deref() {
+            vec![id.to_owned()]
+        } else {
+            cache
+                .list_manifest_ids()
+                .with_context(|| format!("listing cached manifests at {}", cache_dir.display()))?
+        };
+
+        let mut seen = std::collections::BTreeMap::new();
+        for id in ids {
+            // A manifest named by `--id` that is not cached is itself an error;
+            // for the un-scoped sweep, `list_manifest_ids` only yields present
+            // manifests, so a read failure there is genuinely exceptional.
+            let manifest = cache
+                .get_manifest(&id)
+                .with_context(|| format!("reading cached manifest {id}"))?;
+            for (checksum, path) in Self::missing_cache_objects(&manifest, cache_dir) {
+                seen.entry(checksum).or_insert(path);
+            }
+        }
+        Ok(seen.into_iter().collect())
     }
 
     /// `snapdir flush-cache`: empty the local cache via [`cache::flush_cache`]
@@ -2863,6 +2955,30 @@ impl Ctx {
         let home = std::env::var("HOME").unwrap_or_default();
         let base = std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| format!("{home}/.cache"));
         PathBuf::from(format!("{base}/snapdir"))
+    }
+
+    /// Returns the manifest's file objects that are ABSENT from the cache at
+    /// `cache_dir`, as `(checksum, manifest_path)` pairs in manifest order.
+    ///
+    /// Only `F` (file) entries map to a `.objects/<sharded>` blob; `D`
+    /// (directory) entries are merkle nodes with no stored object, so they are
+    /// skipped. This is the shared primitive behind both the `fetch`/`pull`
+    /// cache-heal decision (re-fetch when non-empty) and `verify-cache`'s
+    /// missing-object detection (fail + name the gap when non-empty). It only
+    /// checks for object PRESENCE; byte-level corruption is left to
+    /// [`cache::verify_cache`], which re-hashes each present object.
+    fn missing_cache_objects(manifest: &Manifest, cache_dir: &Path) -> Vec<(String, String)> {
+        let mut missing = Vec::new();
+        for entry in manifest.entries() {
+            if entry.path_type != PathType::File {
+                continue;
+            }
+            let object = cache_dir.join(snapdir_core::store::object_path(&entry.checksum));
+            if !object.is_file() {
+                missing.push((entry.checksum.clone(), entry.path.clone()));
+            }
+        }
+        missing
     }
 
     /// Returns the required `--id`, or a clear error naming the missing option.

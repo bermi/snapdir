@@ -172,8 +172,22 @@ fn cache_commands_verify_cache_detects_tampered_object_and_purge_removes_it() {
         .stderr(predicate::str::contains(&sum));
     assert!(!obj.exists(), "corrupt object must be purged by --purge");
 
-    // The surviving clean object keeps the cache otherwise intact: a re-scan now
-    // sees no corruption and passes.
+    // No CORRUPT object remains (the only one was purged). But the staged
+    // manifest still references that object's address, so the cache is now
+    // INCOMPLETE: a re-scan reports the purged object as MISSING and exits
+    // non-zero (manifest-aware presence check — stricter than the oracle's
+    // byte-only scan, which is blind to a referenced-but-absent object). The
+    // missing report no longer carries the "Checksum mismatch" corrupt wording.
+    snapdir(cache.path())
+        .arg("verify-cache")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(&sum))
+        .stderr(predicate::str::contains("Missing object"));
+
+    // `flush-cache` clears the dangling manifest, after which a clean cache (no
+    // objects, no manifests) verifies green again.
+    snapdir(cache.path()).arg("flush-cache").assert().success();
     snapdir(cache.path()).arg("verify-cache").assert().success();
 }
 
