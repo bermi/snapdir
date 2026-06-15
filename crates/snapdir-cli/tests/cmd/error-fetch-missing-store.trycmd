@@ -1,6 +1,6 @@
 ```
 $ snapdir fetch
 ? 1
-missing --store option
+no store configured: pass --store <uri> or set the SNAPDIR_STORE environment variable
 
 ```

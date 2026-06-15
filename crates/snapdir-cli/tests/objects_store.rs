@@ -1073,12 +1073,11 @@ fn external_manifest_store_error_names_offending_store_url() {
 
 /// REVIEW (missing --store, clean error): `--objects-store` set but `--store`
 /// genuinely UNSET (env removed) must fail with a clean, NON-panicking error that
-/// names `--store`. Strengthens the staged case by pinning that the message is the
-/// canonical `missing --store option` (the impl surfaces it BEFORE touching either
-/// store) and that NOTHING is written to the pool. NOTE: the impl's nicer
-/// `resolve_split_store` message that also names `$SNAPDIR_STORE` is shadowed on
-/// the push path by the earlier `store_url` guard, so this pins the ACTUAL
-/// observed message rather than over-asserting `$SNAPDIR_STORE`.
+/// names `--store`. Strengthens the staged case by pinning that the missing-store
+/// error names `--store` (the impl surfaces it BEFORE touching either store) and
+/// that NOTHING is written to the pool. Pins only `--store` (not `$SNAPDIR_STORE`)
+/// because the push path's earlier `store_url` guard may shadow the
+/// `resolve_split_store` message, so this asserts the substance both messages share.
 #[test]
 fn missing_store_with_objects_store_is_clean_named_error() {
     let src = temp_dir("mn-src");

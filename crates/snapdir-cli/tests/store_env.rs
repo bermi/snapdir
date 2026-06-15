@@ -221,8 +221,9 @@ fn store_env_sync_from_to_must_differ_still_fires() {
         .stderr(predicate::str::contains("--from and --to must differ"));
 }
 
-/// 4. With NEITHER `--store` flag NOR `SNAPDIR_STORE` env, the existing
-///    "missing --store option" error is preserved exactly (push needs a store).
+/// 4. With NEITHER `--store` flag NOR `SNAPDIR_STORE` env, the missing-store
+///    error is surfaced (push needs a store); the actionable 1.8.0 message names
+///    both the `--store` flag and the `SNAPDIR_STORE` env fallback.
 #[test]
 fn store_env_missing_flag_and_env_preserves_error() {
     let cache = TempDir::new().unwrap();
@@ -235,7 +236,7 @@ fn store_env_missing_flag_and_env_preserves_error() {
         .args(["push", &src_str])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("missing --store option"));
+        .stderr(predicate::str::contains("--store").and(predicate::str::contains("SNAPDIR_STORE")));
 }
 
 /// 4b. With neither flag nor env, `sync --to <x>` (omitting `--from`) fails on

@@ -47,6 +47,7 @@
     clippy::similar_names,
     clippy::items_after_statements,
     clippy::manual_let_else,
+    clippy::map_unwrap_or,
     clippy::doc_markdown
 )]
 

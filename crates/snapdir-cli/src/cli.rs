@@ -45,6 +45,12 @@ use snapdir_stores::{
 /// the controller's in-flight window.
 const ADAPTIVE_CEILING_CAP: usize = 64;
 
+/// Actionable error for a transfer command run with neither `--store` nor the
+/// `SNAPDIR_STORE` env fallback. Naming BOTH ways to supply a store turns a
+/// dead-end "missing --store option" into something a user can act on.
+const NO_STORE_CONFIGURED: &str =
+    "no store configured: pass --store <uri> or set the SNAPDIR_STORE environment variable";
+
 /// Content-addressable directory snapshots.
 #[derive(Debug, Parser)]
 #[command(
@@ -1441,7 +1447,7 @@ impl Ctx {
                 .globals
                 .store
                 .as_deref()
-                .context("missing --store option")?;
+                .context(NO_STORE_CONFIGURED)?;
             // Under --dryrun: the id is a pure read-only lookup, so still print
             // it to stdout (the scriptable id-on-stdout contract). Skip the
             // scratch materialize (it's discarded), the store push, and the
@@ -1505,7 +1511,7 @@ impl Ctx {
             .globals
             .store
             .as_deref()
-            .context("missing --store option")?;
+            .context(NO_STORE_CONFIGURED)?;
         // Under --dryrun: the snapshot id is a pure read-only computation, so
         // still print it to stdout. Skip the store push and the catalog log —
         // the only persistent writes here.
@@ -1629,9 +1635,11 @@ impl Ctx {
             // `id`). This preserves the cache's manifest-written-last
             // invariant: a failed external fetch leaves orphan objects but
             // never a manifest claiming the snapshot is complete.
-            store
-                .fetch_files(&manifest, &self.cache_dir())
-                .with_context(|| format!("fetching objects for snapshot {id}"))?;
+            self.split_read_hint(
+                store
+                    .fetch_files(&manifest, &self.cache_dir())
+                    .with_context(|| format!("fetching objects for snapshot {id}")),
+            )?;
             cache
                 .put_manifest(id, &manifest)
                 .with_context(|| format!("saving snapshot {id} to the local cache"))?;
@@ -1641,9 +1649,11 @@ impl Ctx {
             // atomic persist on both legs and lands the cache in the same
             // sharded layout.
             let scratch = ScratchDir::new("fetch")?;
-            store
-                .fetch_files(&manifest, scratch.path())
-                .with_context(|| format!("fetching objects for snapshot {id}"))?;
+            self.split_read_hint(
+                store
+                    .fetch_files(&manifest, scratch.path())
+                    .with_context(|| format!("fetching objects for snapshot {id}")),
+            )?;
 
             cache
                 .push(&manifest, scratch.path())
@@ -2022,7 +2032,7 @@ impl Ctx {
             .globals
             .store
             .as_deref()
-            .context("missing --store option")?;
+            .context(NO_STORE_CONFIGURED)?;
         let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
         let config = self.transfer_config_for(Some(adapter.name()))?;
         store_for_adapter(&adapter, store_url, config, meter)
@@ -2088,7 +2098,7 @@ impl Ctx {
             .globals
             .store
             .as_deref()
-            .context("missing --store option")?;
+            .context(NO_STORE_CONFIGURED)?;
         let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
         Ok(matches!(adapter, Adapter::External { .. }))
     }
@@ -2673,7 +2683,7 @@ impl Ctx {
             .globals
             .store
             .as_deref()
-            .context("missing --store option")?;
+            .context(NO_STORE_CONFIGURED)?;
         let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
         let config = self.transfer_config_for(Some(adapter.name()))?;
         let stdin = std::io::stdin();
@@ -2737,10 +2747,33 @@ impl Ctx {
             .globals
             .store
             .as_deref()
-            .context("missing --store option")?;
+            .context(NO_STORE_CONFIGURED)?;
         let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
         let config = self.transfer_config_for(Some(adapter.name()))?;
         stream_store_for_adapter(&adapter, store_url, config, None)
+    }
+
+    /// Contextualizes a store-read error (`fetch_files`) so a SPLIT snapshot —
+    /// one whose objects were pushed to a separate `--objects-store` pool — fails
+    /// with a hint that names the objects-store / split concept, not a bare
+    /// `object not found: <hash>` that leaves the user with no clue an objects
+    /// pool is required.
+    ///
+    /// Only adds the hint when the user did NOT already supply `--objects-store`
+    /// /`--from-objects` (an objects pool IS configured ⇒ a genuine missing
+    /// object is a real corruption error, not a missing-pool mistake). The hint
+    /// rides on stderr with the underlying error so the original `object not
+    /// found` cause is preserved in the chain.
+    fn split_read_hint<T>(&self, result: Result<T>) -> Result<T> {
+        if self.globals.objects_store.is_some() {
+            return result;
+        }
+        result.map_err(|e| {
+            e.context(
+                "if this snapshot was pushed with a split --objects-store, re-run with \
+                 --objects-store/--from-objects pointing at that object pool",
+            )
+        })
     }
 
     /// The local cache as a `file://`-shaped store, rooted at the resolved cache

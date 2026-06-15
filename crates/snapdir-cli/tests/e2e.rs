@@ -318,7 +318,7 @@ fn fetch_without_store_fails_with_clear_message() {
         .args(["fetch", "--id", &"0".repeat(64)])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("missing --store option"));
+        .stderr(predicate::str::contains("--store"));
 }
 
 #[test]
