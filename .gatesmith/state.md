@@ -3,8 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 30 IN PROGRESS — 10/30 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 248/268 total
+## ▶ PHASE 30 IN PROGRESS — 11/30 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 249/268 total
 
+> ✅ `dx-defaults-impl-cli` (cli, code `9c31b95`) — `defaults` rewritten: prints `<knob> <value> source=<flag|env|default>` for all 18 effective knobs + other-env superset; reuses existing resolvers; `DefaultsArgs` group makes it reflect its own `--cache-dir`/`--jobs` (fixes the ignores-own-flags bug) while still rejecting staging flags. Dropped legacy 4-line output. dx_defaults 19/19; **full cli suite green** (also updated defaults_command/ratelimit_select + help-defaults.trycmd). Resolves persona-6's "defaults useless." (Known minor: 7 clippy backtick warnings in dx_args.rs to tidy pre-release.)
+> **▶ NEXT (id-asc): `dx-defaults-review` (adversary)** — audit dx_defaults.rs no-weakening + re-assert. Then by id-asc: `dx-errors-spec-tests`, `dx-id-stdin-verify`, `dx-progress-spec-tests`, `dx-recovery-spec-tests`.
 > ✅ `dx-defaults-spec-tests` (adversary, ledger-only) — `.gatesmith/pending-tests/dx_defaults.rs`: 19 black-box tests pinning the defaults-rewrite contract (every effective knob + resolved value + source flag|env|default; flag/env override reflected + anti-regression of the "ignores its own --cache-dir" bug; precedence flag>env; legacy SNAPDIR_MANIFEST_* not shown as live; deterministic/greppable). Substance-based (impl keeps format latitude). Expected to FAIL until impl lands.
 > **▶ NEXT (id-asc): `dx-defaults-impl-cli` (cli)** — rewrite `run_defaults()` reusing the existing resolvers to print effective config + source; take over dx_defaults.rs; update help-defaults.trycmd. Then `dx-defaults-review`. Other clusters (errors/id-stdin/progress/recovery) follow.
 > 🏁 **ARG-HYGIENE CLUSTER COMPLETE** (spec→impl[1 reopen]→snapshots→review). ✅ `dx-arg-review` (adversary, code `376f93e`) — dx_args.rs zero-diff vs staged (no weakening); snapshot-gate edits clean (fast_walk GOLDEN_ID + list_options + catalog_logging keystones preserved); +13 impl-revealed cases (dx_args 20→**33**, all green); `cargo test --workspace` 0 failed. No reopen.

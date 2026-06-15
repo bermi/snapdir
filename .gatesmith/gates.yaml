@@ -4410,7 +4410,9 @@ gates:
     phase: 30
     owner_agent: cli
     depends_on: [dx-defaults-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T05:12:00Z
+    git_sha: 9c31b95
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_defaults && test -f crates/snapdir-cli/tests/dx_defaults.rs && test ! -f .gatesmith/pending-tests/dx_defaults.rs"
     pass_criteria:
