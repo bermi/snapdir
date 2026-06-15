@@ -4624,7 +4624,9 @@ gates:
     phase: 30
     owner_agent: cli
     depends_on: [dx-recovery-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T09:05:00Z
+    git_sha: b82282f
     failure_count: 0
     bump_reason: "GATE-BUMP 2026-06-15 (lane re-route): dx-recovery-spec-tests' black-box probing proved the recovery gaps are CLI, not stores — flush-cache+fetch heals (so the stores transfer API is fine); the bug is run_fetch/run_pull SHORT-CIRCUITING on a cached manifest before checking objects (the `CACHED` notice), and run_verify_cache's enumeration missing deleted objects. Renamed dx-recovery-impl-stores -> dx-recovery-impl-cli, owner stores->cli, test dest crates/snapdir-stores/tests/ -> crates/snapdir-cli/tests/ (the suite is CLI-level assert_cmd), verification snapdir-stores -> snapdir-cli. Pass INTENT unchanged (fix the recovery gaps + green dx_recovery). If a small stores error-context touch is needed for checkout-path-naming, the cli teammate flags it and the PM spawns stores."
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_recovery && cargo test --workspace && test -f crates/snapdir-cli/tests/dx_recovery.rs && test ! -f .gatesmith/pending-tests/dx_recovery.rs"
