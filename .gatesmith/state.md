@@ -3,8 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 30 IN PROGRESS — 9/30 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 247/268 total
+## ▶ PHASE 30 IN PROGRESS — 10/30 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 248/268 total
 
+> ✅ `dx-defaults-spec-tests` (adversary, ledger-only) — `.gatesmith/pending-tests/dx_defaults.rs`: 19 black-box tests pinning the defaults-rewrite contract (every effective knob + resolved value + source flag|env|default; flag/env override reflected + anti-regression of the "ignores its own --cache-dir" bug; precedence flag>env; legacy SNAPDIR_MANIFEST_* not shown as live; deterministic/greppable). Substance-based (impl keeps format latitude). Expected to FAIL until impl lands.
+> **▶ NEXT (id-asc): `dx-defaults-impl-cli` (cli)** — rewrite `run_defaults()` reusing the existing resolvers to print effective config + source; take over dx_defaults.rs; update help-defaults.trycmd. Then `dx-defaults-review`. Other clusters (errors/id-stdin/progress/recovery) follow.
 > 🏁 **ARG-HYGIENE CLUSTER COMPLETE** (spec→impl[1 reopen]→snapshots→review). ✅ `dx-arg-review` (adversary, code `376f93e`) — dx_args.rs zero-diff vs staged (no weakening); snapshot-gate edits clean (fast_walk GOLDEN_ID + list_options + catalog_logging keystones preserved); +13 impl-revealed cases (dx_args 20→**33**, all green); `cargo test --workspace` 0 failed. No reopen.
 > **▶ NEXT (id-asc): `dx-defaults-spec-tests` (adversary)** — opens the defaults cluster. Remaining eligible spec/investigate gates: defaults, errors, id-stdin-verify, progress, recovery (all dep `dx-findings-signoff` ✅).
 > ✅ `dx-arg-snapshots` (cli, code `bd6ce47`) — **full `cargo test -p snapdir-cli` GREEN (0/27 failed)** + man renders, against the fixed binary. 17 trycmd help snapshots regenerated to the scoped per-command help; 4 integration test files adapted (catalog_commands/catalog_logging flag-reposition + id-logs-via-env; list_options global-exclude-now-rejected; fast_walk --walk-jobs retarget + both-knobs id→push, GOLDEN_ID preserved). Fence clean (no src, dx_args untouched).

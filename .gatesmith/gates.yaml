@@ -4395,7 +4395,9 @@ gates:
     phase: 30
     owner_agent: adversary
     depends_on: [dx-findings-signoff]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T04:57:00Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/dx_defaults.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/dx_defaults.rs"
     pass_criteria:
