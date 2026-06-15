@@ -179,21 +179,28 @@ fn list_options_macro_combined_with_literal() {
 }
 
 #[test]
-fn list_options_subcommand_overrides_global_exclude() {
-    // Precedence: the `manifest` subcommand's `--exclude` (placed after the
-    // subcommand) overrides the global `--exclude` (placed before it). Here the
-    // global drops alpha, but the subcommand list (gamma) takes over, so alpha
-    // survives and gamma is dropped.
+fn list_options_global_exclude_before_subcommand_is_rejected() {
+    // Approach-B (phase 30): `--exclude` is no longer a global flag, so placing
+    // it BEFORE the subcommand is a hard CLI error. Only the subcommand-scoped
+    // `--exclude` (placed after `manifest`) is accepted; that path still drops
+    // its targets. (Replaces the old global-vs-subcommand precedence test, which
+    // covered a surface that no longer exists.)
     let root = temp_tree("precedence");
     build_tree(&root);
-    let mut cmd = Command::new(snapdir_bin());
-    cmd.arg("--exclude").arg("alpha"); // global (before subcommand)
-    cmd.arg("manifest");
-    cmd.arg("--exclude").arg("gamma"); // subcommand override
-    cmd.arg(root.to_string_lossy().into_owned());
-    let out = cmd.output().expect("run snapdir manifest");
-    assert!(out.status.success());
-    let stdout = String::from_utf8(out.stdout).unwrap();
+
+    // Global placement is rejected before the subcommand even runs.
+    let mut bad = Command::new(snapdir_bin());
+    bad.arg("--exclude").arg("alpha"); // no longer a global flag
+    bad.arg("manifest");
+    bad.arg(root.to_string_lossy().into_owned());
+    let bad_out = bad.output().expect("run snapdir");
+    assert!(
+        !bad_out.status.success(),
+        "global --exclude before the subcommand must be rejected"
+    );
+
+    // Subcommand-scoped `--exclude` still works: gamma is dropped, the rest kept.
+    let stdout = manifest_stdout(&root, &["--exclude", "gamma"]);
     assert_present(
         &stdout,
         &["alpha.txt", "beta.txt", "keep.txt"],

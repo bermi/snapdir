@@ -94,7 +94,7 @@ fn catalog_logging_manifest_records_location_and_revision() {
     // `manifest` emits the manifest AND logs it at the dir's absolute path.
     stdout_ok(
         cache.path(),
-        &["--catalog", &catalog_str, "manifest", &src_str],
+        &["manifest", "--catalog", &catalog_str, &src_str],
     );
 
     // The logged id equals `snapdir id` of the same tree.
@@ -102,7 +102,7 @@ fn catalog_logging_manifest_records_location_and_revision() {
     assert_eq!(id.len(), 64, "id must be a 64-hex snapshot id: {id:?}");
 
     // `locations` lists the manifested directory's absolute path with that id.
-    let locations = stdout_ok(cache.path(), &["--catalog", &catalog_str, "locations"]);
+    let locations = stdout_ok(cache.path(), &["locations", "--catalog", &catalog_str]);
     let loc_lines: Vec<&str> = locations.lines().collect();
     assert_eq!(loc_lines.len(), 1, "exactly one location: {locations:?}");
     assert_eq!(
@@ -117,9 +117,9 @@ fn catalog_logging_manifest_records_location_and_revision() {
     let revisions = stdout_ok(
         cache.path(),
         &[
+            "revisions",
             "--catalog",
             &catalog_str,
-            "revisions",
             "--location",
             &src_str,
         ],
@@ -147,7 +147,7 @@ fn catalog_logging_stage_records_location_and_revision() {
     // `stage` caches the tree AND logs it at the staged base dir.
     let staged_id = stdout_ok(
         cache.path(),
-        &["--catalog", &catalog_str, "stage", &src_str],
+        &["stage", "--catalog", &catalog_str, &src_str],
     );
     assert_eq!(
         staged_id.len(),
@@ -160,7 +160,7 @@ fn catalog_logging_stage_records_location_and_revision() {
     assert_eq!(id, staged_id, "staged id must equal `snapdir id`");
 
     // `locations` lists the staged base dir with that id.
-    let locations = stdout_ok(cache.path(), &["--catalog", &catalog_str, "locations"]);
+    let locations = stdout_ok(cache.path(), &["locations", "--catalog", &catalog_str]);
     let loc_lines: Vec<&str> = locations.lines().collect();
     assert_eq!(loc_lines.len(), 1, "exactly one location: {locations:?}");
     assert_eq!(
@@ -174,9 +174,9 @@ fn catalog_logging_stage_records_location_and_revision() {
     let revisions = stdout_ok(
         cache.path(),
         &[
+            "revisions",
             "--catalog",
             &catalog_str,
-            "revisions",
             "--location",
             &src_str,
         ],
@@ -200,14 +200,14 @@ fn catalog_logging_second_manifest_chains_revisions_and_ancestors() {
     build_tree(src.path(), "first");
     stdout_ok(
         cache.path(),
-        &["--catalog", &catalog_str, "manifest", &src_str],
+        &["manifest", "--catalog", &catalog_str, &src_str],
     );
     let id1 = stdout_ok(cache.path(), &["id", &src_str]);
 
     build_tree(src.path(), "second (changed)");
     stdout_ok(
         cache.path(),
-        &["--catalog", &catalog_str, "manifest", &src_str],
+        &["manifest", "--catalog", &catalog_str, &src_str],
     );
     let id2 = stdout_ok(cache.path(), &["id", &src_str]);
     assert_ne!(id1, id2, "changed content yields a distinct id");
@@ -216,9 +216,9 @@ fn catalog_logging_second_manifest_chains_revisions_and_ancestors() {
     let revisions = stdout_ok(
         cache.path(),
         &[
+            "revisions",
             "--catalog",
             &catalog_str,
-            "revisions",
             "--location",
             &src_str,
         ],
@@ -232,7 +232,7 @@ fn catalog_logging_second_manifest_chains_revisions_and_ancestors() {
     // `ancestors --id=<id2>` walks back to id1.
     let ancestors = stdout_ok(
         cache.path(),
-        &["--catalog", &catalog_str, "ancestors", "--id", &id2],
+        &["ancestors", "--catalog", &catalog_str, "--id", &id2],
     );
     let anc_lines: Vec<&str> = ancestors.lines().collect();
     assert_eq!(anc_lines.len(), 1, "one ancestor: {ancestors:?}");
@@ -252,7 +252,7 @@ fn manifest_stdout_is_unchanged_by_catalog_logging() {
 
     let with_catalog = output_ok(
         cache.path(),
-        &["--catalog", &catalog_str, "manifest", &src_str],
+        &["manifest", "--catalog", &catalog_str, &src_str],
     );
     let without_catalog = output_ok(cache.path(), &["manifest", &src_str]);
     assert_eq!(
@@ -273,7 +273,7 @@ fn stage_stdout_is_unchanged_by_catalog_logging() {
 
     let with_catalog = output_ok(
         cache.path(),
-        &["--catalog", &catalog_str, "stage", &src_str],
+        &["stage", "--catalog", &catalog_str, &src_str],
     );
     // Fresh cache for the no-catalog leg so neither run is affected by the
     // other's cached objects (the printed id is content-addressed regardless).
@@ -318,10 +318,22 @@ fn catalog_logging_id_does_not_log() {
     let src_str = src.path().to_string_lossy().into_owned();
     let catalog_str = catalog.path().to_string_lossy().into_owned();
 
-    let id = stdout_ok(cache.path(), &["--catalog", &catalog_str, "id", &src_str]);
+    // `id` has no `--catalog` flag; offer the catalog via the env var instead so
+    // the assertion is that `id` ignores an *available* catalog (it never logs).
+    let id_out = snapdir(cache.path())
+        .env("SNAPDIR_CATALOG", &catalog_str)
+        .args(["id", &src_str])
+        .output()
+        .expect("run snapdir id");
+    assert!(
+        id_out.status.success(),
+        "snapdir id failed: {}",
+        String::from_utf8_lossy(&id_out.stderr)
+    );
+    let id = String::from_utf8(id_out.stdout).unwrap().trim_end().to_owned();
     assert_eq!(id.len(), 64);
 
-    let locations = stdout_ok(cache.path(), &["--catalog", &catalog_str, "locations"]);
+    let locations = stdout_ok(cache.path(), &["locations", "--catalog", &catalog_str]);
     assert_eq!(
         locations, "",
         "`id` must not log to the catalog (oracle's snapdir_id does not): {locations:?}"

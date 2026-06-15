@@ -210,28 +210,45 @@ fn sort_stability_over_mixed_unicode_and_space_tree() {
 #[test]
 fn walk_jobs_is_separate_from_transfer_jobs() {
     // Spec clause: --walk-jobs is SEPARATE from --jobs (transfer concurrency).
-    // Setting BOTH on `id` must NOT error and must produce the same golden id —
-    // proving they are independent knobs, not aliases.
+    // Phase 30 (approach-B): --walk-jobs is scoped to the walking commands and
+    // --jobs to the TRANSFER commands. `push` carries BOTH; setting them together
+    // must NOT error and must produce the same golden id — proving they are
+    // independent knobs, not aliases. (`id` is a pure walk command and no longer
+    // accepts --jobs, so the both-flags case moves to `push`.)
     let cache = TempDir::new().unwrap();
+    let store = TempDir::new().unwrap();
+    let store_uri = format!("file://{}", store.path().display());
     let src = TempDir::new().unwrap();
     build_fixture(&src);
     let src_str = src.path().to_string_lossy().into_owned();
 
-    // Both flags together: must succeed (no "conflicting/duplicate argument").
+    // Both flags together on `push`: must succeed (no "conflicting/duplicate
+    // argument") and the recorded snapshot id is the golden id.
     let both = id_ok(
         cache.path(),
-        &["id", "--walk-jobs", "4", "--jobs", "2", &src_str],
+        &[
+            "push",
+            "--store",
+            &store_uri,
+            "--walk-jobs",
+            "4",
+            "--jobs",
+            "2",
+            &src_str,
+        ],
     );
     assert_eq!(
         both, GOLDEN_ID,
         "combining --walk-jobs and --jobs must not change the id"
     );
 
-    // --walk-jobs alone must not error even though it differs from --jobs.
+    // --walk-jobs alone on `id` (a pure walk command) must not error and yields
+    // the same golden id.
     let walk_only = id_ok(cache.path(), &["id", "--walk-jobs", "4", &src_str]);
     assert_eq!(walk_only, both);
 
-    // Both env vars set together: still no conflict, same id.
+    // Both env vars set together on `id`: still no conflict, same id (the
+    // transfer-jobs env var is inert for a non-transfer command).
     let env_both = {
         let out = snapdir(cache.path())
             .env("SNAPDIR_WALK_JOBS", "4")
@@ -252,20 +269,22 @@ fn walk_jobs_is_separate_from_transfer_jobs() {
 #[test]
 fn walk_jobs_flag_is_advertised_in_help() {
     // Spec corollary: the CLI lane documents --walk-jobs / SNAPDIR_WALK_JOBS in
-    // help text. Assert the top-level help mentions the flag and the env var.
+    // help text. Phase 30 (approach-B) scopes --walk-jobs to the walking commands,
+    // so it is advertised in each walk command's help (e.g. `id --help`) rather
+    // than the top-level help.
     let cache = TempDir::new().unwrap();
     let out = snapdir(cache.path())
-        .arg("--help")
+        .args(["id", "--help"])
         .output()
-        .expect("run snapdir --help");
-    assert!(out.status.success(), "--help must succeed");
+        .expect("run snapdir id --help");
+    assert!(out.status.success(), "id --help must succeed");
     let help = String::from_utf8_lossy(&out.stdout);
     assert!(
         help.contains("--walk-jobs"),
-        "help must advertise the --walk-jobs flag"
+        "id help must advertise the --walk-jobs flag"
     );
     assert!(
         help.contains("SNAPDIR_WALK_JOBS"),
-        "help must advertise the SNAPDIR_WALK_JOBS env var"
+        "id help must advertise the SNAPDIR_WALK_JOBS env var"
     );
 }

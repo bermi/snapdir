@@ -9,110 +9,34 @@ Arguments:
           Directory to describe (omit to read a manifest from stdin)
 
 Options:
-      --cache-dir <DIR>
-          Directory where the object cache is stored
-          
-          [env: SNAPDIR_CACHE_DIR=]
-
-      --catalog <NAME>
-          Catalog adapter to use
-          
-          [env: SNAPDIR_CATALOG=]
-
-      --store <URI>
-          Store URI: `protocol://location/path`
-          
-          [env: SNAPDIR_STORE=]
-
-      --objects-store <URI>
-          Shared object-pool store URI: when set, content OBJECTS route to this pool's `.objects/` while MANIFESTS route to `--store`'s `.manifests/`
-          
-          [env: SNAPDIR_OBJECTS_STORE=]
-
-      --id <ID>
-          Snapshot ID to operate on
-
       --exclude <PATTERN>
           Exclude paths matching PATTERN
-
-      --paths <PATTERN>
-          Only include paths matching PATTERN
-
-      --linked
-          Use symlinks instead of copies
-
-      --force
-          Force an action to run
-
-      --purge
-          Purge objects with invalid checksums
-
-      --keep
-          Keep the staging directory
-
-      --dryrun
-          Run without making any changes
-
-      --verbose
-          Enable verbose output
-
-      --debug
-          Enable debug output
-
-      --no-progress
-          Disable the live progress line (transfers still run)
-          
-          [env: SNAPDIR_NO_PROGRESS=]
 
   -q, --quiet
           Suppress stderr banners and the live progress line
 
       --color <WHEN>
           When to colorize progress output: auto, always, or never
+
+          Possible values:
+          - auto:   Color when attached to a TTY and `NO_COLOR` is unset (default)
+          - always: Always emit color
+          - never:  Never emit color
           
           [default: auto]
 
-      --location <DIR|STORE>
-          Context (directory or store) for catalog queries
-
-  -j, --jobs <N>
-          Max concurrent object transfers (0/auto = number of CPUs, capped)
-          
-          [env: SNAPDIR_JOBS=]
-
       --walk-jobs <N>
-          Max parallel file-hashing jobs during the directory walk (0/auto = number of CPUs, capped). Distinct from --jobs (transfer concurrency)
+          Max parallel file-hashing jobs during the directory walk (0/auto = number of CPUs, capped). Distinct from transfer concurrency
           
           [env: SNAPDIR_WALK_JOBS=]
 
-      --limit-rate <RATE>
-          Limit total transfer bandwidth, e.g. 10M, 512K, 1G (wget-style; aggregate across all transfers)
+      --no-progress
+          Disable the live progress line (transfers still run)
           
-          [env: SNAPDIR_LIMIT_RATE=]
+          [env: SNAPDIR_NO_PROGRESS=]
 
-      --adaptive[=<FRACTION>]
-          Adaptively tune transfer concurrency/bandwidth toward a fraction (default 0.8) of measured CPU/network capacity; backs off under contention. Opt-in; default is full speed.
-          
-          Presence (with or without a value) opts in; the optional value is the politeness fraction in `(0.0, 1.0]`.
-          
-          [env: SNAPDIR_ADAPTIVE=]
-
-      --max-jobs <N>
-          Adaptive concurrency ceiling (only meaningful with `--adaptive`). When unset, defaults to the auto concurrency; clamped to a sane upper bound
-          
-          [env: SNAPDIR_MAX_JOBS=]
-
-      --max-retries <N>
-          Total retry attempts per network request, including the first (default 5)
-
-      --retry-base-ms <MS>
-          Base backoff delay in milliseconds for request retries (default 250)
-
-      --retry-max-ms <MS>
-          Maximum backoff delay in milliseconds for request retries (default 30000)
-
-      --max-requests <N>
-          Cap request rate (req/s); 0/unset uses the per-backend default
+      --verbose
+          Enable verbose output. Honored by the transfer commands (push/fetch/pull/checkout/stage/sync emit an effective-config banner and CACHED/SAVED notices) and verify-cache (purge notices); inert elsewhere
 
   -h, --help
           Print help (see a summary with '-h')

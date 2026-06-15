@@ -94,7 +94,7 @@ fn catalog_commands_push_records_location_and_revision() {
     let id = stdout_ok(
         cache.path(),
         catalog.path(),
-        &["--store", &store, "push", &src_str],
+        &["push", "--store", &store, &src_str],
     );
     assert_eq!(id.len(), 64, "push must print a 64-hex id: {id:?}");
 
@@ -145,7 +145,7 @@ fn catalog_commands_second_push_lists_both_and_ancestors_walks_back() {
     let id1 = stdout_ok(
         cache.path(),
         catalog.path(),
-        &["--store", &store, "push", &src1.path().to_string_lossy()],
+        &["push", "--store", &store, &src1.path().to_string_lossy()],
     );
 
     // Second push of a changed tree to the SAME store.
@@ -154,7 +154,7 @@ fn catalog_commands_second_push_lists_both_and_ancestors_walks_back() {
     let id2 = stdout_ok(
         cache.path(),
         catalog.path(),
-        &["--store", &store, "push", &src2.path().to_string_lossy()],
+        &["push", "--store", &store, &src2.path().to_string_lossy()],
     );
     assert_ne!(id1, id2, "the two trees must have distinct ids");
 
