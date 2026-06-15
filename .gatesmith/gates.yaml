@@ -4640,7 +4640,9 @@ gates:
     phase: 30
     owner_agent: adversary
     depends_on: [dx-recovery-impl-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T09:22:00Z
+    git_sha: 82e5310
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test dx_recovery && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
