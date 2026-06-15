@@ -4365,7 +4365,9 @@ gates:
     phase: 30
     owner_agent: cli
     depends_on: [dx-arg-impl-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T04:27:00Z
+    git_sha: bd6ce47
     failure_count: 0
     bump_reason: "GATE-BUMP 2026-06-15 (lane correction): id ci->cli rename (dx-arg-ci-snapshots -> dx-arg-snapshots) and owner_agent ci->cli. The artifacts being regenerated are crates/snapdir-cli/tests/cmd/*.trycmd + the cli/clap man output — these live in the CLI lane, NOT the ci lane (.github/Cargo/_typos). A ci teammate would fail the fence on crates/snapdir-cli/. pass_criteria UNCHANGED."
     verification_cmd: "cargo test -p snapdir-cli && cargo run -q -p snapdir -- man >/dev/null"
