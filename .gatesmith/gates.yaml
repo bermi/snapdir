@@ -4455,7 +4455,9 @@ gates:
     phase: 30
     owner_agent: core
     depends_on: [dx-progress-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T07:52:00Z
+    git_sha: b8cea2b
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core && grep -qE 'Discovering|objects_discovered' crates/snapdir-core/src/progress.rs && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
