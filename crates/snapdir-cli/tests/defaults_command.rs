@@ -1,29 +1,33 @@
 //! Integration tests for the `defaults` subcommand, using `assert_cmd`.
 //!
-//! `snapdir defaults` emits three groups of lines — the manifest tool's
-//! non-option defaults, every `SNAPDIR*` environment variable (excluding
-//! `*VERSION*`) reformatted into `--option-name=value`, and a `SNAPDIR_BIN_PATH=…`
-//! line for the running binary — combined under a final `sort -u`.
+//! `snapdir defaults` prints the EFFECTIVE configuration: for every knob, its
+//! resolved value and a source tag (`flag` | `env` | `default`), reflecting
+//! flag/env overrides with flag>env>default precedence. A trailing `other-env:`
+//! section surfaces any remaining set `SNAPDIR_*` var (a superset of the old
+//! "echo env" behavior); the legacy `SNAPDIR_MANIFEST_*` vars are shown there
+//! only when set and only under an explicit `legacy` label — never as live
+//! knobs, and never as the old empty `SNAPDIR_MANIFEST_*=` cruft.
 //!
 //! Every test runs under a *controlled* environment: the inherited host env is
 //! cleared and only the vars under test (plus `PATH`/`HOME` so the process can
 //! run) are set, so the assertions are deterministic and never depend on the
 //! tester's ambient `SNAPDIR*` variables.
 
-use std::collections::HashSet;
 use std::process::Command;
 
 use assert_cmd::prelude::*;
 
 /// A `snapdir` command with the inherited environment cleared, then only `PATH`
-/// (so the process loader works) re-set. Tests add the `SNAPDIR*` vars they want
-/// — nothing leaks in from the host, so the output is fully deterministic.
+/// and a stable `HOME` re-set (so nothing resolves into the developer's real
+/// home). Tests add the `SNAPDIR*` vars they want — nothing leaks in from the
+/// host, so the output is fully deterministic.
 fn snapdir_clean_env() -> Command {
     let mut cmd = Command::cargo_bin("snapdir").expect("snapdir binary built");
     cmd.env_clear();
     if let Ok(path) = std::env::var("PATH") {
         cmd.env("PATH", path);
     }
+    cmd.env("HOME", "/tmp/snapdir-defaults-test-home");
     cmd
 }
 
@@ -44,27 +48,35 @@ fn defaults_lines(cmd: &mut Command) -> Vec<String> {
 }
 
 #[test]
-fn defaults_command_reformats_env_vars_and_excludes_version() {
+fn defaults_command_exits_zero() {
+    snapdir_clean_env().arg("defaults").assert().success();
+}
+
+#[test]
+fn defaults_command_reports_env_set_knobs_with_value_and_source() {
     let mut cmd = snapdir_clean_env();
     cmd.env("SNAPDIR_CACHE_DIR", "/tmp/x")
         .env("SNAPDIR_CATALOG", "foo")
-        // A *VERSION* var must be dropped entirely.
+        // A *VERSION* var must never leak into the effective report.
         .env("SNAPDIR_VERSION", "9.9.9")
         // A non-SNAPDIR var must never appear.
         .env("UNRELATED_VAR", "should-not-appear");
 
     let lines = defaults_lines(&mut cmd);
 
-    // The env vars are reformatted: leading `SNAPDIR_` → `--`, `_`→`-`,
-    // lowercased, as `--option=value`.
+    // The env-set knobs are reported with their resolved value AND tagged `env`.
     assert!(
-        lines.iter().any(|l| l == "--cache-dir=/tmp/x"),
-        "expected --cache-dir=/tmp/x in:\n{}",
+        lines
+            .iter()
+            .any(|l| l.contains("cache-dir") && l.contains("/tmp/x") && l.contains("env")),
+        "expected an env-tagged cache-dir=/tmp/x line in:\n{}",
         lines.join("\n"),
     );
     assert!(
-        lines.iter().any(|l| l == "--catalog=foo"),
-        "expected --catalog=foo in:\n{}",
+        lines
+            .iter()
+            .any(|l| l.contains("catalog") && l.contains("foo") && l.contains("env")),
+        "expected an env-tagged catalog=foo line in:\n{}",
         lines.join("\n"),
     );
 
@@ -80,110 +92,78 @@ fn defaults_command_reformats_env_vars_and_excludes_version() {
         "non-SNAPDIR vars must not appear:\n{}",
         lines.join("\n"),
     );
-
-    // The running-binary line is always emitted (group 3).
-    assert!(
-        lines.iter().any(|l| l.starts_with("SNAPDIR_BIN_PATH=")),
-        "expected a SNAPDIR_BIN_PATH= line:\n{}",
-        lines.join("\n"),
-    );
 }
 
 #[test]
-fn defaults_command_includes_manifest_default_lines() {
+fn defaults_command_legacy_manifest_vars_not_live_knobs() {
+    // On a clean env the legacy SNAPDIR_MANIFEST_* vars must NOT appear at all
+    // (no empty `=`-suffixed cruft, the prior behavior).
     let mut cmd = snapdir_clean_env();
+    cmd.env("SNAPDIR_CACHE_DIR", "/tmp/x");
     let lines = defaults_lines(&mut cmd);
 
-    // Group 1: the manifest tool's non-option defaults (`grep -v "^-"` leaves
-    // the `SNAPDIR_MANIFEST_*=` key lines). With an empty controlled env,
-    // CONTEXT and EXCLUDE default to empty; the manifest bin path is present.
-    assert!(
-        lines.iter().any(|l| l == "SNAPDIR_MANIFEST_CONTEXT="),
-        "expected SNAPDIR_MANIFEST_CONTEXT= in:\n{}",
-        lines.join("\n"),
-    );
-    assert!(
-        lines.iter().any(|l| l == "SNAPDIR_MANIFEST_EXCLUDE="),
-        "expected SNAPDIR_MANIFEST_EXCLUDE= in:\n{}",
-        lines.join("\n"),
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|l| l.starts_with("SNAPDIR_MANIFEST_BIN_PATH=")),
-        "expected SNAPDIR_MANIFEST_BIN_PATH= in:\n{}",
-        lines.join("\n"),
-    );
-}
-
-#[test]
-fn defaults_command_manifest_context_reflects_env() {
-    // When SNAPDIR_MANIFEST_CONTEXT is set, group 1 echoes it (the Rust manifest
-    // walk honors it for keyed BLAKE3). NB: the same var also appears reformatted
-    // in group 2 as `--manifest-context=…`; both lines are valid output.
-    let mut cmd = snapdir_clean_env();
-    cmd.env("SNAPDIR_MANIFEST_CONTEXT", "mykey");
-    let lines = defaults_lines(&mut cmd);
-
-    assert!(
-        lines.iter().any(|l| l == "SNAPDIR_MANIFEST_CONTEXT=mykey"),
-        "expected SNAPDIR_MANIFEST_CONTEXT=mykey in:\n{}",
-        lines.join("\n"),
-    );
-}
-
-#[test]
-fn defaults_command_output_is_sorted_and_unique() {
-    let mut cmd = snapdir_clean_env();
-    cmd.env("SNAPDIR_CACHE_DIR", "/tmp/x")
-        .env("SNAPDIR_CATALOG", "foo")
-        .env("SNAPDIR_STORE", "file:///tmp/store");
-
-    let lines = defaults_lines(&mut cmd);
-
-    // `sort -u`: the output must equal its own sort, with no duplicates.
-    let mut sorted = lines.clone();
-    sorted.sort();
-    assert_eq!(
-        lines,
-        sorted,
-        "output must be sorted:\n{}",
-        lines.join("\n")
-    );
-
-    let unique: HashSet<&String> = lines.iter().collect();
-    assert_eq!(
-        unique.len(),
-        lines.len(),
-        "output must be unique (no duplicate lines):\n{}",
-        lines.join("\n"),
-    );
-
-    // No two adjacent lines are equal (sorted-unique invariant).
-    for pair in lines.windows(2) {
-        assert_ne!(pair[0], pair[1], "adjacent duplicate line: {:?}", pair[0]);
-    }
-}
-
-#[test]
-fn defaults_command_exits_zero() {
-    snapdir_clean_env().arg("defaults").assert().success();
-}
-
-#[test]
-fn defaults_command_reformats_store_env_var() {
-    // The `--option=value` env reformat applies to every SNAPDIR* var, including
-    // SNAPDIR_STORE -> --store=… (pins the shared env-derived option shape).
-    let mut cmd = snapdir_clean_env();
-    cmd.env("SNAPDIR_CACHE_DIR", "/tmp/x")
-        .env("SNAPDIR_STORE", "file:///tmp/store");
-    let lines = defaults_lines(&mut cmd);
-
-    for expected in ["--cache-dir=/tmp/x", "--store=file:///tmp/store"] {
+    for legacy in ["SNAPDIR_MANIFEST_CONTEXT", "SNAPDIR_MANIFEST_EXCLUDE"] {
         assert!(
-            lines.iter().any(|l| l == expected),
-            "expected {expected} in:\n{}",
+            !lines.iter().any(|l| l.trim() == format!("{legacy}=")),
+            "the old empty `{legacy}=` legacy line must not appear in:\n{}",
             lines.join("\n"),
         );
     }
+}
+
+#[test]
+fn defaults_command_legacy_manifest_var_when_set_is_labeled_legacy() {
+    // When SNAPDIR_MANIFEST_CONTEXT is set it is still surfaced (superset), but
+    // only under an explicit `legacy` label — never as a live effective knob.
+    let mut cmd = snapdir_clean_env();
+    cmd.env("SNAPDIR_CACHE_DIR", "/tmp/x")
+        .env("SNAPDIR_MANIFEST_CONTEXT", "mykey");
+    let lines = defaults_lines(&mut cmd);
+
+    let manifest_line = lines
+        .iter()
+        .find(|l| l.contains("SNAPDIR_MANIFEST_CONTEXT"))
+        .expect("a set SNAPDIR_MANIFEST_CONTEXT must still be surfaced");
+    assert!(
+        manifest_line.contains("mykey"),
+        "the surfaced legacy line must carry its value: {manifest_line:?}",
+    );
+    assert!(
+        manifest_line.to_lowercase().contains("legacy"),
+        "the surfaced legacy line must be labeled legacy: {manifest_line:?}",
+    );
+}
+
+#[test]
+fn defaults_command_is_deterministic() {
+    let mut a = snapdir_clean_env();
+    a.env("SNAPDIR_CACHE_DIR", "/tmp/x")
+        .env("SNAPDIR_STORE", "file:///tmp/store");
+    let out_a = a.arg("defaults").output().expect("run a");
+
+    let mut b = snapdir_clean_env();
+    b.env("SNAPDIR_CACHE_DIR", "/tmp/x")
+        .env("SNAPDIR_STORE", "file:///tmp/store");
+    let out_b = b.arg("defaults").output().expect("run b");
+
+    assert_eq!(
+        out_a.stdout, out_b.stdout,
+        "two `defaults` runs on the same env must be byte-identical",
+    );
+}
+
+#[test]
+fn defaults_command_reports_store_env_var() {
+    let mut cmd = snapdir_clean_env();
+    cmd.env("SNAPDIR_CACHE_DIR", "/tmp/x")
+        .env("SNAPDIR_STORE", "file:///tmp/store");
+    let lines = defaults_lines(&mut cmd);
+
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("store") && l.contains("file:///tmp/store") && l.contains("env")),
+        "expected an env-tagged store=file:///tmp/store line in:\n{}",
+        lines.join("\n"),
+    );
 }

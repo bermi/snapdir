@@ -1,10 +1,11 @@
 //! Integration test: the new rate-limit / retry `SNAPDIR_*` env vars surface in
 //! `snapdir defaults`.
 //!
-//! `snapdir defaults` enumerates every `SNAPDIR*` environment variable
-//! (excluding `*VERSION*`) reformatted into `--option-name=value`. The
-//! rate-limit / retry knobs are plain env vars, so when set they must appear in
-//! that listing — this pins that they are not silently dropped.
+//! `snapdir defaults` reports the effective configuration: for every knob, its
+//! RESOLVED value plus a `flag`/`env`/`default` source tag. The rate-limit /
+//! retry knobs are env-configurable, so when their `SNAPDIR_*` vars are set the
+//! knob lines must show the resolved value tagged `env` — this pins that they
+//! are not silently dropped.
 
 use std::process::Command;
 
@@ -40,17 +41,18 @@ fn ratelimit_defaults_lists_new_env_vars() {
     let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
     let lines: Vec<&str> = stdout.lines().collect();
 
-    // The env reformat is: leading `SNAPDIR_` -> `--`, `_` -> `-`, lowercased,
-    // emitted as `--option=value`.
-    for expected in [
-        "--max-requests=3",
-        "--max-retries=7",
-        "--retry-base-ms=100",
-        "--retry-max-ms=9000",
+    // Each env-set knob is reported with its RESOLVED value and tagged `env`.
+    for (knob, value) in [
+        ("max-requests", "3"),
+        ("max-retries", "7"),
+        ("retry-base-ms", "100"),
+        ("retry-max-ms", "9000"),
     ] {
         assert!(
-            lines.contains(&expected),
-            "expected {expected} in `snapdir defaults`:\n{stdout}",
+            lines
+                .iter()
+                .any(|l| l.contains(knob) && l.contains(value) && l.contains("env")),
+            "expected an env-tagged `{knob}` line resolving to `{value}` in `snapdir defaults`:\n{stdout}",
         );
     }
 }

@@ -238,6 +238,78 @@ pub struct TransferArgs {
     pub dryrun: bool,
 }
 
+/// The `defaults` reporting family: the CONFIG knobs `snapdir defaults` resolves
+/// and reports (with a `flag`/`env`/`default` source tag). It deliberately
+/// mirrors only the resolvable subset of [`TransferArgs`] — the store/cache/
+/// concurrency/retry/rate knobs — and OMITS the staging action bools
+/// (`--linked`/`--force`/`--keep`/`--dryrun`), which `defaults` neither uses nor
+/// reports, so clap natively rejects e.g. `defaults --keep` (exit 2). Every
+/// field carries the same flag name + `env` wiring as its `TransferArgs` twin,
+/// so `defaults --jobs 3` / `SNAPDIR_JOBS=7 defaults` resolve identically.
+#[derive(Debug, Default, Args)]
+pub struct DefaultsArgs {
+    /// Store URI: `protocol://location/path`.
+    #[arg(long, value_name = "URI", env = "SNAPDIR_STORE")]
+    pub store: Option<String>,
+
+    /// Catalog adapter to record this snapshot's location in.
+    #[arg(long, value_name = "NAME", env = "SNAPDIR_CATALOG")]
+    pub catalog: Option<String>,
+
+    /// Shared object-pool store URI.
+    #[arg(long, value_name = "URI", env = "SNAPDIR_OBJECTS_STORE")]
+    pub objects_store: Option<String>,
+
+    /// Directory where the object cache is stored.
+    #[arg(long, value_name = "DIR", env = "SNAPDIR_CACHE_DIR")]
+    pub cache_dir: Option<PathBuf>,
+
+    /// Max parallel file-hashing jobs during the directory walk (0/auto = number
+    /// of CPUs, capped).
+    #[arg(long, value_name = "N", env = "SNAPDIR_WALK_JOBS")]
+    pub walk_jobs: Option<usize>,
+
+    /// Max concurrent object transfers (0/auto = number of CPUs, capped).
+    #[arg(long, short = 'j', value_name = "N", env = "SNAPDIR_JOBS")]
+    pub jobs: Option<usize>,
+
+    /// Limit total transfer bandwidth, e.g. 10M, 512K, 1G (wget-style; aggregate across all transfers).
+    #[arg(long, value_name = "RATE", env = "SNAPDIR_LIMIT_RATE", value_parser = parse_rate_arg)]
+    pub limit_rate: Option<String>,
+
+    /// Adaptively tune transfer concurrency/bandwidth toward a fraction of measured capacity.
+    #[arg(
+        long,
+        value_name = "FRACTION",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "0.8",
+        env = "SNAPDIR_ADAPTIVE",
+        value_parser = parse_adaptive_fraction
+    )]
+    pub adaptive: Option<f64>,
+
+    /// Adaptive concurrency ceiling (only meaningful with `--adaptive`).
+    #[arg(long, value_name = "N", env = "SNAPDIR_MAX_JOBS")]
+    pub max_jobs: Option<usize>,
+
+    /// Total retry attempts per network request, including the first (default 5).
+    #[arg(long, value_name = "N")]
+    pub max_retries: Option<u32>,
+
+    /// Base backoff delay in milliseconds for request retries (default 250).
+    #[arg(long, value_name = "MS")]
+    pub retry_base_ms: Option<u64>,
+
+    /// Maximum backoff delay in milliseconds for request retries (default 30000).
+    #[arg(long, value_name = "MS")]
+    pub retry_max_ms: Option<u64>,
+
+    /// Cap request rate (req/s); 0/unset uses the per-backend default.
+    #[arg(long, value_name = "N")]
+    pub max_requests: Option<u64>,
+}
+
 /// The catalog-query family: applied to `locations`/`ancestors`/`revisions`.
 #[derive(Debug, Default, Args)]
 pub struct CatalogArgs {
@@ -588,7 +660,14 @@ pub enum Command {
     },
 
     /// Print default settings and arguments.
-    Defaults,
+    Defaults {
+        /// The resolvable config knobs whose effective value + source
+        /// (`flag`/`env`/`default`) `defaults` reports, e.g. `--cache-dir`,
+        /// `--jobs`, `--store` (so `defaults --jobs 3` shows the effective
+        /// jobs=3, tagged `flag`). Staging action flags are intentionally absent.
+        #[command(flatten)]
+        config: DefaultsArgs,
+    },
 
     /// Copy a snapshot (its manifest + objects) directly between two stores,
     /// streaming through memory — no local staging.
@@ -800,6 +879,9 @@ impl Cli {
             | Command::Pull { transfer, .. }
             | Command::Checkout { transfer, .. }
             | Command::Sync { transfer, .. } => merge_transfer(&mut globals, transfer),
+            // `defaults` folds its config group so its `--cache-dir`/`--jobs`/
+            // `--store`/… overrides resolve (and report `flag`) like a real run.
+            Command::Defaults { config } => merge_defaults(&mut globals, config),
             Command::Verify { cache_mgmt }
             | Command::VerifyCache { cache_mgmt }
             | Command::FlushCache { cache_mgmt } => merge_cache_mgmt(&mut globals, cache_mgmt),
@@ -812,10 +894,9 @@ impl Cli {
             Command::ObjectsNeeded { plumbing }
             | Command::SendPack { plumbing, .. }
             | Command::ReceivePack { plumbing, .. } => merge_plumbing(&mut globals, plumbing),
-            // The remaining commands (defaults/version + the build-time hooks)
-            // take universal flags only.
-            Command::Defaults
-            | Command::Version { .. }
+            // The remaining commands (version + the build-time hooks) take
+            // universal flags only.
+            Command::Version { .. }
             | Command::Completions { .. }
             | Command::Man => {}
         }
@@ -852,6 +933,25 @@ fn merge_transfer(g: &mut Resolved, t: &TransferArgs) {
     g.force = t.force;
     g.keep = t.keep;
     g.dryrun = t.dryrun;
+}
+
+/// Folds a parsed [`DefaultsArgs`] group into the resolved config so `defaults`
+/// reports the same resolved values a real run would use. Only the config knobs
+/// it reports are folded (no staging bools exist in [`DefaultsArgs`]).
+fn merge_defaults(g: &mut Resolved, d: &DefaultsArgs) {
+    g.store.clone_from(&d.store);
+    g.catalog.clone_from(&d.catalog);
+    g.objects_store.clone_from(&d.objects_store);
+    g.cache_dir.clone_from(&d.cache_dir);
+    g.walk_jobs = d.walk_jobs;
+    g.jobs = d.jobs;
+    g.limit_rate.clone_from(&d.limit_rate);
+    g.adaptive = d.adaptive;
+    g.max_jobs = d.max_jobs;
+    g.max_retries = d.max_retries;
+    g.retry_base_ms = d.retry_base_ms;
+    g.retry_max_ms = d.retry_max_ms;
+    g.max_requests = d.max_requests;
 }
 
 /// Folds a parsed [`CatalogArgs`] group into the resolved config.
@@ -987,7 +1087,7 @@ impl Ctx {
                 }
                 Ok(())
             }
-            Command::Defaults => run_defaults(),
+            Command::Defaults { .. } => self.run_defaults(),
             Command::Sync {
                 from,
                 to,
@@ -1065,42 +1165,251 @@ impl Ctx {
 /// order is independent of the environment's iteration order. Kept as a free
 /// function: it resolves everything from the process environment + the running
 /// binary path, so it needs no CLI state (`&self`).
-fn run_defaults() -> Result<()> {
-    let bin_path = std::env::current_exe()
-        .context("resolving the running binary path")?
-        .display()
-        .to_string();
+/// Tag describing where a knob's effective value came from: an explicit CLI
+/// flag, an environment variable, or the built-in default. Printed verbatim
+/// (lowercased) on every knob line so the output is greppable by source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Flag,
+    Env,
+    Default,
+}
 
-    let mut lines: Vec<String> = Vec::new();
-
-    // Group 1: the manifest tool's non-option defaults (`grep -v "^-"`). The
-    // walk is in-process, so the manifest "binary" is this binary; CONTEXT /
-    // EXCLUDE default to the (possibly empty) environment values.
-    let manifest_context = std::env::var("SNAPDIR_MANIFEST_CONTEXT").unwrap_or_default();
-    let manifest_exclude = std::env::var("SNAPDIR_MANIFEST_EXCLUDE").unwrap_or_default();
-    lines.push(format!("SNAPDIR_MANIFEST_BIN_PATH={bin_path}"));
-    lines.push(format!("SNAPDIR_MANIFEST_CONTEXT={manifest_context}"));
-    lines.push(format!("SNAPDIR_MANIFEST_EXCLUDE={manifest_exclude}"));
-
-    // Group 2: every SNAPDIR* env var (excluding *VERSION*), reformatted by
-    // the oracle's `sed`/`tr` rules.
-    for (key, value) in std::env::vars() {
-        if !key.contains("SNAPDIR") || key.contains("VERSION") {
-            continue;
+impl Source {
+    fn tag(self) -> &'static str {
+        match self {
+            Source::Flag => "flag",
+            Source::Env => "env",
+            Source::Default => "default",
         }
-        lines.push(reformat_env_default(&key, &value));
     }
+}
 
-    // Group 3: the running binary path.
-    lines.push(format!("SNAPDIR_BIN_PATH={bin_path}"));
-
-    // Final `sort -u`: lexicographic sort, then dedup adjacent equals.
-    lines.sort();
-    lines.dedup();
-    for line in lines {
-        println!("{line}");
+/// Per-knob precedence resolver for the `defaults` report: a value came from a
+/// `--flag` (highest), else its `SNAPDIR_*` env var, else the built-in default.
+///
+/// `flag_set` is whether the corresponding CLI flag was present on argv (the
+/// resolved config alone cannot tell flag from env, since clap's `env` feature
+/// already folded them into one `Option`). `env_name` is the knob's env var;
+/// `""` means the knob has no env var (e.g. plain `--color`), so it is only ever
+/// `flag` or `default`.
+fn knob_source(flag_set: bool, env_name: &str) -> Source {
+    if flag_set {
+        Source::Flag
+    } else if !env_name.is_empty() && std::env::var_os(env_name).is_some() {
+        Source::Env
+    } else {
+        Source::Default
     }
-    Ok(())
+}
+
+impl Ctx {
+    /// `snapdir defaults`: print the EFFECTIVE configuration — for every knob,
+    /// its RESOLVED value plus a source tag (`flag` | `env` | `default`),
+    /// reflecting flag and env overrides with flag>env>default precedence.
+    ///
+    /// Output is deterministic and line-oriented (`<knob>  <value>  source=<tag>`
+    /// in a stable order), so two runs on the same env are byte-identical and a
+    /// simple grep can parse it. The resolved values REUSE the same helpers the
+    /// real commands use — [`Self::cache_dir`], [`Self::transfer_config`] (jobs),
+    /// [`Self::resolve_retry_policy`] (retries), etc. — so what `defaults`
+    /// reports is exactly what a run would use.
+    ///
+    /// Arbitrary set `SNAPDIR_*` vars are still surfaced (a superset of the old
+    /// "echo env" behavior) in a trailing section; the legacy bash
+    /// `SNAPDIR_MANIFEST_CONTEXT` / `SNAPDIR_MANIFEST_EXCLUDE` are shown only when
+    /// set and only under an explicit `legacy` label — never as live knobs.
+    #[allow(clippy::too_many_lines)]
+    fn run_defaults(&self) -> Result<()> {
+        // argv-presence probe: clap's `env` feature folds `--flag` and the env
+        // var into one resolved `Option`, so to tell `flag` from `env` we check
+        // whether the long flag literally appears on the command line.
+        let argv: Vec<String> = std::env::args().collect();
+        let has_flag = |name: &str| -> bool {
+            let eq = format!("{name}=");
+            argv.iter()
+                .any(|a| a == name || a.starts_with(&eq))
+        };
+
+        let mut out: Vec<String> = Vec::new();
+        // `<knob>  <value>  source=<tag>` — fixed shape, stable order.
+        let mut emit = |knob: &str, value: &str, src: Source| {
+            out.push(format!("{knob} {value} source={}", src.tag()));
+        };
+
+        // cache-dir: reuse Self::cache_dir (flag/env/$HOME-derived default).
+        let cache_dir = self.cache_dir();
+        emit(
+            "cache-dir",
+            &cache_dir.display().to_string(),
+            knob_source(has_flag("--cache-dir"), "SNAPDIR_CACHE_DIR"),
+        );
+
+        // store / objects-store / catalog: resolved Option, "none" when unset.
+        emit(
+            "store",
+            self.globals.store.as_deref().unwrap_or("none"),
+            knob_source(has_flag("--store"), "SNAPDIR_STORE"),
+        );
+        emit(
+            "objects-store",
+            self.globals.objects_store.as_deref().unwrap_or("none"),
+            knob_source(has_flag("--objects-store"), "SNAPDIR_OBJECTS_STORE"),
+        );
+        emit(
+            "catalog",
+            self.globals.catalog.as_deref().unwrap_or("none"),
+            knob_source(has_flag("--catalog"), "SNAPDIR_CATALOG"),
+        );
+
+        // jobs: reuse the transfer-config resolver so the reported number is the
+        // exact auto-resolved transfer concurrency a real run would use.
+        let jobs = self.transfer_config()?.concurrency.get();
+        emit(
+            "jobs",
+            &jobs.to_string(),
+            knob_source(has_flag("--jobs") || has_flag("-j"), "SNAPDIR_JOBS"),
+        );
+
+        // walk-jobs: resolve the auto CPU count the same way the core walk does
+        // (available_parallelism capped at 16) when unset/0.
+        let walk_jobs = match self.globals.walk_jobs {
+            Some(n) if n > 0 => n,
+            _ => std::thread::available_parallelism()
+                .map_or(1, std::num::NonZeroUsize::get)
+                .clamp(1, 16),
+        };
+        emit(
+            "walk-jobs",
+            &walk_jobs.to_string(),
+            knob_source(has_flag("--walk-jobs"), "SNAPDIR_WALK_JOBS"),
+        );
+
+        // limit-rate: the raw rate spec (resolved/parsed elsewhere); none when unset.
+        emit(
+            "limit-rate",
+            self.globals.limit_rate.as_deref().unwrap_or("none"),
+            knob_source(has_flag("--limit-rate"), "SNAPDIR_LIMIT_RATE"),
+        );
+
+        // adaptive: the operating fraction when enabled, else "off".
+        let adaptive = self
+            .globals
+            .adaptive
+            .map_or_else(|| "off".to_string(), |f| f.to_string());
+        emit(
+            "adaptive",
+            &adaptive,
+            knob_source(has_flag("--adaptive"), "SNAPDIR_ADAPTIVE"),
+        );
+
+        // max-jobs / max-requests: optional ceilings, "none" when unset.
+        emit(
+            "max-jobs",
+            &self
+                .globals
+                .max_jobs
+                .map_or_else(|| "none".to_string(), |n| n.to_string()),
+            knob_source(has_flag("--max-jobs"), "SNAPDIR_MAX_JOBS"),
+        );
+
+        // retry policy: reuse the live resolver so the reported schedule is the
+        // exact one a transfer would install (flag>env>default per field).
+        let retry = self.resolve_retry_policy();
+        emit(
+            "max-retries",
+            &retry.max_attempts.to_string(),
+            knob_source(has_flag("--max-retries"), "SNAPDIR_MAX_RETRIES"),
+        );
+        emit(
+            "retry-base-ms",
+            &retry.base.as_millis().to_string(),
+            knob_source(has_flag("--retry-base-ms"), "SNAPDIR_RETRY_BASE_MS"),
+        );
+        emit(
+            "retry-max-ms",
+            &retry.cap.as_millis().to_string(),
+            knob_source(has_flag("--retry-max-ms"), "SNAPDIR_RETRY_MAX_MS"),
+        );
+        // max-requests resolves flag>env (env via SNAPDIR_MAX_REQUESTS, the same
+        // fallback resolve_rate_limits uses), else "none".
+        let max_requests = self
+            .globals
+            .max_requests
+            .or_else(|| env_u64("SNAPDIR_MAX_REQUESTS"));
+        emit(
+            "max-requests",
+            &max_requests.map_or_else(|| "none".to_string(), |n| n.to_string()),
+            knob_source(has_flag("--max-requests"), "SNAPDIR_MAX_REQUESTS"),
+        );
+
+        // no-progress: bool; has an env var (SNAPDIR_NO_PROGRESS).
+        emit(
+            "no-progress",
+            if self.globals.no_progress { "true" } else { "false" },
+            knob_source(has_flag("--no-progress"), "SNAPDIR_NO_PROGRESS"),
+        );
+
+        // color: a non-Option flag with NO env var, so flag-or-default only.
+        let color = match self.globals.color {
+            ColorArg::Auto => "auto",
+            ColorArg::Always => "always",
+            ColorArg::Never => "never",
+        };
+        emit("color", color, knob_source(has_flag("--color"), ""));
+
+        // fsync: read SNAPDIR_FSYNC (default `batch`); no flag, env-or-default.
+        let fsync = match std::env::var("SNAPDIR_FSYNC").ok().as_deref() {
+            Some("off") => "off",
+            _ => "batch",
+        };
+        emit("fsync", fsync, knob_source(false, "SNAPDIR_FSYNC"));
+
+        // clonefile: enabled unless SNAPDIR_CLONEFILE=0 (no flag).
+        let clonefile_on = !matches!(std::env::var("SNAPDIR_CLONEFILE").as_deref(), Ok("0"));
+        emit(
+            "clonefile",
+            if clonefile_on { "enabled" } else { "disabled" },
+            knob_source(false, "SNAPDIR_CLONEFILE"),
+        );
+
+        // verify-copies: forced ON only by SNAPDIR_VERIFY_COPIES=1 (no flag).
+        let verify_on = matches!(std::env::var("SNAPDIR_VERIFY_COPIES").as_deref(), Ok("1"));
+        emit(
+            "verify-copies",
+            if verify_on { "enabled" } else { "disabled" },
+            knob_source(false, "SNAPDIR_VERIFY_COPIES"),
+        );
+
+        // The effective-knob block is the head of the report.
+        for line in &out {
+            println!("{line}");
+        }
+
+        // Superset: surface ANY other set `SNAPDIR_*` var (excluding *VERSION*)
+        // that the knob block above did not already cover, sorted for
+        // determinism. The legacy bash `SNAPDIR_MANIFEST_*` vars are shown here
+        // ONLY when set and ONLY under an explicit `legacy` label — never as a
+        // live effective knob, and never as the old empty `=`-suffixed cruft.
+        let mut others: Vec<(String, String)> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("SNAPDIR") && !k.contains("VERSION"))
+            .collect();
+        others.sort();
+        let mut printed_header = false;
+        for (key, value) in others {
+            let legacy = key == "SNAPDIR_MANIFEST_CONTEXT" || key == "SNAPDIR_MANIFEST_EXCLUDE";
+            if !printed_header {
+                println!("other-env:");
+                printed_header = true;
+            }
+            if legacy {
+                println!("  {key}={value} (legacy)");
+            } else {
+                println!("  {key}={value}");
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Ctx {
@@ -2916,32 +3225,6 @@ fn parse_adaptive_fraction(s: &str) -> Result<f64, String> {
         ));
     }
     Ok(value)
-}
-
-/// Reformats a `SNAPDIR*` environment variable into the oracle's `defaults`
-/// option line, faithfully reproducing the `sed -E 's|^_?SNAPDIR_|--|; s|_|-|g;'
-/// | tr '[:upper:]' '[:lower:]'` pipeline applied to the `KEY=VALUE` text:
-///
-/// 1. strip a single leading `_SNAPDIR_` or `SNAPDIR_` prefix, replacing it with
-///    `--` (only the first match, anchored at the start — `sed` with `^`);
-/// 2. replace every remaining `_` with `-` (`s|_|-|g`, across the whole line —
-///    so underscores in the value are rewritten too);
-/// 3. lowercase the whole line (`tr '[:upper:]' '[:lower:]'`, value included).
-///
-/// So `SNAPDIR_CACHE_DIR=/x` → `--cache-dir=/x`, and
-/// `_SNAPDIR_BIN_DIR=/X` → `--bin-dir=/x`.
-fn reformat_env_default(key: &str, value: &str) -> String {
-    let line = format!("{key}={value}");
-    // `s|^_?SNAPDIR_|--|`: optional leading `_`, then `SNAPDIR_`, anchored.
-    let stripped = line
-        .strip_prefix("_SNAPDIR_")
-        .or_else(|| line.strip_prefix("SNAPDIR_"));
-    let body = match stripped {
-        Some(rest) => format!("--{rest}"),
-        None => line,
-    };
-    // `s|_|-|g` then `tr '[:upper:]' '[:lower:]'` over the whole line.
-    body.replace('_', "-").to_lowercase()
 }
 
 /// Walks `root` with the given hasher, mapping the typed [`WalkError`] into an
