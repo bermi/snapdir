@@ -4425,7 +4425,9 @@ gates:
     phase: 30
     owner_agent: adversary
     depends_on: [dx-defaults-impl-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T05:30:00Z
+    git_sha: 8cc87ca
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test dx_defaults && cargo test --workspace"
     pass_criteria:
