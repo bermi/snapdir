@@ -37,6 +37,10 @@ aimd = "aimd"
 # `fo` = from-objects, a temp-dir-name abbreviation in the sync-split CLI tests
 # (e.g. `temp_dir("fo-src")`); these are deliberate string literals, not "of"/"for".
 fo = "fo"
+# `mis` = the English prefix in "mis-addressed" — the clone-skip safety invariant
+# ("never a silently mis-addressed object") spelled with a hyphen across the
+# copy-guard / clone-skip test prose. Intentional prefix, not "miss"/"mist".
+mis = "mis"
 
 [default.extend-identifiers]
 # crate / API identifiers that look like typos but are intentional.
