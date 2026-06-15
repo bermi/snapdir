@@ -1053,14 +1053,40 @@ impl Ctx {
                 // b3sum of the comment-stripped manifest text. The wrapper
                 // walks with the default checksum (b3sum) and default
                 // path/follow modes; the id is checksum-mode independent here.
-                let manifest = self.build_manifest(
-                    path.as_deref(),
-                    false,
-                    false,
-                    None,
-                    &self.globals.exclude,
-                    None,
-                )?;
+                //
+                // With NO PATH, the documented contract (help + help-id.trycmd:
+                // "omit to read a manifest from stdin") is to hash a manifest
+                // piped on stdin rather than walking the cwd. We honor that
+                // when stdin is NOT a TTY: parse the piped manifest text and
+                // run it through the SAME frozen `snapshot_id` rule `id <dir>`
+                // uses (parse strips `#`-comment lines == `grep -v '^#'`;
+                // `snapshot_id` re-renders + appends the trailing `echo`
+                // newline before BLAKE3), so `manifest <dir> | id` round-trips
+                // byte-identically to `id <dir>` and depends only on stdin.
+                let manifest = if path.is_none() && !std::io::stdin().is_terminal() {
+                    let mut text = String::new();
+                    std::io::stdin()
+                        .read_to_string(&mut text)
+                        .context("reading manifest from stdin")?;
+                    Manifest::parse(&text).context("parsing manifest from stdin")?
+                } else if path.is_none() {
+                    // A bare `snapdir id` with stdin attached to a TTY would
+                    // otherwise silently walk the cwd. Fail loudly instead and
+                    // point at the documented forms.
+                    anyhow::bail!(
+                        "no directory given and no manifest on stdin; \
+                         pass a PATH (or `.`), or pipe a manifest"
+                    );
+                } else {
+                    self.build_manifest(
+                        path.as_deref(),
+                        false,
+                        false,
+                        None,
+                        &self.globals.exclude,
+                        None,
+                    )?
+                };
                 let id = snapshot_id(&manifest, &Blake3Hasher::new());
                 println!("{id}");
                 Ok(())
