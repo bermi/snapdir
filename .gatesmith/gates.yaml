@@ -4237,3 +4237,356 @@ gates:
         - human_confirm: "Phase 29 done: snapdir 1.7.0 released end-to-end — canonical snapdir/snapdir at 1.7.0, tag v1.7.0, GitHub release live (release notes = CHANGELOG [1.7.0]), all 6 crates on crates.io. Ships Phase-28 (--objects-store / $SNAPDIR_OBJECTS_STORE shared-pool split, `snapdir diff` manifests-only, `sync --from-objects/--to-objects`), Phase-27 (SNAPPACK 1Z zstd transport + receive-pack durability — SNAPDIR_FSYNC=batch crash-safe default; the ~20% small-files-receive cost was ACCEPTED + DOCUMENTED per the operator's Option-3 decision, the unrealistic <=5% target relaxed; SNAPDIR_FSYNC=off escape hatch), AND the Phase-29 PERFORMANCE work: parallel/mmap walk (`--walk-jobs`, ~multiple-x faster `id`/stage), CROSS-PLATFORM copy-on-write clones (macOS APFS clonefile + Linux FICLONE reflink), and the clone-path re-hash elision (`SNAPDIR_VERIFY_COPIES=1`) stage/checkout speedup. Frozen manifest format untouched; snapshot ids byte-identical; default behavior unchanged when the new flags are unset. Approve?"
     human_checkpoint: true
     description: "PHASE 29 SIGN-OFF: snapdir 1.7.0 released end-to-end. Ships the Phase-27 SNAPPACK 1Z zstd transport + SNAPDIR_FSYNC receive-pack durability and the Phase-28 objects-store split (--objects-store), manifest-listing, `snapdir diff` (manifests-only), and `sync --from-objects/--to-objects`. All additive: frozen format untouched, unset-flag behavior byte-for-byte unchanged. 6 crates published; the Phase-27 Linux batch-vs-off <=5% release gate was cleared."
+
+  # ===========================================================================
+  # PHASE 30 — Adversarial CLI DX/UX review -> snapdir 1.8.0 (operator-requested
+  # 2026-06-15). Two sub-phases: (A) UNBIASED discovery (sandbox + sealed QA
+  # personas + systematic arg-matrix audit) judged into a findings report ->
+  # operator locks scope; (B) fixes via adversarial triples (author!=coder!=
+  # reviewer) for the 4 chosen clusters [arg-hygiene approach-B, defaults
+  # rewrite, progress observability, error-message hints] -> (C) release 1.8.0
+  # mirroring the 1.7.0 chain. KEYSTONE: frozen manifest format untouched,
+  # snapshot ids BYTE-IDENTICAL (progress + arg changes are output-orthogonal).
+  # Discovery is black-box vs the INSTALLED snapdir (resolves to 1.7.0) — no
+  # compile; fixes build from source. Plan: .claude/plans/...greedy-stearns.md
+  # (top section "Phase 30").
+  # ===========================================================================
+
+  # ---- Sub-phase A: discovery (no code changes) ----
+  - id: dx-sandbox-setup
+    phase: 30
+    owner_agent: generic
+    depends_on: [phase29-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f utils/dx/build-sandbox.sh && test -f .gatesmith/reviews/dx-scenario-catalog.md && test -d .gatesmith/evidence/dx-sandbox/tree && snapdir id .gatesmith/evidence/dx-sandbox/tree >/dev/null 2>&1"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - files_exist: ["utils/dx/build-sandbox.sh", ".gatesmith/reviews/dx-scenario-catalog.md"]
+    human_checkpoint: false
+    description: "Build a REPRODUCIBLE QA sandbox + a committed scenario catalog. Reuse benches/src/lib.rs Scenario::materialize + gate_scenarios() (many_small/few_large/deep_nest/wide_fanout/mixed/dedup/with_excludes/edge) plus a couple bench-tier shapes to materialize a realistic tree under .gatesmith/evidence/dx-sandbox/tree (gitignored), and stand up a local file store + a split --objects-store under .gatesmith/evidence/dx-sandbox/store. Write a deterministic rebuild script utils/dx/build-sandbox.sh (idempotent; rebuilds tree+store) and commit .gatesmith/reviews/dx-scenario-catalog.md describing the REALISTIC QA GOALS the personas will resolve (backup->restore on a new machine, diff two versions, shared object-store + sync, perf-tune a large tree, disaster-recovery/verify, explore-via-help). The catalog states goals ONLY — it must NOT mention any known DX smell (unbiased contract). PM machine-check: script + catalog exist and `snapdir id <sandbox tree>` succeeds against the installed 1.7.0 binary."
+  - id: dx-arg-matrix-audit
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-sandbox-setup]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/reviews/dx-arg-matrix.md && grep -qiE 'manifest|stage|push' .gatesmith/reviews/dx-arg-matrix.md && grep -qiE 'debug|verbose' .gatesmith/reviews/dx-arg-matrix.md && grep -qiE 'noop|no-op|ignored|silently|effective|rejected' .gatesmith/reviews/dx-arg-matrix.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/reviews/dx-arg-matrix.md"
+    human_checkpoint: false
+    description: "SYSTEMATIC black-box (command x flag) audit using the INSTALLED snapdir (1.7.0) + the tests/cmd/*.trycmd help as the authoritative arg list. For every public subcommand (manifest,id,stage,push,fetch,pull,checkout,verify,verify-cache,flush-cache,locations,ancestors,revisions,defaults,sync,diff) x every flag, classify behavior: EFFECTIVE | SILENT-NOOP | REJECTED | N/A. Run real (read-only/sandbox) invocations to verify the classification empirically (e.g. does --limit-rate change anything on `id`? does --debug change anything anywhere?). Output .gatesmith/reviews/dx-arg-matrix.md (the deterministic catch-all that surfaces the --debug ghost, the --verbose coverage gaps, and every accepted-but-ignored combo). This is an OBJECTIVE inventory, distinct from the persona friction reports. PM machine-check: matrix file exists, covers the commands, and flags noop/ghost cells."
+  - id: dx-qa-personas
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-sandbox-setup]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test \"$(ls .gatesmith/evidence/dx-personas/*.md 2>/dev/null | wc -l | tr -d ' ')\" -ge 6"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "UNBIASED adversarial discovery — the heart of the harness. The PM spawns ~6 INDEPENDENT persona teammates with SEALED prompts: each gets a realistic goal + the sandbox path + the CLI and `--help` ONLY. They MUST NOT read source and MUST NOT be told any known DX smell (the operator's examples — progress-0%, defaults-cruft, ghost flags — live ONLY in the judge's calibration set, NOT in these prompts; seeding them voids the adversarial contract). Personas: (1) first-time backup->restore on a new machine; (2) CI scripter parsing stdout/exit-codes/--json; (3) perf tuner on a large tree; (4) shared object-store + `sync` operator; (5) disaster-recovery / `verify`; (6) explorer-via-`--help`-only (help-text + `defaults` DX). Each writes a STRUCTURED friction report to .gatesmith/evidence/dx-personas/<persona>.md: goal, exact commands tried, friction/confusion/surprises with SEVERITY (blocker/major/minor/nit) and repro. PM machine-check: >=6 persona reports present."
+  - id: dx-judge-synthesis
+    phase: 30
+    owner_agent: generic
+    depends_on: [dx-arg-matrix-audit, dx-qa-personas]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/reviews/dx-findings-1.8.0.md && grep -qiE 'severity' .gatesmith/reviews/dx-findings-1.8.0.md && grep -qiE 'calibration' .gatesmith/reviews/dx-findings-1.8.0.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/reviews/dx-findings-1.8.0.md"
+    human_checkpoint: false
+    description: "JUDGE synthesis (PM is the judge, per operator). Dedupe + categorize (arg-hygiene / progress-observability / defaults / errors / help-docs / consistency) + severity-rank + add minimal repro across the arg-matrix + all persona reports, into .gatesmith/reviews/dx-findings-1.8.0.md. CRITICAL: include a CALIBRATION-COVERAGE section measuring whether the SEALED personas independently rediscovered the 3 operator-known smells (progress stuck at 0%/until-done; `defaults` legacy-cruft / missing effective knobs; flags that do nothing or aren't validated, esp. --debug ghost + --verbose gaps). A MISS is reported as a HARNESS finding (personas/sandbox not adversarial enough — recommend re-running dx-qa-personas with sharper goals), NOT as evidence the smell is absent. PM machine-check: findings report exists with severity ranking + a calibration section."
+  - id: dx-findings-signoff
+    phase: 30
+    owner_agent: generic
+    depends_on: [dx-judge-synthesis]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/reviews/dx-findings-1.8.0.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Reviewed .gatesmith/reviews/dx-findings-1.8.0.md (deduped, severity-ranked, with calibration coverage). The unbiased personas adequately exercised the CLI (calibration coverage acceptable, or the harness gap is understood). LOCK the 1.8.0 fix scope: the 4 planned clusters (arg-hygiene approach-B, defaults rewrite, progress observability, error-message hints) plus/minus any findings-driven additions or trims. Approve and proceed to fixes?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint). The hinge between discovery and fixes. The operator reviews the findings report; the PM escalates via AskUserQuestion to LOCK the 1.8.0 fix scope (confirm/trim/add clusters). The 4 fix-cluster chains below depend on this gate. If calibration coverage was poor, the operator may instead direct a re-run of dx-qa-personas before locking scope."
+
+  # ---- Sub-phase B: fixes (1.8.0), adversarial triples, all depend on dx-findings-signoff ----
+  # Cluster 1 — argument hygiene (approach B: per-command arg groups; clap natively rejects
+  # inapplicable flags AND per-command --help shows only its flags; remove the --debug ghost).
+  - id: dx-arg-spec-tests
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-findings-signoff]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/dx_args.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/dx_args.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/dx_args.rs"
+    human_checkpoint: false
+    description: "ADVERSARY black-box spec tests for argument hygiene -> .gatesmith/pending-tests/dx_args.rs (assert_cmd/trycmd-style against the snapdir binary). Contracts: (a) a flag the USER typed that does not apply to the chosen subcommand -> exit 2 with a useful error NAMING the flag + command (e.g. `snapdir manifest --limit-rate 1M ./d`); (b) per-command `--help` lists ONLY applicable flags (e.g. `snapdir id --help` has no --limit-rate/--store/--jobs noise); (c) `--debug` is GONE -> `snapdir <cmd> --debug` is an unknown-argument error; (d) env-provided SNAPDIR_* that is inapplicable stays SILENT (`SNAPDIR_LIMIT_RATE=1M snapdir manifest ./d` -> exit 0, stdout unchanged); (e) `--verbose`/`--quiet`/`--color`/`--no-progress` accepted on every command; (f) KEYSTONE — a VALID invocation `snapdir id ./d` produces byte-identical stdout to before. Behavior-only (no pub(crate) imports)."
+  - id: dx-arg-impl-cli
+    phase: 30
+    owner_agent: cli
+    depends_on: [dx-arg-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_args && test -f crates/snapdir-cli/tests/dx_args.rs && test ! -f .gatesmith/pending-tests/dx_args.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-cli/tests/dx_args.rs"
+    human_checkpoint: false
+    description: "CLI impl (approach B). Restructure GlobalArgs (cli.rs:72-228, all currently global=true) into a small UNIVERSAL group {--quiet,--color,--no-progress,--verbose} + per-command-family arg groups via #[command(flatten)] (families: walk/hash {manifest,id,stage,push}; transfer {push,fetch,pull,checkout,stage,sync}; catalog-query {locations,ancestors,revisions}; manifest-only {diff}; cache-mgmt {verify,verify-cache,flush-cache}; defaults = universal only). clap then NATIVELY rejects inapplicable flags (exit 2) and per-command --help shows only its flags. Rethread the ~60 self.globals.<field> read sites. REMOVE the --debug ghost (cli.rs:151-153, 0 reads) and delete the deferred-validation comment (cli.rs:73-75). Keep --verbose universal; document which commands honor it. Take over the staged tests (git mv .gatesmith/pending-tests/dx_args.rs -> crates/snapdir-cli/tests/dx_args.rs). NOTE: this changes the public help surface intentionally; the trycmd/man regeneration is the NEXT gate. PM machine-check: workspace builds locked, dx_args test green, pending test moved."
+  - id: dx-arg-ci-snapshots
+    phase: 30
+    owner_agent: ci
+    depends_on: [dx-arg-impl-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli && cargo run -q -p snapdir -- man >/dev/null"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "CI/snapshot regeneration. The approach-B restructure changes every per-command --help, so regenerate + commit ALL 21 crates/snapdir-cli/tests/cmd/help-*.trycmd snapshots (TRYCMD=overwrite or the project's snapshot-update path) and confirm the man page (clap_mangen) renders. Verify the trycmd suite is GREEN against the regenerated snapshots and actionlint stays clean. Mechanical + reviewable; kept separate from the impl so the snapshot diff is auditable. PM machine-check: `cargo test -p snapdir-cli` green (trycmd included) + `snapdir man` renders."
+  - id: dx-arg-review
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-arg-ci-snapshots]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test dx_args && cargo test --workspace"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of the arg-hygiene cluster. Diff landed crates/snapdir-cli/tests/dx_args.rs vs the staged original; adjudicate any coder test edits on merit (legit test-bug-fix vs impl-masking weakening); re-assert every load-bearing contract (inapplicable->exit2 naming flag+command, per-command --help scoping, --debug gone, env stays silent, valid-id byte-identical). Add impl-revealed cases (flags shared across families; diff --id pinned-manifest; the universal-flag set). Confirm no weakening and the whole workspace is green."
+  # Cluster 2 — defaults rewrite (real effective config, resolved value + source).
+  - id: dx-defaults-spec-tests
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-findings-signoff]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/dx_defaults.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/dx_defaults.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/dx_defaults.rs"
+    human_checkpoint: false
+    description: "ADVERSARY black-box spec tests for the `defaults` rewrite -> .gatesmith/pending-tests/dx_defaults.rs. Contracts: on a CLEAN env, `snapdir defaults` prints EVERY effective knob with its resolved value + SOURCE {flag|env|default} — cache-dir, store, objects-store, catalog, jobs, walk-jobs, limit-rate, adaptive, max-jobs, retries (max/base/max-ms), max-requests, no-progress, color, fsync, clonefile, verify-copies; a stable, parseable, deterministic format; still SURFACES any set SNAPDIR_* (e.g. SNAPDIR_JOBS=4 is reflected with source=env); legacy bash lines (SNAPDIR_MANIFEST_*) are either dropped or clearly labeled legacy/compat. Behavior-only."
+  - id: dx-defaults-impl-cli
+    phase: 30
+    owner_agent: cli
+    depends_on: [dx-defaults-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_defaults && test -f crates/snapdir-cli/tests/dx_defaults.rs && test ! -f .gatesmith/pending-tests/dx_defaults.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-cli/tests/dx_defaults.rs"
+    human_checkpoint: false
+    description: "CLI impl: rewrite run_defaults() (cli.rs:669-737) to print the real effective config. REUSE the existing resolvers — cache-dir (cli.rs:2087), transfer/jobs (1471), walk-jobs (2221), retry policy (1505), rate (1460), catalog (1300), and the per-knob flag>env>default precedence — to emit each knob with its resolved value + source. Keep surfacing any set SNAPDIR_* (now with source=env); drop or clearly-label the legacy SNAPDIR_MANIFEST_* bash lines. Update help-defaults.trycmd. Take over the staged tests. PM machine-check: workspace builds locked, dx_defaults test green, pending test moved."
+  - id: dx-defaults-review
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-defaults-impl-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test dx_defaults && cargo test --workspace"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of the defaults cluster. Diff landed vs staged dx_defaults.rs; adjudicate edits; re-assert that every effective knob is printed with a correct resolved value + source, env values are reflected, format is stable/parseable. Add impl-revealed cases (e.g. --flag overrides env in the printed source; backend-specific rate defaults). No weakening; workspace green."
+  # Cluster 3 — progress observability (visible discovery + determinate hash %). Touches core+cli.
+  - id: dx-progress-spec-tests
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-findings-signoff]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/dx_progress.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/dx_progress.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/dx_progress.rs"
+    human_checkpoint: false
+    description: "ADVERSARY black-box spec tests for progress -> .gatesmith/pending-tests/dx_progress.rs (PTY harness like the existing progress_e2e). Contracts: during a stage/id of a large sandbox tree the stderr shows a VISIBLE discovery phase (e.g. 'discovering... N files', growing) then a DETERMINATE hash phase (real NN% / done-of-total) — NOT stuck at 0%-until-done; --no-progress and --quiet emit NO progress lines; KEYSTONE DETERMINISM — `snapdir id ./d` and `snapdir manifest ./d` stdout are BYTE-IDENTICAL progress-on vs --no-progress AND byte-identical to the pre-change 1.7.0 binary (snapshot-id freeze); an empty/zero-file dir does not panic (no divide-by-zero); stdout stays clean (no progress fragment) when stdout is redirected and stderr is a TTY. Behavior-only."
+  - id: dx-progress-impl-core
+    phase: 30
+    owner_agent: core
+    depends_on: [dx-progress-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core && grep -qE 'Discovering|objects_discovered' crates/snapdir-core/src/progress.rs && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "CORE impl: make the walk emit discovery progress and set a real total before hashing. In crates/snapdir-core/src/progress.rs add Phase::Discovering + one objects_discovered AtomicU64 + method + MeterSnapshot field (mirror the existing objects_skipped pattern; additive). In walk.rs thread `meter: Option<&Meter>` into discover_dir and bump meter.object_discovered() per file during enumeration; set the initial phase to Discovering; and between discovery and hashing in walk_inner call meter.set_total(pending.len() as u64) + set_phase(Hashing) so the hash phase renders a real %. The hot hash loop (hash_one) is UNTOUCHED. KEYSTONE: snapshot ids byte-identical — meter is output-orthogonal; the existing meter-vs-none golden must still pass and the frozen lock (merkle/manifest/excludes) must verify. PM machine-check: snapdir-core tests green + Discovering/objects_discovered present + `shasum -c .gatesmith/manifest-format.sha.lock` OK."
+  - id: dx-progress-impl-cli
+    phase: 30
+    owner_agent: cli
+    depends_on: [dx-progress-impl-core]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli && test ! -f .gatesmith/pending-tests/dx_progress.rs && test -f crates/snapdir-cli/tests/dx_progress.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-cli/tests/dx_progress.rs"
+    human_checkpoint: false
+    description: "CLI impl: render the new phase + wire the walk-bearing commands. Add the Phase::Discovering arm to crates/snapdir-cli/src/progress.rs phase_word + the new MeterSnapshot field in the renderer and its test helpers. Wire a meter into `manifest` and `id` (currently pass None) via start_progress so their long discovery phase is visible — CRUCIAL: call reporter.finish() BEFORE the stdout println so stdout stays byte-clean (progress is stderr+TTY-gated). pull/checkout/sync already set a manifest-derived total up front -> no change. Take over the staged tests. PM machine-check: workspace builds locked, snapdir-cli tests green, pending test moved."
+  - id: dx-progress-review
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-progress-impl-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of the progress cluster. Diff landed vs staged dx_progress.rs; adjudicate edits; RE-ASSERT the determinism keystone (id/manifest stdout byte-identical progress-on vs off vs pre-change binary) and the meter-vs-none golden; confirm visible discovery + determinate hash %; empty-dir no panic; stdout cleanliness. Add impl-revealed cases. No weakening; workspace + frozen lock green."
+  # Cluster 4 — error-message hints (may fold into cluster 1 if findings overlap).
+  - id: dx-errors-spec-tests
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-findings-signoff]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/dx_errors.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/dx_errors.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/dx_errors.rs"
+    human_checkpoint: false
+    description: "ADVERSARY black-box spec tests for error-message quality -> .gatesmith/pending-tests/dx_errors.rs. Contracts: a transfer command with no --store (and no SNAPDIR_STORE) -> an ACTIONABLE error naming the missing --store/SNAPDIR_STORE, not a generic missing-option dump; a bad --limit-rate value -> a readable parse error showing the accepted forms (10M/512K/1G); an unknown snapshot id keeps its existing good 'did you fetch?' hint; conflicting/invalid flag combos -> a clear message. Stderr only; stdout unaffected. Behavior-only."
+  - id: dx-errors-impl-cli
+    phase: 30
+    owner_agent: cli
+    depends_on: [dx-errors-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_errors && test -f crates/snapdir-cli/tests/dx_errors.rs && test ! -f .gatesmith/pending-tests/dx_errors.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-cli/tests/dx_errors.rs"
+    human_checkpoint: false
+    description: "CLI impl: add actionable hints for the common failures the spec pins (missing --store on push/pull/sync; bad --limit-rate format; preserve the unknown-id hint; clear flag-conflict messages). Keep messages on stderr; do not change exit-code semantics beyond the new arg-validation exit-2 (cluster 1). Take over the staged tests. PM machine-check: workspace builds locked, dx_errors test green, pending test moved."
+  - id: dx-errors-review
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-errors-impl-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test dx_errors && cargo test --workspace"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of the error-hints cluster. Diff landed vs staged dx_errors.rs; adjudicate edits; re-assert each actionable-hint contract; add impl-revealed cases. No weakening; workspace green."
+  # ---- INDEPENDENT loop-closing verification + changelog ----
+  - id: dx-fix-verify
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-arg-review, dx-defaults-review, dx-progress-review, dx-errors-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/evidence/dx-fix-verify.log && grep -qiE 'RESOLVED|PASS' .gatesmith/evidence/dx-fix-verify.log && cargo test --workspace"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "INDEPENDENT loop-closing verification (the DX counterpart of *-race-verify). BUILD snapdir from source (cargo build --release -p snapdir) and re-run the JUDGE'S CALIBRATION SET + a subset of the persona scenarios BLACK-BOX against the freshly-built binary in the sandbox, confirming each prioritized finding is actually resolved (progress now visible+determinate; defaults shows effective config; inapplicable flags fail with useful messages; --debug gone; error hints present). Record .gatesmith/evidence/dx-fix-verify.log with a per-finding RESOLVED/NOT-RESOLVED verdict. A NOT-RESOLVED reopens the relevant cluster. PM machine-check: log exists with PASS/RESOLVED verdicts + workspace tests green."
+  - id: dx-complete
+    phase: 30
+    owner_agent: generic
+    depends_on: [dx-fix-verify]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --locked && grep -q '## \\[Unreleased\\]' docs/rust-port/CHANGELOG.md && grep -qiE 'defaults|progress|argument|--help' docs/rust-port/CHANGELOG.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "DX SIGN-OFF + changelog (generic lane, gatesmith-free CODE-ONLY commit). Add docs/rust-port/CHANGELOG.md [Unreleased] entries for the shipped clusters: per-command argument validation (unsupported flags now fail with useful messages; per-command --help; --debug removed), `defaults` now prints effective config with resolved value + source, progress now shows discovery + a real % (snapshot ids unchanged), and the error-message hints. Keep heading [Unreleased] (release-prep folds -> [1.8.0]). Confirm the whole Phase-30 fix chain is green. PM machine-check: workspace tests green (locked) + CHANGELOG [Unreleased] mentions the DX work."
+  # ---- Sub-phase C: release 1.8.0 (mirror the 1.7.0 chain) ----
+  - id: release-prep-1.8.0
+    phase: 30
+    owner_agent: generic
+    depends_on: [dx-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -qE '^version = \"1.8.0\"' Cargo.toml && grep -q '## \\[1.8.0\\]' docs/rust-port/CHANGELOG.md && cargo build --workspace --locked"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "Prepare the 1.8.0 release (generic lane, gatesmith-free CODE-ONLY commit on dev — NO .gatesmith paths). Bump 1.7.0 -> 1.8.0 in root Cargo.toml [workspace.package].version AND the crates/snapdir/Cargo.toml snapdir-cli path-dep version pin; regenerate Cargo.lock (cargo build --workspace). docs/rust-port/CHANGELOG.md = THE RELEASE NOTES (release.yml body_path): rename '## [Unreleased]' -> '## [1.8.0] - <date>'; add a fresh empty '## [Unreleased]' above it; update the compare-links footer ([Unreleased]: ...compare/v1.8.0...HEAD; [1.8.0]: ...compare/v1.7.0...v1.8.0). VERIFY the [1.8.0] section covers the Phase-30 DX work (arg validation + per-command --help, defaults rewrite, progress observability, error hints). Confirm release.yml publishes all 6 crates."
+  - id: release-verify-branch-1.8.0
+    phase: 30
+    owner_agent: generic
+    depends_on: [release-prep-1.8.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git ls-remote --exit-code origin refs/heads/release-verify/1.8.0 >/dev/null"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "release-verify/1.8.0 is built off upstream/main (ZERO .gatesmith tracked), carrying the gatesmith-free Phase-30 code commits + the release-prep-1.8.0 commit on top (tip shows 1.8.0); pushed to origin; bench-verify.yml is green. Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint). Create release-verify/1.8.0 off upstream/main and apply ONLY the new release content (the Phase-30 gatesmith-free CODE commits — every feat/test/docs/ci commit recorded as a gate git_sha in Phase 30 — in order, then release-prep-1.8.0; OR the squashed net code diff + release-prep). Branch tip = upstream/main + exactly the 1.8.0 changes, version 1.8.0, ZERO .gatesmith tracked. Push to origin (bermi) -> bench-verify.yml. PM machine-check: origin has refs/heads/release-verify/1.8.0; human_confirm bench-verify green + ZERO .gatesmith. NOTE: the local pre-push hook runs the full ci.yaml mirror (incl. typos) — fix any blocker before the push lands."
+  - id: release-pr-upstream-1.8.0
+    phase: 30
+    owner_agent: generic
+    depends_on: [release-verify-branch-1.8.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.8.0\"'"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "PR release-verify/1.8.0 -> snapdir/snapdir was opened, the full CI matrix went green (lint/deny/test-matrix incl. the loopback-sshd suite on ubuntu+macos, the required reflink Btrfs FICLONE job, the static-musl leg, coverage, crate-age >=3 days), and it was squash-merged; upstream/main is now at 1.8.0 with ZERO .gatesmith. Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint, IRREVERSIBLE — merges to the canonical repo). Open PR release-verify/1.8.0 -> snapdir/snapdir main (title 'release: 1.8.0', body = CHANGELOG [1.8.0]), wait for the full CI matrix (incl. the required reflink Btrfs FICLONE job + loopback-sshd + musl zstd leg), operator-authorized squash-merge. PM machine-check: upstream/main Cargo.toml shows 1.8.0."
+  - id: release-tag-crates-1.8.0
+    phase: 30
+    owner_agent: packaging
+    depends_on: [release-pr-upstream-1.8.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git ls-remote --tags upstream refs/tags/v1.8.0 | grep -q v1.8.0 && for c in snapdir-core snapdir-catalog snapdir-stores snapdir-ssh-store snapdir-cli snapdir; do curl -sf \"https://index.crates.io/$(printf %s \"$c\" | cut -c1-2)/$(printf %s \"$c\" | cut -c3-4)/$c\" | grep -q '\"vers\":\"1.8.0\"' || exit 1; done"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "v1.8.0 is tagged on snapdir/snapdir, the GitHub release is live (signed archives + SHA256SUMS), and ALL 6 crates are at 1.8.0 on crates.io. Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint, IRREVERSIBLE — permanent tag + crates.io publish). *** TP PRE-CHECK FIRST (the 1.7.0 lesson — memory release-crates-io-state): BEFORE tagging, confirm Trusted Publishing is attached on ALL 6 crate pages (snapdir-core/-catalog/-stores/-ssh-store/-cli/snapdir) for repo=snapdir/snapdir workflow=release.yml, no environment. At 1.7.0 snapdir-ssh-store 403'd mid-publish because its TP config was missing — do not repeat. *** Then tag v1.8.0 on the merged upstream/main commit and push -> release.yml builds per-target archives + GitHub release (signed + SLSA) + the idempotent 6-crate publish loop in dependency order (snapdir-core -> snapdir-catalog -> snapdir-stores -> snapdir-ssh-store -> snapdir-cli -> snapdir; skip-if-published makes a re-run after a TP fix safe via `gh run rerun <run> --failed`). PM machine-check: upstream tag v1.8.0 AND crates.io sparse index shows 1.8.0 for all SIX crates."
+  - id: phase30-complete
+    phase: 30
+    owner_agent: generic
+    depends_on: [release-tag-crates-1.8.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.8.0\"'"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 30 done: snapdir 1.8.0 released end-to-end — canonical snapdir/snapdir at 1.8.0, tag v1.8.0, GitHub release live, all 6 crates on crates.io. Ships the adversarial-DX-review fixes: per-command argument validation (unsupported flags fail with useful messages; per-command --help; --debug removed), `defaults` prints effective config with resolved value + source, meaningful progress (visible discovery + real %), and error-message hints. Frozen manifest format untouched; snapshot ids byte-identical; default behavior unchanged when flags unset. Approve?"
+    human_checkpoint: true
+    description: "PHASE 30 SIGN-OFF: snapdir 1.8.0 released end-to-end — the adversarial CLI DX/UX review (unbiased sandbox personas + arg-matrix audit, judged) drove a focused minor that makes the CLI an exemplar experience. Additive/correctness only: frozen format untouched, snapshot ids byte-identical, unset-flag behavior unchanged. 6 crates published; TP verified on all 6 pages pre-tag."
