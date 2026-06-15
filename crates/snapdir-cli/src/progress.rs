@@ -429,6 +429,7 @@ const BAR_WIDTH_INIT: usize = 20;
 impl LineFields {
     fn build(snap: &MeterSnapshot, m: &RenderMetrics, ascii: bool, cmd: Option<&str>) -> Self {
         let phase_word = match snap.phase {
+            Phase::Discovering => "discovering",
             Phase::Hashing => "hashing",
             Phase::Transfer => "transfer",
             Phase::Idle => "idle",
@@ -440,7 +441,12 @@ impl LineFields {
 
         let done = snap.objects_done + snap.objects_skipped;
         let total = snap.objects_total;
-        let determinate = total > 0;
+        // The discovery/enumeration pass has no known total yet (it IS the pass
+        // that establishes the file count), so it always renders an
+        // indeterminate, growing "discovering N files" count from the live
+        // `objects_discovered` gauge — never a 0/0 fraction.
+        let discovering = matches!(snap.phase, Phase::Discovering);
+        let determinate = !discovering && total > 0;
         let fraction = if determinate {
             done as f64 / total as f64
         } else {
@@ -450,12 +456,21 @@ impl LineFields {
         // Counts are labeled as *files* and the `done` value is left-padded to
         // the digit-width of `total`, so e.g. `8/61` and `38/61` occupy the
         // same width (no reflow as the count climbs).
-        let counts = if determinate {
+        let counts = if discovering {
+            // Discovery: surface the visible, growing enumeration count. The
+            // denominator is unknown here (we are still counting), so this is
+            // an indeterminate "N files" with the discovery count.
+            format!("{} files", snap.objects_discovered)
+        } else if determinate {
+            // Hashing (and transfer): a true determinate `NN% done/total files`.
+            // `objects_total` is the FILE COUNT (set after discovery), so the
+            // denominator shown here is files, never a byte total.
             let pct = (fraction * 100.0).clamp(0.0, 100.0);
             let total_digits = decimal_digits(total);
             format!("{pct:>3.0}% {done:>total_digits$}/{total} files")
         } else {
-            // Indeterminate: a digit-stable, explicitly-labeled file count.
+            // Indeterminate fallback: a digit-stable, explicitly-labeled file
+            // count.
             format!("{done} files")
         };
 
@@ -761,8 +776,18 @@ impl CpuSampler {
 /// EWMA smoothing factor for instantaneous rates.
 const EWMA_ALPHA: f64 = 0.3;
 
-/// Render-thread tick interval.
+/// Render-thread tick interval (steady state).
 const TICK: Duration = Duration::from_millis(100);
+
+/// Finer render cadence used during the initial [`WARMUP_WINDOW`] so a very
+/// short discovery/enumeration phase is still sampled at least once before the
+/// hash pass overtakes it.
+const WARMUP_TICK: Duration = Duration::from_millis(5);
+
+/// How long the render thread polls at [`WARMUP_TICK`] before reverting to the
+/// steady-state [`TICK`]. Long enough to catch a sub-100ms discovery phase,
+/// short enough that the finer polling is negligible overhead.
+const WARMUP_WINDOW: Duration = Duration::from_millis(200);
 
 /// Owns the live render thread that draws the single progress line to stderr.
 ///
@@ -961,6 +986,29 @@ fn estimate_total_bytes(snap: &MeterSnapshot) -> Option<u64> {
     Some(total as u64)
 }
 
+/// Samples the meter, advances the render state one tick, and draws a single
+/// progress line to stderr (in-place, behind the shared stderr lock). Shared by
+/// the synchronous first frame and the render thread's loop so both render
+/// identically.
+fn render_frame(
+    meter: &Meter,
+    state: &mut RenderState,
+    jobs: usize,
+    style: Style,
+    ascii: bool,
+    stderr_lock: &Mutex<()>,
+) {
+    let snap = meter.snapshot();
+    let metrics = state.tick(snap, jobs);
+    let width = term_width().unwrap_or(80);
+    let line = format_line(&snap, &metrics, width, &style, ascii);
+
+    let _guard = stderr_lock.lock();
+    let mut err = std::io::stderr().lock();
+    let _ = write!(err, "{CLEAR_LINE}{line}");
+    let _ = err.flush();
+}
+
 impl ProgressReporter {
     /// Starts the reporter. If `active`, spawns a render thread that ticks every
     /// ~100ms; otherwise returns an inert reporter that spawns nothing.
@@ -986,22 +1034,36 @@ impl ProgressReporter {
         // stderr is line-shared; a Mutex guards interleaving with banner writes.
         let stderr_lock: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
 
+        let mut state = RenderState::init(&meter, adaptive_fraction);
+        // Render the FIRST frame SYNCHRONOUSLY here, on the calling thread,
+        // BEFORE the walk starts and before the render thread is even spawned.
+        // On a fast tree the whole walk (a sub-millisecond discovery pass + the
+        // hash pass) can complete inside a single `TICK`; deferring the first
+        // frame to the spawned thread would race the walk and the operator would
+        // only ever see the tail of hashing, never the "discovering" phase. The
+        // caller primes the meter to `Phase::Discovering` before calling us, so
+        // this guaranteed frame shows the discovery phase deterministically even
+        // when enumeration finishes instantly.
+        render_frame(&meter, &mut state, jobs, style, ascii, &stderr_lock);
+
         let handle = std::thread::spawn(move || {
-            let mut state = RenderState::init(&meter, adaptive_fraction);
+            // Warm-up: poll at a finer cadence for the first stretch so a SHORT
+            // discovery/enumeration phase that outlives the synchronous first
+            // frame is still re-sampled. Steady state reverts to the normal
+            // `TICK`.
+            let mut elapsed = Duration::ZERO;
             while !stop_thread.load(Ordering::Relaxed) {
-                std::thread::sleep(TICK);
+                let interval = if elapsed < WARMUP_WINDOW {
+                    WARMUP_TICK
+                } else {
+                    TICK
+                };
+                std::thread::sleep(interval);
+                elapsed += interval;
                 if stop_thread.load(Ordering::Relaxed) {
                     break;
                 }
-                let snap = meter.snapshot();
-                let metrics = state.tick(snap, jobs);
-                let width = term_width().unwrap_or(80);
-                let line = format_line(&snap, &metrics, width, &style, ascii);
-
-                let _guard = stderr_lock.lock();
-                let mut err = std::io::stderr().lock();
-                let _ = write!(err, "{CLEAR_LINE}{line}");
-                let _ = err.flush();
+                render_frame(&meter, &mut state, jobs, style, ascii, &stderr_lock);
             }
         });
 
@@ -1090,6 +1152,7 @@ mod tests {
             bytes_in,
             bytes_out,
             objects_done: done,
+            objects_discovered: total,
             objects_total: total,
             objects_skipped: skipped,
             in_flight,

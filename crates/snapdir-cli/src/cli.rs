@@ -1023,14 +1023,22 @@ impl Ctx {
                 } else {
                     exclude
                 };
+                // Render live discovery+hash progress for the walk (stderr+TTY
+                // gated). The walk drives Discovering -> Hashing/total itself;
+                // the reporter MUST be finished before the stdout `println!` so
+                // the manifest bytes stay clean (progress is stderr-only).
+                let jobs = self.walk_jobs();
+                let (meter, reporter) = self.start_progress(jobs);
                 let manifest = self.build_manifest(
                     path.as_deref(),
                     *absolute,
                     *no_follow,
                     checksum_bin.as_deref(),
                     exclude,
-                    None,
-                )?;
+                    meter.as_deref(),
+                );
+                reporter.finish();
+                let manifest = manifest?;
                 println!("{manifest}");
                 // Mirror the oracle's `_snapdir_log_event "manifest" "$id"
                 // "$snapdir_dir_abs_path"` (`snapdir` L212): after emitting the
@@ -1078,14 +1086,21 @@ impl Ctx {
                          pass a PATH (or `.`), or pipe a manifest"
                     );
                 } else {
-                    self.build_manifest(
+                    // Walking a real directory: render live discovery+hash
+                    // progress (stderr+TTY gated). The reporter is finished
+                    // BEFORE the stdout `println!` so the id stays byte-clean.
+                    let jobs = self.walk_jobs();
+                    let (meter, reporter) = self.start_progress(jobs);
+                    let manifest = self.build_manifest(
                         path.as_deref(),
                         false,
                         false,
                         None,
                         &self.globals.exclude,
-                        None,
-                    )?
+                        meter.as_deref(),
+                    );
+                    reporter.finish();
+                    manifest?
                 };
                 let id = snapshot_id(&manifest, &Blake3Hasher::new());
                 println!("{id}");
@@ -2327,6 +2342,20 @@ impl Ctx {
     /// threads the optional meter into the walk and the store, and ALWAYS calls
     /// [`ProgressReporter::finish`] before any stdout write so the id stays
     /// clean.
+    /// Resolves the effective walk concurrency the same way the core walk does
+    /// (`available_parallelism` capped at 16) when `--walk-jobs` is unset/0. Used
+    /// only for the progress dashboard's `jobs <in>/<N>` readout on the
+    /// walk-driven commands (`manifest`/`id`); the actual traversal concurrency
+    /// is resolved inside the core walk from the same `WalkOptions.walk_jobs`.
+    fn walk_jobs(&self) -> usize {
+        match self.globals.walk_jobs {
+            Some(n) if n > 0 => n,
+            _ => std::thread::available_parallelism()
+                .map_or(1, std::num::NonZeroUsize::get)
+                .clamp(1, 16),
+        }
+    }
+
     fn start_progress(&self, jobs: usize) -> (Option<Arc<Meter>>, ProgressReporter) {
         let is_tty = std::io::stderr().is_terminal();
         let active = should_render(
@@ -2336,6 +2365,12 @@ impl Ctx {
         );
         if active {
             let meter = Arc::new(Meter::new());
+            // Prime the phase to `Discovering` so the reporter's guaranteed
+            // first frame shows the enumeration phase even on a tiny/fast tree
+            // whose walk completes inside a single render tick. The walk
+            // re-asserts `Discovering` then flips to `Hashing` itself; this is
+            // purely advisory and never perturbs output.
+            meter.set_phase(Phase::Discovering);
             let color = use_color(
                 self.color_choice(),
                 is_tty,
