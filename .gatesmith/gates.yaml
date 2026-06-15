@@ -4274,7 +4274,7 @@ gates:
     depends_on: [dx-sandbox-setup]
     status: passed
     passed_at: 2026-06-15T02:42:00Z
-    git_sha: ab1822c
+    git_sha: c18554f
     failure_count: 0
     verification_cmd: "test -f .gatesmith/reviews/dx-arg-matrix.md && grep -qiE 'manifest|stage|push' .gatesmith/reviews/dx-arg-matrix.md && grep -qiE 'debug|verbose' .gatesmith/reviews/dx-arg-matrix.md && grep -qiE 'noop|no-op|ignored|silently|effective|rejected' .gatesmith/reviews/dx-arg-matrix.md"
     pass_criteria:
