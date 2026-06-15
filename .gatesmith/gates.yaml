@@ -4552,7 +4552,9 @@ gates:
     phase: 30
     owner_agent: adversary
     depends_on: [dx-findings-signoff]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T06:52:00Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/evidence/dx-id-stdin-verdict.md && grep -qiE 'VERDICT:[[:space:]]*(REAL-BUG|NOT-A-BUG)' .gatesmith/evidence/dx-id-stdin-verdict.md"
     pass_criteria:
@@ -4560,7 +4562,34 @@ gates:
         - exit_code: 0
         - file_exists: ".gatesmith/evidence/dx-id-stdin-verdict.md"
     human_checkpoint: false
-    description: "ADVERSARY investigate (black-box, installed 1.7.0) the persona-2 finding that `snapdir id` reading a manifest from STDIN is non-deterministic (a byte-identical manifest yields a different id on repeated COLD-cache runs, and `snapdir manifest <dir> | snapdir id` never round-trips to `snapdir id <dir>`), while `snapdir id <dir>` itself IS deterministic (ce2b03…8399 everywhere). Reproduce rigorously with controlled cache dirs; isolate whether the id-from-stdin path normalizes/strips/sorts the piped manifest the same way the directory path does, and whether anything env- or cache-dependent leaks into the hash. Write .gatesmith/evidence/dx-id-stdin-verdict.md ending with a line `VERDICT: REAL-BUG` (a genuine content-addressing defect in the stdin path) or `VERDICT: NOT-A-BUG` (user-misuse / expected; document the correct pipe usage). If REAL-BUG, ALSO stage a failing repro at .gatesmith/pending-tests/dx_id_stdin.rs and note the likely lane (cli stdin-read vs core) — the PM will schedule a fix triple before dx-fix-verify. If NOT-A-BUG, the verdict file documents correct usage and no fix is scheduled. PM machine-check: verdict file exists with a REAL-BUG|NOT-A-BUG line."
+    description: "ADVERSARY investigate (black-box, installed 1.7.0) the persona-2 finding that `snapdir id` reading a manifest from STDIN is non-deterministic (a byte-identical manifest yields a different id on repeated COLD-cache runs, and `snapdir manifest <dir> | snapdir id` never round-trips to `snapdir id <dir>`), while `snapdir id <dir>` itself IS deterministic (ce2b03…8399 everywhere). Reproduce rigorously with controlled cache dirs; isolate whether the id-from-stdin path normalizes/strips/sorts the piped manifest the same way the directory path does, and whether anything env- or cache-dependent leaks into the hash. Write .gatesmith/evidence/dx-id-stdin-verdict.md ending with a line `VERDICT: REAL-BUG` (a genuine content-addressing defect in the stdin path) or `VERDICT: NOT-A-BUG` (user-misuse / expected; document the correct pipe usage). If REAL-BUG, ALSO stage a failing repro at .gatesmith/pending-tests/dx_id_stdin.rs and note the likely lane (cli stdin-read vs core) — the PM will schedule a fix triple before dx-fix-verify. If NOT-A-BUG, the verdict file documents correct usage and no fix is scheduled. PM machine-check: verdict file exists with a REAL-BUG|NOT-A-BUG line. RESOLVED 2026-06-15: VERDICT=REAL-BUG — `snapdir id` no-PATH ignores stdin + silently walks cwd (documented stdin feature never implemented). Fix triple scheduled below."
+  # id-from-stdin FIX (scheduled because dx-id-stdin-verify returned REAL-BUG): implement no-PATH stdin read.
+  - id: dx-id-stdin-impl-cli
+    phase: 30
+    owner_agent: cli
+    depends_on: [dx-id-stdin-verify]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_id_stdin && test -f crates/snapdir-cli/tests/dx_id_stdin.rs && test ! -f .gatesmith/pending-tests/dx_id_stdin.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-cli/tests/dx_id_stdin.rs"
+    human_checkpoint: false
+    description: "CLI impl: make `snapdir id` with NO PATH actually read a manifest from STDIN (the documented-but-unimplemented contract). In crates/snapdir-cli/src/cli.rs Command::Id handler (~1051): when PATH is omitted AND stdin is piped (not a TTY), read the manifest text from stdin and compute the snapshot id over it per the FROZEN snapshot_id rule (strip `#`-comment lines, b3sum/BLAKE3 of the #-stripped text INCLUDING the trailing newline — reuse snapdir-core's snapshot_id/hashing, do NOT reimplement or touch the frozen core). When PATH is omitted AND stdin is a TTY (no pipe), emit a LOUD error (e.g. 'no directory given and no manifest on stdin; pass a PATH, `.`, or pipe a manifest') rather than silently walking cwd. Positional `id <dir>` / `id .` behavior UNCHANGED. KEYSTONE: `snapdir manifest <dir> | snapdir id` MUST now round-trip to `snapdir id <dir>` byte-identically, and `id < manifest` is cwd-independent. Take over the staged repro (git mv .gatesmith/pending-tests/dx_id_stdin.rs -> crates/snapdir-cli/tests/dx_id_stdin.rs) and make it green. Run `cargo test --workspace` (the flagship snapdir crate has parity/help tests; the help-id text already promises stdin so it should now be TRUE). Frozen core lock must still verify. PM machine-check: workspace builds locked, dx_id_stdin green, pending test moved + PM repro of manifest|id == id<dir>."
+  - id: dx-id-stdin-review
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-id-stdin-impl-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test dx_id_stdin && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of the id-from-stdin fix. Diff landed dx_id_stdin.rs vs staged (no weakening); re-assert the keystones — `manifest <dir> | id` round-trips to `id <dir>` byte-identically; `id < fixed-manifest` is cwd-independent (run from two different cwds); no-PATH + TTY is a loud error (not a cwd walk); positional `id <dir>`/`id .` unchanged; snapshot ids byte-identical (frozen format untouched). Add impl-revealed cases (empty stdin, manifest with/without trailing newline, a manifest containing `#` lines, a malformed manifest -> clean error). No weakening; workspace + frozen lock green."
+  # recovery gaps: adversarial triple (fetch must restore a MISSING cache object; verify-cache must detect MISSING objects).
   # recovery gaps: adversarial triple (fetch must restore a MISSING cache object; verify-cache must detect MISSING objects).
   - id: dx-recovery-spec-tests
     phase: 30
@@ -4604,7 +4633,7 @@ gates:
   - id: dx-fix-verify
     phase: 30
     owner_agent: adversary
-    depends_on: [dx-arg-review, dx-defaults-review, dx-progress-review, dx-errors-review, dx-id-stdin-verify, dx-recovery-review]
+    depends_on: [dx-arg-review, dx-defaults-review, dx-progress-review, dx-errors-review, dx-id-stdin-review, dx-recovery-review]
     status: pending
     failure_count: 0
     bump_reason: "GATE-BUMP 2026-06-15 (operator-locked scope at dx-findings-signoff): depends_on EXPANDED += [dx-id-stdin-verify, dx-recovery-review] to gate the loop-closing verify on the two new §6 chains. pass_criteria UNCHANGED."
