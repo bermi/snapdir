@@ -4485,7 +4485,9 @@ gates:
     phase: 30
     owner_agent: adversary
     depends_on: [dx-progress-impl-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T08:30:00Z
+    git_sha: 7261f97
     failure_count: 0
     bump_reason: "GATE-BUMP 2026-06-15 (correctness): added `SNAPDIR_PTY_TEST=1 cargo test -p snapdir-cli --test dx_progress` so the PTY-render progress clauses actually run during review (they skip without the env). Frozen-lock + workspace legs unchanged."
     verification_cmd: "SNAPDIR_PTY_TEST=1 cargo test -p snapdir-cli --test dx_progress && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
