@@ -4301,7 +4301,9 @@ gates:
     phase: 30
     owner_agent: generic
     depends_on: [dx-arg-matrix-audit, dx-qa-personas]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T03:05:00Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/reviews/dx-findings-1.8.0.md && grep -qiE 'severity' .gatesmith/reviews/dx-findings-1.8.0.md && grep -qiE 'calibration' .gatesmith/reviews/dx-findings-1.8.0.md"
     pass_criteria:
