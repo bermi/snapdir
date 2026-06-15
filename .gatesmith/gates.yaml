@@ -4210,7 +4210,9 @@ gates:
     phase: 29
     owner_agent: packaging
     depends_on: [release-pr-upstream-1.7.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T02:05:00Z
+    git_sha: a4774898
     failure_count: 0
     verification_cmd: "git ls-remote --tags upstream refs/tags/v1.7.0 | grep -q v1.7.0 && for c in snapdir-core snapdir-catalog snapdir-stores snapdir-ssh-store snapdir-cli snapdir; do curl -sf \"https://index.crates.io/$(printf %s \"$c\" | cut -c1-2)/$(printf %s \"$c\" | cut -c3-4)/$c\" | grep -q '\"vers\":\"1.7.0\"' || exit 1; done"
     pass_criteria:
@@ -4223,7 +4225,9 @@ gates:
     phase: 29
     owner_agent: generic
     depends_on: [release-tag-crates-1.7.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T02:06:00Z
+    git_sha: a477489
     failure_count: 0
     bump_reason: "GATE-BUMP 2026-06-14 (operator-directed). Corrected the durability framing (Option-3 accept+document: ~20% cost ACCEPTED, the <=5% target relaxed — the prior text wrongly claimed <=5% confirmed) and added the Phase-29 performance features (parallel/mmap walk, cross-platform CoW, clone-skip) to the sign-off. Pass INTENT unchanged (1.7.0 released end-to-end; 6 crates on crates.io; frozen format untouched)."
     verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.7.0\"'"
