@@ -4491,7 +4491,9 @@ gates:
     phase: 30
     owner_agent: adversary
     depends_on: [dx-findings-signoff]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T05:47:00Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/dx_errors.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/dx_errors.rs"
     pass_criteria:
@@ -4500,19 +4502,32 @@ gates:
         - file_exists: ".gatesmith/pending-tests/dx_errors.rs"
     human_checkpoint: false
     description: "ADVERSARY black-box spec tests for error-message quality + the two folded §6 silent-wrong findings -> .gatesmith/pending-tests/dx_errors.rs. Contracts: a transfer command with no --store (and no SNAPDIR_STORE) -> an ACTIONABLE error naming the missing --store/SNAPDIR_STORE, not a generic missing-option dump; a bad --limit-rate value -> a readable parse error showing the accepted forms (10M/512K/1G); an unknown snapshot id keeps its existing good 'did you fetch?' hint; conflicting/invalid flag combos -> a clear message; forgetting --from-objects on a split source -> an error that mentions the split-store/objects-store concept, not a raw 'object not found: <hash>'. FOLDED §6 (operator-locked 2026-06-15): (a) SILENT-EMPTY-STORE — a diff/sync against a NONEXISTENT/typo'd --to/--from/--store path must ERROR (nonzero, named), NOT be silently treated as an empty store yielding a fabricated full D/A delta at exit 0; (b) SYNC MISCOUNT — sync/--dryrun counters must label unique-object counts correctly (not report file-reference counts as 'objects', and not report 'N skipped' into an EMPTY destination). Stderr only; stdout/exit semantics for VALID inputs unchanged. Behavior-only."
-  - id: dx-errors-impl-cli
+  - id: dx-errors-impl-stores
     phase: 30
-    owner_agent: cli
+    owner_agent: stores
     depends_on: [dx-errors-spec-tests]
     status: pending
     failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-stores"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "STORES impl for the §6 silent-wrong findings (clauses 5-6 of the staged dx_errors.rs, which the adversary flagged live below the CLI). (5) SILENT-EMPTY-STORE: resolving a NONEXISTENT/unreadable store location for a READ (diff/sync get_manifest / manifest enumeration) must ERROR, not return an empty manifest set that the caller renders as a fabricated full delta at exit 0 — distinguish a nonexistent/unreadable store ROOT (error) from a store that EXISTS but legitimately has no manifests (valid empty). (6) SYNC MISCOUNT: the SyncReport / sync-engine counters must reflect UNIQUE OBJECT counts, not file-reference counts labeled 'object(s)', and must not report 'N skipped' when the destination started EMPTY. Fix in crates/snapdir-stores/src (FileStore root-existence on read + the sync report counters). Do NOT move the cli-level dx_errors.rs test file (that's the cli gate — these tests invoke the snapdir binary). Frozen core (merkle/manifest/excludes) untouched -> re-run `shasum -c .gatesmith/manifest-format.sha.lock`. Self-verify clauses 5-6 via manual black-box repro (the PM will repro too). PM machine-check: workspace builds locked + snapdir-stores tests green + frozen lock OK + PM manual repro of nonexistent-store-errors + sync-count-sane."
+  - id: dx-errors-impl-cli
+    phase: 30
+    owner_agent: cli
+    depends_on: [dx-errors-impl-stores]
+    status: pending
+    failure_count: 0
+    bump_reason: "GATE-BUMP 2026-06-15 (lane split at dx-errors-spec-tests): the adversary's dx_errors.rs spans two lanes — clauses 5-6 (silent-empty-store resolution + sync miscount) are snapdir-stores, clauses 1-4 (error messages) are cli. Inserted dx-errors-impl-stores (stores) to fix 5-6 FIRST; this gate's depends_on changed [dx-errors-spec-tests]->[dx-errors-impl-stores] so by the time cli wires + greens the WHOLE dx_errors.rs, the stores half is already fixed. pass_criteria UNCHANGED (still requires the full --test dx_errors green)."
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_errors && test -f crates/snapdir-cli/tests/dx_errors.rs && test ! -f .gatesmith/pending-tests/dx_errors.rs"
     pass_criteria:
       and:
         - exit_code: 0
         - file_exists: "crates/snapdir-cli/tests/dx_errors.rs"
     human_checkpoint: false
-    description: "CLI impl: add actionable hints for the common failures the spec pins (missing --store on push/pull/sync; bad --limit-rate format; missing --from-objects on a split source -> hint the objects-store concept; preserve the unknown-id hint; clear flag-conflict messages). FOLDED §6: make a NONEXISTENT/typo'd store path an ERROR rather than a silently-empty store (so diff/sync fail loudly instead of fabricating a full delta at exit 0); fix the sync/--dryrun counters to report unique-object counts (no file-refs-as-objects, no 'N skipped' into an empty dest). Keep messages on stderr; do not change exit-code/stdout semantics for VALID inputs beyond the new arg-validation exit-2 (cluster 1). NOTE: if the store-resolution or sync-count logic lives in crates/snapdir-stores rather than the cli, STOP and flag it in the handoff Blockers so the PM spawns the stores lane for that part. Take over the staged tests. PM machine-check: workspace builds locked, dx_errors test green, pending test moved."
+    description: "CLI impl: add actionable hints for the common failures the spec pins — clauses 1-4 (missing --store on push/pull/sync -> name --store/SNAPDIR_STORE; bad --limit-rate -> show accepted forms; missing --from-objects on a split source -> hint the objects-store concept; preserve the unknown-id hint; clear flag-conflict messages). Clauses 5-6 (silent-empty-store, sync miscount) are ALREADY fixed in snapdir-stores by the preceding gate dx-errors-impl-stores. TAKE OVER the staged cli-level test file (git mv .gatesmith/pending-tests/dx_errors.rs -> crates/snapdir-cli/tests/dx_errors.rs) and make the FULL `cargo test -p snapdir-cli --test dx_errors` green (all 11 — both halves now done). Keep messages on stderr; valid-input stdout/exit semantics unchanged. ALSO run `cargo test --workspace` locally (the flagship snapdir crate has parity tests — the defaults-cluster lesson). PM machine-check: workspace builds locked, dx_errors fully green, pending test moved."
   - id: dx-errors-review
     phase: 30
     owner_agent: adversary
