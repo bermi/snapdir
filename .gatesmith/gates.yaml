@@ -4350,7 +4350,9 @@ gates:
     phase: 30
     owner_agent: cli
     depends_on: [dx-arg-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T03:42:00Z
+    git_sha: 4280b7b
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_args && test -f crates/snapdir-cli/tests/dx_args.rs && test ! -f .gatesmith/pending-tests/dx_args.rs"
     pass_criteria:
@@ -4359,22 +4361,23 @@ gates:
         - file_exists: "crates/snapdir-cli/tests/dx_args.rs"
     human_checkpoint: false
     description: "CLI impl (approach B). Restructure GlobalArgs (cli.rs:72-228, all currently global=true) into a small UNIVERSAL group {--quiet,--color,--no-progress,--verbose} + per-command-family arg groups via #[command(flatten)] (families: walk/hash {manifest,id,stage,push}; transfer {push,fetch,pull,checkout,stage,sync}; catalog-query {locations,ancestors,revisions}; manifest-only {diff}; cache-mgmt {verify,verify-cache,flush-cache}; defaults = universal only). clap then NATIVELY rejects inapplicable flags (exit 2) and per-command --help shows only its flags. Rethread the ~60 self.globals.<field> read sites. REMOVE the --debug ghost (cli.rs:151-153, 0 reads) and delete the deferred-validation comment (cli.rs:73-75). Keep --verbose universal; document which commands honor it. Take over the staged tests (git mv .gatesmith/pending-tests/dx_args.rs -> crates/snapdir-cli/tests/dx_args.rs). NOTE: this changes the public help surface intentionally; the trycmd/man regeneration is the NEXT gate. PM machine-check: workspace builds locked, dx_args test green, pending test moved."
-  - id: dx-arg-ci-snapshots
+  - id: dx-arg-snapshots
     phase: 30
-    owner_agent: ci
+    owner_agent: cli
     depends_on: [dx-arg-impl-cli]
     status: pending
     failure_count: 0
+    bump_reason: "GATE-BUMP 2026-06-15 (lane correction): id ci->cli rename (dx-arg-ci-snapshots -> dx-arg-snapshots) and owner_agent ci->cli. The artifacts being regenerated are crates/snapdir-cli/tests/cmd/*.trycmd + the cli/clap man output — these live in the CLI lane, NOT the ci lane (.github/Cargo/_typos). A ci teammate would fail the fence on crates/snapdir-cli/. pass_criteria UNCHANGED."
     verification_cmd: "cargo test -p snapdir-cli && cargo run -q -p snapdir -- man >/dev/null"
     pass_criteria:
       and:
         - exit_code: 0
     human_checkpoint: false
-    description: "CI/snapshot regeneration. The approach-B restructure changes every per-command --help, so regenerate + commit ALL 21 crates/snapdir-cli/tests/cmd/help-*.trycmd snapshots (TRYCMD=overwrite or the project's snapshot-update path) and confirm the man page (clap_mangen) renders. Verify the trycmd suite is GREEN against the regenerated snapshots and actionlint stays clean. Mechanical + reviewable; kept separate from the impl so the snapshot diff is auditable. PM machine-check: `cargo test -p snapdir-cli` green (trycmd included) + `snapdir man` renders."
+    description: "CLI snapshot regeneration. The approach-B restructure changes every per-command --help, so regenerate + commit ALL 21 crates/snapdir-cli/tests/cmd/help-*.trycmd snapshots (TRYCMD=overwrite or the project's snapshot-update path) and confirm the man page (clap_mangen) renders. Verify the FULL trycmd suite is GREEN against the regenerated snapshots. Mechanical + reviewable; kept separate from the impl so the snapshot diff is auditable. In-lane = crates/snapdir-cli/ only. PM machine-check: `cargo test -p snapdir-cli` green (trycmd included) + `snapdir man` renders."
   - id: dx-arg-review
     phase: 30
     owner_agent: adversary
-    depends_on: [dx-arg-ci-snapshots]
+    depends_on: [dx-arg-snapshots]
     status: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test dx_args && cargo test --workspace"
