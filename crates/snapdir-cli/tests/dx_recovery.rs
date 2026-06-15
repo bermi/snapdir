@@ -547,3 +547,288 @@ fn keystone_verify_cache_still_detects_corrupt_object() {
 
     cleanup(&[&src, &store, &cache]);
 }
+
+// ---------------------------------------------------------------------------
+// Impl-revealed cases (phase 30, `dx-recovery-review`).
+//
+// These pin behaviors exposed by reading the landed impl (cli.rs
+// fetch_inner / run_verify_cache / checkout_inner). They must PASS against the
+// current binary — a failure here is a REAL bug, not an expected red.
+// ---------------------------------------------------------------------------
+
+/// A richer source tree exercising DEDUP (`dup_a`/`dup_b` share bytes ⇒ one
+/// object) plus distinct files. Returns the (rel, bytes) pairs.
+const DEDUP_FILES: [(&str, &[u8]); 4] = [
+    ("dup_a.txt", b"shared-content"),
+    ("nested/dup_b.txt", b"shared-content"),
+    ("only_one.txt", b"unique-one"),
+    ("only_two.txt", b"unique-two"),
+];
+
+/// Builds the richer tree (two files sharing bytes ⇒ a single deduped object).
+fn build_dedup_tree(src: &Path) {
+    fs::create_dir_all(src.join("nested")).unwrap();
+    for (rel, bytes) in DEDUP_FILES {
+        let target = src.join(rel);
+        fs::write(&target, bytes).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    fs::set_permissions(src.join("nested"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(src, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Push the dedup tree to a fresh `file://` store, then fetch into a clean
+/// cache. Returns `(store_url, id)`.
+fn push_and_fetch_dedup(src: &Path, store: &Path, cache: &Path) -> (String, String) {
+    build_dedup_tree(src);
+    let store_url = format!("file://{}", store.display());
+    let src_str = src.to_string_lossy().into_owned();
+    let id = run_ok(&["push", "--store", &store_url, &src_str], cache);
+    fs::remove_dir_all(cache).ok();
+    run_ok(&["fetch", "--store", &store_url, "--id", &id], cache);
+    (store_url, id)
+}
+
+/// CACHED fast-path keystone (perf): a SECOND `fetch` of a FULLY-present cache
+/// must short-circuit — `--verbose` prints `CACHED: <id>` and SAVED is never
+/// emitted (no store→cache transfer/re-copy). Proves the heal change did NOT
+/// turn fetch into an always-re-fetch.
+#[test]
+fn fetch_complete_cache_takes_cached_fast_path_no_transfer() {
+    let src = temp_dir("ir-fast-src");
+    let store = temp_dir("ir-fast-store");
+    let cache = temp_dir("ir-fast-cache");
+    build_tree(&src);
+    let (store_url, id) = push_and_fetch(&src, &store, &cache);
+
+    // Cache is whole. A second fetch must hit the fast path.
+    let out = run_raw(&["fetch", "--store", &store_url, "--id", &id, "--verbose"], &cache);
+    assert!(
+        out.status.success(),
+        "second fetch on a whole cache must succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains(&format!("CACHED: {id}")),
+        "a complete cache must short-circuit with `CACHED: {id}`; got: {combined}"
+    );
+    assert!(
+        !combined.contains("SAVED"),
+        "the fast path must NOT re-transfer (no SAVED line); got: {combined}"
+    );
+
+    cleanup(&[&src, &store, &cache]);
+}
+
+/// Partial pool, MULTIPLE missing: deleting 2+ distinct objects must be fully
+/// healed by a single `fetch` (every object back), and `verify-cache` before
+/// the heal must report the count ("2 ... missing object(s)").
+#[test]
+fn fetch_restores_multiple_missing_objects_and_verify_reports_count() {
+    let src = temp_dir("ir-multi-src");
+    let store = temp_dir("ir-multi-store");
+    let cache = temp_dir("ir-multi-cache");
+    let (store_url, id) = push_and_fetch_dedup(&src, &store, &cache);
+
+    // Delete two DISTINCT objects (unique files ⇒ two distinct addresses).
+    let o1 = object_path(&cache, b"unique-one");
+    let o2 = object_path(&cache, b"unique-two");
+    fs::remove_file(&o1).unwrap();
+    fs::remove_file(&o2).unwrap();
+    assert!(!o1.exists() && !o2.exists(), "both objects gone before heal");
+
+    // verify-cache reports BOTH and a count of 2 missing.
+    let v = run_raw(&["verify-cache"], &cache);
+    assert!(!v.status.success(), "verify-cache must fail with 2 objects missing");
+    let vc = format!(
+        "{}{}",
+        String::from_utf8_lossy(&v.stdout),
+        String::from_utf8_lossy(&v.stderr)
+    );
+    assert!(
+        vc.contains("2 missing") || vc.matches("Missing object").count() == 2,
+        "verify-cache must report the 2 missing objects (count or two lines); got: {vc}"
+    );
+
+    // A single fetch heals BOTH.
+    run_ok(&["fetch", "--store", &store_url, "--id", &id], &cache);
+    assert!(o1.is_file(), "first missing object restored");
+    assert!(o2.is_file(), "second missing object restored");
+    assert_eq!(fs::read(&o1).unwrap(), b"unique-one");
+    assert_eq!(fs::read(&o2).unwrap(), b"unique-two");
+
+    cleanup(&[&src, &store, &cache]);
+}
+
+/// Missing MANIFEST (vs missing object): deleting the cached manifest must also
+/// be healed by `fetch` (re-pulled from the store) and the cache then checks out
+/// — the manifest-absent path is distinct from the object-absent path and both
+/// recover.
+#[test]
+fn fetch_restores_missing_cached_manifest() {
+    let src = temp_dir("ir-man-src");
+    let store = temp_dir("ir-man-store");
+    let cache = temp_dir("ir-man-cache");
+    let dest = temp_dir("ir-man-dest");
+    build_tree(&src);
+    let (store_url, id) = push_and_fetch(&src, &store, &cache);
+
+    // Delete ONLY the cached manifest; objects remain present.
+    let manifest_file = cache.join(sharded(".manifests", &id));
+    assert!(manifest_file.is_file(), "manifest must exist before deletion");
+    fs::remove_file(&manifest_file).unwrap();
+    assert!(!manifest_file.exists(), "manifest gone before re-fetch");
+
+    // Without a cached manifest the fast path cannot fire; fetch re-pulls it.
+    let out = run_raw(&["fetch", "--store", &store_url, "--id", &id], &cache);
+    assert!(
+        out.status.success(),
+        "fetch must restore a missing cached manifest; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(manifest_file.is_file(), "fetch must re-commit the manifest");
+
+    // The healed cache checks out offline to the same id.
+    let dest_str = dest.to_string_lossy().into_owned();
+    run_ok(&["checkout", "--id", &id, &dest_str], &cache);
+    let dest_id = run_ok(&["id", &dest_str], &cache);
+    assert_eq!(dest_id, id, "manifest-heal must re-manifest to the pushed id");
+
+    cleanup(&[&src, &store, &cache, &dest]);
+}
+
+/// verify-cache SCOPE: with an object missing, BOTH the whole-cache sweep
+/// (`list_manifest_ids`) and the `--id`-scoped run flag it non-zero; a healthy
+/// cache exits 0 SILENTLY under either form.
+#[test]
+fn verify_cache_scope_whole_vs_id_and_healthy_silent() {
+    let src = temp_dir("ir-scope-src");
+    let store = temp_dir("ir-scope-store");
+    let cache = temp_dir("ir-scope-cache");
+    build_tree(&src);
+    let (_store_url, id) = push_and_fetch(&src, &store, &cache);
+
+    // Healthy: both whole-cache and --id exit 0 and are stdout-silent.
+    for args in [vec!["verify-cache"], vec!["verify-cache", "--id", &id]] {
+        let out = run_raw(&args, &cache);
+        assert!(
+            out.status.success(),
+            "healthy {args:?} must exit 0; stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+            "healthy {args:?} must be stdout-silent; got: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+
+    // Now break the cache and confirm BOTH scopes flag it.
+    let sum = Blake3Hasher::new().hash_hex(b"hello");
+    fs::remove_file(cache.join(sharded(".objects", &sum))).unwrap();
+    for args in [vec!["verify-cache"], vec!["verify-cache", "--id", &id]] {
+        let out = run_raw(&args, &cache);
+        assert!(
+            !out.status.success(),
+            "{args:?} must FAIL with the object missing"
+        );
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            combined.contains(&sum),
+            "{args:?} must name the missing object {sum}; got: {combined}"
+        );
+    }
+
+    cleanup(&[&src, &store, &cache]);
+}
+
+/// DEDUP heal: an object referenced by MULTIPLE files (two paths share bytes)
+/// is restored ONCE by `fetch`, and the verify-cache "Missing object ... for
+/// <path>" line names (at least) one of the referencing paths.
+#[test]
+fn dedup_missing_object_heals_once_and_message_names_a_path() {
+    let src = temp_dir("ir-dedup-src");
+    let store = temp_dir("ir-dedup-store");
+    let cache = temp_dir("ir-dedup-cache");
+    let (store_url, id) = push_and_fetch_dedup(&src, &store, &cache);
+
+    // The shared object (dup_a.txt == nested/dup_b.txt).
+    let shared = object_path(&cache, b"shared-content");
+    assert!(shared.is_file(), "deduped shared object present after fetch");
+    fs::remove_file(&shared).unwrap();
+
+    // verify-cache names the object and at least one referencing path. The
+    // impl dedups by address (one line) but must still attribute a path.
+    let v = run_raw(&["verify-cache"], &cache);
+    assert!(!v.status.success(), "missing shared object must fail verify-cache");
+    let vc = format!(
+        "{}{}",
+        String::from_utf8_lossy(&v.stdout),
+        String::from_utf8_lossy(&v.stderr)
+    );
+    let sum = Blake3Hasher::new().hash_hex(b"shared-content");
+    assert!(vc.contains(&sum), "report must name the shared object {sum}; got: {vc}");
+    assert!(
+        vc.contains("dup_a.txt") || vc.contains("dup_b.txt"),
+        "report must name a referencing path (dup_a.txt/dup_b.txt); got: {vc}"
+    );
+
+    // A single fetch restores the one shared object (heals BOTH files).
+    run_ok(&["fetch", "--store", &store_url, "--id", &id], &cache);
+    assert!(shared.is_file(), "fetch restores the deduped shared object once");
+    assert_eq!(fs::read(&shared).unwrap(), b"shared-content");
+
+    cleanup(&[&src, &store, &cache]);
+}
+
+/// CORRUPT + MISSING together: with one object tampered AND a different object
+/// deleted, `verify-cache` must distinguish the two — a "Checksum mismatch"
+/// line for the corrupt one and a "Missing object" line for the absent one —
+/// and exit non-zero.
+#[test]
+fn verify_cache_distinguishes_corrupt_from_missing_together() {
+    let src = temp_dir("ir-cm-src");
+    let store = temp_dir("ir-cm-store");
+    let cache = temp_dir("ir-cm-cache");
+    build_tree(&src);
+    push_and_fetch(&src, &store, &cache);
+
+    // Tamper one object (corrupt) and delete another (missing).
+    let corrupt_sum = Blake3Hasher::new().hash_hex(b"hello");
+    let missing_sum = Blake3Hasher::new().hash_hex(b"world!!");
+    let corrupt = cache.join(sharded(".objects", &corrupt_sum));
+    let missing = cache.join(sharded(".objects", &missing_sum));
+    fs::write(&corrupt, b"TAMPERED").unwrap();
+    fs::remove_file(&missing).unwrap();
+
+    let out = run_raw(&["verify-cache"], &cache);
+    assert!(!out.status.success(), "corrupt+missing must fail verify-cache");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Corrupt wording for the tampered object…
+    assert!(
+        combined.contains("Checksum mismatch") && combined.contains(&corrupt_sum),
+        "corrupt object must be reported with mismatch wording + its hash; got: {combined}"
+    );
+    // …Missing wording for the deleted object (distinct line + its hash).
+    assert!(
+        combined.contains("Missing object") && combined.contains(&missing_sum),
+        "deleted object must be reported as Missing + its hash; got: {combined}"
+    );
+    // The two must NOT be conflated onto the same address.
+    assert_ne!(corrupt_sum, missing_sum, "test setup uses two distinct objects");
+
+    cleanup(&[&src, &store, &cache]);
+}
