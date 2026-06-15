@@ -155,6 +155,13 @@ pub struct TransferArgs {
     #[arg(long, value_name = "URI", env = "SNAPDIR_STORE")]
     pub store: Option<String>,
 
+    /// Catalog adapter to record this snapshot's location in.
+    // The transfer commands that log (push/fetch/pull/checkout/stage) RECORD
+    // their location via `log_event`; the catalog selector is a logging sink,
+    // not a transfer flag.
+    #[arg(long, value_name = "NAME", env = "SNAPDIR_CATALOG")]
+    pub catalog: Option<String>,
+
     /// Shared object-pool store URI: when set, content OBJECTS route to this
     /// pool's `.objects/` while MANIFESTS route to `--store`'s `.manifests/`.
     #[arg(long, value_name = "URI", env = "SNAPDIR_OBJECTS_STORE")]
@@ -288,6 +295,23 @@ pub struct DiffIdArgs {
     /// unioned).
     #[arg(long, value_name = "ID")]
     pub id: Option<String>,
+}
+
+/// The plumbing family: store selection for the hidden wire-plumbing commands
+/// (`objects-needed`/`send-pack`/`receive-pack`). They obtain a store via
+/// `--store` (`SNAPDIR_STORE`) and may route objects to a shared pool via
+/// `--objects-store` (`SNAPDIR_OBJECTS_STORE`) — exactly the two store URIs the
+/// streaming resolvers (`resolve_stream_store`/`resolve_split_store`) read.
+#[derive(Debug, Default, Args)]
+pub struct PlumbingArgs {
+    /// Store URI: `protocol://location/path`.
+    #[arg(long, value_name = "URI", env = "SNAPDIR_STORE")]
+    pub store: Option<String>,
+
+    /// Shared object-pool store URI: when set, content OBJECTS route to this
+    /// pool's `.objects/` while MANIFESTS route to `--store`'s `.manifests/`.
+    #[arg(long, value_name = "URI", env = "SNAPDIR_OBJECTS_STORE")]
+    pub objects_store: Option<String>,
 }
 
 /// The resolved per-invocation configuration the dispatch layer reads. Built
@@ -445,6 +469,13 @@ pub enum Command {
         #[arg(long, value_name = "N", env = "SNAPDIR_WALK_JOBS")]
         walk_jobs: Option<usize>,
 
+        /// Catalog adapter to record this manifest's location in.
+        // `manifest` RECORDS its location via `log_event` (mirroring the
+        // oracle's `_snapdir_log_event "manifest" …`), so the catalog selector
+        // belongs here — a logging sink, not a transfer flag.
+        #[arg(long, value_name = "NAME", env = "SNAPDIR_CATALOG")]
+        catalog: Option<String>,
+
         /// Directory to describe.
         path: Option<PathBuf>,
     },
@@ -567,7 +598,10 @@ pub enum Command {
         transfer: TransferArgs,
 
         /// Source store URI: `protocol://location/path`.
-        #[arg(long, value_name = "STORE")]
+        // `--from` falls back to `$SNAPDIR_STORE` so a single exported store URI
+        // serves as the sync SOURCE (the historical behavior the restructure
+        // dropped); `--to` has no such fallback (a sync needs an explicit dest).
+        #[arg(long, value_name = "STORE", env = "SNAPDIR_STORE")]
         from: String,
         /// Destination store URI: `protocol://location/path`.
         #[arg(long, value_name = "STORE")]
@@ -666,7 +700,11 @@ pub enum Command {
     /// Fail-closed: ANY malformed stdin line errors before the first store
     /// query and prints NOTHING.
     #[command(hide = true)]
-    ObjectsNeeded,
+    ObjectsNeeded {
+        /// Plumbing store flags (`--store`, `--objects-store`).
+        #[command(flatten)]
+        plumbing: PlumbingArgs,
+    },
 
     /// Emit a SNAPPACK stream of the listed objects (+ optional manifest,
     /// last) from the store to raw stdout.
@@ -678,6 +716,10 @@ pub enum Command {
     /// too.
     #[command(hide = true)]
     SendPack {
+        /// Plumbing store flags (`--store`, `--objects-store`).
+        #[command(flatten)]
+        plumbing: PlumbingArgs,
+
         /// File listing one object checksum per line (`-` reads stdin).
         #[arg(long, value_name = "FILE|-")]
         ids: PathBuf,
@@ -709,6 +751,10 @@ pub enum Command {
     /// publishes the snapshot. Summary on stderr; stdout stays silent.
     #[command(hide = true)]
     ReceivePack {
+        /// Plumbing store flags (`--store`, `--objects-store`).
+        #[command(flatten)]
+        plumbing: PlumbingArgs,
+
         /// Fail unless the stream committed exactly this manifest id.
         #[arg(long, value_name = "ID")]
         require_manifest: Option<String>,
@@ -731,10 +777,14 @@ impl Cli {
         // Fold the active command's per-family group(s) into the flat config.
         match &self.command {
             Command::Manifest {
-                exclude, walk_jobs, ..
+                exclude,
+                walk_jobs,
+                catalog,
+                ..
             } => {
                 globals.exclude.clone_from(exclude);
                 globals.walk_jobs = *walk_jobs;
+                globals.catalog.clone_from(catalog);
             }
             Command::Id { walk, .. } => merge_walk(&mut globals, walk),
             Command::Stage {
@@ -757,15 +807,17 @@ impl Cli {
             | Command::Ancestors { catalog }
             | Command::Revisions { catalog } => merge_catalog(&mut globals, catalog),
             Command::Diff { id_arg, .. } => globals.id.clone_from(&id_arg.id),
-            // The remaining commands (defaults/version + the hidden plumbing)
+            // The hidden wire-plumbing commands fold their store group so the
+            // streaming resolvers see `--store` / `--objects-store` (+ env).
+            Command::ObjectsNeeded { plumbing }
+            | Command::SendPack { plumbing, .. }
+            | Command::ReceivePack { plumbing, .. } => merge_plumbing(&mut globals, plumbing),
+            // The remaining commands (defaults/version + the build-time hooks)
             // take universal flags only.
             Command::Defaults
             | Command::Version { .. }
             | Command::Completions { .. }
-            | Command::Man
-            | Command::ObjectsNeeded
-            | Command::SendPack { .. }
-            | Command::ReceivePack { .. } => {}
+            | Command::Man => {}
         }
         Ctx {
             globals,
@@ -784,6 +836,7 @@ fn merge_walk(g: &mut Resolved, w: &WalkArgs) {
 /// Folds a parsed [`TransferArgs`] group into the resolved config.
 fn merge_transfer(g: &mut Resolved, t: &TransferArgs) {
     g.store.clone_from(&t.store);
+    g.catalog.clone_from(&t.catalog);
     g.objects_store.clone_from(&t.objects_store);
     g.cache_dir.clone_from(&t.cache_dir);
     g.id.clone_from(&t.id);
@@ -817,6 +870,15 @@ fn merge_cache_mgmt(g: &mut Resolved, c: &CacheMgmtArgs) {
     g.force = c.force;
     g.dryrun = c.dryrun;
     g.cache_dir.clone_from(&c.cache_dir);
+}
+
+/// Folds a parsed [`PlumbingArgs`] group into the resolved config — so the
+/// plumbing commands' `resolve_stream_store`/`resolve_split_store` see the
+/// `--store`/`--objects-store` (and their `SNAPDIR_STORE`/`SNAPDIR_OBJECTS_STORE`
+/// env) they read.
+fn merge_plumbing(g: &mut Resolved, p: &PlumbingArgs) {
+    g.store.clone_from(&p.store);
+    g.objects_store.clone_from(&p.objects_store);
 }
 
 impl Ctx {
@@ -957,15 +1019,16 @@ impl Ctx {
                     .context("rendering the man page")?;
                 Ok(())
             }
-            Command::ObjectsNeeded => self.run_objects_needed(),
+            Command::ObjectsNeeded { .. } => self.run_objects_needed(),
             Command::SendPack {
                 ids,
                 manifest_id,
                 pack_format,
+                ..
             } => self.run_send_pack(ids, manifest_id.as_deref(), pack_format.resolve()),
-            Command::ReceivePack { require_manifest } => {
-                self.run_receive_pack(require_manifest.as_deref())
-            }
+            Command::ReceivePack {
+                require_manifest, ..
+            } => self.run_receive_pack(require_manifest.as_deref()),
         }
     }
 }
