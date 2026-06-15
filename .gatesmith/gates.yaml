@@ -4380,7 +4380,9 @@ gates:
     phase: 30
     owner_agent: adversary
     depends_on: [dx-arg-snapshots]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T04:42:00Z
+    git_sha: 376f93e
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test dx_args && cargo test --workspace"
     pass_criteria:
