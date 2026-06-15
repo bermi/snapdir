@@ -4568,7 +4568,9 @@ gates:
     phase: 30
     owner_agent: cli
     depends_on: [dx-id-stdin-verify]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T07:07:00Z
+    git_sha: dc6b389
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_id_stdin && test -f crates/snapdir-cli/tests/dx_id_stdin.rs && test ! -f .gatesmith/pending-tests/dx_id_stdin.rs"
     pass_criteria:
