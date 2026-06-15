@@ -30,6 +30,8 @@ pub enum Phase {
     Hashing,
     /// Objects are being transferred to/from a store.
     Transfer,
+    /// The tree is being enumerated to discover files before hashing begins.
+    Discovering,
 }
 
 impl Phase {
@@ -39,6 +41,7 @@ impl Phase {
             Phase::Idle => 0,
             Phase::Hashing => 1,
             Phase::Transfer => 2,
+            Phase::Discovering => 3,
         }
     }
 
@@ -48,6 +51,7 @@ impl Phase {
         match value {
             1 => Phase::Hashing,
             2 => Phase::Transfer,
+            3 => Phase::Discovering,
             _ => Phase::Idle,
         }
     }
@@ -65,6 +69,9 @@ pub struct MeterSnapshot {
     pub bytes_out: u64,
     /// Objects finished (e.g. files hashed).
     pub objects_done: u64,
+    /// Objects discovered so far during the enumeration pass (e.g. files
+    /// enumerated before hashing begins).
+    pub objects_discovered: u64,
     /// Expected total objects, when known (`0` means unknown).
     pub objects_total: u64,
     /// Objects skipped (e.g. already present, deduplicated).
@@ -93,6 +100,7 @@ pub struct Meter {
     bytes_in: AtomicU64,
     bytes_out: AtomicU64,
     objects_done: AtomicU64,
+    objects_discovered: AtomicU64,
     objects_total: AtomicU64,
     objects_skipped: AtomicU64,
     in_flight: AtomicU64,
@@ -153,6 +161,12 @@ impl Meter {
         self.objects_total.store(n, Ordering::Relaxed);
     }
 
+    /// Records that one object was discovered during the enumeration pass:
+    /// bumps the discovered counter by one.
+    pub fn object_discovered(&self) {
+        self.objects_discovered.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Adds `n` to the skipped-objects counter.
     pub fn add_skipped(&self, n: u64) {
         self.objects_skipped.fetch_add(n, Ordering::Relaxed);
@@ -196,6 +210,7 @@ impl Meter {
             bytes_in: self.bytes_in.load(Ordering::Relaxed),
             bytes_out: self.bytes_out.load(Ordering::Relaxed),
             objects_done: self.objects_done.load(Ordering::Relaxed),
+            objects_discovered: self.objects_discovered.load(Ordering::Relaxed),
             objects_total: self.objects_total.load(Ordering::Relaxed),
             objects_skipped: self.objects_skipped.load(Ordering::Relaxed),
             in_flight: self.in_flight.load(Ordering::Relaxed),
@@ -218,6 +233,7 @@ mod tests {
         assert_eq!(initial.bytes_in, 0);
         assert_eq!(initial.bytes_out, 0);
         assert_eq!(initial.objects_done, 0);
+        assert_eq!(initial.objects_discovered, 0);
         assert_eq!(initial.objects_total, 0);
         assert_eq!(initial.objects_skipped, 0);
         assert_eq!(initial.in_flight, 0);
@@ -229,6 +245,10 @@ mod tests {
         meter.set_total(10);
         meter.add_skipped(2);
         meter.add_skipped(1);
+        meter.object_discovered();
+        meter.object_discovered();
+        meter.object_discovered();
+        meter.object_discovered();
         meter.set_phase(Phase::Hashing);
 
         // One object in flight after a started/finished pair leaves a second
@@ -241,13 +261,19 @@ mod tests {
         assert_eq!(snap.bytes_in, 123);
         assert_eq!(snap.bytes_out, 7);
         assert_eq!(snap.objects_done, 1);
+        assert_eq!(snap.objects_discovered, 4);
         assert_eq!(snap.objects_total, 10);
         assert_eq!(snap.objects_skipped, 3);
         assert_eq!(snap.in_flight, 1);
         assert_eq!(snap.phase, Phase::Hashing);
 
         // Phase round-trips through the atomic for every variant.
-        for p in [Phase::Idle, Phase::Hashing, Phase::Transfer] {
+        for p in [
+            Phase::Idle,
+            Phase::Hashing,
+            Phase::Transfer,
+            Phase::Discovering,
+        ] {
             meter.set_phase(p);
             assert_eq!(meter.phase(), p);
             assert_eq!(meter.snapshot().phase, p);

@@ -240,10 +240,13 @@ pub fn walk<H: Hasher + HashFile + Sync>(
 
 /// Like [`walk`], but records hashing progress into an optional [`Meter`].
 ///
-/// When `meter` is `Some`, the phase is set to [`Phase::Hashing`] and, for each
-/// regular file whose bytes are read and hashed, the file's byte length is added
-/// to the meter's bytes-in counter and the file is counted as one finished
-/// object. When `meter` is `None` this behaves exactly like [`walk`].
+/// When `meter` is `Some`, the phase starts at [`Phase::Discovering`] while the
+/// tree is enumerated (each regular file bumps the discovered counter), then
+/// flips to [`Phase::Hashing`] with `objects_total` set to the discovered file
+/// count before the parallel hash pass; for each regular file whose bytes are
+/// read and hashed, the file's byte length is added to the meter's bytes-in
+/// counter and the file is counted as one finished object. When `meter` is
+/// `None` this behaves exactly like [`walk`].
 ///
 /// The recording is purely advisory: the returned [`Manifest`] is
 /// **byte-identical** whether or not a meter is supplied — the meter is updated
@@ -313,7 +316,7 @@ fn walk_inner<H: Hasher + HashFile + Sync>(
     capture_guards: bool,
 ) -> Result<(Manifest, HashMap<PathBuf, CopyGuard>), WalkError> {
     if let Some(meter) = meter {
-        meter.set_phase(Phase::Hashing);
+        meter.set_phase(Phase::Discovering);
     }
     if !root.is_absolute() {
         return Err(WalkError::RootNotAbsolute(root.to_path_buf()));
@@ -355,7 +358,17 @@ fn walk_inner<H: Hasher + HashFile + Sync>(
         &mut dirs,
         &mut pending,
         &mut guard_sink,
+        meter,
     )?;
+
+    // Discovery is complete: the pending vec is the real FILE count, so set it
+    // as the meter's total and flip to the Hashing phase. This gives the
+    // renderer a determinate FILE-count % for the hash pass. Advisory only —
+    // the manifest is assembled from `dirs`/`pending` independent of the meter.
+    if let Some(meter) = meter {
+        meter.set_total(pending.len() as u64);
+        meter.set_phase(Phase::Hashing);
+    }
 
     // Hash every discovered file in parallel, writing each `(checksum, size)`
     // result back into its FIXED slot. The result is order-independent, so the
@@ -432,6 +445,7 @@ fn discover_dir(
     dirs: &mut BTreeMap<String, DirRecord>,
     pending: &mut Vec<PendingHash>,
     guards: &mut Option<&mut HashMap<PathBuf, CopyGuard>>,
+    meter: Option<&Meter>,
 ) -> Result<(), WalkError> {
     // `permissions` is the directory's own `lstat` octal mode (a symlinked
     // directory keeps the symlink's perms, matching the oracle's non-following
@@ -508,6 +522,7 @@ fn discover_dir(
                 dirs,
                 pending,
                 guards,
+                meter,
             )?;
         } else if file_type.is_file() {
             // Record the file with an EMPTY checksum slot and queue a pending
@@ -532,6 +547,13 @@ fn discover_dir(
                         sink.insert(entry_path.clone(), guard);
                     }
                 }
+            }
+
+            // Advisory: count this file as discovered so the renderer can show
+            // a live, growing count during the (otherwise silent) enumeration
+            // pass. Output-orthogonal — never influences the manifest.
+            if let Some(meter) = meter {
+                meter.object_discovered();
             }
 
             let file_index = record.files.len();
@@ -1121,8 +1143,17 @@ F 600 2d1ebfa706ba230165250f744796a92accba5e1b6fa357983b65319da33f8e93 13 ./src/
         let snap = meter.snapshot();
         assert_eq!(snap.bytes_in, 5 + 7 + 1, "sum of file byte lengths");
         assert_eq!(snap.objects_done, 3, "one finished object per file");
+        assert_eq!(snap.objects_discovered, 3, "one discovered per file");
+        assert_eq!(
+            snap.objects_total, 3,
+            "total set to the discovered file count before hashing"
+        );
         assert_eq!(snap.in_flight, 0, "no object left in flight");
-        assert_eq!(snap.phase, Phase::Hashing, "walk sets the Hashing phase");
+        assert_eq!(
+            snap.phase,
+            Phase::Hashing,
+            "walk ends in the Hashing phase after discovery"
+        );
     }
 
     #[test]
