@@ -654,7 +654,7 @@ fn manifest_accepts_and_honors_catalog() {
 }
 
 /// Clause 8: `stage --catalog <dir> <tree>` is ACCEPTED (exit 0) — `--catalog`
-/// is a TransferArgs flag carried by the staging command.
+/// is a `TransferArgs` flag carried by the staging command.
 #[test]
 fn stage_accepts_catalog() {
     let fx = Fixture::new();
@@ -678,7 +678,7 @@ fn stage_accepts_catalog() {
 }
 
 /// Clause 8: `push --catalog … <tree>` gets PAST arg parsing — `--catalog` is a
-/// TransferArgs flag on `push`, so clap does not reject it as unexpected.
+/// `TransferArgs` flag on `push`, so clap does not reject it as unexpected.
 #[test]
 fn push_accepts_catalog_flag() {
     let fx = Fixture::new();
@@ -698,7 +698,7 @@ fn push_accepts_catalog_flag() {
     );
 }
 
-/// Clause 8 (the quirk): `id` REJECTS `--catalog` — `id` carries only WalkArgs,
+/// Clause 8 (the quirk): `id` REJECTS `--catalog` — `id` carries only `WalkArgs`,
 /// so the catalog selector is an unexpected argument (exit 2).
 #[test]
 fn id_rejects_catalog_flag() {
@@ -759,7 +759,7 @@ fn id_does_not_log_even_with_catalog_env() {
 // ── 8b. Plumbing --store / SNAPDIR_STORE on the hidden wire commands ──────────
 
 /// Clause 8: `objects-needed --store file://…` gets PAST arg parsing — the
-/// hidden plumbing command carries `--store` via PlumbingArgs, so there is no
+/// hidden plumbing command carries `--store` via `PlumbingArgs`, so there is no
 /// "unexpected argument --store". (Empty stdin → it answers nothing and exits
 /// cleanly without blocking on a TTY.)
 #[test]
@@ -786,7 +786,7 @@ fn objects_needed_accepts_store_flag() {
     );
 }
 
-/// Clause 8: `send-pack --store file://…` gets PAST arg parsing (PlumbingArgs);
+/// Clause 8: `send-pack --store file://…` gets PAST arg parsing (`PlumbingArgs`);
 /// no "unexpected argument --store". (`--ids -` with empty stdin keeps it from
 /// blocking; any later error must NOT be the arg-parse rejection.)
 #[test]
@@ -813,7 +813,7 @@ fn send_pack_accepts_store_flag() {
 }
 
 /// Clause 8: `receive-pack --store file://…` gets PAST arg parsing
-/// (PlumbingArgs); no "unexpected argument --store".
+/// (`PlumbingArgs`); no "unexpected argument --store".
 #[test]
 fn receive_pack_accepts_store_flag() {
     let fx = Fixture::new();
@@ -922,7 +922,7 @@ fn sync_from_required_without_env() {
 
 // ── 8d. `--jobs` is a transfer flag: on push, not on id/manifest ──────────────
 
-/// Clause 8: `--jobs` IS accepted on `push` (a transfer command, TransferArgs).
+/// Clause 8: `--jobs` IS accepted on `push` (a transfer command, `TransferArgs`).
 #[test]
 fn push_accepts_jobs_flag() {
     let fx = Fixture::new();

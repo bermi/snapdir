@@ -10,7 +10,8 @@
 //! - `--help` stays byte-identical to the documented surface pinned by the
 //!   `snapdir-cli` trycmd snapshot (`tests/cmd/help.trycmd`), so the shim can
 //!   never drift from the snapshot suite that guards the implementation;
-//! - `defaults` keeps the oracle's `sort -u` shape under a controlled env;
+//! - `defaults` prints the effective config (`<knob> <value> source=<tag>` per
+//!   knob plus an `other-env:` section) under a controlled env;
 //! - an `id`/`push`/`fetch`/`checkout` round-trip over a temp `file://`
 //!   store with an isolated `SNAPDIR_CACHE_DIR` reproduces the snapshot id
 //!   (condensed from `snapdir-cli/tests/store_roundtrip.rs`).
@@ -131,16 +132,22 @@ fn help_matches_the_documented_trycmd_surface() {
     );
 }
 
-/// `defaults` under a controlled environment keeps the oracle's shape:
-/// `SNAPDIR*` env reformatted to `--option=value`, the manifest defaults, a
-/// `SNAPDIR_BIN_PATH=` line naming THIS binary, all under a final `sort -u`.
+/// `defaults` under a controlled environment prints the EFFECTIVE config: for
+/// every knob, `<knob> <value> source=<flag|env|default>`, plus a trailing
+/// `other-env:` superset section. This pins the post-rewrite contract (the old
+/// bash-oracle shape — `--option=value` env reformat, a `SNAPDIR_BIN_PATH=`
+/// line, a final `sort -u` — was intentionally removed by the rewrite). Mirrors
+/// the assertion style of `snapdir-cli/tests/dx_defaults.rs`.
 #[test]
-fn defaults_keeps_the_oracle_shape() {
+fn defaults_prints_effective_config() {
     let output = Command::new(snapdir_bin())
         .arg("defaults")
         .env_clear()
         .envs(std::env::var("PATH").map(|p| ("PATH".to_owned(), p)))
+        .env("HOME", "/tmp/snapdir-parity-defaults-home")
         .env("SNAPDIR_CACHE_DIR", "/tmp/parity-cache")
+        .env("SNAPDIR_FOO", "bar")
+        .env("SNAPDIR_MANIFEST_CONTEXT", "legacy-key")
         .output()
         .expect("run snapdir defaults");
     assert!(
@@ -151,20 +158,77 @@ fn defaults_keeps_the_oracle_shape() {
     let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
     let lines: Vec<&str> = stdout.lines().collect();
 
+    // The env-set cache-dir is reported with its resolved value, tagged `env`.
     assert!(
-        lines.contains(&"--cache-dir=/tmp/parity-cache"),
-        "SNAPDIR_CACHE_DIR must be reformatted to --cache-dir=…; got:\n{stdout}"
+        lines.contains(&"cache-dir /tmp/parity-cache source=env"),
+        "cache-dir must be reported as a `source=env` effective knob; got:\n{stdout}"
     );
-    let bin_line = format!("SNAPDIR_BIN_PATH={}", snapdir_bin());
+
+    // A representative set of unset knobs is each present and tagged `default`,
+    // with the resolved default values the rewrite pins.
+    for expected in [
+        "store none source=default",
+        "objects-store none source=default",
+        "fsync batch source=default",
+        "clonefile enabled source=default",
+        "verify-copies disabled source=default",
+    ] {
+        assert!(
+            lines.contains(&expected),
+            "expected effective-knob line `{expected}` in:\n{stdout}"
+        );
+    }
+
+    // Every non-`other-env` knob line carries a literal `source=<tag>` token.
+    let other_env_idx = lines
+        .iter()
+        .position(|l| *l == "other-env:")
+        .expect("a literal `other-env:` superset header must be present");
+    for line in &lines[..other_env_idx] {
+        assert!(
+            line.contains("source=flag")
+                || line.contains("source=env")
+                || line.contains("source=default"),
+            "every effective-knob line must carry a literal source tag, got: {line:?}"
+        );
+    }
+
+    // The old bash-oracle shapes must be GONE: no `--option=value` env reformat,
+    // no `SNAPDIR_BIN_PATH=` line.
     assert!(
-        lines.contains(&bin_line.as_str()),
-        "defaults must name the running binary ({bin_line}); got:\n{stdout}"
+        !lines.iter().any(|l| l.starts_with("--cache-dir=")),
+        "the old `--cache-dir=…` env reformat must be gone; got:\n{stdout}"
     );
-    // The final `sort -u`: sorted, no duplicates.
-    let mut sorted = lines.clone();
-    sorted.sort_unstable();
-    sorted.dedup();
-    assert_eq!(lines, sorted, "defaults output must be `sort -u`-shaped");
+    assert!(
+        !lines.iter().any(|l| l.starts_with("SNAPDIR_BIN_PATH=")),
+        "the old `SNAPDIR_BIN_PATH=` oracle line must be gone; got:\n{stdout}"
+    );
+
+    // The `other-env:` superset lists an arbitrary set `SNAPDIR_*` raw (untagged).
+    assert!(
+        lines.contains(&"  SNAPDIR_FOO=bar"),
+        "an arbitrary set SNAPDIR_* must be listed raw under other-env; got:\n{stdout}"
+    );
+
+    // Legacy `SNAPDIR_MANIFEST_*` is surfaced only under `other-env:` with the
+    // `(legacy)` label — never as a live `source=`-tagged effective knob, and
+    // never as the old empty `SNAPDIR_MANIFEST_*=` cruft.
+    let manifest = lines
+        .iter()
+        .find(|l| l.contains("SNAPDIR_MANIFEST_CONTEXT"))
+        .expect("a set SNAPDIR_MANIFEST_CONTEXT must still be surfaced");
+    assert!(
+        manifest.contains("legacy-key") && manifest.contains("(legacy)"),
+        "legacy manifest var must carry its value and the `(legacy)` label, got: {manifest:?}"
+    );
+    assert!(
+        !manifest.contains("source="),
+        "legacy manifest var must not appear as a `source=`-tagged knob, got: {manifest:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.trim() == "SNAPDIR_MANIFEST_CONTEXT="),
+        "the old empty `SNAPDIR_MANIFEST_CONTEXT=` legacy cruft must be gone; got:\n{stdout}"
+    );
 }
 
 /// id → push → fetch → checkout round-trip over a temp `file://` store with

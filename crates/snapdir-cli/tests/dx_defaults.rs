@@ -623,3 +623,209 @@ fn dx_defaults_output_is_line_oriented() {
         "output must not contain NUL bytes (line-oriented text)",
     );
 }
+
+// ===========================================================================
+// Impl-revealed cases (phase 30 review — implementation now visible).
+//
+// The spec tests above deliberately kept FORMAT LATITUDE (case-insensitive
+// `contains` on substance). Now that `9c31b95` landed, the exact tokens are
+// known and pinned below so they cannot silently drift:
+//   * source tag literal is `source=<flag|env|default>` (one token, `=`-joined);
+//   * the superset section header is the literal `other-env:` and each entry is
+//     `  SNAPDIR_KEY=value`, with legacy manifest vars suffixed ` (legacy)`;
+//   * resolved default values: clonefile=`enabled`, fsync=`batch`,
+//     verify-copies=`disabled`, and their env flips.
+// Every fn name still contains `dx_defaults` so the suite selector picks them up.
+// These ADDED tests MUST PASS against the current binary.
+// ===========================================================================
+
+/// All three literal source tokens — `source=default`, `source=env`,
+/// `source=flag` — appear with the exact `source=<tag>` spelling (no spaces
+/// around `=`, lowercase tag). Pins the format the impl chose.
+#[test]
+fn dx_defaults_literal_source_tokens_exact() {
+    let home = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let mut cmd = snapdir_clean(&home);
+    // env-set cache-dir → at least one `source=env`; `--jobs` → `source=flag`;
+    // every unset knob → `source=default`.
+    cmd.env("SNAPDIR_CACHE_DIR", cache.path());
+    let out = defaults_stdout(&mut cmd, &["--jobs", "4"]);
+
+    for token in ["source=default", "source=env", "source=flag"] {
+        assert!(
+            out.contains(token),
+            "expected literal `{token}` in defaults output:\n{out}",
+        );
+    }
+    // And the tag is never printed with surrounding spaces (e.g. `source = env`).
+    assert!(
+        !out.contains("source ="),
+        "source tag must be the tight `source=<tag>` token, not `source = …`:\n{out}",
+    );
+}
+
+/// The superset section header is the literal `other-env:`, and an arbitrary
+/// set `SNAPDIR_*` var (here `SNAPDIR_FOO=bar`, which is NOT a recognized knob)
+/// is listed verbatim under it.
+#[test]
+fn dx_defaults_other_env_section_lists_arbitrary_snapdir_var() {
+    let home = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let mut cmd = snapdir_clean(&home);
+    cmd.env("SNAPDIR_CACHE_DIR", cache.path());
+    cmd.env("SNAPDIR_FOO", "bar");
+    let lines = defaults_lines(&mut cmd, &[]);
+
+    assert!(
+        lines.iter().any(|l| l == "other-env:"),
+        "expected a literal `other-env:` superset header in:\n{}",
+        lines.join("\n"),
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("SNAPDIR_FOO=bar")),
+        "the arbitrary set `SNAPDIR_FOO=bar` must be listed under other-env in:\n{}",
+        lines.join("\n"),
+    );
+    // It is NOT presented as a recognized effective knob (no `source=` tag on it).
+    let foo_line = lines
+        .iter()
+        .find(|l| l.contains("SNAPDIR_FOO=bar"))
+        .expect("the SNAPDIR_FOO line");
+    assert!(
+        !foo_line.contains("source="),
+        "an unrecognized SNAPDIR_* var must be raw env, not a tagged knob: {foo_line:?}",
+    );
+}
+
+/// A set legacy `SNAPDIR_MANIFEST_CONTEXT` is surfaced ONLY under `other-env:`
+/// with the explicit ` (legacy)` suffix — never as a live `source=`-tagged knob.
+#[test]
+fn dx_defaults_legacy_manifest_context_surfaced_as_legacy_not_knob() {
+    let home = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let mut cmd = snapdir_clean(&home);
+    cmd.env("SNAPDIR_CACHE_DIR", cache.path());
+    cmd.env("SNAPDIR_MANIFEST_CONTEXT", "mykey");
+    let lines = defaults_lines(&mut cmd, &[]);
+
+    let manifest = lines
+        .iter()
+        .find(|l| l.contains("SNAPDIR_MANIFEST_CONTEXT"))
+        .expect("a set SNAPDIR_MANIFEST_CONTEXT must still be surfaced");
+    assert!(
+        manifest.contains("mykey") && manifest.contains("(legacy)"),
+        "legacy manifest var must carry its value and the `(legacy)` label: {manifest:?}",
+    );
+    assert!(
+        !manifest.contains("source="),
+        "legacy manifest var must NOT appear as a `source=`-tagged effective knob: {manifest:?}",
+    );
+}
+
+/// Resolved-value sanity for `clonefile`: `enabled` + `source=default` by
+/// default, flipped to `disabled` + `source=env` by `SNAPDIR_CLONEFILE=0`.
+#[test]
+fn dx_defaults_clonefile_default_and_env_flip() {
+    let home = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+
+    let mut on = snapdir_clean(&home);
+    on.env("SNAPDIR_CACHE_DIR", cache.path());
+    let on_lines = defaults_lines(&mut on, &[]);
+    let on_line = knob_line(&on_lines, "clonefile");
+    assert!(
+        on_line.contains("enabled") && on_line.contains("source=default"),
+        "default clonefile must be `enabled source=default`, got: {on_line:?}",
+    );
+
+    let mut off = snapdir_clean(&home);
+    off.env("SNAPDIR_CACHE_DIR", cache.path());
+    off.env("SNAPDIR_CLONEFILE", "0");
+    let off_lines = defaults_lines(&mut off, &[]);
+    let off_line = knob_line(&off_lines, "clonefile");
+    assert!(
+        off_line.contains("disabled") && off_line.contains("source=env"),
+        "SNAPDIR_CLONEFILE=0 must flip clonefile to `disabled source=env`, got: {off_line:?}",
+    );
+}
+
+/// Resolved-value sanity for `fsync`: `batch` + `source=default` by default,
+/// flipped to `off` + `source=env` by `SNAPDIR_FSYNC=off`.
+#[test]
+fn dx_defaults_fsync_default_and_env_flip() {
+    let home = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+
+    let mut def = snapdir_clean(&home);
+    def.env("SNAPDIR_CACHE_DIR", cache.path());
+    let def_line = knob_line(&defaults_lines(&mut def, &[]), "fsync");
+    assert!(
+        def_line.contains("batch") && def_line.contains("source=default"),
+        "default fsync must be `batch source=default`, got: {def_line:?}",
+    );
+
+    let mut off = snapdir_clean(&home);
+    off.env("SNAPDIR_CACHE_DIR", cache.path());
+    off.env("SNAPDIR_FSYNC", "off");
+    let off_line = knob_line(&defaults_lines(&mut off, &[]), "fsync");
+    assert!(
+        off_line.contains("off") && off_line.contains("source=env"),
+        "SNAPDIR_FSYNC=off must flip fsync to `off source=env`, got: {off_line:?}",
+    );
+}
+
+/// Resolved-value sanity for `verify-copies`: `disabled` + `source=default` by
+/// default, flipped to `enabled` + `source=env` by `SNAPDIR_VERIFY_COPIES=1`.
+#[test]
+fn dx_defaults_verify_copies_default_and_env_flip() {
+    let home = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+
+    let mut def = snapdir_clean(&home);
+    def.env("SNAPDIR_CACHE_DIR", cache.path());
+    let def_line = knob_line(&defaults_lines(&mut def, &[]), "verify-copies");
+    assert!(
+        def_line.contains("disabled") && def_line.contains("source=default"),
+        "default verify-copies must be `disabled source=default`, got: {def_line:?}",
+    );
+
+    let mut on = snapdir_clean(&home);
+    on.env("SNAPDIR_CACHE_DIR", cache.path());
+    on.env("SNAPDIR_VERIFY_COPIES", "1");
+    let on_line = knob_line(&defaults_lines(&mut on, &[]), "verify-copies");
+    assert!(
+        on_line.contains("enabled") && on_line.contains("source=env"),
+        "SNAPDIR_VERIFY_COPIES=1 must flip verify-copies to `enabled source=env`, got: {on_line:?}",
+    );
+}
+
+/// `objects-store` reflects a `--objects-store` flag with `source=flag`, and a
+/// `SNAPDIR_OBJECTS_STORE` env with `source=env` — scoped to the objects-store
+/// line (distinct from the plain `store` line).
+#[test]
+fn dx_defaults_objects_store_flag_and_env_source() {
+    let home = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+
+    // Flag → source=flag.
+    let mut flagged = snapdir_clean(&home);
+    flagged.env("SNAPDIR_CACHE_DIR", cache.path());
+    let flag_lines = defaults_lines(&mut flagged, &["--objects-store", "file:///tmp/dx-obj-flag"]);
+    let flag_line = knob_line(&flag_lines, "objects-store");
+    assert!(
+        flag_line.contains("file:///tmp/dx-obj-flag") && flag_line.contains("source=flag"),
+        "`--objects-store …` must show that URL tagged source=flag, got: {flag_line:?}",
+    );
+
+    // Env → source=env.
+    let mut enved = snapdir_clean(&home);
+    enved.env("SNAPDIR_CACHE_DIR", cache.path());
+    enved.env("SNAPDIR_OBJECTS_STORE", "file:///tmp/dx-obj-env");
+    let env_lines = defaults_lines(&mut enved, &[]);
+    let env_line = knob_line(&env_lines, "objects-store");
+    assert!(
+        env_line.contains("file:///tmp/dx-obj-env") && env_line.contains("source=env"),
+        "`SNAPDIR_OBJECTS_STORE=…` must show that URL tagged source=env, got: {env_line:?}",
+    );
+}
