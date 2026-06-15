@@ -4194,7 +4194,9 @@ gates:
     phase: 29
     owner_agent: generic
     depends_on: [release-verify-branch-1.7.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T01:11:00Z
+    git_sha: a477489
     failure_count: 0
     bump_reason: "GATE-BUMP 2026-06-14 (operator-directed). Added the NEW required `reflink` Btrfs-loopback FICLONE CI job (Phase-29) to the CI-green human_confirm + description (first run on the GH runner; continue-on-error fallback documented). Pass INTENT unchanged (full CI matrix green + operator-authorized squash-merge to upstream/main at 1.7.0)."
     verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.7.0\"'"
