@@ -4350,9 +4350,10 @@ gates:
     phase: 30
     owner_agent: cli
     depends_on: [dx-arg-spec-tests]
-    status: failed
+    status: passed
+    passed_at: 2026-06-15T04:12:00Z
+    git_sha: 92653c4
     failure_count: 1
-    failure_reason: "REOPENED-BY dx-arg-snapshots 2026-06-15: approach-B restructure (4280b7b) regressed 3 behaviors the narrow `--test dx_args` check missed — (1) catalog logging no-op on manifest/stage/push (WalkArgs/TransferArgs lack a catalog field + merge_walk/merge_transfer never set g.catalog); (2) plumbing objects-needed/send-pack/receive-pack lack a store arg group (--store rejected, SNAPDIR_STORE unread); (3) sync --from lost its env=SNAPDIR_STORE fallback. FIX: re-add --catalog to walk/transfer families + wire the merges; give plumbing commands a store arg group; restore env=SNAPDIR_STORE on sync --from. Verify the FULL `cargo test -p snapdir-cli` green before handoff."
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_args && test -f crates/snapdir-cli/tests/dx_args.rs && test ! -f .gatesmith/pending-tests/dx_args.rs"
     pass_criteria:
       and:
