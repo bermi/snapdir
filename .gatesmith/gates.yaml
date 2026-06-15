@@ -4609,7 +4609,9 @@ gates:
     phase: 30
     owner_agent: adversary
     depends_on: [dx-findings-signoff]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T08:47:00Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/dx_recovery.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/dx_recovery.rs"
     pass_criteria:
@@ -4618,26 +4620,27 @@ gates:
         - file_exists: ".gatesmith/pending-tests/dx_recovery.rs"
     human_checkpoint: false
     description: "ADVERSARY black-box spec tests for the §6 recovery gaps -> .gatesmith/pending-tests/dx_recovery.rs. Contracts: (a) after a snapshot is in a store, DELETING/removing an object from the local cache and then running fetch/pull (incl. --force) MUST detect+restore the missing object from the store (today it reports CACHED/succeeds while leaving the cache broken; only flush-cache+fetch works); (b) `verify-cache` MUST report a non-zero/failing result when a cache object is MISSING (deleted), not just when it is CORRUPT (today missing -> silent exit 0); (c) the messages name what's missing and (ideally) the affected file path(s), not only the object hash. KEYSTONE: object pools + snapshot ids byte-identical for healthy round-trips; no behavior change when nothing is missing. Behavior-only; integration tests against the public CLI/store API."
-  - id: dx-recovery-impl-stores
+  - id: dx-recovery-impl-cli
     phase: 30
-    owner_agent: stores
+    owner_agent: cli
     depends_on: [dx-recovery-spec-tests]
     status: pending
     failure_count: 0
-    verification_cmd: "cargo test -p snapdir-stores --test dx_recovery && cargo test --workspace && test -f crates/snapdir-stores/tests/dx_recovery.rs && test ! -f .gatesmith/pending-tests/dx_recovery.rs"
+    bump_reason: "GATE-BUMP 2026-06-15 (lane re-route): dx-recovery-spec-tests' black-box probing proved the recovery gaps are CLI, not stores — flush-cache+fetch heals (so the stores transfer API is fine); the bug is run_fetch/run_pull SHORT-CIRCUITING on a cached manifest before checking objects (the `CACHED` notice), and run_verify_cache's enumeration missing deleted objects. Renamed dx-recovery-impl-stores -> dx-recovery-impl-cli, owner stores->cli, test dest crates/snapdir-stores/tests/ -> crates/snapdir-cli/tests/ (the suite is CLI-level assert_cmd), verification snapdir-stores -> snapdir-cli. Pass INTENT unchanged (fix the recovery gaps + green dx_recovery). If a small stores error-context touch is needed for checkout-path-naming, the cli teammate flags it and the PM spawns stores."
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_recovery && cargo test --workspace && test -f crates/snapdir-cli/tests/dx_recovery.rs && test ! -f .gatesmith/pending-tests/dx_recovery.rs"
     pass_criteria:
       and:
         - exit_code: 0
-        - file_exists: "crates/snapdir-stores/tests/dx_recovery.rs"
+        - file_exists: "crates/snapdir-cli/tests/dx_recovery.rs"
     human_checkpoint: false
-    description: "STORES impl for the recovery gaps: fetch/pull must restore a MISSING (not just corrupt) cache object from the store; verify-cache must surface MISSING objects as a failure. Likely touches the cache/fetch presence-check + verify-cache enumeration in crates/snapdir-stores (and possibly the cli run_verify_cache wiring). Frozen core (merkle/manifest/excludes) MUST stay untouched -> re-run `shasum -c .gatesmith/manifest-format.sha.lock`. Take over the staged tests (git mv .gatesmith/pending-tests/dx_recovery.rs -> crates/snapdir-stores/tests/dx_recovery.rs). NOTE: if the fix needs cli wiring (e.g. run_verify_cache surfacing), STOP and flag in handoff Blockers so the PM spawns the cli lane for that part. PM machine-check: dx_recovery test green, workspace green, pending test moved, frozen lock OK."
+    description: "CLI impl for the §6 recovery gaps (lane re-routed stores->cli per the spec-test probing). (1) fetch/pull (incl --force) must RESTORE a MISSING cache object: run_fetch/run_pull currently SHORT-CIRCUIT on a cached manifest (the `CACHED: <id>` notice) and skip object transfer — change them to verify every manifest object is present in the cache and re-fetch any that are missing (the stores fetch/transfer API already restores correctly once invoked; flush-cache+fetch proves it). (2) run_verify_cache must report a NON-ZERO failure naming a MISSING object (today missing -> silent exit 0; only corrupt content is caught) — enumerate the manifest's objects and flag any absent from the cache. (3) Message quality: name the affected file path(s) from the manifest, not just the bare hash (if path-naming needs a small snapdir-stores error-context change, STOP and flag in Blockers — PM spawns stores). KEYSTONE: healthy round-trips byte-identical, verify-cache on a healthy cache still exits 0, corrupt-detection unchanged. Take over the staged tests (git mv .gatesmith/pending-tests/dx_recovery.rs -> crates/snapdir-cli/tests/dx_recovery.rs) and green all 11. Run cargo test --workspace. Frozen core lock must verify. PM machine-check: workspace builds locked, dx_recovery green, pending moved + PM repro of fetch-restores-missing + verify-cache-detects-missing."
   - id: dx-recovery-review
     phase: 30
     owner_agent: adversary
-    depends_on: [dx-recovery-impl-stores]
+    depends_on: [dx-recovery-impl-cli]
     status: pending
     failure_count: 0
-    verification_cmd: "cargo test -p snapdir-stores --test dx_recovery && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    verification_cmd: "cargo test -p snapdir-cli --test dx_recovery && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
       and:
         - exit_code: 0
