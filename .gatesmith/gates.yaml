@@ -4520,7 +4520,9 @@ gates:
     phase: 30
     owner_agent: cli
     depends_on: [dx-errors-impl-stores]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T06:22:00Z
+    git_sha: 15b01d7
     failure_count: 0
     bump_reason: "GATE-BUMP 2026-06-15 (lane split at dx-errors-spec-tests): the adversary's dx_errors.rs spans two lanes — clauses 5-6 (silent-empty-store resolution + sync miscount) are snapdir-stores, clauses 1-4 (error messages) are cli. Inserted dx-errors-impl-stores (stores) to fix 5-6 FIRST; this gate's depends_on changed [dx-errors-spec-tests]->[dx-errors-impl-stores] so by the time cli wires + greens the WHOLE dx_errors.rs, the stores half is already fixed. pass_criteria UNCHANGED (still requires the full --test dx_errors green)."
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_errors && test -f crates/snapdir-cli/tests/dx_errors.rs && test ! -f .gatesmith/pending-tests/dx_errors.rs"
