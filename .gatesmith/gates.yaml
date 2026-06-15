@@ -4287,7 +4287,9 @@ gates:
     phase: 30
     owner_agent: adversary
     depends_on: [dx-sandbox-setup]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T02:55:00Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test \"$(ls .gatesmith/evidence/dx-personas/*.md 2>/dev/null | wc -l | tr -d ' ')\" -ge 6"
     pass_criteria:
