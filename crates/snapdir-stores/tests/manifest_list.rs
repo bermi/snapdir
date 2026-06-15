@@ -477,6 +477,41 @@ fn list_existing_empty_root_is_ok_not_error() {
     assert!(listed.is_empty(), "fresh empty store => empty vec, got {listed:?}");
 }
 
+/// REVIEW ADDITION (impl now visible — pin the exact variant + phrasing the src
+/// uses): the nonexistent-root error is specifically `StoreError::Backend` (not a
+/// raw `Io` NotFound), and its message literally says `store location does not
+/// exist`. Pinning the variant matters because downstream diff/sync render-and-
+/// classify errors; an `Io(NotFound)` could be mistaken for "empty" again, which
+/// is exactly the §6 bug. (FileStore::list_manifest_ids in file_store.rs.)
+#[test]
+fn list_nonexistent_root_is_backend_variant_naming_does_not_exist() {
+    let parent = TempDir::new("nonexistent-root-variant");
+    let missing = parent.path().join("typo-store");
+    assert!(!missing.exists(), "precondition: root must not exist");
+
+    let store = FileStore::from_root(missing.clone());
+    let err = store
+        .list_manifest_ids()
+        .expect_err("a nonexistent store root must error");
+
+    match &err {
+        StoreError::Backend { message, .. } => {
+            assert!(
+                message.contains("does not exist"),
+                "the Backend error must say 'does not exist'; got: {message}"
+            );
+            assert!(
+                message.contains(&missing.display().to_string()),
+                "the Backend error must name the missing location; got: {message}"
+            );
+        }
+        other => panic!(
+            "a nonexistent root must be StoreError::Backend (not e.g. Io NotFound, \
+             which downstream could re-read as 'empty'); got: {other:?}"
+        ),
+    }
+}
+
 // ===========================================================================
 // SHARED-POOL ISOLATION (SplitStore over two FileStore prefixes, one pool)
 // ===========================================================================

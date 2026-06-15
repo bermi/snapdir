@@ -761,3 +761,229 @@ fn sync_dryrun_counts_unique_objects_not_file_refs() {
         "--dryrun must not write any objects to the dest"
     );
 }
+
+// ===========================================================================
+// REVIEW ADDITIONS (impl now visible — pin the EXACT branches the src reveals)
+// ===========================================================================
+
+/// Clause 1 (literal tokens): the impl's missing-store message is exactly
+/// `no store configured: pass --store <uri> or set the SNAPDIR_STORE environment
+/// variable` (crates/snapdir-cli/src/cli.rs). The feature-suite tests lowercase
+/// before matching; this pins the ACTUAL-CASE literal tokens `--store` AND
+/// `SNAPDIR_STORE` (uppercase env name) so a future refactor cannot drop either
+/// the flag or the env hint while still passing a case-folded check.
+#[test]
+fn missing_store_push_names_both_tokens_literally() {
+    let cache = temp_dir("ms-lit-cache");
+    let src = temp_dir("ms-lit-src");
+    build_tree(&src, &[("a.txt", b"hello")]);
+    let src_str = src.to_string_lossy().into_owned();
+
+    let out = run_raw(&["push", &src_str], &cache, &[]);
+    assert!(!out.status.success(), "push with no store must fail");
+    let err = stderr_of(&out);
+    assert!(
+        err.contains("--store"),
+        "missing-store error must literally name `--store`; got: {err}"
+    );
+    // The env fallback name is uppercase in the real message; pin it literally so
+    // it cannot be silently down-cased or dropped.
+    assert!(
+        err.contains("SNAPDIR_STORE"),
+        "missing-store error must literally name the `SNAPDIR_STORE` env var \
+         (uppercase); got: {err}"
+    );
+}
+
+/// Clause 2 (literal tokens): the split-read hint the impl adds
+/// (`Engine::split_read_hint`) names BOTH alternative flags —
+/// `--objects-store` and `--from-objects` — so the user learns the read-side and
+/// sync-side names. Pin both literal tokens (the feature suite only requires one
+/// of several alternatives), so neither flag name can be dropped from the hint.
+#[test]
+fn split_fetch_hint_names_both_objects_flags_literally() {
+    let cache = temp_dir("split-lit-cache");
+    let src = temp_dir("split-lit-src");
+    let mani = temp_dir("split-lit-mani");
+    let pool = temp_dir("split-lit-pool");
+    build_tree(&src, &[("a.txt", b"hello"), ("b.txt", b"world")]);
+    let src_str = src.to_string_lossy().into_owned();
+    let mani_url = file_url(&mani);
+    let pool_url = file_url(&pool);
+
+    let id = run_ok(
+        &[
+            "push",
+            "--objects-store",
+            &pool_url,
+            "--store",
+            &mani_url,
+            &src_str,
+        ],
+        &cache,
+    );
+
+    let fresh = temp_dir("split-lit-fresh");
+    let out = run_raw(&["fetch", "--store", &mani_url, "--id", &id], &fresh, &[]);
+    assert!(!out.status.success(), "split fetch without pool must fail");
+    let err = stderr_of(&out);
+    assert!(
+        err.contains("--objects-store"),
+        "the split hint must literally name `--objects-store`; got: {err}"
+    );
+    assert!(
+        err.contains("--from-objects"),
+        "the split hint must also literally name `--from-objects` (the sync-side \
+         flag) so the user learns both names; got: {err}"
+    );
+}
+
+/// Clause 2 (INVERSE branch the impl reveals): `split_read_hint` only fires when
+/// NO objects pool was supplied (`self.globals.objects_store.is_none()`). When the
+/// user DID pass `--objects-store` and the object is GENUINELY missing (the pool is
+/// the wrong/empty one), the error must be the PLAIN `object not found` cause with
+/// NO split hint — otherwise the hint would spuriously tell the user to do exactly
+/// what they already did, masking a real corruption/wrong-pool error.
+#[test]
+fn missing_object_with_objects_store_gives_plain_error_no_split_hint() {
+    let cache = temp_dir("inv-cache");
+    let src = temp_dir("inv-src");
+    let mani = temp_dir("inv-mani");
+    let pool = temp_dir("inv-pool");
+    build_tree(&src, &[("a.txt", b"hello"), ("b.txt", b"world")]);
+    let src_str = src.to_string_lossy().into_owned();
+    let mani_url = file_url(&mani);
+    let pool_url = file_url(&pool);
+
+    // Split push: manifest -> mani, objects -> pool.
+    let id = run_ok(
+        &[
+            "push",
+            "--objects-store",
+            &pool_url,
+            "--store",
+            &mani_url,
+            &src_str,
+        ],
+        &cache,
+    );
+    assert!(count_objects(&pool) > 0, "pool must hold the blobs");
+
+    // Fetch WITH an --objects-store supplied, but pointed at a DIFFERENT, EMPTY
+    // pool: the objects are genuinely missing there. Because a pool WAS supplied,
+    // the impl must NOT add the split hint — it is the wrong advice here.
+    let wrong_pool = temp_dir("inv-wrong-pool");
+    let wrong_pool_url = file_url(&wrong_pool);
+    assert_eq!(count_objects(&wrong_pool), 0, "the wrong pool is empty");
+
+    let fresh = temp_dir("inv-fresh");
+    let out = run_raw(
+        &[
+            "fetch",
+            "--store",
+            &mani_url,
+            "--objects-store",
+            &wrong_pool_url,
+            "--id",
+            &id,
+        ],
+        &fresh,
+        &[],
+    );
+    assert!(
+        !out.status.success(),
+        "a genuinely missing object must still fail; stderr: {}",
+        stderr_of(&out)
+    );
+    let err = stderr_of(&out).to_lowercase();
+    // The plain cause must surface...
+    assert!(
+        err.contains("object not found") || err.contains("not found"),
+        "a genuine missing object (pool supplied) must give the plain \
+         'object not found' cause; got: {}",
+        stderr_of(&out)
+    );
+    // ...and the split hint must NOT fire (it would be misleading: the user already
+    // passed --objects-store). Guard against the hint's distinctive phrasing.
+    assert!(
+        !err.contains("re-run with --objects-store")
+            && !err.contains("pushed with a split"),
+        "the split hint must NOT fire when --objects-store was already supplied \
+         (it would tell the user to do what they already did); got: {}",
+        stderr_of(&out)
+    );
+}
+
+/// Clause 6 (stronger dedup): a tree with SIX file references collapsing to THREE
+/// unique objects (AAAA×2, BBBB×3, CCCC×1) must report `copied == 3` (the unique
+/// count), NOT 6 (file refs), with 0 skipped on a fresh dest. A wider fan-out than
+/// the 4→2 base case rules out an accidental "halve the count" coincidence and
+/// pins that the dedup is by-checksum across an arbitrary multiplicity.
+#[test]
+fn sync_counts_three_unique_objects_across_six_refs() {
+    let cache = temp_dir("mc3-cache");
+    let src = temp_dir("mc3-src");
+    // 6 file entries -> 3 unique blobs: AAAA (×2), BBBB (×3), CCCC (×1).
+    build_tree(
+        &src,
+        &[
+            ("a1.txt", b"AAAA"),
+            ("a2.txt", b"AAAA"),
+            ("b1.txt", b"BBBB"),
+            ("b2.txt", b"BBBB"),
+            ("b3.txt", b"BBBB"),
+            ("c1.txt", b"CCCC"),
+        ],
+    );
+    let src_str = src.to_string_lossy().into_owned();
+    let from = temp_dir("mc3-from");
+    let from_url = file_url(&from);
+    let id = run_ok(&["push", "--store", &from_url, &src_str], &cache);
+
+    // Ground truth: exactly 3 unique objects landed in the source store.
+    let unique = count_objects(&from);
+    assert_eq!(
+        unique, 3,
+        "6 file refs must collapse to 3 unique objects; got {unique}"
+    );
+
+    let to = temp_dir("mc3-to");
+    let to_url = file_url(&to);
+    let out = run_raw(
+        &["sync", "--id", &id, "--from", &from_url, "--to", &to_url],
+        &cache,
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "the dedup sync must succeed; stderr: {}",
+        stderr_of(&out)
+    );
+    let stderr = stderr_of(&out);
+    let summary = stderr
+        .lines()
+        .find(|l| l.contains("copied"))
+        .unwrap_or_else(|| panic!("expected a sync summary with a copied count:\n{stderr}"));
+
+    // Fresh dest => 0 skipped.
+    if let Some(skipped) = parse_count(summary, "skipped") {
+        assert_eq!(
+            skipped, 0,
+            "a first sync into an EMPTY dest must report 0 skipped; got:\n{summary}"
+        );
+    }
+    // copied must be the UNIQUE count (3), never the 6 file references.
+    let copied = parse_count(summary, "copied")
+        .unwrap_or_else(|| panic!("no copied count in summary:\n{summary}"));
+    assert_eq!(
+        copied, 3,
+        "the 'copied' count must be the 3 UNIQUE objects, not the 6 file \
+         references; got:\n{summary}"
+    );
+    // And the dest must physically hold exactly 3 unique blobs.
+    assert_eq!(
+        count_objects(&to),
+        3,
+        "the dest must hold exactly 3 unique objects after the sync"
+    );
+}
