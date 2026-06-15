@@ -435,6 +435,49 @@ fn list_prefix_with_only_objects_no_manifests_returns_empty_vec() {
 }
 
 // ===========================================================================
+// NONEXISTENT ROOT (Err, NOT an empty vec) — the §6 silent-empty-store bug
+// ===========================================================================
+
+#[test]
+fn list_nonexistent_root_errors_not_empty() {
+    // SPEC: a store whose ROOT directory does not exist (a typo'd / never-created
+    // location) must NOT masquerade as an empty store — that fabricates a full
+    // deletion delta downstream (`diff --to file:///nope` exit 0 + bogus `D`).
+    // It must return an Err whose message NAMES the missing location.
+    let parent = TempDir::new("nonexistent-root");
+    let missing = parent.path().join("no-such-store-subdir");
+    assert!(!missing.exists(), "precondition: root must not exist");
+
+    let store = FileStore::from_root(missing.clone());
+    let err = store
+        .list_manifest_ids()
+        .expect_err("a nonexistent store root must error, not return Ok(empty)");
+
+    // The error must name the bad location so the operator can see the typo.
+    let needle = missing.display().to_string();
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains(&needle),
+        "error must name the missing store location {needle:?}, got: {rendered}"
+    );
+}
+
+#[test]
+fn list_existing_empty_root_is_ok_not_error() {
+    // CRITICAL DISTINCTION control: an EXISTING store dir that legitimately has
+    // no manifests yet (a fresh push target — real dir, no `.manifests/`) must
+    // STILL return Ok(empty), never the nonexistent-root error.
+    let root = TempDir::new("fresh-existing-empty");
+    assert!(root.path().exists(), "precondition: root exists");
+
+    let store = FileStore::from_root(root.path().to_path_buf());
+    let listed = store
+        .list_manifest_ids()
+        .expect("an existing empty store root must be Ok(empty), not an error");
+    assert!(listed.is_empty(), "fresh empty store => empty vec, got {listed:?}");
+}
+
+// ===========================================================================
 // SHARED-POOL ISOLATION (SplitStore over two FileStore prefixes, one pool)
 // ===========================================================================
 

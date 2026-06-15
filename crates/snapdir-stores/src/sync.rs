@@ -108,34 +108,35 @@ pub fn sync_snapshot(
     // Verifies the source manifest hashes back to `id` before we trust it.
     let manifest = from.get_manifest(id)?;
 
-    // Sync moves content objects, not the directory tree, so only File entries
-    // carry an object to copy.
-    let files: Vec<&str> = manifest
-        .entries()
-        .iter()
-        .filter(|e| e.path_type == PathType::File)
-        .map(|e| e.checksum.as_str())
-        .collect();
+    // Sync moves content OBJECTS, not file references: a manifest's File
+    // entries that share a checksum (dedup — the same bytes referenced by
+    // several paths) are ONE object to copy. Deduplicate by checksum here
+    // (first occurrence wins, preserving manifest order) so the counters and
+    // the work both reflect UNIQUE objects, not file-reference count. Without
+    // this, a 4-file/2-object snapshot copies 2 objects then sees the other 2
+    // file-refs already present and reports them as "skipped" even into a fresh
+    // empty dest — a miscount.
+    let mut seen = std::collections::HashSet::new();
+    let mut files: Vec<&str> = Vec::new();
     // Manifest-declared object sizes (for the adaptive controller's memory
-    // guardrail p95). Advisory only; never gates what is copied.
-    let object_sizes: Vec<u64> = manifest
-        .entries()
-        .iter()
-        .filter(|e| e.path_type == PathType::File)
-        .map(|e| e.size)
-        .collect();
+    // guardrail p95), aligned 1:1 with the deduped `files`. Advisory only;
+    // never gates what is copied.
+    let mut object_sizes: Vec<u64> = Vec::new();
+    for entry in manifest.entries() {
+        if entry.path_type == PathType::File && seen.insert(entry.checksum.as_str()) {
+            files.push(entry.checksum.as_str());
+            object_sizes.push(entry.size);
+        }
+    }
 
     // Advisory progress: we are entering the transfer phase, and the total is
     // the sum of the to-copy object sizes (the File entries' manifest sizes).
     // No effect on what is copied; a no-op without a meter.
     if let Some(m) = meter {
         m.set_phase(Phase::Transfer);
-        let total: u64 = manifest
-            .entries()
-            .iter()
-            .filter(|e| e.path_type == PathType::File)
-            .map(|e| e.size)
-            .sum();
+        // Sum the DEDUPED object sizes (unique objects to copy), not every File
+        // entry — a shared object is transferred once, so it counts once.
+        let total: u64 = object_sizes.iter().sum();
         m.set_total(total);
     }
 
@@ -411,6 +412,52 @@ mod tests {
         (manifest, id)
     }
 
+    /// Builds a 4-file tree where two pairs share content, so the manifest has
+    /// 4 File entries but only 2 UNIQUE objects (M=2 < N=4 via dedup). Returns
+    /// the manifest + snapshot id with real BLAKE3 checksums.
+    fn make_dedup_source(source: &Path) -> (Manifest, String) {
+        let hasher = Blake3Hasher::new();
+        // f1/f2 share "shared-a\n"; f3/f4 share "shared-b\n".
+        let files: [(&str, &[u8]); 4] = [
+            ("f1", b"shared-a\n"),
+            ("f2", b"shared-a\n"),
+            ("f3", b"shared-b\n"),
+            ("f4", b"shared-b\n"),
+        ];
+        let mut sums: Vec<(String, String, u64)> = Vec::new();
+        for (name, bytes) in files {
+            fs::write(source.join(name), bytes).unwrap();
+            sums.push((
+                (*name).to_owned(),
+                hasher.hash_hex(bytes),
+                bytes.len() as u64,
+            ));
+        }
+        let root_sum = snapdir_core::merkle::directory_checksum(
+            sums.iter().map(|(_, s, _)| s.as_str()),
+            &hasher,
+        );
+        let mut entries = vec![ManifestEntry::new(
+            PathType::Directory,
+            "700",
+            root_sum,
+            0,
+            "./",
+        )];
+        for (name, sum, size) in &sums {
+            entries.push(ManifestEntry::new(
+                PathType::File,
+                "600",
+                sum.clone(),
+                *size,
+                format!("./{name}"),
+            ));
+        }
+        let manifest = Manifest::from_entries(entries);
+        let id = snapdir_core::merkle::snapshot_id(&manifest, &hasher);
+        (manifest, id)
+    }
+
     /// The number of File objects in `manifest`.
     fn object_count(manifest: &Manifest) -> usize {
         manifest
@@ -519,6 +566,46 @@ mod tests {
         assert_eq!(later_snap.objects_done, 0, "no objects copied");
         assert_eq!(later_snap.bytes_in, 0, "no bytes read");
         assert_eq!(later_snap.bytes_out, 0, "no bytes written");
+    }
+
+    #[test]
+    fn sync_dedup_counts_unique_objects_not_file_refs() {
+        // §6 sync miscount: a 4-file/2-object snapshot (two pairs share content)
+        // synced into a FRESH empty dest must report 2 objects COPIED (unique,
+        // not the 4 file-references) and 0 SKIPPED (skipped means "already in
+        // dest", which is 0 for an empty dest — the duplicate file-refs are the
+        // same already-copied object, not a skip).
+        let a_dir = TempDir::new("dedup-a");
+        let b_dir = TempDir::new("dedup-b");
+        let src_dir = TempDir::new("dedup-src");
+        let (manifest, id) = make_dedup_source(src_dir.path());
+        assert_eq!(object_count(&manifest), 4, "manifest has 4 File entries");
+
+        let a = FileStore::from_root(a_dir.path());
+        let b = FileStore::from_root(b_dir.path());
+        a.push(&manifest, src_dir.path()).expect("stage into A");
+
+        // Real (wet) sync into a fresh empty B.
+        let report = sync_snapshot(&a, &b, &id, &cfg(), false, None).expect("sync ok");
+        assert_eq!(
+            report.objects_copied, 2,
+            "must copy the 2 UNIQUE objects, not 4 file-refs"
+        );
+        assert_eq!(
+            report.objects_skipped, 0,
+            "nothing is skipped into a fresh empty dest"
+        );
+
+        // Dry run reports the same unique would-copy count.
+        let dry_dir = TempDir::new("dedup-dry");
+        let dry = FileStore::from_root(dry_dir.path());
+        let dry_report =
+            sync_snapshot(&a, &dry, &id, &cfg(), true, None).expect("dry run ok");
+        assert_eq!(
+            dry_report.objects_copied, 2,
+            "dry-run would-copy count is the 2 unique objects"
+        );
+        assert_eq!(dry_report.objects_skipped, 0);
     }
 
     #[test]

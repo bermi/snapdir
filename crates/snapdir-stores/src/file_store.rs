@@ -601,10 +601,29 @@ impl StreamStore for FileStore {
     fn list_manifest_ids(&self) -> Result<Vec<String>, StoreError> {
         let manifests_root = self.root.join(MANIFESTS_DIR);
 
-        // Empty prefix: no `.manifests/` tree yet => Ok(empty), never an error.
         let walk = match fs::read_dir(&manifests_root) {
             Ok(walk) => walk,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            // A missing `.manifests/` tree is ambiguous: it can mean either an
+            // EXISTING store with no manifests pushed yet (a legitimate empty
+            // result) OR a store whose ROOT does not exist at all (a typo'd /
+            // never-created location, which must NOT silently masquerade as an
+            // empty store — that fabricates a full deletion delta downstream).
+            // Distinguish on the ROOT's existence: a real (readable) root with
+            // no `.manifests/` => Ok(empty); a missing/unreadable root => Err
+            // naming the bad location.
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                return match self.root.try_exists() {
+                    Ok(true) => Ok(Vec::new()),
+                    Ok(false) => Err(StoreError::Backend {
+                        message: format!(
+                            "store location does not exist: {}",
+                            self.root.display()
+                        ),
+                        source: None,
+                    }),
+                    Err(probe_err) => Err(StoreError::Io(probe_err)),
+                };
+            }
             Err(err) => return Err(StoreError::Io(err)),
         };
 
