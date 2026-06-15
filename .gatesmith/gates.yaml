@@ -4650,15 +4650,54 @@ gates:
         - exit_code: 0
     human_checkpoint: false
     description: "ADVERSARY review of the recovery cluster. Diff landed vs staged dx_recovery.rs; adjudicate edits; re-assert missing-object restore (fetch/pull) + verify-cache detects-missing + healthy round-trip byte-identical; add impl-revealed cases (e.g. partially-missing pool, missing manifest vs missing object). No weakening; workspace + frozen lock green."
+  # ---- help-text gaps the loop-closer caught (verify --help 'staged' + file:// scheme undiscoverable) ----
+  - id: dx-helptext-spec-tests
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-errors-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/dx_helptext.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/dx_helptext.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/dx_helptext.rs"
+    human_checkpoint: false
+    description: "ADVERSARY black-box spec tests for the 2 findings dx-fix-verify caught NOT-RESOLVED (both accepted in the findings report cluster 4/§5 but never pinned by dx-errors-spec-tests) -> .gatesmith/pending-tests/dx_helptext.rs (assert_cmd). Contracts: (1) VERIFY --HELP no longer falsely says 'staged' — `snapdir verify --help` must NOT contain 'staged' and must accurately describe that it checks the STORE (and needs --store/--id); regression-pin that the help text matches the actual behavior. (2) FILE:// SCHEME DISCOVERABLE — a bad/unknown --store protocol (e.g. `snapdir push <dir> --store notaproto://x` or a bare path) errors with a message that LISTS the valid scheme(s) including `file://` (not just 'invalid store protocol: <x>' with no guidance); and/or the relevant --help/error surfaces `file://`. Pin SUBSTANCE (stderr/stdout line-contains). Behavior-only; expected to FAIL against current binary on both."
+  - id: dx-helptext-impl-cli
+    phase: 30
+    owner_agent: cli
+    depends_on: [dx-helptext-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_helptext && cargo test --workspace && test -f crates/snapdir-cli/tests/dx_helptext.rs && test ! -f .gatesmith/pending-tests/dx_helptext.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-cli/tests/dx_helptext.rs"
+    human_checkpoint: false
+    description: "CLI impl for the 2 help-text gaps. (1) Fix `verify`'s help/doc string (crates/snapdir-cli/src/cli.rs ~626, the `Verify the integrity of a staged snapshot` line) to accurately describe verifying a snapshot in the STORE (requires --store/--id) — no longer 'staged'. Regenerate the affected trycmd help snapshot (help-verify.trycmd) + any parity/man as needed (in-lane). (2) Make the `file://` scheme discoverable: when the store URI has an unknown/invalid protocol, surface a message that LISTS the valid schemes incl `file://` — prefer wrapping/contextualizing the error CLI-side (like the existing split-store hint pattern) so it stays in-lane; if the cleanest fix is the router error message in crates/snapdir-stores/src/router.rs, STOP and flag in Blockers (PM spawns stores). Optionally mention `file://` in the --store arg help. Take over dx_helptext.rs (git mv -> crates/snapdir-cli/tests/) and green all. Run cargo test --workspace (regen any snapshot that pins the old verify wording). Frozen lock holds. PM machine-check: workspace builds locked + dx_helptext green + pending moved + PM repro."
+  - id: dx-helptext-review
+    phase: 30
+    owner_agent: adversary
+    depends_on: [dx-helptext-impl-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test dx_helptext && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of the help-text fix. Diff landed dx_helptext.rs vs staged (no weakening); re-assert verify --help is accurate (no 'staged', mentions store) and the invalid-scheme error lists file://; glance at any trycmd/parity snapshot regen for no smuggled weakening. Add impl-revealed cases. No weakening; workspace + frozen lock green."
   # ---- INDEPENDENT loop-closing verification + changelog ----
   - id: dx-fix-verify
     phase: 30
     owner_agent: adversary
-    depends_on: [dx-arg-review, dx-defaults-review, dx-progress-review, dx-errors-review, dx-id-stdin-review, dx-recovery-review]
+    depends_on: [dx-arg-review, dx-defaults-review, dx-progress-review, dx-errors-review, dx-id-stdin-review, dx-recovery-review, dx-helptext-review]
     status: pending
     failure_count: 0
-    bump_reason: "GATE-BUMP 2026-06-15 (operator-locked scope at dx-findings-signoff): depends_on EXPANDED += [dx-id-stdin-verify, dx-recovery-review] to gate the loop-closing verify on the two new §6 chains. pass_criteria UNCHANGED."
-    verification_cmd: "test -f .gatesmith/evidence/dx-fix-verify.log && grep -qiE 'RESOLVED|PASS' .gatesmith/evidence/dx-fix-verify.log && cargo test --workspace"
+    bump_reason: "GATE-BUMP 2026-06-15: (a) depends_on += dx-helptext-review — the first dx-fix-verify run found 2/12 findings NOT-RESOLVED (verify --help 'staged' + file:// scheme undiscoverable), so a help-text triple was scheduled and the loop-closer now gates on it. (b) verification_cmd STRENGTHENED: the old `grep -qiE 'RESOLVED|PASS'` matched any single RESOLVED line and would pass a NOT-PASS log; now requires PASS present AND no 'NOT-RESOLVED'/'NOT PASS' anywhere. pass_criteria (exit_code 0) unchanged."
+    verification_cmd: "test -f .gatesmith/evidence/dx-fix-verify.log && grep -qi 'PASS' .gatesmith/evidence/dx-fix-verify.log && ! grep -qiE 'NOT[ -]?RESOLVED|NOT[ -]?PASS' .gatesmith/evidence/dx-fix-verify.log && cargo test --workspace"
     pass_criteria:
       and:
         - exit_code: 0
