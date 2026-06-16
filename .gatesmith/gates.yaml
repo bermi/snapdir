@@ -4670,7 +4670,9 @@ gates:
     phase: 30
     owner_agent: stores
     depends_on: [dx-helptext-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T10:07:00Z
+    git_sha: 4039237
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-stores"
     pass_criteria:
