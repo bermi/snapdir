@@ -4745,7 +4745,9 @@ gates:
     phase: 30
     owner_agent: generic
     depends_on: [dx-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-16T11:27:00Z
+    git_sha: f9788b8
     failure_count: 0
     verification_cmd: "grep -qE '^version = \"1.8.0\"' Cargo.toml && grep -q '## \\[1.8.0\\]' docs/rust-port/CHANGELOG.md && cargo build --workspace --locked"
     pass_criteria:

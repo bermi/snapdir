@@ -3,8 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 30 IN PROGRESS — 32/37 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 270/275 total
+## ▶ PHASE 30 IN PROGRESS — 33/37 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 271/275 total
 
+> ✅ `release-prep-1.8.0` (generic, code `f9788b8`) — bumped 1.7.0→1.8.0 (5 pins: workspace version + 3 path-dep pins + flagship snapdir-cli pin) + Cargo.lock; folded CHANGELOG `[Unreleased]`→`[1.8.0] - 2026-06-16` + fresh `[Unreleased]` + compare-links. No residual 1.7.0 pins; `cargo build --workspace --locked` OK; gatesmith-free (4 files, no .gatesmith). release.yml publishes all 6 crates.
+> **▶ NEXT: `release-verify-branch-1.8.0` (HUMAN ✋).** PM builds `release-verify/1.8.0` off upstream/main (net Phase-30 DX code diff, ZERO .gatesmith, tip=1.8.0) + pushes origin + bench-verify, then escalates the approval. Then operator drives: PR ✋ → tag+crates ✋ (**TP pre-check on all 6 crates!**) → phase30-complete ✋.
 > 🏁 **FIX PHASE COMPLETE + SIGNED OFF.** ✅ `dx-complete` (generic, code `e08c733`) — CHANGELOG `[Unreleased]` filled (+61) with all 7 DX workstreams (BREAKING flags-follow-subcommand + scoped --help; defaults+source; progress file-%; id-stdin; nonexistent-store errors; sync counts; recovery; clearer errors). Heading kept `[Unreleased]` (release-prep folds → 1.8.0). workspace 0 failed.
 > **▶ NEXT: `release-prep-1.8.0` (generic)** — bump 1.7.0→1.8.0 (root Cargo.toml version + crates/snapdir/Cargo.toml snapdir-cli pin) + fold CHANGELOG `[Unreleased]`→`[1.8.0]` + compare-links + `cargo build --workspace --locked`. Then verify-branch ✋ → PR ✋ → tag+crates ✋ (TP pre-check!) → phase30-complete ✋.
 > ⚠️ Pre-existing `adaptive::controller_driver_throttle…` timing flake (out of scope) — re-run CI if it trips at verify-branch/PR.
