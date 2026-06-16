@@ -41,6 +41,12 @@ fo = "fo"
 # ("never a silently mis-addressed object") spelled with a hyphen across the
 # copy-guard / clone-skip test prose. Intentional prefix, not "miss"/"mist".
 mis = "mis"
+# `deprecat` = a deliberate SUBSTRING in a dx_defaults test (`low.contains("deprecat")`)
+# that matches "deprecated"/"deprecation" when checking the defaults legacy-label text.
+deprecat = "deprecat"
+# `unparseable` = a valid English spelling used in a dx_errors assertion message
+# ("an unparseable --limit-rate must fail"); not a typo (variant of "unparsable").
+unparseable = "unparseable"
 
 [default.extend-identifiers]
 # crate / API identifiers that look like typos but are intentional.
