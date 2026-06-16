@@ -4700,7 +4700,9 @@ gates:
     phase: 30
     owner_agent: adversary
     depends_on: [dx-helptext-impl-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T10:37:00Z
+    git_sha: 4194b56
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test dx_helptext && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
