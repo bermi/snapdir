@@ -12,7 +12,7 @@ Commands:
   fetch         Fetch a snapshot from a store into the local cache
   pull          Fetch a snapshot from a store and check it out to the given path
   checkout      Check out a snapshot to a directory
-  verify        Verify the integrity of a staged snapshot
+  verify        Verify the integrity of a snapshot in a store (requires `--store`/`--id`)
   verify-cache  Verify the integrity of the local cache
   flush-cache   Flush the local cache
   locations     List directories and stores where snapshots have been recorded

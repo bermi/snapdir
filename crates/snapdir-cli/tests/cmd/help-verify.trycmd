@@ -1,6 +1,6 @@
 ```
 $ snapdir verify --help
-Verify the integrity of a staged snapshot
+Verify the integrity of a snapshot in a store (requires `--store`/`--id`)
 
 Usage: snapdir verify [OPTIONS]
 

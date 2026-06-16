@@ -623,7 +623,7 @@ pub enum Command {
         dir: Option<PathBuf>,
     },
 
-    /// Verify the integrity of a staged snapshot.
+    /// Verify the integrity of a snapshot in a store (requires `--store`/`--id`).
     Verify {
         /// Cache-management flags (`--store`, `--id`, `--purge`, …).
         #[command(flatten)]
