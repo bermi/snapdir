@@ -3,8 +3,11 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 30 IN PROGRESS — 31/37 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 269/275 total
+## ▶ PHASE 30 IN PROGRESS — 32/37 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 270/275 total
 
+> 🏁 **FIX PHASE COMPLETE + SIGNED OFF.** ✅ `dx-complete` (generic, code `e08c733`) — CHANGELOG `[Unreleased]` filled (+61) with all 7 DX workstreams (BREAKING flags-follow-subcommand + scoped --help; defaults+source; progress file-%; id-stdin; nonexistent-store errors; sync counts; recovery; clearer errors). Heading kept `[Unreleased]` (release-prep folds → 1.8.0). workspace 0 failed.
+> **▶ NEXT: `release-prep-1.8.0` (generic)** — bump 1.7.0→1.8.0 (root Cargo.toml version + crates/snapdir/Cargo.toml snapdir-cli pin) + fold CHANGELOG `[Unreleased]`→`[1.8.0]` + compare-links + `cargo build --workspace --locked`. Then verify-branch ✋ → PR ✋ → tag+crates ✋ (TP pre-check!) → phase30-complete ✋.
+> ⚠️ Pre-existing `adaptive::controller_driver_throttle…` timing flake (out of scope) — re-run CI if it trips at verify-branch/PR.
 > 🎯 **✅ `dx-fix-verify` PASS — 12/12 RESOLVED.** The independent loop-closer rebuilt the binary and black-box re-verified ALL 12 prioritized findings RESOLVED vs the 1.8.0 build (the 2 help-text gaps now fixed; the other 10 carried forward — isolated changes don't touch them). Strengthened machine-check satisfied (PASS, no NOT-RESOLVED). workspace 0 failed (adaptive flake confirmed flake: 180/180 isolated). **THE DX REVIEW DELIVERED — every finding fixed + independently verified.**
 > **▶ NEXT (id-asc): `dx-complete` (generic)** — CHANGELOG `[Unreleased]` entries for all 7 fix workstreams + `cargo test --workspace` sign-off. Then `release-prep-1.8.0` → verify-branch ✋ → PR ✋ → tag+crates ✋ → phase30-complete ✋.
 > 🏁 **HELP-TEXT TRIPLE COMPLETE** (both loop-closer gaps resolved). ✅ `dx-helptext-review` (adversary, code `4194b56`) — dx_helptext byte-identical (no weakening); +4 cases (3→**7**) covering all 4 store-URI sites + bare-path-vs-scheme routing. workspace green, lock 3/3. ⚠️ Known pre-existing flake `adaptive::controller_driver_throttle…` (timing) — release-CI re-run risk, not DX-scope.

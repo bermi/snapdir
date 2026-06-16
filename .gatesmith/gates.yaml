@@ -4730,7 +4730,9 @@ gates:
     phase: 30
     owner_agent: generic
     depends_on: [dx-fix-verify]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T11:12:00Z
+    git_sha: e08c733
     failure_count: 0
     verification_cmd: "cargo test --workspace --locked && grep -q '## \\[Unreleased\\]' docs/rust-port/CHANGELOG.md && grep -qiE 'defaults|progress|argument|--help' docs/rust-port/CHANGELOG.md"
     pass_criteria:
