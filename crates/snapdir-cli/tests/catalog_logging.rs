@@ -330,7 +330,10 @@ fn catalog_logging_id_does_not_log() {
         "snapdir id failed: {}",
         String::from_utf8_lossy(&id_out.stderr)
     );
-    let id = String::from_utf8(id_out.stdout).unwrap().trim_end().to_owned();
+    let id = String::from_utf8(id_out.stdout)
+        .unwrap()
+        .trim_end()
+        .to_owned();
     assert_eq!(id.len(), 64);
 
     let locations = stdout_ok(cache.path(), &["locations", "--catalog", &catalog_str]);

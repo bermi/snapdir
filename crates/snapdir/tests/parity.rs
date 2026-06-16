@@ -226,7 +226,9 @@ fn defaults_prints_effective_config() {
         "legacy manifest var must not appear as a `source=`-tagged knob, got: {manifest:?}"
     );
     assert!(
-        !lines.iter().any(|l| l.trim() == "SNAPDIR_MANIFEST_CONTEXT="),
+        !lines
+            .iter()
+            .any(|l| l.trim() == "SNAPDIR_MANIFEST_CONTEXT="),
         "the old empty `SNAPDIR_MANIFEST_CONTEXT=` legacy cruft must be gone; got:\n{stdout}"
     );
 }

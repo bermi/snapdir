@@ -198,7 +198,10 @@ fn fetch_force_restores_a_missing_cache_object() {
     let obj = object_path(&cache, b"hello");
     fs::remove_file(&obj).unwrap();
 
-    let out = run_raw(&["fetch", "--store", &store_url, "--id", &id, "--force"], &cache);
+    let out = run_raw(
+        &["fetch", "--store", &store_url, "--id", &id, "--force"],
+        &cache,
+    );
     assert!(
         out.status.success(),
         "fetch --force should succeed; stderr: {}",
@@ -469,8 +472,14 @@ fn keystone_healthy_roundtrip_is_unchanged() {
         let key = sharded(".objects", &Blake3Hasher::new().hash_hex(bytes));
         let from_store = fs::read(store.join(&key)).expect("store object");
         let from_cache = fs::read(cache.join(&key)).expect("cache object");
-        assert_eq!(from_store, from_cache, "store/cache object pools must match byte-for-byte");
-        assert_eq!(from_store, bytes, "object bytes must equal the source bytes");
+        assert_eq!(
+            from_store, from_cache,
+            "store/cache object pools must match byte-for-byte"
+        );
+        assert_eq!(
+            from_store, bytes,
+            "object bytes must equal the source bytes"
+        );
     }
 
     run_ok(&["checkout", "--id", &src_id, &dest_str], &cache);
@@ -478,7 +487,10 @@ fn keystone_healthy_roundtrip_is_unchanged() {
         assert_eq!(fs::read(dest.join(rel)).unwrap(), bytes, "bytes for {rel}");
     }
     let dest_id = run_ok(&["id", &dest_str], &cache);
-    assert_eq!(dest_id, src_id, "healthy round-trip preserves the snapshot id");
+    assert_eq!(
+        dest_id, src_id,
+        "healthy round-trip preserves the snapshot id"
+    );
 
     cleanup(&[&src, &store, &cache, &dest]);
 }
@@ -542,7 +554,10 @@ fn keystone_verify_cache_still_detects_corrupt_object() {
 
     // --purge removes the corrupt object (existing behavior preserved).
     let purged = run_raw(&["verify-cache", "--purge"], &cache);
-    assert!(!purged.status.success(), "purge run still reports the failure");
+    assert!(
+        !purged.status.success(),
+        "purge run still reports the failure"
+    );
     assert!(!obj.exists(), "corrupt object must be purged by --purge");
 
     cleanup(&[&src, &store, &cache]);
@@ -602,7 +617,10 @@ fn fetch_complete_cache_takes_cached_fast_path_no_transfer() {
     let (store_url, id) = push_and_fetch(&src, &store, &cache);
 
     // Cache is whole. A second fetch must hit the fast path.
-    let out = run_raw(&["fetch", "--store", &store_url, "--id", &id, "--verbose"], &cache);
+    let out = run_raw(
+        &["fetch", "--store", &store_url, "--id", &id, "--verbose"],
+        &cache,
+    );
     assert!(
         out.status.success(),
         "second fetch on a whole cache must succeed; stderr: {}",
@@ -640,11 +658,17 @@ fn fetch_restores_multiple_missing_objects_and_verify_reports_count() {
     let o2 = object_path(&cache, b"unique-two");
     fs::remove_file(&o1).unwrap();
     fs::remove_file(&o2).unwrap();
-    assert!(!o1.exists() && !o2.exists(), "both objects gone before heal");
+    assert!(
+        !o1.exists() && !o2.exists(),
+        "both objects gone before heal"
+    );
 
     // verify-cache reports BOTH and a count of 2 missing.
     let v = run_raw(&["verify-cache"], &cache);
-    assert!(!v.status.success(), "verify-cache must fail with 2 objects missing");
+    assert!(
+        !v.status.success(),
+        "verify-cache must fail with 2 objects missing"
+    );
     let vc = format!(
         "{}{}",
         String::from_utf8_lossy(&v.stdout),
@@ -680,7 +704,10 @@ fn fetch_restores_missing_cached_manifest() {
 
     // Delete ONLY the cached manifest; objects remain present.
     let manifest_file = cache.join(sharded(".manifests", &id));
-    assert!(manifest_file.is_file(), "manifest must exist before deletion");
+    assert!(
+        manifest_file.is_file(),
+        "manifest must exist before deletion"
+    );
     fs::remove_file(&manifest_file).unwrap();
     assert!(!manifest_file.exists(), "manifest gone before re-fetch");
 
@@ -697,7 +724,10 @@ fn fetch_restores_missing_cached_manifest() {
     let dest_str = dest.to_string_lossy().into_owned();
     run_ok(&["checkout", "--id", &id, &dest_str], &cache);
     let dest_id = run_ok(&["id", &dest_str], &cache);
-    assert_eq!(dest_id, id, "manifest-heal must re-manifest to the pushed id");
+    assert_eq!(
+        dest_id, id,
+        "manifest-heal must re-manifest to the pushed id"
+    );
 
     cleanup(&[&src, &store, &cache, &dest]);
 }
@@ -763,20 +793,29 @@ fn dedup_missing_object_heals_once_and_message_names_a_path() {
 
     // The shared object (dup_a.txt == nested/dup_b.txt).
     let shared = object_path(&cache, b"shared-content");
-    assert!(shared.is_file(), "deduped shared object present after fetch");
+    assert!(
+        shared.is_file(),
+        "deduped shared object present after fetch"
+    );
     fs::remove_file(&shared).unwrap();
 
     // verify-cache names the object and at least one referencing path. The
     // impl dedups by address (one line) but must still attribute a path.
     let v = run_raw(&["verify-cache"], &cache);
-    assert!(!v.status.success(), "missing shared object must fail verify-cache");
+    assert!(
+        !v.status.success(),
+        "missing shared object must fail verify-cache"
+    );
     let vc = format!(
         "{}{}",
         String::from_utf8_lossy(&v.stdout),
         String::from_utf8_lossy(&v.stderr)
     );
     let sum = Blake3Hasher::new().hash_hex(b"shared-content");
-    assert!(vc.contains(&sum), "report must name the shared object {sum}; got: {vc}");
+    assert!(
+        vc.contains(&sum),
+        "report must name the shared object {sum}; got: {vc}"
+    );
     assert!(
         vc.contains("dup_a.txt") || vc.contains("dup_b.txt"),
         "report must name a referencing path (dup_a.txt/dup_b.txt); got: {vc}"
@@ -784,7 +823,10 @@ fn dedup_missing_object_heals_once_and_message_names_a_path() {
 
     // A single fetch restores the one shared object (heals BOTH files).
     run_ok(&["fetch", "--store", &store_url, "--id", &id], &cache);
-    assert!(shared.is_file(), "fetch restores the deduped shared object once");
+    assert!(
+        shared.is_file(),
+        "fetch restores the deduped shared object once"
+    );
     assert_eq!(fs::read(&shared).unwrap(), b"shared-content");
 
     cleanup(&[&src, &store, &cache]);
@@ -811,7 +853,10 @@ fn verify_cache_distinguishes_corrupt_from_missing_together() {
     fs::remove_file(&missing).unwrap();
 
     let out = run_raw(&["verify-cache"], &cache);
-    assert!(!out.status.success(), "corrupt+missing must fail verify-cache");
+    assert!(
+        !out.status.success(),
+        "corrupt+missing must fail verify-cache"
+    );
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -828,7 +873,10 @@ fn verify_cache_distinguishes_corrupt_from_missing_together() {
         "deleted object must be reported as Missing + its hash; got: {combined}"
     );
     // The two must NOT be conflated onto the same address.
-    assert_ne!(corrupt_sum, missing_sum, "test setup uses two distinct objects");
+    assert_ne!(
+        corrupt_sum, missing_sum,
+        "test setup uses two distinct objects"
+    );
 
     cleanup(&[&src, &store, &cache]);
 }

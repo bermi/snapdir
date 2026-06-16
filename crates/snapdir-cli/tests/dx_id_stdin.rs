@@ -68,12 +68,7 @@ fn id_with_stdin(cache: &Path, cwd: &Path, args: &[&str], stdin_bytes: &[u8]) ->
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn snapdir id");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin_bytes)
-        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin_bytes).unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(
         out.status.success(),
@@ -85,17 +80,9 @@ fn id_with_stdin(cache: &Path, cwd: &Path, args: &[&str], stdin_bytes: &[u8]) ->
 /// Compute the deterministic `snapdir manifest <tree>` text and `snapdir id
 /// <tree>` for the fixture, returning `(manifest_bytes, id_dir)`.
 fn manifest_and_id(cache: &Path, tree: &Path) -> (Vec<u8>, String) {
-    let man = snapdir(cache)
-        .arg("manifest")
-        .arg(tree)
-        .output()
-        .unwrap();
+    let man = snapdir(cache).arg("manifest").arg(tree).output().unwrap();
     assert!(man.status.success(), "manifest <tree> must succeed");
-    let id_dir = snapdir(cache)
-        .arg("id")
-        .arg(tree)
-        .output()
-        .unwrap();
+    let id_dir = snapdir(cache).arg("id").arg(tree).output().unwrap();
     assert!(id_dir.status.success(), "id <tree> must succeed");
     let id = String::from_utf8(id_dir.stdout).unwrap().trim().to_owned();
     (man.stdout, id)
@@ -225,7 +212,11 @@ fn round_trip_keystone_is_cwd_independent_and_byte_identical() {
          `id <dir>`: got {piped} vs {id_dir}"
     );
     // And the keystone id is non-empty hex (sanity: not a blank line).
-    assert_eq!(id_dir.len(), 64, "snapshot id must be 64 hex chars: {id_dir}");
+    assert_eq!(
+        id_dir.len(),
+        64,
+        "snapshot id must be 64 hex chars: {id_dir}"
+    );
     assert!(
         id_dir.bytes().all(|b| b.is_ascii_hexdigit()),
         "snapshot id must be hex: {id_dir}"
@@ -249,10 +240,15 @@ fn id_no_path_with_dev_null_is_empty_manifest_id_not_cwd_walk() {
 
     // A non-empty cwd whose own `id` we can compute to prove we did NOT walk it.
     let cwd = TempDir::new().unwrap();
-    cwd.child("walked.txt").write_str("if you see this id, you walked the cwd")
+    cwd.child("walked.txt")
+        .write_str("if you see this id, you walked the cwd")
         .unwrap();
     let cwd_id = {
-        let out = snapdir(cache.path()).arg("id").arg(cwd.path()).output().unwrap();
+        let out = snapdir(cache.path())
+            .arg("id")
+            .arg(cwd.path())
+            .output()
+            .unwrap();
         assert!(out.status.success());
         String::from_utf8(out.stdout).unwrap().trim().to_owned()
     };
@@ -298,9 +294,15 @@ fn id_empty_piped_stdin_is_deterministic_empty_manifest_id() {
 
     // Non-empty cwd, again to rule out a silent walk.
     let cwd = TempDir::new().unwrap();
-    cwd.child("noise.txt").write_str("noise noise noise").unwrap();
+    cwd.child("noise.txt")
+        .write_str("noise noise noise")
+        .unwrap();
     let cwd_id = {
-        let out = snapdir(cache.path()).arg("id").arg(cwd.path()).output().unwrap();
+        let out = snapdir(cache.path())
+            .arg("id")
+            .arg(cwd.path())
+            .output()
+            .unwrap();
         assert!(out.status.success());
         String::from_utf8(out.stdout).unwrap().trim().to_owned()
     };
@@ -417,7 +419,11 @@ fn id_malformed_stdin_errors_cleanly_without_cwd_fallback() {
     let cwd = TempDir::new().unwrap();
     cwd.child("present.txt").write_str("present").unwrap();
     let cwd_id = {
-        let out = snapdir(cache.path()).arg("id").arg(cwd.path()).output().unwrap();
+        let out = snapdir(cache.path())
+            .arg("id")
+            .arg(cwd.path())
+            .output()
+            .unwrap();
         assert!(out.status.success());
         String::from_utf8(out.stdout).unwrap().trim().to_owned()
     };

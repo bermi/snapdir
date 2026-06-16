@@ -437,6 +437,7 @@ fn walk_inner<H: Hasher + HashFile + Sync>(
 /// Recursively discovers the directory at `abs_path` (already known to be a
 /// directory), recording its direct files and child directories, then recurses
 /// into each child directory.
+#[allow(clippy::too_many_arguments)] // internal recursion carrying walk state + the discovery meter
 fn discover_dir(
     dir: &Path,
     abs_path: &str,

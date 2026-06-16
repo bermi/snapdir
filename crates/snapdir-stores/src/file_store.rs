@@ -615,10 +615,7 @@ impl StreamStore for FileStore {
                 return match self.root.try_exists() {
                     Ok(true) => Ok(Vec::new()),
                     Ok(false) => Err(StoreError::Backend {
-                        message: format!(
-                            "store location does not exist: {}",
-                            self.root.display()
-                        ),
+                        message: format!("store location does not exist: {}", self.root.display()),
                         source: None,
                     }),
                     Err(probe_err) => Err(StoreError::Io(probe_err)),

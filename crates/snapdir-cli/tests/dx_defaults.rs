@@ -96,12 +96,10 @@ fn line_assocs(lines: &[String], knob: &str, value: &str) -> bool {
 /// True if some line names `knob` at all (either `-` or `_` spelling).
 fn line_has_knob(lines: &[String], knob: &str) -> bool {
     let knob_us = knob.replace('-', "_");
-    lines
-        .iter()
-        .any(|l| {
-            let low = l.to_lowercase();
-            low.contains(knob) || low.contains(&knob_us)
-        })
+    lines.iter().any(|l| {
+        let low = l.to_lowercase();
+        low.contains(knob) || low.contains(&knob_us)
+    })
 }
 
 /// The single line that names `knob` (panics if none / many candidates is fine
@@ -115,12 +113,7 @@ fn knob_line(lines: &[String], knob: &str) -> String {
             low.contains(knob) || low.contains(&knob_us)
         })
         .cloned()
-        .unwrap_or_else(|| {
-            panic!(
-                "no line names knob `{knob}` in:\n{}",
-                lines.join("\n")
-            )
-        })
+        .unwrap_or_else(|| panic!("no line names knob `{knob}` in:\n{}", lines.join("\n")))
 }
 
 /// The representative knob set the rewrite MUST surface on a clean env. The
@@ -811,7 +804,10 @@ fn dx_defaults_objects_store_flag_and_env_source() {
     // Flag → source=flag.
     let mut flagged = snapdir_clean(&home);
     flagged.env("SNAPDIR_CACHE_DIR", cache.path());
-    let flag_lines = defaults_lines(&mut flagged, &["--objects-store", "file:///tmp/dx-obj-flag"]);
+    let flag_lines = defaults_lines(
+        &mut flagged,
+        &["--objects-store", "file:///tmp/dx-obj-flag"],
+    );
     let flag_line = knob_line(&flag_lines, "objects-store");
     assert!(
         flag_line.contains("file:///tmp/dx-obj-flag") && flag_line.contains("source=flag"),

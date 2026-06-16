@@ -340,7 +340,8 @@ fn env_set_inapplicable_flag_is_silent_and_inert() {
     );
 
     assert_eq!(
-        with_env.stdout, baseline.stdout,
+        with_env.stdout,
+        baseline.stdout,
         "an exported inapplicable env var must not change manifest output\n\
          baseline:\n{}\nwith env:\n{}",
         stdout_of(&baseline),
@@ -444,7 +445,8 @@ fn keystone_id_is_deterministic_and_unchanged() {
     let second = run(&fx, &["id", &dir]);
     assert!(second.status.success(), "second `id` must succeed");
     assert_eq!(
-        second.stdout, baseline,
+        second.stdout,
+        baseline,
         "`id` must be deterministic across runs\nfirst:\n{}\nsecond:\n{}",
         stdout_of(&first),
         stdout_of(&second)
@@ -454,7 +456,8 @@ fn keystone_id_is_deterministic_and_unchanged() {
     let id = stdout_of(&first).trim().to_owned();
     assert_eq!(id.len(), 64, "id must be 64 hex chars, got {id:?}");
     assert!(
-        id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        id.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
         "id must be lowercase hex: {id:?}"
     );
 }
@@ -630,7 +633,12 @@ fn manifest_accepts_and_honors_catalog() {
     let fx = Fixture::new();
     let dir = fx.tree_path().to_str().unwrap().to_owned();
     let catalog = TempDir::new().unwrap();
-    let cat = catalog.child("catalog.redb").path().to_str().unwrap().to_owned();
+    let cat = catalog
+        .child("catalog.redb")
+        .path()
+        .to_str()
+        .unwrap()
+        .to_owned();
 
     let out = run(&fx, &["manifest", "--catalog", &cat, &dir]);
     assert!(
@@ -660,7 +668,12 @@ fn stage_accepts_catalog() {
     let fx = Fixture::new();
     let dir = fx.tree_path().to_str().unwrap().to_owned();
     let catalog = TempDir::new().unwrap();
-    let cat = catalog.child("catalog.redb").path().to_str().unwrap().to_owned();
+    let cat = catalog
+        .child("catalog.redb")
+        .path()
+        .to_str()
+        .unwrap()
+        .to_owned();
 
     let out = run(&fx, &["stage", "--catalog", &cat, &dir]);
     assert!(
@@ -684,7 +697,12 @@ fn push_accepts_catalog_flag() {
     let fx = Fixture::new();
     let dir = fx.tree_path().to_str().unwrap().to_owned();
     let catalog = TempDir::new().unwrap();
-    let cat = catalog.child("catalog.redb").path().to_str().unwrap().to_owned();
+    let cat = catalog
+        .child("catalog.redb")
+        .path()
+        .to_str()
+        .unwrap()
+        .to_owned();
     let (_store, store_uri) = file_store();
 
     let out = run(
@@ -728,7 +746,12 @@ fn id_does_not_log_even_with_catalog_env() {
     let fx = Fixture::new();
     let dir = fx.tree_path().to_str().unwrap().to_owned();
     let catalog = TempDir::new().unwrap();
-    let cat = catalog.child("catalog.redb").path().to_str().unwrap().to_owned();
+    let cat = catalog
+        .child("catalog.redb")
+        .path()
+        .to_str()
+        .unwrap()
+        .to_owned();
 
     let id_out = fx
         .cmd()

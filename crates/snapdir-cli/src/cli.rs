@@ -872,12 +872,7 @@ impl Cli {
                 globals.catalog.clone_from(catalog);
             }
             Command::Id { walk, .. } => merge_walk(&mut globals, walk),
-            Command::Stage {
-                walk, transfer, ..
-            }
-            | Command::Push {
-                walk, transfer, ..
-            } => {
+            Command::Stage { walk, transfer, .. } | Command::Push { walk, transfer, .. } => {
                 merge_walk(&mut globals, walk);
                 merge_transfer(&mut globals, transfer);
             }
@@ -902,9 +897,7 @@ impl Cli {
             | Command::ReceivePack { plumbing, .. } => merge_plumbing(&mut globals, plumbing),
             // The remaining commands (version + the build-time hooks) take
             // universal flags only.
-            Command::Version { .. }
-            | Command::Completions { .. }
-            | Command::Man => {}
+            Command::Version { .. } | Command::Completions { .. } | Command::Man => {}
         }
         Ctx {
             globals,
@@ -1274,8 +1267,7 @@ impl Ctx {
         let argv: Vec<String> = std::env::args().collect();
         let has_flag = |name: &str| -> bool {
             let eq = format!("{name}=");
-            argv.iter()
-                .any(|a| a == name || a.starts_with(&eq))
+            argv.iter().any(|a| a == name || a.starts_with(&eq))
         };
 
         let mut out: Vec<String> = Vec::new();
@@ -1393,7 +1385,11 @@ impl Ctx {
         // no-progress: bool; has an env var (SNAPDIR_NO_PROGRESS).
         emit(
             "no-progress",
-            if self.globals.no_progress { "true" } else { "false" },
+            if self.globals.no_progress {
+                "true"
+            } else {
+                "false"
+            },
             knob_source(has_flag("--no-progress"), "SNAPDIR_NO_PROGRESS"),
         );
 
@@ -1484,11 +1480,7 @@ impl Ctx {
             let manifest = cache.get_manifest(id).with_context(|| {
                 format!("manifest {id} not found in the local cache; stage or fetch it first")
             })?;
-            let store_url = self
-                .globals
-                .store
-                .as_deref()
-                .context(NO_STORE_CONFIGURED)?;
+            let store_url = self.globals.store.as_deref().context(NO_STORE_CONFIGURED)?;
             // Under --dryrun: the id is a pure read-only lookup, so still print
             // it to stdout (the scriptable id-on-stdout contract). Skip the
             // scratch materialize (it's discarded), the store push, and the
@@ -1548,11 +1540,7 @@ impl Ctx {
         )?;
         let root = resolve_root(path).context("resolving push path")?;
         let id = snapshot_id(&manifest, &Blake3Hasher::new());
-        let store_url = self
-            .globals
-            .store
-            .as_deref()
-            .context(NO_STORE_CONFIGURED)?;
+        let store_url = self.globals.store.as_deref().context(NO_STORE_CONFIGURED)?;
         // Under --dryrun: the snapshot id is a pure read-only computation, so
         // still print it to stdout. Skip the store push and the catalog log —
         // the only persistent writes here.
@@ -1718,7 +1706,9 @@ impl Ctx {
             // the missing objects. `push` rewrites the byte-identical manifest
             // last, restoring the manifest-written-last invariant.
             if healing {
-                let manifest_file = self.cache_dir().join(snapdir_core::store::manifest_path(id));
+                let manifest_file = self
+                    .cache_dir()
+                    .join(snapdir_core::store::manifest_path(id));
                 if manifest_file.exists() {
                     std::fs::remove_file(&manifest_file).with_context(|| {
                         format!(
@@ -2161,11 +2151,7 @@ impl Ctx {
         if self.globals.objects_store.is_some() {
             return Ok(Box::new(self.resolve_split_store(meter)?));
         }
-        let store_url = self
-            .globals
-            .store
-            .as_deref()
-            .context(NO_STORE_CONFIGURED)?;
+        let store_url = self.globals.store.as_deref().context(NO_STORE_CONFIGURED)?;
         let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
         let config = self.transfer_config_for(Some(adapter.name()))?;
         store_for_adapter(&adapter, store_url, config, meter)
@@ -2227,11 +2213,7 @@ impl Ctx {
         if self.globals.objects_store.is_some() {
             return Ok(false);
         }
-        let store_url = self
-            .globals
-            .store
-            .as_deref()
-            .context(NO_STORE_CONFIGURED)?;
+        let store_url = self.globals.store.as_deref().context(NO_STORE_CONFIGURED)?;
         let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
         Ok(matches!(adapter, Adapter::External { .. }))
     }
@@ -2832,11 +2814,7 @@ impl Ctx {
                 "invalid --require-manifest {id:?}: expected 64 lowercase hex characters"
             );
         }
-        let store_url = self
-            .globals
-            .store
-            .as_deref()
-            .context(NO_STORE_CONFIGURED)?;
+        let store_url = self.globals.store.as_deref().context(NO_STORE_CONFIGURED)?;
         let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
         let config = self.transfer_config_for(Some(adapter.name()))?;
         let stdin = std::io::stdin();
@@ -2896,11 +2874,7 @@ impl Ctx {
         if self.globals.objects_store.is_some() {
             return Ok(Box::new(self.resolve_split_store(None)?));
         }
-        let store_url = self
-            .globals
-            .store
-            .as_deref()
-            .context(NO_STORE_CONFIGURED)?;
+        let store_url = self.globals.store.as_deref().context(NO_STORE_CONFIGURED)?;
         let adapter = resolve_adapter(store_url).context("resolving --store protocol")?;
         let config = self.transfer_config_for(Some(adapter.name()))?;
         stream_store_for_adapter(&adapter, store_url, config, None)
@@ -3783,12 +3757,7 @@ mod tests {
                 globals.walk_jobs = *walk_jobs;
             }
             Command::Id { walk, .. } => merge_walk(&mut globals, walk),
-            Command::Stage {
-                walk, transfer, ..
-            }
-            | Command::Push {
-                walk, transfer, ..
-            } => {
+            Command::Stage { walk, transfer, .. } | Command::Push { walk, transfer, .. } => {
                 merge_walk(&mut globals, walk);
                 merge_transfer(&mut globals, transfer);
             }

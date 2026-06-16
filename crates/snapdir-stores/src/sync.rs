@@ -599,8 +599,7 @@ mod tests {
         // Dry run reports the same unique would-copy count.
         let dry_dir = TempDir::new("dedup-dry");
         let dry = FileStore::from_root(dry_dir.path());
-        let dry_report =
-            sync_snapshot(&a, &dry, &id, &cfg(), true, None).expect("dry run ok");
+        let dry_report = sync_snapshot(&a, &dry, &id, &cfg(), true, None).expect("dry run ok");
         assert_eq!(
             dry_report.objects_copied, 2,
             "dry-run would-copy count is the 2 unique objects"

@@ -34,7 +34,7 @@
 //! frame is ANSI-stripped (CSI sequences removed), and we scan the resulting
 //! plain text. "Files-not-bytes" is asserted by extracting the numeric
 //! denominator of any `done/total` fraction (or the standalone count behind a
-//! files-ish label) and proving it is a plausible FILE count (< 100_000, near
+//! files-ish label) and proving it is a plausible FILE count (< `100_000`, near
 //! the tree's ~2089) and NOT the multi-million BYTE total.
 //!
 //! ## Env gating (CI-safe)
@@ -49,6 +49,9 @@
 //! sandbox tree at `.gatesmith/evidence/dx-sandbox/tree` is used when present
 //! (`sh utils/dx/build-sandbox.sh` builds it); otherwise an in-test tree of a
 //! few hundred files is built so the suite is self-contained.
+
+// Threshold consts are intentionally declared next to their use inside each test.
+#![allow(clippy::items_after_statements)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -442,7 +445,7 @@ fn run_under_pty(cache: &Path, args: &[&str]) -> Result<(Vec<u8>, Output), Strin
     set_nonblocking(master).map_err(|e| format!("set master nonblocking: {e}"))?;
 
     let mut pty_bytes: Vec<u8> = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
     let mut buf = [0u8; 8192];
     loop {
         match master_file.read(&mut buf) {
@@ -508,7 +511,7 @@ fn skip_unless_pty(test: &str) -> bool {
 
 /// Prepare a cache + the tree under test. Prefer the committed 2089-file sandbox
 /// (and report its true file count); else build an in-test multi-hundred tree in
-/// a TempDir the caller must keep alive. Returns (cache, tree_path, file_count,
+/// a `TempDir` the caller must keep alive. Returns (cache, `tree_path`, `file_count`,
 /// _keepalive).
 fn prepare_tree() -> (TempDir, PathBuf, u64, Option<TempDir>) {
     let cache = TempDir::new().unwrap();
@@ -529,9 +532,9 @@ fn prepare_tree() -> (TempDir, PathBuf, u64, Option<TempDir>) {
 /// SPEC clause 1: during `id`/`stage` of the tree, the progress total/denominator
 /// must equal the FILE COUNT (~2089), NOT the byte total (tens of millions).
 /// We collect every fraction denominator and every standalone count rendered and
-/// require that the dominant "total" is a plausible FILE count (< 100_000, and in
+/// require that the dominant "total" is a plausible FILE count (< `100_000`, and in
 /// the same order of magnitude as the real file count) — and that NO frame ever
-/// presents the byte total (>= 1_000_000) as the progress denominator/total.
+/// presents the byte total (>= `1_000_000`) as the progress denominator/total.
 #[test]
 fn dx_progress_denominator_is_files_not_bytes() {
     if skip_unless_pty("dx_progress_denominator_is_files_not_bytes") {
@@ -940,7 +943,7 @@ fn dx_progress_empty_dir_no_divide_by_zero() {
             "id {dir} under pty must not panic; stderr(pty): {stderr}"
         );
         assert_is_id(
-            &String::from_utf8_lossy(&out.stdout).trim_end().to_owned(),
+            String::from_utf8_lossy(&out.stdout).trim_end(),
             &format!("id {dir} under pty"),
         );
     }
@@ -1248,10 +1251,16 @@ fn dx_progress_keystone_three_modes_byte_identical() {
         id_on, id_quiet,
         "id stdout: progress-on must equal --quiet byte-for-byte"
     );
-    let id = String::from_utf8(id_on.clone()).unwrap().trim_end().to_owned();
+    let id = String::from_utf8(id_on.clone())
+        .unwrap()
+        .trim_end()
+        .to_owned();
     assert_is_id(&id, "id three-mode");
     if is_sandbox {
-        assert_eq!(id, SANDBOX_ID, "printed id must equal the frozen sandbox id");
+        assert_eq!(
+            id, SANDBOX_ID,
+            "printed id must equal the frozen sandbox id"
+        );
     }
 
     // --- manifest ---

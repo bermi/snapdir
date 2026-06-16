@@ -435,7 +435,11 @@ fn checkout_unknown_id_keeps_fetch_hint() {
     let dest_str = dest.to_string_lossy().into_owned();
 
     // Empty cache + no store: the manifest cannot be found locally.
-    let out = run_raw(&["checkout", "--id", &"0".repeat(64), &dest_str], &cache, &[]);
+    let out = run_raw(
+        &["checkout", "--id", &"0".repeat(64), &dest_str],
+        &cache,
+        &[],
+    );
     assert!(
         !out.status.success(),
         "checkout of an unknown id must fail; stderr: {}",
@@ -501,7 +505,11 @@ fn diff_nonexistent_to_store_errors_not_silent_full_delta() {
     // The error must reference the bad/unreadable store so the user can fix the
     // typo'd path (case-insensitive: name the store or the missing path).
     let err = stderr_of(&out).to_lowercase();
-    let needle = missing.file_name().unwrap().to_string_lossy().to_lowercase();
+    let needle = missing
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_lowercase();
     assert!(
         err.contains(&needle)
             || err.contains("no such")
@@ -549,8 +557,12 @@ fn diff_existing_empty_to_store_is_valid_full_deletion() {
     // Every FROM file is gone in the empty TO -> a `D` per file. This delta is the
     // CORRECT answer here (the store really is empty), unlike the 5(a) case.
     assert!(
-        stdout.lines().any(|l| l.starts_with('D') && l.contains("./a.txt"))
-            && stdout.lines().any(|l| l.starts_with('D') && l.contains("./b.txt")),
+        stdout
+            .lines()
+            .any(|l| l.starts_with('D') && l.contains("./a.txt"))
+            && stdout
+                .lines()
+                .any(|l| l.starts_with('D') && l.contains("./b.txt")),
         "an existing-empty TO must report the FROM files as deleted (D); got:\n{stdout}"
     );
 }
@@ -906,8 +918,7 @@ fn missing_object_with_objects_store_gives_plain_error_no_split_hint() {
     // ...and the split hint must NOT fire (it would be misleading: the user already
     // passed --objects-store). Guard against the hint's distinctive phrasing.
     assert!(
-        !err.contains("re-run with --objects-store")
-            && !err.contains("pushed with a split"),
+        !err.contains("re-run with --objects-store") && !err.contains("pushed with a split"),
         "the split hint must NOT fire when --objects-store was already supplied \
          (it would tell the user to do what they already did); got: {}",
         stderr_of(&out)

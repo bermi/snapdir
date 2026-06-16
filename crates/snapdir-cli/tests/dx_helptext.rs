@@ -38,7 +38,8 @@
     clippy::too_many_lines,
     clippy::similar_names,
     clippy::items_after_statements,
-    clippy::doc_markdown
+    clippy::doc_markdown,
+    clippy::doc_lazy_continuation
 )]
 
 use std::fs;

@@ -474,15 +474,18 @@ fn list_existing_empty_root_is_ok_not_error() {
     let listed = store
         .list_manifest_ids()
         .expect("an existing empty store root must be Ok(empty), not an error");
-    assert!(listed.is_empty(), "fresh empty store => empty vec, got {listed:?}");
+    assert!(
+        listed.is_empty(),
+        "fresh empty store => empty vec, got {listed:?}"
+    );
 }
 
 /// REVIEW ADDITION (impl now visible — pin the exact variant + phrasing the src
 /// uses): the nonexistent-root error is specifically `StoreError::Backend` (not a
-/// raw `Io` NotFound), and its message literally says `store location does not
+/// raw `Io` `NotFound`), and its message literally says `store location does not
 /// exist`. Pinning the variant matters because downstream diff/sync render-and-
 /// classify errors; an `Io(NotFound)` could be mistaken for "empty" again, which
-/// is exactly the §6 bug. (FileStore::list_manifest_ids in file_store.rs.)
+/// is exactly the §6 bug. (`FileStore::list_manifest_ids` in `file_store.rs`.)
 #[test]
 fn list_nonexistent_root_is_backend_variant_naming_does_not_exist() {
     let parent = TempDir::new("nonexistent-root-variant");
