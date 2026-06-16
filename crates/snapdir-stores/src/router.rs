@@ -32,7 +32,11 @@ pub enum RouteError {
     ///
     /// Mirrors the oracle's `grep -q "^[a-z0-9]*$"` rejection
     /// (`Invalid store protocol: '<proto>'`).
-    #[error("invalid store protocol: '{protocol}'")]
+    #[error(
+        "invalid store protocol: '{protocol}': expected a URI like \
+         file://<path> for a local store, or <scheme>://… for an external \
+         snapdir-<scheme>-store helper"
+    )]
     InvalidProtocol {
         /// The offending protocol text extracted from the store URL.
         protocol: String,
