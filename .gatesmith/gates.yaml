@@ -4684,7 +4684,9 @@ gates:
     phase: 30
     owner_agent: cli
     depends_on: [dx-helptext-impl-stores]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T10:22:00Z
+    git_sha: f933ef8
     failure_count: 0
     bump_reason: "GATE-BUMP 2026-06-15 (lane split): the spec-test probing + PM confirmed clause 2 (file:// discoverability) is the router #[error] string in crates/snapdir-stores/src/router.rs:35, not cli. Inserted dx-helptext-impl-stores (stores, fixes clause 2) BEFORE this gate; dep [dx-helptext-spec-tests]->[dx-helptext-impl-stores]. This gate now does ONLY clause 1 (verify --help) + takes over the cli-level dx_helptext.rs + greens all 3. pass_criteria unchanged."
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_helptext && cargo test --workspace && test -f crates/snapdir-cli/tests/dx_helptext.rs && test ! -f .gatesmith/pending-tests/dx_helptext.rs"

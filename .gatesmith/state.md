@@ -3,8 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 30 IN PROGRESS — 28/37 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 266/275 total
+## ▶ PHASE 30 IN PROGRESS — 29/37 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 267/275 total
 
+> ✅ `dx-helptext-impl-cli` (cli, code `f933ef8`) — clause 1 fixed: `verify --help` now "Verify the integrity of a snapshot in a store (requires --store/--id)" (no "staged"). Regenerated help-verify/help trycmd. dx_helptext **3/3**; workspace 0 failed; lock 3/3. **Both loop-closer gaps resolved.**
+> **▶ NEXT (id-asc): `dx-helptext-review` (adversary)** → then **`dx-fix-verify` re-runs** (strengthened verification; expect 12/12) → `dx-complete` (CHANGELOG) → release-prep-1.8.0 → verify-branch ✋ → PR ✋ → tag+crates ✋ → phase30-complete ✋.
 > ✅ `dx-helptext-impl-stores` (stores, code `4039237`) — clause 2 fixed: router `InvalidProtocol` error now names the URI form (`file://<path>` local; `<scheme>://…` external helper) instead of bare "invalid store protocol". Covers all store-URI sites. PM repro: bare-path `--store` error names `file://`. stores 0 failed, lock 3/3.
 > **▶ NEXT (id-asc): `dx-helptext-impl-cli` (cli)** — clause 1: fix `verify` help (drop "staged", mention store) + take over dx_helptext.rs + green all 3. Then `dx-helptext-review` → **`dx-fix-verify` re-runs** → `dx-complete` → release.
 > ✅ `dx-helptext-spec-tests` (adversary, ledger-only) — `.gatesmith/pending-tests/dx_helptext.rs`: 3 tests pinning the 2 loop-closer gaps (verify --help drops "staged" + mentions store; invalid-store-protocol error lists `file://`). **Split (37):** clause 2 confirmed = stores `router.rs:35` `#[error]` → `dx-helptext-impl-stores` (router) before `dx-helptext-impl-cli` (verify-help + green all 3).
