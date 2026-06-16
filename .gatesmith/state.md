@@ -3,8 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 30 IN PROGRESS — 26/36 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 264/274 total
+## ▶ PHASE 30 IN PROGRESS — 27/37 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 265/275 total
 
+> ✅ `dx-helptext-spec-tests` (adversary, ledger-only) — `.gatesmith/pending-tests/dx_helptext.rs`: 3 tests pinning the 2 loop-closer gaps (verify --help drops "staged" + mentions store; invalid-store-protocol error lists `file://`). **Split (37):** clause 2 confirmed = stores `router.rs:35` `#[error]` → `dx-helptext-impl-stores` (router) before `dx-helptext-impl-cli` (verify-help + green all 3).
+> **▶ NEXT (id-asc): `dx-helptext-impl-stores` (stores)** → `dx-helptext-impl-cli` → `dx-helptext-review` → **`dx-fix-verify` re-runs** → `dx-complete` → release.
 > ⛔ **`dx-fix-verify` ran → 10/12 RESOLVED, 2 NOT-RESOLVED (NOT PASS).** The independent loop-closer (black-box vs the freshly-built 1.8.0 binary) confirmed all 3 calibration smells + 7 others fixed (progress file-% / defaults+source / arg-hygiene / id-stdin round-trip / silent-empty-store / sync unique-count / recovery heal+detect). But caught **2 accepted findings the errors-spec never pinned**: (1) `verify --help` still says "staged" (checks the STORE; cli.rs:626); (2) `file://` scheme undiscoverable (router.rs:35 error lists no schemes). **Scheduled a help-text triple (33→36)** + strengthened the loop-closer's verification (old grep would falsely pass a NOT-PASS log) + added `dx-helptext-review` to its deps so it re-runs. dx-fix-verify stays pending.
 > **▶ NEXT (id-asc): `dx-helptext-spec-tests` (adversary)** → `dx-helptext-impl-cli` → `dx-helptext-review` → **`dx-fix-verify` re-runs** → `dx-complete` → release.
 > 🏁 **RECOVERY CLUSTER COMPLETE — ALL SIX FIX WORKSTREAMS DONE** (arg-hygiene, defaults, errors, id-from-stdin, progress, recovery). ✅ `dx-recovery-review` (adversary, code `82e5310`) — dx_recovery byte-identical (no weakening); +6 cases (11→**17**) incl. CACHED-fast-path perf keystone, dedup heal, corrupt-vs-missing. workspace 0 failed, lock 3/3, no reopen.

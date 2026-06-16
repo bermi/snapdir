@@ -4655,7 +4655,9 @@ gates:
     phase: 30
     owner_agent: adversary
     depends_on: [dx-errors-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T09:52:00Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/dx_helptext.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/dx_helptext.rs"
     pass_criteria:
@@ -4664,19 +4666,32 @@ gates:
         - file_exists: ".gatesmith/pending-tests/dx_helptext.rs"
     human_checkpoint: false
     description: "ADVERSARY black-box spec tests for the 2 findings dx-fix-verify caught NOT-RESOLVED (both accepted in the findings report cluster 4/§5 but never pinned by dx-errors-spec-tests) -> .gatesmith/pending-tests/dx_helptext.rs (assert_cmd). Contracts: (1) VERIFY --HELP no longer falsely says 'staged' — `snapdir verify --help` must NOT contain 'staged' and must accurately describe that it checks the STORE (and needs --store/--id); regression-pin that the help text matches the actual behavior. (2) FILE:// SCHEME DISCOVERABLE — a bad/unknown --store protocol (e.g. `snapdir push <dir> --store notaproto://x` or a bare path) errors with a message that LISTS the valid scheme(s) including `file://` (not just 'invalid store protocol: <x>' with no guidance); and/or the relevant --help/error surfaces `file://`. Pin SUBSTANCE (stderr/stdout line-contains). Behavior-only; expected to FAIL against current binary on both."
-  - id: dx-helptext-impl-cli
+  - id: dx-helptext-impl-stores
     phase: 30
-    owner_agent: cli
+    owner_agent: stores
     depends_on: [dx-helptext-spec-tests]
     status: pending
     failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-stores"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "STORES impl for clause 2 of the help-text gaps (the file:// scheme discoverability), which the spec-test probing + PM confirmed lives in the router error: crates/snapdir-stores/src/router.rs:35 `#[error(\"invalid store protocol: '{protocol}'\")]` lists NO valid schemes. Change that error message to LIST the valid scheme(s) incl `file://` and explain the URI form — accurate to how the router works: `file://<abs-path>` is the built-in local store, and any other `<scheme>://...` routes to an external `snapdir-<scheme>-store` helper binary. Suggested wording: `invalid store protocol '<x>': expected a URI like file://<path> for a local store, or <scheme>://... for an external store helper`. This covers ALL call sites (--store/--to/--from/--objects-store). Frozen core lock must verify (it's stores, not core, but re-run shasum -c). The cli-level dx_helptext.rs test is taken over by the NEXT gate. Self-verify clause-2 black-box: a bare-path --store on a transfer command now errors naming file://. PM machine-check: workspace builds locked + snapdir-stores tests green + PM repro that the invalid-protocol error lists file://."
+  - id: dx-helptext-impl-cli
+    phase: 30
+    owner_agent: cli
+    depends_on: [dx-helptext-impl-stores]
+    status: pending
+    failure_count: 0
+    bump_reason: "GATE-BUMP 2026-06-15 (lane split): the spec-test probing + PM confirmed clause 2 (file:// discoverability) is the router #[error] string in crates/snapdir-stores/src/router.rs:35, not cli. Inserted dx-helptext-impl-stores (stores, fixes clause 2) BEFORE this gate; dep [dx-helptext-spec-tests]->[dx-helptext-impl-stores]. This gate now does ONLY clause 1 (verify --help) + takes over the cli-level dx_helptext.rs + greens all 3. pass_criteria unchanged."
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_helptext && cargo test --workspace && test -f crates/snapdir-cli/tests/dx_helptext.rs && test ! -f .gatesmith/pending-tests/dx_helptext.rs"
     pass_criteria:
       and:
         - exit_code: 0
         - file_exists: "crates/snapdir-cli/tests/dx_helptext.rs"
     human_checkpoint: false
-    description: "CLI impl for the 2 help-text gaps. (1) Fix `verify`'s help/doc string (crates/snapdir-cli/src/cli.rs ~626, the `Verify the integrity of a staged snapshot` line) to accurately describe verifying a snapshot in the STORE (requires --store/--id) — no longer 'staged'. Regenerate the affected trycmd help snapshot (help-verify.trycmd) + any parity/man as needed (in-lane). (2) Make the `file://` scheme discoverable: when the store URI has an unknown/invalid protocol, surface a message that LISTS the valid schemes incl `file://` — prefer wrapping/contextualizing the error CLI-side (like the existing split-store hint pattern) so it stays in-lane; if the cleanest fix is the router error message in crates/snapdir-stores/src/router.rs, STOP and flag in Blockers (PM spawns stores). Optionally mention `file://` in the --store arg help. Take over dx_helptext.rs (git mv -> crates/snapdir-cli/tests/) and green all. Run cargo test --workspace (regen any snapshot that pins the old verify wording). Frozen lock holds. PM machine-check: workspace builds locked + dx_helptext green + pending moved + PM repro."
+    description: "CLI impl for clause 1 of the help-text gaps (clause 2, file:// scheme, was fixed in snapdir-stores by the preceding gate). Fix `verify`'s help/doc string (crates/snapdir-cli/src/cli.rs ~626, the `Verify the integrity of a staged snapshot` line) to accurately describe verifying a snapshot in the STORE (requires --store/--id) — no longer 'staged'. Regenerate the affected trycmd help snapshot (help-verify.trycmd) + any parity/man snapshot that pinned the old wording (in-lane). TAKE OVER the cli-level test (git mv .gatesmith/pending-tests/dx_helptext.rs -> crates/snapdir-cli/tests/dx_helptext.rs) and make the FULL `cargo test -p snapdir-cli --test dx_helptext` green (all 3 — clause 2 already passes via stores). Run `cargo test --workspace`. Frozen lock holds. PM machine-check: workspace builds locked + dx_helptext green + pending moved + PM repro verify --help no longer says staged."
   - id: dx-helptext-review
     phase: 30
     owner_agent: adversary
