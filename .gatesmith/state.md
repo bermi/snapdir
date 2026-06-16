@@ -3,8 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 30 IN PROGRESS — 30/37 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 268/275 total
+## ▶ PHASE 30 IN PROGRESS — 31/37 — Adversarial CLI DX/UX review → snapdir 1.8.0 (operator-requested 2026-06-15) — 269/275 total
 
+> 🎯 **✅ `dx-fix-verify` PASS — 12/12 RESOLVED.** The independent loop-closer rebuilt the binary and black-box re-verified ALL 12 prioritized findings RESOLVED vs the 1.8.0 build (the 2 help-text gaps now fixed; the other 10 carried forward — isolated changes don't touch them). Strengthened machine-check satisfied (PASS, no NOT-RESOLVED). workspace 0 failed (adaptive flake confirmed flake: 180/180 isolated). **THE DX REVIEW DELIVERED — every finding fixed + independently verified.**
+> **▶ NEXT (id-asc): `dx-complete` (generic)** — CHANGELOG `[Unreleased]` entries for all 7 fix workstreams + `cargo test --workspace` sign-off. Then `release-prep-1.8.0` → verify-branch ✋ → PR ✋ → tag+crates ✋ → phase30-complete ✋.
 > 🏁 **HELP-TEXT TRIPLE COMPLETE** (both loop-closer gaps resolved). ✅ `dx-helptext-review` (adversary, code `4194b56`) — dx_helptext byte-identical (no weakening); +4 cases (3→**7**) covering all 4 store-URI sites + bare-path-vs-scheme routing. workspace green, lock 3/3. ⚠️ Known pre-existing flake `adaptive::controller_driver_throttle…` (timing) — release-CI re-run risk, not DX-scope.
 > **▶ NEXT: `dx-fix-verify` RE-RUNS** (all 7 reviews now satisfied; strengthened verification). Rebuild + black-box re-check all 12 findings → expect 12/12 RESOLVED. Then `dx-complete` (CHANGELOG) → release-prep-1.8.0 → verify-branch ✋ → PR ✋ → tag+crates ✋ → phase30-complete ✋.
 > ✅ `dx-helptext-impl-cli` (cli, code `f933ef8`) — clause 1 fixed: `verify --help` now "Verify the integrity of a snapshot in a store (requires --store/--id)" (no "staged"). Regenerated help-verify/help trycmd. dx_helptext **3/3**; workspace 0 failed; lock 3/3. **Both loop-closer gaps resolved.**

@@ -4715,7 +4715,9 @@ gates:
     phase: 30
     owner_agent: adversary
     depends_on: [dx-arg-review, dx-defaults-review, dx-progress-review, dx-errors-review, dx-id-stdin-review, dx-recovery-review, dx-helptext-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-15T10:55:00Z
+    git_sha: ledger-only
     failure_count: 0
     bump_reason: "GATE-BUMP 2026-06-15: (a) depends_on += dx-helptext-review — the first dx-fix-verify run found 2/12 findings NOT-RESOLVED (verify --help 'staged' + file:// scheme undiscoverable), so a help-text triple was scheduled and the loop-closer now gates on it. (b) verification_cmd STRENGTHENED: the old `grep -qiE 'RESOLVED|PASS'` matched any single RESOLVED line and would pass a NOT-PASS log; now requires PASS present AND no 'NOT-RESOLVED'/'NOT PASS' anywhere. pass_criteria (exit_code 0) unchanged."
     verification_cmd: "test -f .gatesmith/evidence/dx-fix-verify.log && grep -qi 'PASS' .gatesmith/evidence/dx-fix-verify.log && ! grep -qiE 'NOT[ -]?RESOLVED|NOT[ -]?PASS' .gatesmith/evidence/dx-fix-verify.log && cargo test --workspace"
