@@ -4759,7 +4759,9 @@ gates:
     phase: 30
     owner_agent: generic
     depends_on: [release-prep-1.8.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-16T01:30:00Z
+    git_sha: fb67069
     failure_count: 0
     verification_cmd: "git ls-remote --exit-code origin refs/heads/release-verify/1.8.0 >/dev/null"
     pass_criteria:
