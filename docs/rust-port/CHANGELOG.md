@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+## [1.8.0] - 2026-06-16
+
 This release is a CLI usability pass: stricter argument handling, a more honest
 `defaults` report, a clearer progress indicator, working `id` stdin, and a batch
 of store/sync/recovery/error-message fixes. The manifest byte-format,
@@ -510,7 +514,8 @@ Bash-written caches and remote buckets stay mutually readable.
   `gcloud`) in the shipped binary. External tools are used only by the test/oracle
   harness.
 
-[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/snapdir/snapdir/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/snapdir/snapdir/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/snapdir/snapdir/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/snapdir/snapdir/compare/v1.4.0...v1.5.0
