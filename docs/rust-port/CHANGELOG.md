@@ -7,7 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release is a CLI usability pass: stricter argument handling, a more honest
+`defaults` report, a clearer progress indicator, working `id` stdin, and a batch
+of store/sync/recovery/error-message fixes. The manifest byte-format,
+content-addressed layout, and snapshot ids are unchanged.
+
+### BREAKING
+
+- **Global flags must now follow their subcommand.** Write
+  `snapdir push --store X` rather than `snapdir --store X push`. Global flags
+  placed before the subcommand are no longer accepted.
+- **Each command accepts only the flags that apply to it.** Passing a flag a
+  command does not use now fails with a clear error (e.g. `the argument
+  '--limit-rate' cannot be used with 'manifest'`) instead of being silently
+  ignored. Per-command `--help` now lists only that command's flags. Scripts that
+  relied on snapdir quietly tolerating inapplicable flags will now get an error.
+
 ### Added
+
+- **`snapdir id` now reads a manifest from stdin.** With no path argument,
+  `snapdir id` reads a manifest piped on stdin, so `snapdir manifest <dir> |
+  snapdir id` reproduces `snapdir id <dir>`. Previously it silently hashed the
+  current directory regardless of any piped input. With no path and nothing
+  piped, it now errors instead of silently scanning the current directory.
+
+### Changed
+
+- **`snapdir defaults` now reports every effective setting.** It prints each
+  resolved value together with its source — `flag`, `env`, or `default` — for
+  cache-dir, store, jobs, walk-jobs, limit-rate, retries, fsync, clonefile, and
+  the rest, and it reflects override flags such as `--cache-dir`. Previously it
+  printed only a handful of legacy environment lines.
+- **Live progress now shows discovery and a real percentage.** For `id`,
+  `manifest`, `stage`, and `push`, the progress indicator surfaces a visible
+  discovery phase and a true percentage computed over the file count, instead of
+  sitting at 0% against a byte-count denominator. Snapshot ids are unchanged.
+- **`sync` now reports unique objects copied.** The summary counts the number of
+  distinct objects actually copied rather than the file-reference count, and it
+  no longer reports skipped objects when the destination starts out empty.
+
+### Removed
+
+- **Removed the `--debug` flag** (it had no effect) and the **`--paths` flag**
+  (it silently filtered nothing).
+
+### Fixed
+
+- **Invalid flag values are now rejected.** `--color` and `--limit-rate` reject
+  invalid values instead of accepting them silently, and an invalid store URI
+  now reports the valid form (`file://<path>`, …).
+- **`manifest --id` is no longer silently ignored.**
+- **`diff`/`sync` against a nonexistent store now error clearly** instead of
+  treating the missing store as empty, which previously produced a fabricated
+  full diff.
+- **`fetch`/`pull` restore objects missing from the local cache.** When a cached
+  snapshot's objects were missing locally, `fetch`/`pull` previously reported the
+  snapshot as cached and left the cache broken; they now re-fetch the missing
+  objects. `verify-cache` now detects and reports missing objects (not only
+  corrupt ones), naming the affected file path.
+- **Clearer error messages.** A missing store now names `--store` /
+  `SNAPDIR_STORE`; fetching a split snapshot without `--objects-store` /
+  `--from-objects` now hints at the objects-store; and `verify --help` no longer
+  claims it checks a "staged" snapshot — it verifies a snapshot in a store.
 
 ## [1.7.0] - 2026-06-14
 
