@@ -4886,7 +4886,9 @@ gates:
     owner_agent: adversary
     model: sonnet
     depends_on: [catalog-default-impl-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T11:48:22Z
+    git_sha: fc2f88c
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test catalog_default && cargo test --workspace"
     pass_criteria:
