@@ -5121,7 +5121,9 @@ gates:
     phase: 31
     owner_agent: packaging
     depends_on: [release-pr-upstream-1.9.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T21:00:00Z
+    git_sha: 0a33b73
     failure_count: 0
     verification_cmd: "git ls-remote --tags upstream refs/tags/v1.9.0 | grep -q v1.9.0 && for c in snapdir-core snapdir-catalog snapdir-stores snapdir-ssh-store snapdir-cli snapdir; do curl -sf \"https://index.crates.io/$(printf %s \"$c\" | cut -c1-2)/$(printf %s \"$c\" | cut -c3-4)/$c\" | grep -q '\"vers\":\"1.9.0\"' || exit 1; done"
     pass_criteria:
@@ -5134,7 +5136,9 @@ gates:
     phase: 31
     owner_agent: generic
     depends_on: [release-tag-crates-1.9.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T21:00:00Z
+    git_sha: 0a33b73
     failure_count: 0
     verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.9.0\"'"
     pass_criteria:
