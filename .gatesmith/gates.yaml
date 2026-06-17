@@ -4964,7 +4964,9 @@ gates:
     phase: 31
     owner_agent: cli
     depends_on: [flux-impl-core-detect]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T15:15:53Z
+    git_sha: baef35d
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test --workspace && grep -qiE 'in-flux|quiescent|changed during|vanished' docs/rust-port/CHANGELOG.md && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
     pass_criteria:
