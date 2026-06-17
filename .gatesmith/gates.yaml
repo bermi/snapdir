@@ -5106,7 +5106,9 @@ gates:
     phase: 31
     owner_agent: generic
     depends_on: [release-verify-branch-1.9.0]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T20:30:00Z
+    git_sha: 0a33b73
     failure_count: 0
     verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.9.0\"'"
     pass_criteria:

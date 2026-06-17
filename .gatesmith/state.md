@@ -3,7 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 31 IN PROGRESS — 17/20 — Catalog default · files-in-flux robustness · `autocomplete` → snapdir 1.9.0 — 292/295 total
+## ▶ PHASE 31 IN PROGRESS — 18/20 — Catalog default · files-in-flux robustness · `autocomplete` → snapdir 1.9.0 — 293/295 total
+
+> ✅ `release-pr-upstream-1.9.0` (generic, HUMAN ✋ IRREVERSIBLE, operator-authorized "merge + complete the release", merge `0a33b73`) — assistant opened **PR #16** (release-verify/1.9.0 → snapdir/snapdir), full CI matrix went green on ALL 16 checks; the single Test(1.91.1/macos) failure was the documented `adaptive_wire_healthy_stream_does_not_spuriously_shrink` timing flake (passed on `gh run rerun --failed`, unrelated to Phase-31). Squash-merged → **upstream/main @ `0a33b73` = 1.9.0**, ZERO .gatesmith.
+> **▶ NEXT: `release-tag-crates-1.9.0` (packaging, HUMAN ✋, IRREVERSIBLE — assistant-driven per operator authorization).** ⚠️ TP was confirmed working with a CLEAN publish at 1.8.0 (no 403) → TP is attached on all 6 crate pages. Tag `v1.9.0` on `0a33b73` → `release.yml` builds + GitHub release + idempotent 6-crate publish. Then `phase31-complete` ✋.
 
 > ✅ `release-verify-branch-1.9.0` (generic, HUMAN ✋ APPROVED 2026-06-17, artifact `e5fc35d`, fc=1) — after the operator reviewed the 1.9.0 release explainer (`.gatesmith/reviews/snapdir-1.9.0-release.html`). Rebuilt `release-verify/1.9.0` off upstream/main with the sigbus glibc fix + `disabl` typos allowlist (origin `e5fc35d`, ZERO .gatesmith, tip=1.9.0); pre-push CI mirror PASSED; **bench-verify.yml run 27710429139 = SUCCESS on Linux** (`__sigsetjmp` links; determinism + scenarios + benches green). Recovered from the earlier fc=1 link-error fail+reopen.
 > **▶ NEXT: `release-pr-upstream-1.9.0` (generic, HUMAN ✋, IRREVERSIBLE — OPERATOR-DRIVEN)** — open PR `release-verify/1.9.0` → snapdir/snapdir (title `release: 1.9.0`, body = CHANGELOG `[1.9.0]`), full CI incl. the required reflink Btrfs FICLONE job, squash-merge. Then `release-tag-crates-1.9.0` ✋ (**TP pre-check on all 6 crate pages!** the 1.7.0 ssh-store 403 lesson) → `phase31-complete` ✋.
