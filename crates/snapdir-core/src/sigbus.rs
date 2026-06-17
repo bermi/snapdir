@@ -54,10 +54,16 @@ use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::Once;
 
-// `sigsetjmp` / `siglongjmp` are not exported by the `libc` crate (they are
-// C macros / have platform-specific buffer layouts), so we bind the real libc
-// symbols ourselves. They ARE genuine exported functions on both macOS
-// (libSystem) and glibc/musl. `JmpBuf` is an opaque, generously-oversized,
+// `sigsetjmp` / `siglongjmp` are not exported by the `libc` crate (they have
+// platform-specific buffer layouts), so we bind the real libc symbols
+// ourselves. `siglongjmp` is a genuine exported function everywhere. For
+// `sigsetjmp` the platforms differ: on **glibc** it is NOT an exported
+// function — it is a C macro that calls the real symbol `__sigsetjmp(jmp_buf,
+// savesigs)`, so binding plain `sigsetjmp` fails to link (`undefined symbol:
+// sigsetjmp`). On **musl** and **macOS/BSD (libSystem)** `sigsetjmp` IS a real
+// exported function. We therefore bind `__sigsetjmp` on glibc and `sigsetjmp`
+// elsewhere; the signature `(jmp_buf, int) -> int` is identical, so the call
+// site is unchanged. `JmpBuf` is an opaque, generously-oversized,
 // pointer-aligned byte buffer: macOS `sigjmp_buf` is at most ~38 ints and
 // glibc's is ~200 bytes, both comfortably under our reserve.
 const JMP_BUF_BYTES: usize = 512;
@@ -66,9 +72,22 @@ const JMP_BUF_BYTES: usize = 512;
 struct JmpBuf([u8; JMP_BUF_BYTES]);
 
 extern "C" {
-    // `savesigs != 0` => also save/restore the signal mask (the `sig` variant).
-    fn sigsetjmp(env: *mut JmpBuf, savesigs: libc::c_int) -> libc::c_int;
     fn siglongjmp(env: *mut JmpBuf, val: libc::c_int) -> !;
+}
+
+// glibc: `sigsetjmp` is a macro over the real exported symbol `__sigsetjmp`;
+// bind that under the unchanged `sigsetjmp` call-site name. `savesigs != 0` =>
+// also save/restore the signal mask (the `sig` variant).
+#[cfg(target_env = "gnu")]
+extern "C" {
+    #[link_name = "__sigsetjmp"]
+    fn sigsetjmp(env: *mut JmpBuf, savesigs: libc::c_int) -> libc::c_int;
+}
+
+// musl + macOS/BSD: `sigsetjmp` is a real exported function.
+#[cfg(not(target_env = "gnu"))]
+extern "C" {
+    fn sigsetjmp(env: *mut JmpBuf, savesigs: libc::c_int) -> libc::c_int;
 }
 
 /// Marker payload carried by the [`io::Error`] returned when a guarded `SIGBUS`
