@@ -1013,3 +1013,272 @@ fn catalog_none_disabled_message_distinct_from_empty_enabled_catalog() {
         "--catalog none must print a disabled message; got {none_combined:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Impl-revealed: disabled message goes to STDERR only (stdout stays clean)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn catalog_none_disabled_message_is_on_stderr_not_stdout() {
+    // Impl-revealed: `print_catalog_disabled()` uses `eprintln!` → the message
+    // must appear on STDERR; stdout must be empty (no JSON lines, no stray text).
+    // This matters for pipeline users who capture stdout to parse JSON.
+    let cache = TempDir::new().unwrap();
+    let store_dir = TempDir::new().unwrap();
+    let store = file_store(store_dir.path());
+
+    let out = snapdir_isolated(cache.path())
+        .args(["revisions", "--catalog", "none", "--location", &store])
+        .output()
+        .expect("run revisions --catalog none");
+
+    assert!(
+        out.status.success(),
+        "revisions --catalog none must exit 0; got {:?}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    // stdout must be empty — the disabled message must NOT appear on stdout.
+    assert!(
+        out.stdout.is_empty(),
+        "revisions --catalog none stdout must be empty; got {:?}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+
+    // stderr MUST carry the disabled message.
+    let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        stderr.contains("disabl") || stderr.contains("none"),
+        "disabled message must appear on stderr; got stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn catalog_none_locations_disabled_message_is_on_stderr_not_stdout() {
+    // Impl-revealed: `locations --catalog none` — disabled message on stderr,
+    // empty stdout (same contract as revisions, for pipeline safety).
+    let cache = TempDir::new().unwrap();
+
+    let out = snapdir_isolated(cache.path())
+        .args(["locations", "--catalog", "none"])
+        .output()
+        .expect("run locations --catalog none");
+
+    assert!(out.status.success(), "locations --catalog none must exit 0");
+    assert!(
+        out.stdout.is_empty(),
+        "locations --catalog none stdout must be empty; got {:?}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        stderr.contains("disabl") || stderr.contains("none"),
+        "disabled message must appear on stderr; got stderr={stderr:?}"
+    );
+}
+
+#[test]
+fn catalog_none_ancestors_disabled_message_is_on_stderr_not_stdout() {
+    // Impl-revealed: `ancestors --catalog none` — disabled message on stderr,
+    // empty stdout.
+    let cache = TempDir::new().unwrap();
+    let fake_id = "0".repeat(64);
+
+    let out = snapdir_isolated(cache.path())
+        .args(["ancestors", "--catalog", "none", "--id", &fake_id])
+        .output()
+        .expect("run ancestors --catalog none");
+
+    assert!(out.status.success(), "ancestors --catalog none must exit 0");
+    assert!(
+        out.stdout.is_empty(),
+        "ancestors --catalog none stdout must be empty; got {:?}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        stderr.contains("disabl") || stderr.contains("none"),
+        "disabled message must appear on stderr; got stderr={stderr:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Impl-revealed: --cache-dir round-trip (push and query must agree on path)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn catalog_cache_dir_flag_round_trip_push_then_revisions() {
+    // Impl-revealed: `--cache-dir` on the query commands was additive in this
+    // cluster (CatalogArgs gained cache_dir). Push with `--cache-dir X` and
+    // revisions with `--cache-dir X` must resolve the SAME default-catalog.redb
+    // and therefore list the pushed id.
+    let cache = TempDir::new().unwrap();
+    let store_dir = TempDir::new().unwrap();
+    let store = file_store(store_dir.path());
+
+    // A separate dir to use as the explicit cache (not the HOME-derived default).
+    let explicit_cache = TempDir::new().unwrap();
+    let explicit_cache_str = explicit_cache.path().to_string_lossy().into_owned();
+
+    let src = TempDir::new().unwrap();
+    build_tree(&src, "cache-dir-round-trip");
+
+    // Push with explicit --cache-dir so default-catalog.redb lands there.
+    let push_id = snapdir_isolated(cache.path())
+        .args([
+            "push",
+            "--store",
+            &store,
+            "--cache-dir",
+            &explicit_cache_str,
+            &src.path().to_string_lossy(),
+        ])
+        .output()
+        .expect("run push --cache-dir");
+    assert!(
+        push_id.status.success(),
+        "push --cache-dir must exit 0; stderr: {}",
+        String::from_utf8_lossy(&push_id.stderr),
+    );
+    let push_id_str = String::from_utf8(push_id.stdout)
+        .unwrap()
+        .trim_end()
+        .to_owned();
+    assert_eq!(push_id_str.len(), 64, "push must print a 64-hex id");
+
+    // The default catalog must exist under the EXPLICIT cache dir, not `cache`.
+    let default_catalog_explicit = explicit_cache.path().join("default-catalog.redb");
+    assert!(
+        default_catalog_explicit.exists(),
+        "default-catalog.redb must be in the explicit --cache-dir, not the HOME-derived one; \
+        expected {default_catalog_explicit:?}"
+    );
+    let default_catalog_home = cache.path().join("default-catalog.redb");
+    assert!(
+        !default_catalog_home.exists(),
+        "default-catalog.redb must NOT be in HOME when --cache-dir overrides; \
+        found stray file at {default_catalog_home:?}"
+    );
+
+    // Query with the SAME explicit --cache-dir; must find the pushed id.
+    let revisions = snapdir_isolated(cache.path())
+        .args([
+            "revisions",
+            "--cache-dir",
+            &explicit_cache_str,
+            "--location",
+            &store,
+        ])
+        .output()
+        .expect("run revisions --cache-dir");
+    assert!(
+        revisions.status.success(),
+        "revisions --cache-dir must exit 0; stderr: {}",
+        String::from_utf8_lossy(&revisions.stderr),
+    );
+    let revisions_str = String::from_utf8(revisions.stdout).unwrap();
+    assert!(
+        revisions_str.contains(&push_id_str),
+        "revisions with --cache-dir must list the push id {push_id_str:?}; \
+        got {revisions_str:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Impl-revealed: locations and ancestors end-to-end with default catalog
+// ---------------------------------------------------------------------------
+
+#[test]
+fn catalog_default_locations_end_to_end() {
+    // Impl-revealed: `locations` with the default catalog (no flag) must list
+    // the store URI that was pushed to. This verifies `open_catalog()` wiring
+    // for `run_locations()`.
+    let cache = TempDir::new().unwrap();
+    let store_dir = TempDir::new().unwrap();
+    let store = file_store(store_dir.path());
+
+    let src = TempDir::new().unwrap();
+    build_tree(&src, "locations-default-catalog");
+
+    // Push with no --catalog flag (goes to default-catalog.redb).
+    stdout_ok(
+        cache.path(),
+        &["push", "--store", &store, &src.path().to_string_lossy()],
+    );
+
+    // No-flag locations must include the store URI.
+    let locations = stdout_ok(cache.path(), &["locations"]);
+    assert!(
+        locations.contains(store_dir.path().to_str().unwrap()),
+        "no-flag locations must list the pushed store URI; got {locations:?}"
+    );
+}
+
+#[test]
+fn catalog_default_ancestors_end_to_end() {
+    // Impl-revealed: `ancestors --id <id>` with the default catalog (no flag)
+    // must return the chain from the default catalog. After two no-flag pushes
+    // at the same location, ancestors of the second id must include the first.
+    let cache = TempDir::new().unwrap();
+    let store_dir = TempDir::new().unwrap();
+    let store = file_store(store_dir.path());
+
+    // First push.
+    let src1 = TempDir::new().unwrap();
+    build_tree(&src1, "ancestors-first");
+    let id1 = stdout_ok(
+        cache.path(),
+        &["push", "--store", &store, &src1.path().to_string_lossy()],
+    );
+    assert_eq!(id1.len(), 64);
+
+    // Second push (different content so different id).
+    let src2 = TempDir::new().unwrap();
+    build_tree(&src2, "ancestors-second (different)");
+    let id2 = stdout_ok(
+        cache.path(),
+        &["push", "--store", &store, &src2.path().to_string_lossy()],
+    );
+    assert_eq!(id2.len(), 64);
+    assert_ne!(id1, id2, "distinct trees must have distinct ids");
+
+    // ancestors of id2 (no --catalog flag) must mention id1 (the previous
+    // revision at the same location).
+    let ancestors = stdout_ok(cache.path(), &["ancestors", "--id", &id2]);
+    assert!(
+        ancestors.contains(&id1),
+        "default-catalog ancestors of id2 must mention id1; got {ancestors:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Impl-revealed: defaults shows the resolved DEFAULT catalog path (not just
+// the word "catalog"), so the value is useful, not just a tag.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn catalog_defaults_value_is_full_path_when_default() {
+    // Impl-revealed: `defaults` on a clean env resolves the catalog knob to
+    // the full `<cache_dir>/default-catalog.redb` path, not the bare string
+    // "default" or "none". Users should see exactly where the DB will land.
+    let cache = TempDir::new().unwrap();
+
+    let out = snapdir_isolated(cache.path())
+        .args(["defaults"])
+        .output()
+        .expect("run snapdir defaults");
+    assert!(out.status.success(), "snapdir defaults must exit 0");
+
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // The catalog line must contain the path to default-catalog.redb.
+    assert!(
+        stdout.contains("default-catalog.redb"),
+        "defaults must show the resolved default-catalog.redb path; got:\n{stdout}"
+    );
+    // And it must be under the cache dir we pointed at.
+    assert!(
+        stdout.contains(cache.path().to_str().unwrap()),
+        "defaults catalog path must be under the sandboxed cache dir; got:\n{stdout}"
+    );
+}
