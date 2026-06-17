@@ -4990,7 +4990,9 @@ gates:
     owner_agent: adversary
     model: sonnet
     depends_on: [phase30-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T02:46:43Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/dx_autocomplete.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/dx_autocomplete.rs"
     pass_criteria:

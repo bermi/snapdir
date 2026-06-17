@@ -3,6 +3,11 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
+## ▶ PHASE 31 IN PROGRESS — 1/20 — Catalog default · files-in-flux robustness · `autocomplete` → snapdir 1.9.0 — 276/295 total
+
+> ✅ `autocomplete-spec-tests` (adversary/sonnet, ledger-only) — BLACK-BOX spec tests staged at `.gatesmith/pending-tests/dx_autocomplete.rs` (19 `#[test]`s). Pins `snapdir autocomplete <shell>`: bash/zsh/fish/powershell/elvish → exit 0 non-empty snapdir script; `autocomplete` VISIBLE in `--help` + a wiring example (`eval`/source) for bash+zsh; unknown shell → exit 2 listing valid shells; hidden `completions` alias byte-identical; real-shell sourcing (`bash -n` always, zsh/fish gated-on-PATH); missing-arg→exit 2; determinism; bash-completion marker. Expected un-passable until impl lands. Fence PASS (test artifacts only).
+> **▶ NEXT (id-asc): `autocomplete-impl-cli` (cli)** — promote the hidden `completions` to a VISIBLE `autocomplete <shell>` (keep `completions` as a hidden alias) with per-shell wiring help; take over `dx_autocomplete.rs`; green it. Then the two design ✋ gates (`catalog-default-design`, `flux-design`) + the catalog/flux impl triples → release-1.9.0 chain. (Phase 31 = 20 gates: 3 adversarial-triple clusters + 5-gate release.)
+
 ## ✅ PHASE 30 COMPLETE — 37/37 — Adversarial CLI DX/UX review → snapdir 1.8.0 RELEASED (2026-06-16) — 275/275 total
 
 > 🏁 **snapdir 1.8.0 RELEASED END-TO-END (2026-06-16).** Canonical snapdir/snapdir @ 1.8.0 (merge `7f9be38`), tag `v1.8.0`, GitHub release live (signed + SLSA), **ALL 6 crates on crates.io @ 1.8.0** — clean publish, **no TP 403** (the 1.7.0 ssh-store lesson applied: TP pre-checked on all 6 pages before tagging). The adversarial DX review (sealed personas, calibration 3/3, 7 fix triples, independent loop-closer 12/12) shipped: per-command arg validation (BREAKING flags-follow-subcommand; --debug/--paths removed; scoped --help), defaults+source, progress file-%, id-stdin round-trip, nonexistent-store errors, sync unique counts, recovery heal+detect, clearer errors. Frozen format untouched; ids byte-identical.
