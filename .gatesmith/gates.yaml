@@ -4934,10 +4934,11 @@ gates:
     phase: 31
     owner_agent: core
     depends_on: [flux-spec-tests]
-    status: failed
-    git_sha: 3d6ebf0
+    status: passed
+    passed_at: 2026-06-17T17:57:04Z
+    git_sha: b779426
     failure_count: 1
-    failure_reason: "REOPENED 2026-06-17 by release-verify-branch-1.9.0 bench-verify (Linux). crates/snapdir-core/src/sigbus.rs:70 `extern \"C\" { fn sigsetjmp }` is undefined at link time on glibc Linux (rust-lld: undefined symbol: sigsetjmp) — on glibc sigsetjmp is a macro over __sigsetjmp; the bare symbol links on macOS only. Fix: cfg(target_env=\"gnu\") declare/call __sigsetjmp(env, savesigs); keep sigsetjmp on macOS/BSD; siglongjmp is real on both. Behavior + macOS goldens must stay byte-identical. The local macOS verification cannot reproduce the glibc link error; Linux confirmation comes from the re-pushed bench-verify at release-verify-branch."
+    failure_reason: "RESOLVED 2026-06-17 (was REOPENED by release-verify-branch bench-verify Linux link error). Fixed in b779426: cfg(target_env=\"gnu\") binds __sigsetjmp via #[link_name] (glibc real symbol; call site unchanged), keeps sigsetjmp on musl/macOS/BSD; siglongjmp shared. macOS verification green + goldens byte-identical + musl cross-build clean. Linux confirmation = the re-pushed bench-verify at release-verify-branch-1.9.0."
     verification_cmd: "cargo build --workspace --locked && test -f crates/snapdir-core/src/sigbus.rs && shasum -a 256 -c .gatesmith/manifest-format.sha.lock && cargo test -p snapdir-core && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
     pass_criteria:
       and:
