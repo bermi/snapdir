@@ -47,6 +47,9 @@ deprecat = "deprecat"
 # `unparseable` = a valid English spelling used in a dx_errors assertion message
 # ("an unparseable --limit-rate must fail"); not a typo (variant of "unparsable").
 unparseable = "unparseable"
+# `disabl` = a deliberate SUBSTRING in the catalog_default tests (`.contains("disabl")`)
+# that case-insensitively matches the "catalog disabled (--catalog none)" message text.
+disabl = "disabl"
 
 [default.extend-identifiers]
 # crate / API identifiers that look like typos but are intentional.
