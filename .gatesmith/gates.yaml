@@ -4934,7 +4934,9 @@ gates:
     phase: 31
     owner_agent: core
     depends_on: [flux-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T14:44:05Z
+    git_sha: 3d6ebf0
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && test -f crates/snapdir-core/src/sigbus.rs && shasum -a 256 -c .gatesmith/manifest-format.sha.lock && cargo test -p snapdir-core && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
     pass_criteria:
