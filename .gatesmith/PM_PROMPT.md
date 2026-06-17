@@ -150,6 +150,7 @@ If any of the following is true, use `AskUserQuestion` with a precise single que
 - Read the matching template `.gatesmith/templates/<agent>.md`.
 - Substitute `{{gate_id}}`, `{{phase}}`, `{{gate_description}}`, `{{verification_cmd}}`, `{{pass_criteria}}`, `{{utc_iso}}`, `{{handoff_path}}`.
 - Spawn **exactly one** teammate via the `Agent` tool with `subagent_type=general-purpose` and the filled prompt.
+- If the gate carries an optional `model:` field (e.g. `sonnet`, `haiku`), pass it to the `Agent` tool's `model` parameter — adversarial-QA gates use this to route authoring/review to `sonnet` and cheap high-volume fuzzing / real-shell sourcing to `haiku`. If absent, inherit the default model.
 - Wait for completion. Do not spawn a second.
 
 ### 5. VERIFY

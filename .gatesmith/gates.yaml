@@ -4815,3 +4815,292 @@ gates:
         - human_confirm: "Phase 30 done: snapdir 1.8.0 released end-to-end — canonical snapdir/snapdir at 1.8.0, tag v1.8.0, GitHub release live, all 6 crates on crates.io. Ships the adversarial-DX-review fixes: per-command argument validation (unsupported flags fail with useful messages; per-command --help; --debug removed), `defaults` prints effective config with resolved value + source, meaningful progress (visible discovery + real %), and error-message hints. Frozen manifest format untouched; snapshot ids byte-identical; default behavior unchanged when flags unset. Approve?"
     human_checkpoint: true
     description: "PHASE 30 SIGN-OFF: snapdir 1.8.0 released end-to-end — the adversarial CLI DX/UX review (unbiased sandbox personas + arg-matrix audit, judged) drove a focused minor that makes the CLI an exemplar experience. Additive/correctness only: frozen format untouched, snapshot ids byte-identical, unset-flag behavior unchanged. 6 crates published; TP verified on all 6 pages pre-tag."
+
+  # ===========================================================================
+  # Phase 31 — Catalog default fix · files-in-flux robustness · `autocomplete`
+  #            -> snapdir 1.9.0
+  #
+  # Three operator-prioritized fixes, each an ADVERSARIAL TRIPLE (author(adversary)
+  # != coder(lane) != reviewer(adversary)); spec tests staged in
+  # .gatesmith/pending-tests/, lane owner `git mv`s them into crates/*/tests/.
+  # Optional `model:` field routes adversarial-QA teammates to sonnet (authoring/
+  # review) or haiku (cheap high-volume fuzzing / real-shell sourcing) — the PM
+  # passes it to the Agent tool's `model` param (PM_PROMPT step 4).
+  # KEYSTONE: snapshot ids byte-identical on a static tree; frozen manifest/merkle/
+  # excludes lock (.gatesmith/manifest-format.sha.lock) re-verified after core gates.
+  # LESSON (1.8.0): every impl gate also runs `cargo fmt --all --check` + `cargo
+  # clippy --workspace --all-targets --all-features --locked -D warnings` so the
+  # pre-push CI mirror never blocks the release branch.
+  # ===========================================================================
+
+  # ---- Sub-phase A: catalog default-on + `revisions --catalog none` fix ----
+  - id: catalog-default-design
+    phase: 31
+    owner_agent: generic
+    depends_on: [phase30-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/reviews/catalog-default-1.9.0.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/reviews/catalog-default-1.9.0.md"
+        - human_confirm: "Reviewed .gatesmith/reviews/catalog-default-1.9.0.md. LOCK the catalog semantics: (1) `--catalog` unset -> a DEFAULT catalog at <cache_dir>/default-catalog.redb; PUSH & STAGE auto-record to it; `manifest`/`id` stay side-effect-free (manifest logs only with an explicit --catalog); query commands (revisions/locations/ancestors) READ the default when unset. (2) `--catalog none` (and empty) is an EXPLICIT sentinel that DISABLES the catalog; `revisions --catalog none` prints a clear 'catalog disabled' message (exit 0). (3) a path-like `--catalog ./x.redb` or a bare name still works. Approve and proceed to the fix?"
+    human_checkpoint: true
+    description: "DESIGN LOCK (human checkpoint). Capture the default-on catalog semantics in .gatesmith/reviews/catalog-default-1.9.0.md: the read/write asymmetry root cause (writes without --catalog log nowhere via catalog_db_path()->None + log_event no-op; `--catalog none` opens a literal empty none-catalog.redb), the chosen fix (default catalog for push/stage + query reads; `none`/empty sentinel disables), the disabled-catalog message wording, and the back-compat note (additive — revisions starts returning data; nothing sane relied on a literal `none` db). PM machine-check: design doc exists; operator confirms the locked semantics."
+  - id: catalog-default-spec-tests
+    phase: 31
+    owner_agent: adversary
+    model: sonnet
+    depends_on: [catalog-default-design]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/catalog_default.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/catalog_default.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/catalog_default.rs"
+    human_checkpoint: false
+    description: "ADVERSARY black-box spec tests for the default-on catalog -> .gatesmith/pending-tests/catalog_default.rs (assert_cmd-style against the snapdir binary, isolated HOME/XDG cache so the default catalog is sandboxed). Contracts: (a) `snapdir push <dir> --store <s>` then `snapdir stage <dir>` WITHOUT --catalog -> `snapdir revisions --location <dir>` LISTS both (round-trips through the default catalog); (b) `snapdir push <dir> --store <s> --catalog none` records NOTHING, and `snapdir revisions --catalog none --location <dir>` prints a clear 'catalog disabled' message with exit 0 (no fabricated/empty-looking success); (c) `--catalog foo` isolates from the default (revisions --catalog foo does not see default-catalog rows and vice-versa); (d) `snapdir defaults` shows the catalog knob with resolved value + source {flag|env|default}; (e) KEYSTONE — `snapdir manifest <dir>` and `snapdir id <dir>` stdout BYTE-IDENTICAL with and without catalog logging (catalog is side-effect only); (f) a path-like `--catalog ./x.redb` still works. Behavior-only."
+  - id: catalog-default-impl-cli
+    phase: 31
+    owner_agent: cli
+    depends_on: [catalog-default-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test catalog_default && test -f crates/snapdir-cli/tests/catalog_default.rs && test ! -f .gatesmith/pending-tests/catalog_default.rs && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-cli/tests/catalog_default.rs"
+    human_checkpoint: false
+    description: "CLI impl (cli.rs). catalog_db_path() (~L2109): treat `none`/empty as the DISABLE sentinel -> None; when --catalog is UNSET, resolve to the default catalog path <cache_dir>/default-catalog.redb FOR the push/stage write-paths AND all query reads (revisions/locations/ancestors). Keep `manifest` logging gated on an explicit --catalog (and `id` never logs). Update run_defaults to print the resolved catalog + source {flag|env|default}. Make run_revisions/locations/ancestors print a clear 'catalog disabled (--catalog none)' message (exit 0) when the sentinel is set, distinct from 'no revisions for <location>'. Take over the staged tests (git mv .gatesmith/pending-tests/catalog_default.rs -> crates/snapdir-cli/tests/catalog_default.rs). In-lane = crates/snapdir-cli/ only. PM machine-check: workspace builds locked, catalog_default test green, pending test moved, fmt+clippy clean."
+  - id: catalog-default-review
+    phase: 31
+    owner_agent: adversary
+    model: sonnet
+    depends_on: [catalog-default-impl-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test catalog_default && cargo test --workspace"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of the catalog cluster. Diff landed crates/snapdir-cli/tests/catalog_default.rs vs staged; adjudicate any coder edits (legit fix vs impl-masking weakening); re-assert every contract (no-flag round-trip via default catalog; `--catalog none` disables + clear message; named-catalog isolation; defaults source; manifest/id byte-identical). RUN `cargo test --workspace` — the Phase-30 lesson: cli-output/behavior changes can break the flagship crates/snapdir/tests/parity.rs (which may assert the OLD 'no-flag = no log' shape); if a flagship parity test asserts obsolete behavior, REWRITE it (adversary owns crates/*/tests/) rather than weakening a real assertion. No weakening; workspace green."
+
+  # ---- Sub-phase B: files-in-flux robustness (panic-free, silent-failure-free walk) ----
+  - id: flux-design
+    phase: 31
+    owner_agent: generic
+    depends_on: [phase30-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/reviews/flux-robustness-1.9.0.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/reviews/flux-robustness-1.9.0.md"
+        - human_confirm: "Reviewed .gatesmith/reviews/flux-robustness-1.9.0.md. LOCK the files-in-flux model: (1) a scoped SIGBUS handler + hash each file SINGLE-THREADED via update_mmap (not update_mmap_rayon) so the faulting thread is the one that armed sigsetjmp -> same-thread siglongjmp is valid; cross-file rayon parallelism preserved. (2) stat-before/after + bytes-streamed-vs-discovery-size guard -> new typed WalkError variants. (3) convert the two walk.rs expect() panics to errors. (4) fail-fast (defer any --on-change knob). Consistency model: snapdir assumes a quiescent tree; mutations are DETECTED + reported (clear error, non-zero exit), NEVER a silent kill and NEVER silently mis-recorded; ids byte-identical on a static tree. Approve and proceed?"
+    human_checkpoint: true
+    description: "DESIGN LOCK (human checkpoint). Capture the robustness model in .gatesmith/reviews/flux-robustness-1.9.0.md: the four documented failure modes (mmap-truncation SIGBUS silent kill; walk.rs:399 & :653 expect() panics; silent grow/size-mismatch; ENOENT relabel) and the chosen handling (SIGBUS handler + single-thread update_mmap; stat-guards + new WalkError variants; panic->error; fail-fast). Document the consistency model for users (quiescent-tree assumption; detected-and-reported, never silent). PM machine-check: design doc exists; operator confirms the locked model."
+  - id: flux-spec-tests
+    phase: 31
+    owner_agent: adversary
+    model: sonnet
+    depends_on: [flux-design]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/concurrent_mutation.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/concurrent_mutation.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/concurrent_mutation.rs"
+    human_checkpoint: false
+    description: "ADVERSARY spec tests for the in-flux walk -> .gatesmith/pending-tests/concurrent_mutation.rs (snapdir-core integration test exercising walk()/the public hashing path; the harness may use a cheap haiku-driven mutator generator). Design: a fixture tree mixing sub-threshold and >256 KiB files; a MUTATOR thread hammering truncate/grow/delete/replace(ino-change) on designated victim large files while walk() runs; THOUSANDS of iterations x walk_jobs in {Some(1),Some(4),None}; a fixed PRNG so failures reproduce. INVARIANT asserted every iteration: NEVER a panic / process kill; outcome is EXACTLY one of {Ok(manifest) with a well-formed 64-hex snapshot_id AND an untouched CONTROL file still equal to its captured golden} OR {Err(WalkError::{FileVanishedDuringWalk|FileChangedDuringWalk|TreeStructureChanged|Io}) whose Display NAMES a path}. PLUS a focused mid-mmap truncation repro asserting a clean Err (not a kill). PLUS a QUIESCENT-CONTROL test asserting the golden id is unchanged (zero behavior overhead on a static tree). The test simply running to completion N times IS the SIGBUS regression guard. Behavior-only."
+  - id: flux-impl-core-sigbus
+    phase: 31
+    owner_agent: core
+    depends_on: [flux-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && test -f crates/snapdir-core/src/sigbus.rs && shasum -a 256 -c .gatesmith/manifest-format.sha.lock && cargo test -p snapdir-core && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-core/src/sigbus.rs"
+    human_checkpoint: false
+    description: "CORE impl — SIGBUS handler (does NOT take over the staged test yet; that lands after detect). New unix-only module crates/snapdir-core/src/sigbus.rs: lazy `Once` sigaction(SIGBUS, SA_SIGINFO|SA_ONSTACK|SA_NODEFER) that CHAINS the previously-installed handler for faults that are NOT ours (si_addr outside our registered mmap region); a thread-local sigjmp_buf + the current thread's active mmap region (base,len); a sigaltstack installed once. In hash_file.rs switch the large-file path from update_mmap_rayon to a SINGLE-THREADED update_mmap, ARM sigsetjmp around the mmap-touching update, and on a longjmp return a clean io::Error (mapped upstream to a WalkError by the detect gate). Handler body is async-signal-safe (reads a TLS pointer + calls siglongjmp only). Non-unix keeps fs::read (no mmap -> no SIGBUS). Keystone: re-run `shasum -c .gatesmith/manifest-format.sha.lock` and the walk/fast_walk goldens — snapshot ids BYTE-IDENTICAL. In-lane = crates/snapdir-core/ (non-frozen files). PM machine-check: builds locked, sigbus.rs present, frozen lock intact, snapdir-core tests + goldens green, fmt+clippy clean."
+  - id: flux-impl-core-detect
+    phase: 31
+    owner_agent: core
+    depends_on: [flux-impl-core-sigbus]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-core --test concurrent_mutation && test -f crates/snapdir-core/tests/concurrent_mutation.rs && test ! -f .gatesmith/pending-tests/concurrent_mutation.rs && shasum -a 256 -c .gatesmith/manifest-format.sha.lock && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-core/tests/concurrent_mutation.rs"
+    human_checkpoint: false
+    description: "CORE impl — in-flux detection + panic removal. Add WalkError::{FileVanishedDuringWalk{path}, FileChangedDuringWalk{path}, TreeStructureChanged{path}} (each names the path; Display is actionable, e.g. 'file changed during walk (tree changed under snapdir): <path>; re-run on a quiescent tree'). In hash_one (walk.rs ~614-626): map io NotFound -> FileVanishedDuringWalk; stat-before/after the CONTENT path and compare bytes-streamed vs the discovery FileRecord.size (SKIP the byte check for followed symlinks whose recorded SIZE is the lstat length); keep WalkError::Io for genuine permission/IO faults (distinct message). Convert the walk.rs:399 ('child dir finalized before parent') and walk.rs:653 ('pending file's owning dir was discovered') expect() panics to TreeStructureChanged returns. Take over the staged test (git mv .gatesmith/pending-tests/concurrent_mutation.rs -> crates/snapdir-core/tests/concurrent_mutation.rs). Keystone: frozen lock intact, goldens byte-identical. PM machine-check: builds locked, concurrent_mutation green, pending test moved, frozen lock intact, fmt+clippy clean."
+  - id: flux-impl-cli
+    phase: 31
+    owner_agent: cli
+    depends_on: [flux-impl-core-detect]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test --workspace && grep -qiE 'in-flux|quiescent|changed during|vanished' docs/rust-port/CHANGELOG.md && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "CLI impl — surface the new walk errors with actionable messages + non-zero exit (largely automatic via snapdir_cli::run's eprintln!(\"{err:#}\") + ExitCode::FAILURE; verify id/manifest propagate the new variants cleanly and the message names the file). Add a CHANGELOG [Unreleased] entry for the robustness story; document the quiescent-tree consistency model in the man/help where it fits. In-lane = crates/snapdir-cli/ + docs/CHANGELOG. PM machine-check: workspace green, CHANGELOG mentions the in-flux story, fmt+clippy clean."
+  - id: flux-tests-review
+    phase: 31
+    owner_agent: adversary
+    model: sonnet
+    depends_on: [flux-impl-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --test concurrent_mutation && cargo test --workspace"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of the flux cluster. Diff landed crates/snapdir-core/tests/concurrent_mutation.rs vs staged; adjudicate any coder edits; re-assert the invariant (no panic, no silent kill, valid-id-OR-typed-error-naming-a-path) holds across walk_jobs values; confirm the quiescent-control golden is unchanged and the frozen lock intact. Add impl-revealed cases (atomic rename-replace mid-hash; a directory deleted mid-finalize hitting the former panic paths; a zero-byte victim). No weakening; workspace green."
+  - id: flux-fuzz-verify
+    phase: 31
+    owner_agent: adversary
+    model: haiku
+    depends_on: [flux-tests-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/evidence/flux-fuzz-verify.log && grep -qiE 'INVARIANT HELD|PASS' .gatesmith/evidence/flux-fuzz-verify.log && ! grep -qiE 'PANIC|SIGBUS|signal: bus|silently' .gatesmith/evidence/flux-fuzz-verify.log"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/evidence/flux-fuzz-verify.log"
+    human_checkpoint: false
+    description: "ADVERSARY INDEPENDENT loop-closer (cheap high-volume — haiku). BUILD FROM SOURCE, then run a LONG concurrent-mutation fuzz (>=10k iterations across walk_jobs {1,4,None}) + the mid-mmap truncation repro against the freshly-built binary/library, hammering a tree of >256 KiB victims with truncate/grow/delete/replace. PROVE the invariant: zero process kills, zero panics/backtraces, every outcome a valid 64-hex id OR a typed WalkError naming the file; the untouched control file always hashes to its golden. Capture the run + a final verdict line ('INVARIANT HELD' / 'PASS') to .gatesmith/evidence/flux-fuzz-verify.log. A genuine silent kill or panic -> REOPEN the relevant flux-impl-core gate (fix src, never weaken the test). PM machine-check: evidence log present with a PASS verdict and no PANIC/SIGBUS markers."
+
+  # ---- Sub-phase C: `snapdir autocomplete <shell>` (promote the hidden `completions`) ----
+  - id: autocomplete-spec-tests
+    phase: 31
+    owner_agent: adversary
+    model: sonnet
+    depends_on: [phase30-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/dx_autocomplete.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/dx_autocomplete.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/dx_autocomplete.rs"
+    human_checkpoint: false
+    description: "ADVERSARY black-box spec tests for `autocomplete` -> .gatesmith/pending-tests/dx_autocomplete.rs (assert_cmd-style; the real-shell sourcing checks may be haiku-driven). Contracts: (a) `snapdir autocomplete <shell>` for shell in {bash,zsh,fish,powershell,elvish} -> exit 0, non-empty script that mentions `snapdir`; (b) `autocomplete` is VISIBLE in `snapdir --help` AND `snapdir autocomplete --help` shows a profile-wiring example (e.g. eval \"$(snapdir autocomplete zsh)\"); (c) an unknown shell -> exit 2 with a useful error LISTING the valid shells; (d) the hidden `completions <shell>` alias STILL works (release.yml back-compat) and emits identical output; (e) REAL-SHELL sourcing — pipe the bash output into `bash -n`/source and the zsh output into a zsh source, asserting no error (gate the zsh/fish/powershell cases on the shell being present). Behavior-only."
+  - id: autocomplete-impl-cli
+    phase: 31
+    owner_agent: cli
+    depends_on: [autocomplete-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_autocomplete && test -f crates/snapdir-cli/tests/dx_autocomplete.rs && test ! -f .gatesmith/pending-tests/dx_autocomplete.rs && cargo run -q -p snapdir -- autocomplete bash | grep -q snapdir && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-cli/tests/dx_autocomplete.rs"
+    human_checkpoint: false
+    description: "CLI impl (cli.rs). Promote the hidden `Completions { shell }` command to a VISIBLE `autocomplete <shell>` (un-hide; keep `completions` as a HIDDEN alias via clap's #[command(alias = \"completions\")] so release.yml gen-assets keeps working) with rich long-help including per-shell profile-wiring examples (bash: `eval \"$(snapdir autocomplete bash)\"` in ~/.bashrc; zsh in ~/.zshrc; fish; powershell). Dispatch unchanged (clap_complete::generate(shell, &mut Cli::command(), \"snapdir\", stdout)); shell value set = clap_complete::Shell; bin_name stays `snapdir`. Take over the staged tests. In-lane = crates/snapdir-cli/ only. PM machine-check: builds locked, dx_autocomplete green, pending test moved, `autocomplete bash` emits a snapdir script, fmt+clippy clean."
+  - id: autocomplete-ci-snapshots
+    phase: 31
+    owner_agent: ci
+    depends_on: [autocomplete-impl-cli]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli && cargo run -q -p snapdir -- man >/dev/null"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "CI snapshot regeneration. Making `autocomplete` visible changes the top-level `--help` surface, so regenerate + commit the affected crates/snapdir-cli/tests/cmd/*.trycmd snapshots (help + a new autocomplete case) and confirm the man page (clap_mangen) renders. Update .github/workflows/release.yml gen-assets if needed (the `completions <shell>` loop keeps working via the hidden alias, OR switch it to `autocomplete <shell>`); keep actionlint clean. NOTE: the trycmd/man artifacts live in the CLI crate but the release.yml + actionlint scope is the ci lane — keep edits within crates/snapdir-cli/tests/cmd, the man output, and .github/workflows. PM machine-check: `cargo test -p snapdir-cli` green (trycmd included) + `snapdir man` renders."
+  - id: autocomplete-review
+    phase: 31
+    owner_agent: adversary
+    model: sonnet
+    depends_on: [autocomplete-ci-snapshots]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli && cargo test --workspace"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of the autocomplete cluster. Diff landed crates/snapdir-cli/tests/dx_autocomplete.rs vs staged; adjudicate edits; re-assert every shell emits a sourceable script mentioning snapdir, `autocomplete` is visible with a wiring example, unknown-shell -> exit 2 listing valid shells, the hidden `completions` alias still works. Re-run the REAL-SHELL sourcing for bash + (if present) zsh. No weakening; workspace green."
+
+  # ---- Sub-phase D: release 1.9.0 (mirror the 1.8.0 chain) ----
+  - id: release-prep-1.9.0
+    phase: 31
+    owner_agent: generic
+    depends_on: [catalog-default-review, flux-fuzz-verify, autocomplete-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -qE '^version = \"1.9.0\"' Cargo.toml && cargo build --workspace --locked && grep -q '1.9.0' docs/rust-port/CHANGELOG.md && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - regex_match: "version = \"1.9.0\""
+    human_checkpoint: false
+    description: "RELEASE PREP. Bump 1.8.0 -> 1.9.0: root Cargo.toml [workspace.package].version + the 3 path-dep pins (snapdir-core/-catalog/-stores) + the flagship crates/snapdir/Cargo.toml `snapdir-cli` pin. Fold CHANGELOG [Unreleased] -> [1.9.0] - <date> + compare-links. `cargo build --workspace --locked` + fmt --check + clippy --all-features. Gatesmith-free CODE commit (exclude .gatesmith). PM machine-check: Cargo.toml at 1.9.0, workspace builds locked, CHANGELOG has a 1.9.0 section, fmt+clippy clean."
+  - id: release-verify-branch-1.9.0
+    phase: 31
+    owner_agent: generic
+    depends_on: [release-prep-1.9.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git ls-remote --heads origin refs/heads/release-verify/1.9.0 | grep -q release-verify/1.9.0"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "release-verify/1.9.0 was branched off upstream/main, carries the net 1.9.0 code diff with ZERO .gatesmith (and zero .claude/utils/dx), was pushed to origin, and bench-verify.yml went green on the fork. Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint). Build release-verify/1.9.0 OFF upstream/main applying the net code diff (exclude .gatesmith/.claude/utils/dx), tip = 1.9.0, ZERO tracked .gatesmith; push origin; bench-verify.yml green. Mirrors the 1.7.0/1.8.0 verify-branch step. PM machine-check: origin has the release-verify/1.9.0 branch; operator confirms bench-verify green."
+  - id: release-pr-upstream-1.9.0
+    phase: 31
+    owner_agent: generic
+    depends_on: [release-verify-branch-1.9.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.9.0\"'"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "PR release-verify/1.9.0 -> snapdir/snapdir was opened, the full CI matrix went green (lint/deny/test-matrix incl. loopback-sshd on ubuntu+macos, the required reflink Btrfs FICLONE job, the static-musl leg, coverage, crate-age >=3 days), and it was squash-merged; upstream/main is now at 1.9.0 with ZERO .gatesmith. Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint, IRREVERSIBLE — merges to the canonical repo). Open PR release-verify/1.9.0 -> snapdir/snapdir main (title 'release: 1.9.0', body = CHANGELOG [1.9.0]), wait for the full CI matrix (incl. the required reflink Btrfs FICLONE job + loopback-sshd + musl leg), operator-authorized squash-merge. PM machine-check: upstream/main Cargo.toml shows 1.9.0."
+  - id: release-tag-crates-1.9.0
+    phase: 31
+    owner_agent: packaging
+    depends_on: [release-pr-upstream-1.9.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git ls-remote --tags upstream refs/tags/v1.9.0 | grep -q v1.9.0 && for c in snapdir-core snapdir-catalog snapdir-stores snapdir-ssh-store snapdir-cli snapdir; do curl -sf \"https://index.crates.io/$(printf %s \"$c\" | cut -c1-2)/$(printf %s \"$c\" | cut -c3-4)/$c\" | grep -q '\"vers\":\"1.9.0\"' || exit 1; done"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "v1.9.0 is tagged on snapdir/snapdir, the GitHub release is live (signed archives + SHA256SUMS), and ALL 6 crates are at 1.9.0 on crates.io. Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint, IRREVERSIBLE — permanent tag + crates.io publish). *** TP PRE-CHECK FIRST (the 1.7.0 lesson — memory release-crates-io-state): BEFORE tagging, confirm Trusted Publishing is attached on ALL 6 crate pages (snapdir-core/-catalog/-stores/-ssh-store/-cli/snapdir) for repo=snapdir/snapdir workflow=release.yml, no environment. *** Then tag v1.9.0 on the merged upstream/main commit and push -> release.yml builds per-target archives + GitHub release (signed + SLSA) + the idempotent 6-crate publish loop in dependency order (snapdir-core -> snapdir-catalog -> snapdir-stores -> snapdir-ssh-store -> snapdir-cli -> snapdir; skip-if-published makes a re-run after a TP fix safe via `gh run rerun <run> --failed`). PM machine-check: upstream tag v1.9.0 AND crates.io sparse index shows 1.9.0 for all SIX crates."
+  - id: phase31-complete
+    phase: 31
+    owner_agent: generic
+    depends_on: [release-tag-crates-1.9.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.9.0\"'"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 31 done: snapdir 1.9.0 released end-to-end — canonical snapdir/snapdir at 1.9.0, tag v1.9.0, GitHub release live, all 6 crates on crates.io. Ships: a default-on catalog (revisions works out of the box; `--catalog none` is an explicit disable sentinel), a panic-free / silent-failure-free walk under concurrent mutation (SIGBUS handled, in-flux files reported with clear typed errors, two invariant panics removed), and a documented `snapdir autocomplete <shell>` for bash/zsh/fish/powershell/elvish. Frozen format untouched; snapshot ids byte-identical on a static tree. Approve?"
+    human_checkpoint: true
+    description: "PHASE 31 SIGN-OFF: snapdir 1.9.0 released end-to-end. Three operator-prioritized fixes, each adversarially verified (author != coder != reviewer; sonnet authoring/review, haiku high-volume fuzzing): catalog default-on + `revisions --catalog none` sentinel; files-in-flux robustness (no silent kill, no panic, clear typed errors, ids byte-identical on a static tree); `snapdir autocomplete <shell>`. 6 crates published; TP verified on all 6 pages pre-tag."
