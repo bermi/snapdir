@@ -5005,7 +5005,9 @@ gates:
     phase: 31
     owner_agent: cli
     depends_on: [autocomplete-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T02:52:32Z
+    git_sha: cfded0a
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test dx_autocomplete && test -f crates/snapdir-cli/tests/dx_autocomplete.rs && test ! -f .gatesmith/pending-tests/dx_autocomplete.rs && cargo run -q -p snapdir -- autocomplete bash | grep -q snapdir && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
     pass_criteria:
