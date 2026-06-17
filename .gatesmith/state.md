@@ -3,7 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 31 IN PROGRESS — 3/20 — Catalog default · files-in-flux robustness · `autocomplete` → snapdir 1.9.0 — 278/295 total
+## ▶ PHASE 31 IN PROGRESS — 4/20 — Catalog default · files-in-flux robustness · `autocomplete` → snapdir 1.9.0 — 279/295 total
+
+> 🏁 **AUTOCOMPLETE CLUSTER COMPLETE** (spec→impl→snapshots→review). ✅ `autocomplete-review` (adversary/sonnet, code `568f6b7`) — weakening audit: **no weakening**; the cli's zsh-source `compinit` setup fix CONFIRMED legit (clap zsh scripts end in `compdef`, which needs `compinit`; empirically original=exit127/fixed=exit0, assertion unchanged). +3 cases (19→**22**): zsh alias byte-identity, `completions` alias hidden from `--help`, unknown-shell error lists EXACTLY the 5 shells. `cargo test -p snapdir-cli` 22/22 + `cargo test --workspace` all green.
+> **▶ NEXT (id-asc): `catalog-default-design` (generic, HUMAN ✋)** — next tick ESCALATES via AskUserQuestion to lock the default-on catalog semantics (default catalog for push/stage + query reads; `--catalog none`/empty disable sentinel; clear disabled message). Then `flux-design` ✋, then the catalog + flux impl triples → release-1.9.0 chain.
 
 > ✅ `autocomplete-ci-snapshots` (cli, code `3adb8b1`; **GATE-BUMP** owner ci→cli — trycmd/man are CLI-lane, release.yml is packaging-lane & needs no change via the hidden `completions` alias; pass_criteria unchanged) — added `crates/snapdir-cli/tests/cmd/help-autocomplete.trycmd` (per-command help snapshot, Phase-30 convention) capturing `autocomplete --help` + per-shell wiring. No other trycmd regen needed. Verification PASS: full `cargo test -p snapdir-cli` (cli_surface trycmd incl.) + `snapdir man` renders.
 > **▶ NEXT (id-asc): `autocomplete-review` (adversary/sonnet)** — audit `dx_autocomplete.rs` no-weakening (esp. confirm/re-author the cli's zsh-source-test `compinit` setup fix), re-assert every shell emits a sourceable snapdir script, `autocomplete` visible + wiring example, unknown-shell→exit2, hidden `completions` alias works; real-shell sourcing. Closes the autocomplete cluster → then the two design ✋ gates.

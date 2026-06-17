@@ -5036,7 +5036,9 @@ gates:
     owner_agent: adversary
     model: sonnet
     depends_on: [autocomplete-ci-snapshots]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T03:05:52Z
+    git_sha: 568f6b7
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli && cargo test --workspace"
     pass_criteria:
