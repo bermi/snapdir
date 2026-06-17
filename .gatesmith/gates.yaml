@@ -4934,10 +4934,10 @@ gates:
     phase: 31
     owner_agent: core
     depends_on: [flux-spec-tests]
-    status: passed
-    passed_at: 2026-06-17T14:44:05Z
+    status: failed
     git_sha: 3d6ebf0
-    failure_count: 0
+    failure_count: 1
+    failure_reason: "REOPENED 2026-06-17 by release-verify-branch-1.9.0 bench-verify (Linux). crates/snapdir-core/src/sigbus.rs:70 `extern \"C\" { fn sigsetjmp }` is undefined at link time on glibc Linux (rust-lld: undefined symbol: sigsetjmp) — on glibc sigsetjmp is a macro over __sigsetjmp; the bare symbol links on macOS only. Fix: cfg(target_env=\"gnu\") declare/call __sigsetjmp(env, savesigs); keep sigsetjmp on macOS/BSD; siglongjmp is real on both. Behavior + macOS goldens must stay byte-identical. The local macOS verification cannot reproduce the glibc link error; Linux confirmation comes from the re-pushed bench-verify at release-verify-branch."
     verification_cmd: "cargo build --workspace --locked && test -f crates/snapdir-core/src/sigbus.rs && shasum -a 256 -c .gatesmith/manifest-format.sha.lock && cargo test -p snapdir-core && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
     pass_criteria:
       and:
@@ -5089,8 +5089,9 @@ gates:
     phase: 31
     owner_agent: generic
     depends_on: [release-prep-1.9.0]
-    status: pending
-    failure_count: 0
+    status: failed
+    failure_count: 1
+    failure_reason: "2026-06-17: branch built off upstream/main (be76b31, ZERO .gatesmith) + pushed to origin; pre-push CI mirror PASSED after a release-mechanical typos allowlist fix (`disabl`). BUT bench-verify.yml run 27708685191 FAILED on Linux — step 'Determinism + scenarios gate' (cargo test -p snapdir-benches): rust-lld undefined symbol: sigsetjmp, root-caused to crates/snapdir-core/src/sigbus.rs (glibc link). Reopened flux-impl-core-sigbus to fix; once it passes, rebuild + re-push the verify branch and re-run bench-verify."
     verification_cmd: "git ls-remote --heads origin refs/heads/release-verify/1.9.0 | grep -q release-verify/1.9.0"
     pass_criteria:
       and:
