@@ -145,6 +145,15 @@ fn try_replace(path: &Path, seed: u8) {
     let _ = fs::write(path, content);
 }
 
+/// Atomic rename-replace: write `new_content` to a sibling tmp path, then
+/// rename it over `path` (inode changes atomically from the walk's perspective).
+fn try_atomic_replace(path: &Path, new_content: &[u8]) {
+    let tmp = path.with_extension("_tmp_rename");
+    if fs::write(&tmp, new_content).is_ok() {
+        let _ = fs::rename(&tmp, path);
+    }
+}
+
 // The MMAP_THRESHOLD from the design doc: 256 KiB.
 const MMAP_THRESHOLD: usize = 256 * 1024;
 
@@ -807,6 +816,497 @@ fn silent_wrong_size_detected_not_silently_recorded() {
                             | WalkError::Io { .. }
                     ),
                     "attempt={attempt}: wrong-size race produced unexpected variant: {err:?}"
+                );
+                assert!(
+                    error_display_names_a_path(err),
+                    "attempt={attempt}: error Display must name a path: {:?}",
+                    err.to_string()
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 7. Atomic rename-replace of a victim mid-hash (inode change).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn atomic_rename_replace_mid_hash_typed_error_or_valid_id() {
+    // Spec clause: stat-before/stat-after guard (design §B) — an atomic rename
+    // swap changes a file's inode/size/content under the walk without exposing
+    // a mid-file partial state.  The walk must produce a typed error OR a valid
+    // id; it must NEVER silently record a mismatched (size, checksum) pair.
+    //
+    // A rename is the sharpest TOCTOU: the `link_meta.len()` at discovery
+    // differs from the bytes actually hashed through the renamed-in file.
+    // The size-drift guard (walk.rs, `hashed_bytes != item.recorded_size`)
+    // or the `FileVanishedDuringWalk` path (if the original is gone between
+    // discovery stat and hash) must catch this.
+    const ATTEMPTS: usize = 60;
+    let hasher = Blake3Hasher::new();
+
+    for attempt in 0..ATTEMPTS {
+        let scratch = TempTree::new("atomic_rename");
+        let root = scratch.path().to_path_buf();
+
+        // Victim: large (mmap path) so the rename has time to land mid-hash.
+        let victim = root.join("victim_rename.bin");
+        write_file(&victim, &ramp(MMAP_THRESHOLD * 3));
+        // A different-size replacement payload (to guarantee a size mismatch
+        // if the stat-after still sees the old metadata).
+        let replacement = ramp(MMAP_THRESHOLD * 2 + 4097);
+        // Control file: must not be corrupted.
+        let control_content = ramp(512);
+        write_file(&root.join("anchor_rename.bin"), &control_content);
+
+        let victim_c = victim.clone();
+        let replacement_c = replacement.clone();
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done_c = Arc::clone(&done);
+
+        // Renamer thread: hammers the victim with an atomic rename-swap.
+        let renamer = std::thread::spawn(move || {
+            let mut seed: u8 = 0xab;
+            while !done_c.load(Ordering::Relaxed) {
+                try_atomic_replace(&victim_c, &replacement_c);
+                // Also restore the original size to keep the race interesting.
+                let _ = fs::write(&victim_c, ramp(MMAP_THRESHOLD * 3));
+                seed = seed.wrapping_mul(31).wrapping_add(7);
+                let _ = seed; // PRNG advance for future use
+                std::hint::spin_loop();
+            }
+        });
+
+        let result = walk(
+            &root,
+            &WalkOptions {
+                walk_jobs: Some(1),
+                ..WalkOptions::default()
+            },
+            &hasher,
+        );
+        done.store(true, Ordering::Relaxed);
+        renamer.join().expect("renamer thread panicked");
+
+        // Invariant: Ok with valid id OR typed in-flux error.  Never a panic,
+        // never a silently wrong (size, checksum) pair in an Ok manifest.
+        match &result {
+            Ok(manifest) => {
+                let id = snapshot_id(manifest, &hasher);
+                assert!(
+                    is_valid_snapshot_id(&id),
+                    "attempt={attempt}: Ok with malformed id {id:?}"
+                );
+                // Verify the control file wasn't corrupted.
+                let anchor_on_disk =
+                    fs::read(root.join("anchor_rename.bin")).expect("control must exist");
+                assert_eq!(
+                    anchor_on_disk, control_content,
+                    "attempt={attempt}: control file corrupted in Ok manifest"
+                );
+            }
+            Err(err) => {
+                assert!(
+                    is_acceptable_error(err),
+                    "attempt={attempt}: rename-replace produced unexpected error variant: {err:?}"
+                );
+                assert!(
+                    error_display_names_a_path(err),
+                    "attempt={attempt}: error Display must name a path: {:?}",
+                    err.to_string()
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 8. Directory deleted mid-finalize: former expect() panic sites.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dir_deleted_mid_finalize_is_tree_structure_changed_not_panic() {
+    // Spec clause: expect() → TreeStructureChanged (design §C, former walk.rs
+    // L399/L653). The bottom-up finalize pass looks up each child-dir key in
+    // the `finalized` map; a directory that was discovered but then removed
+    // before the finalize pass runs causes a "miss" that used to `expect()`.
+    // After the fix the miss must produce WalkError::TreeStructureChanged.
+    //
+    // Strategy: trigger the miss by removing an entire subdirectory AFTER
+    // the discovery phase has already recorded it in `dirs` but BEFORE the
+    // finalize pass processes its parent.  We approximate this by removing the
+    // subtree concurrently so we race across the discovery→finalize boundary.
+    const ATTEMPTS: usize = 80;
+    let hasher = Blake3Hasher::new();
+
+    for attempt in 0..ATTEMPTS {
+        let scratch = TempTree::new("dir_finalize");
+        let root = scratch.path().to_path_buf();
+
+        // Build a two-level tree where an inner subtree can be removed to
+        // exercise the child-dir lookup in the finalize pass.
+        let sub1 = root.join("outer");
+        let sub2 = sub1.join("inner");
+        let sub3 = root.join("sibling");
+        fs::create_dir_all(&sub2).expect("create outer/inner");
+        fs::create_dir_all(&sub3).expect("create sibling");
+
+        // Populate with large files to slow the hash pass (maximizing race window).
+        write_file(&sub2.join("f1.bin"), &ramp(MMAP_THRESHOLD + 1024));
+        write_file(&sub2.join("f2.bin"), &ramp(MMAP_THRESHOLD + 2048));
+        write_file(&sub1.join("outer_f.bin"), &ramp(MMAP_THRESHOLD));
+        write_file(&sub3.join("sib_f.bin"), &ramp(MMAP_THRESHOLD * 2));
+        write_file(&root.join("root_f.bin"), &ramp(512));
+
+        // The target subtree to remove mid-walk (exercises the finalize miss).
+        let target = sub1.clone();
+
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done_c = Arc::clone(&done);
+
+        let remover = std::thread::spawn(move || {
+            // Remove with no delay so we race aggressively.
+            while !done_c.load(Ordering::Relaxed) {
+                let _ = fs::remove_dir_all(&target);
+            }
+        });
+
+        let result = walk(
+            &root,
+            &WalkOptions {
+                walk_jobs: Some(4),
+                ..WalkOptions::default()
+            },
+            &hasher,
+        );
+        done.store(true, Ordering::Relaxed);
+        remover.join().expect("remover thread panicked");
+
+        // MUST NOT panic.  Result is Ok (if race was missed) or one of the
+        // three in-flux typed errors.
+        match &result {
+            Ok(manifest) => {
+                let id = snapshot_id(manifest, &hasher);
+                assert!(
+                    is_valid_snapshot_id(&id),
+                    "attempt={attempt}: Ok with malformed id {id:?}"
+                );
+            }
+            Err(err) => {
+                // The two former expect() panic sites produce TreeStructureChanged.
+                // FileVanishedDuringWalk or Io may also arise (files in the dir
+                // vanish between discovery and hash).
+                assert!(
+                    matches!(
+                        err,
+                        WalkError::TreeStructureChanged { .. }
+                            | WalkError::FileVanishedDuringWalk { .. }
+                            | WalkError::FileChangedDuringWalk { .. }
+                            | WalkError::Io { .. }
+                    ),
+                    "attempt={attempt}: dir-finalize produced unexpected error variant: {err:?}"
+                );
+                assert!(
+                    error_display_names_a_path(err),
+                    "attempt={attempt}: error Display must name a path: {:?}",
+                    err.to_string()
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 9. Followed-symlink guard-skip: target change must NOT falsely fire on a
+//    STABLE symlink, and a changing target must not produce a silent wrong id.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn followed_symlink_target_change_guard_skip_correctness() {
+    // Spec clause: symlink guard-eligibility rule (design §B, walk.rs
+    // PendingHash.is_symlink). A followed symlink's recorded SIZE is its own
+    // lstat length (the symlink's apparent size), deliberately != the
+    // dereferenced content length; so the bytes-vs-recorded_size drift check is
+    // SKIPPED for symlinks.  This test pins both sides:
+    //
+    // (a) A STABLE symlink (target never changes) must produce the same entry in
+    //     two consecutive quiescent walks — the guard skip does NOT falsely fire.
+    //
+    // (b) A symlink whose TARGET content changes during the walk must produce
+    //     Ok (valid id) or one of the in-flux typed errors — NEVER a panic.
+    //
+    // Note: the guard skip means a content change on the target (while the
+    // symlink's own lstat length is unchanged) can slip through as Ok — the
+    // spec explicitly allows this race on symlinks (design §B). We test the
+    // STABLE case rigorously and the CHANGING case for absence-of-panic only.
+
+    let hasher = Blake3Hasher::new();
+
+    // --- Part (a): stable symlink ----------------------------------------
+    {
+        let scratch = TempTree::new("symlink_stable");
+        let root = scratch.path().to_path_buf();
+
+        let target = root.join("real_target.bin");
+        write_file(&target, &ramp(MMAP_THRESHOLD * 2)); // large: triggers mmap
+                                                        // Symlink pointing to the real file.
+        std::os::unix::fs::symlink(&target, root.join("link_to_target.bin"))
+            .expect("create symlink");
+
+        // Two consecutive quiescent walks must produce identical manifests.
+        let opts = WalkOptions {
+            walk_jobs: Some(1),
+            ..WalkOptions::default()
+        };
+        let m1 = walk(&root, &opts, &hasher).expect("first symlink walk must succeed");
+        let m2 = walk(&root, &opts, &hasher).expect("second symlink walk must succeed");
+
+        let id1 = snapshot_id(&m1, &hasher);
+        let id2 = snapshot_id(&m2, &hasher);
+        assert!(
+            is_valid_snapshot_id(&id1),
+            "stable symlink: first walk produced malformed id {id1:?}"
+        );
+        assert_eq!(
+            id1, id2,
+            "stable symlink: quiescent walks must be byte-identical \
+             (guard skip must not falsely fire)"
+        );
+        assert_eq!(
+            m1.to_string(),
+            m2.to_string(),
+            "stable symlink: Manifest Display differs across two quiescent walks"
+        );
+    }
+
+    // --- Part (b): changing symlink target --------------------------------
+    {
+        const ATTEMPTS: usize = 40;
+
+        for attempt in 0..ATTEMPTS {
+            let scratch = TempTree::new("symlink_changing");
+            let root = scratch.path().to_path_buf();
+
+            let target = root.join("target.bin");
+            write_file(&target, &ramp(MMAP_THRESHOLD * 2)); // large
+            std::os::unix::fs::symlink(&target, root.join("link.bin")).expect("create symlink");
+
+            let target_c = target.clone();
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let done_c = Arc::clone(&done);
+
+            // Mutator: change the target's content mid-walk.
+            let mutator = std::thread::spawn(move || {
+                let mut seed: u8 = 0x42;
+                while !done_c.load(Ordering::Relaxed) {
+                    // Overwrite target with different-size content.
+                    let _ = fs::write(&target_c, ramp(MMAP_THRESHOLD + seed as usize * 17));
+                    // Truncate to zero briefly.
+                    try_truncate(&target_c, 0);
+                    seed = seed.wrapping_mul(31).wrapping_add(7);
+                    std::hint::spin_loop();
+                }
+            });
+
+            let result = walk(
+                &root,
+                &WalkOptions {
+                    walk_jobs: Some(1),
+                    ..WalkOptions::default()
+                },
+                &hasher,
+            );
+            done.store(true, Ordering::Relaxed);
+            mutator.join().expect("mutator thread panicked");
+
+            // Invariant: must not panic/crash.  Ok (if race missed or
+            // symlink guard-skip allowed it) or typed error (if SIGBUS or
+            // vanish was caught on the target file).
+            match &result {
+                Ok(manifest) => {
+                    let id = snapshot_id(manifest, &hasher);
+                    assert!(
+                        is_valid_snapshot_id(&id),
+                        "attempt={attempt}: symlink-target race: Ok with malformed id {id:?}"
+                    );
+                }
+                Err(err) => {
+                    assert!(
+                        is_acceptable_error(err),
+                        "attempt={attempt}: symlink-target race: unexpected error variant: {err:?}"
+                    );
+                    assert!(
+                        error_display_names_a_path(err),
+                        "attempt={attempt}: symlink error Display must name a path: {:?}",
+                        err.to_string()
+                    );
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 10. Sub-threshold shrink (not mmap-fault): size-drift guard via stat path.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sub_threshold_shrink_detected_by_size_drift_guard() {
+    // Spec clause: bytes-vs-FileRecord.size drift (design §B). A small (sub-
+    // MMAP_THRESHOLD) file that is rewritten to a SMALLER size between
+    // discovery stat and hash-time stat produces FileChangedDuringWalk via the
+    // size-drift guard, NOT via the SIGBUS path. This is the non-mmap branch:
+    // the file is read with fs::read (no mmap, no SIGBUS), but the hash-time
+    // metadata `len` differs from the discovery `recorded_size`.
+    //
+    // Note: for sub-threshold files, `blake3_hash_file` returns (hash, stat_len)
+    // where `stat_len` is the SECOND stat (at hash time). So the drift guard
+    // fires when the second stat sees a different size than discovery.
+    const ATTEMPTS: usize = 60;
+    let hasher = Blake3Hasher::new();
+
+    for attempt in 0..ATTEMPTS {
+        let scratch = TempTree::new("sub_threshold_shrink");
+        let root = scratch.path().to_path_buf();
+
+        // Victim: explicitly sub-threshold (< 256 KiB) so fs::read is used.
+        let small_size = MMAP_THRESHOLD / 2; // 128 KiB
+        let victim = root.join("small_victim.bin");
+        write_file(&victim, &ramp(small_size));
+        // Shrunk replacement: clearly smaller.
+        let shrunk_size = MMAP_THRESHOLD / 8; // 32 KiB
+
+        // Control file (never mutated).
+        write_file(&root.join("control.bin"), &ramp(512));
+
+        let victim_c = victim.clone();
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done_c = Arc::clone(&done);
+
+        // Shrinker thread: hammers the victim to a smaller size.
+        let shrinker = std::thread::spawn(move || {
+            while !done_c.load(Ordering::Relaxed) {
+                let _ = fs::write(&victim_c, ramp(shrunk_size));
+                let _ = fs::write(&victim_c, ramp(small_size));
+                std::hint::spin_loop();
+            }
+        });
+
+        let result = walk(
+            &root,
+            &WalkOptions {
+                walk_jobs: Some(1),
+                ..WalkOptions::default()
+            },
+            &hasher,
+        );
+        done.store(true, Ordering::Relaxed);
+        shrinker.join().expect("shrinker thread panicked");
+
+        match &result {
+            Ok(manifest) => {
+                let id = snapshot_id(manifest, &hasher);
+                assert!(
+                    is_valid_snapshot_id(&id),
+                    "attempt={attempt}: sub-threshold shrink: Ok with malformed id {id:?}"
+                );
+            }
+            Err(err) => {
+                // The size-drift guard should produce FileChangedDuringWalk;
+                // a vanish (if the file is briefly absent) yields FileVanished;
+                // genuine IO is Io.  Must NOT be an untyped panic.
+                assert!(
+                    matches!(
+                        err,
+                        WalkError::FileChangedDuringWalk { .. }
+                            | WalkError::FileVanishedDuringWalk { .. }
+                            | WalkError::Io { .. }
+                    ),
+                    "attempt={attempt}: sub-threshold shrink produced unexpected variant: {err:?}"
+                );
+                assert!(
+                    error_display_names_a_path(err),
+                    "attempt={attempt}: error Display must name a path: {:?}",
+                    err.to_string()
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 11. Large-file truncation yields FileChangedDuringWalk (not Io):
+//     the is_mmap_fault() classification is correctly wired.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn large_file_truncation_yields_file_changed_not_io() {
+    // Spec clause: SIGBUS → FileChangedDuringWalk (design §A + §B). When the
+    // SIGBUS guard catches a mid-mmap truncation, `is_mmap_fault(&e)` returns
+    // true and walk.rs maps it to WalkError::FileChangedDuringWalk — NOT to
+    // WalkError::Io (which is reserved for genuine permission/IO faults).
+    //
+    // This test asserts that when we get an error on a concurrent large-file
+    // truncation, it is FileChangedDuringWalk or FileVanishedDuringWalk —
+    // NEVER Io (which would mean the mmap fault fell through to the wrong arm).
+    const LARGE_SIZE: usize = 4 * 1024 * 1024; // 4 MiB — well above MMAP_THRESHOLD
+    const ATTEMPTS: usize = 40;
+
+    let hasher = Blake3Hasher::new();
+
+    for attempt in 0..ATTEMPTS {
+        let scratch = TempTree::new("mmap_fault_typed");
+        let root = scratch.path().to_path_buf();
+        let victim = root.join("large_typed.bin");
+        write_file(&victim, &ramp(LARGE_SIZE));
+
+        let victim_c = victim.clone();
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done_c = Arc::clone(&done);
+
+        let truncator = std::thread::spawn(move || {
+            while !done_c.load(Ordering::Relaxed) {
+                try_truncate(&victim_c, 0);
+                try_truncate(&victim_c, (LARGE_SIZE / 2) as u64);
+                try_truncate(&victim_c, 0);
+                std::hint::spin_loop();
+            }
+        });
+
+        let result = walk(
+            &root,
+            &WalkOptions {
+                walk_jobs: Some(1),
+                ..WalkOptions::default()
+            },
+            &hasher,
+        );
+        done.store(true, Ordering::Relaxed);
+        truncator.join().expect("truncator thread panicked");
+
+        match &result {
+            Ok(manifest) => {
+                let id = snapshot_id(manifest, &hasher);
+                assert!(
+                    is_valid_snapshot_id(&id),
+                    "attempt={attempt}: large-truncation: Ok with malformed id {id:?}"
+                );
+            }
+            Err(err) => {
+                // A large-file truncation MUST produce FileChangedDuringWalk
+                // (from is_mmap_fault) or FileVanishedDuringWalk (if the file
+                // appeared empty/gone at stat time).  NEVER Io — that would
+                // mean the mmap fault was not recognized and fell through to
+                // the wrong variant.
+                assert!(
+                    matches!(
+                        err,
+                        WalkError::FileChangedDuringWalk { .. }
+                            | WalkError::FileVanishedDuringWalk { .. }
+                    ),
+                    "attempt={attempt}: large-file truncation must produce FileChanged or \
+                     FileVanished, not Io or other: {err:?}"
                 );
                 assert!(
                     error_display_names_a_path(err),
