@@ -3,7 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 31 IN PROGRESS — 16/20 — Catalog default · files-in-flux robustness · `autocomplete` → snapdir 1.9.0 — 291/295 total
+## ▶ PHASE 31 IN PROGRESS — 17/20 — Catalog default · files-in-flux robustness · `autocomplete` → snapdir 1.9.0 — 292/295 total
+
+> ✅ `release-verify-branch-1.9.0` (generic, HUMAN ✋ APPROVED 2026-06-17, artifact `e5fc35d`, fc=1) — after the operator reviewed the 1.9.0 release explainer (`.gatesmith/reviews/snapdir-1.9.0-release.html`). Rebuilt `release-verify/1.9.0` off upstream/main with the sigbus glibc fix + `disabl` typos allowlist (origin `e5fc35d`, ZERO .gatesmith, tip=1.9.0); pre-push CI mirror PASSED; **bench-verify.yml run 27710429139 = SUCCESS on Linux** (`__sigsetjmp` links; determinism + scenarios + benches green). Recovered from the earlier fc=1 link-error fail+reopen.
+> **▶ NEXT: `release-pr-upstream-1.9.0` (generic, HUMAN ✋, IRREVERSIBLE — OPERATOR-DRIVEN)** — open PR `release-verify/1.9.0` → snapdir/snapdir (title `release: 1.9.0`, body = CHANGELOG `[1.9.0]`), full CI incl. the required reflink Btrfs FICLONE job, squash-merge. Then `release-tag-crates-1.9.0` ✋ (**TP pre-check on all 6 crate pages!** the 1.7.0 ssh-store 403 lesson) → `phase31-complete` ✋.
 
 > ✅ `flux-impl-core-sigbus` RE-PASSED (code `b779426`, fc=1) — fixed the glibc link: `#[cfg(target_env="gnu")]` binds `__sigsetjmp` via `#[link_name]` (call site unchanged), keeps `sigsetjmp` on musl/macOS/BSD; `siglongjmp` shared. macOS verify green (frozen 3/3, concurrent_mutation 11/11, goldens byte-identical, fmt+clippy `--all-features`); musl cross-build clean. Downstream flux gates unaffected (link-only cfg). **Linux confirmation pending the re-pushed bench-verify.**
 > **▶ NEXT (id-asc, failed first): `release-verify-branch-1.9.0` (generic, HUMAN ✋, fc=1)** — RE-ATTEMPT: rebuild `release-verify/1.9.0` off upstream/main with the sigbus fix (it'll be in dev's net diff), force-push to origin, `bench-verify.yml` re-runs on Linux (the real `__sigsetjmp` confirmation). Then operator drives PR ✋ → tag+crates ✋ (TP pre-check all 6) → phase31-complete ✋.

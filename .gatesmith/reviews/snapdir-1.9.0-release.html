@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>snapdir 1.9.0 — release notes</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --ink:#e6edf3; --muted:#9aa7b4;
+    --line:#2b3440; --green:#3fb950; --red:#f85149; --amber:#d29922;
+    --blue:#58a6ff; --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1020px;margin:0 auto;padding:48px 24px 96px}
+  header.hero{border-bottom:1px solid var(--line);padding-bottom:28px;margin-bottom:40px}
+  .eyebrow{font:600 12px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--blue)}
+  h1{font-size:42px;margin:14px 0 6px;letter-spacing:-.02em}
+  h1 .v{color:var(--green)}
+  .sub{color:var(--muted);font-size:18px;max-width:70ch}
+  .pills{margin-top:20px;display:flex;flex-wrap:wrap;gap:8px}
+  .pill{font:600 12px/1 var(--mono);background:var(--panel2);border:1px solid var(--line);
+    color:var(--muted);padding:7px 11px;border-radius:999px}
+  .pill b{color:var(--ink)}
+  h2{font-size:14px;letter-spacing:.14em;text-transform:uppercase;color:var(--blue);
+    margin:48px 0 6px;font-family:var(--mono)}
+  .feat{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:24px 26px;margin:18px 0}
+  .feat h3{margin:0 0 4px;font-size:23px;letter-spacing:-.01em}
+  .feat .tag{font:600 11px/1 var(--mono);text-transform:uppercase;letter-spacing:.1em;
+    padding:4px 8px;border-radius:6px;margin-left:8px;vertical-align:middle}
+  .tag.fix{background:rgba(248,81,73,.14);color:#ff7b72;border:1px solid rgba(248,81,73,.3)}
+  .tag.chg{background:rgba(210,153,34,.14);color:#e3b341;border:1px solid rgba(210,153,34,.3)}
+  .tag.add{background:rgba(63,185,80,.14);color:#56d364;border:1px solid rgba(63,185,80,.3)}
+  .feat p.lede{color:var(--muted);margin:.4em 0 18px;max-width:74ch}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:680px){.ba{grid-template-columns:1fr}.wrap{padding:32px 16px 72px}h1{font-size:32px}}
+  .col{border:1px solid var(--line);border-radius:10px;padding:16px 18px;background:var(--panel2)}
+  .col.before{border-color:rgba(248,81,73,.35)}
+  .col.after{border-color:rgba(63,185,80,.35)}
+  .col h4{margin:0 0 10px;font:600 12px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase}
+  .col.before h4{color:#ff7b72} .col.after h4{color:#56d364}
+  .col ul{margin:0;padding-left:18px} .col li{margin:.42em 0}
+  code,kbd{font-family:var(--mono);font-size:.86em;background:#0b0f15;border:1px solid var(--line);
+    padding:1.5px 6px;border-radius:5px;color:#cdd9e5}
+  .term{font-family:var(--mono);font-size:13px;background:#0b0f15;border:1px solid var(--line);
+    border-radius:8px;padding:13px 15px;margin:12px 0 0;white-space:pre-wrap;overflow-x:auto;color:#cdd9e5}
+  .term .p{color:#56d364}.term .x{color:#ff7b72}.term .c{color:#6e7781}
+  table.facts{width:100%;border-collapse:collapse;margin-top:6px;font-size:14.5px}
+  table.facts th,table.facts td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.facts th{color:var(--muted);font:600 11px/1.3 var(--mono);letter-spacing:.08em;text-transform:uppercase}
+  table.facts td.b{color:#ff8b82}table.facts td.a{color:#7ee787}
+  table.facts td:first-child{color:var(--ink);font-weight:600;width:34%}
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:8px}
+  @media(max-width:680px){.metrics{grid-template-columns:repeat(2,1fr)}}
+  .metric{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;text-align:center}
+  .metric .n{font-size:30px;font-weight:700;letter-spacing:-.02em;color:var(--green)}
+  .metric .l{color:var(--muted);font-size:12.5px;margin-top:4px}
+  footer{margin-top:56px;padding-top:22px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+  footer code{font-size:12px}
+  .key{background:rgba(88,166,255,.08);border:1px solid rgba(88,166,255,.3);border-radius:12px;
+    padding:16px 20px;margin-top:18px;color:#c9d7e6}
+  .key b{color:var(--blue)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="eyebrow">Release notes</div>
+    <h1>snapdir <span class="v">1.9.0</span></h1>
+    <p class="sub">Three operator-prioritized fixes, each rediscovered and verified by an independent
+    adversarial QA pass: a default-on catalog, a panic-free / crash-free directory walk under
+    concurrent file change, and a documented shell-completion command.</p>
+    <div class="pills">
+      <span class="pill"><b>1.8.0</b> → <b>1.9.0</b></span>
+      <span class="pill">3 feature clusters</span>
+      <span class="pill"><b>61</b> new black-box tests</span>
+      <span class="pill"><b>10,500</b>-iteration fuzz</span>
+      <span class="pill">snapshot ids <b>byte-identical</b></span>
+      <span class="pill">6 crates</span>
+    </div>
+  </header>
+
+  <!-- FEATURE 1 -->
+  <h2>1 · Catalog</h2>
+  <div class="feat">
+    <h3>The catalog is on by default<span class="tag fix">fix</span><span class="tag chg">behavior</span></h3>
+    <p class="lede">You created snapshots without <code>--catalog</code>, then ran
+    <code>revisions --catalog none</code> and got nothing back. The write path logged to no catalog
+    at all, while <code>--catalog none</code> opened a literal, always-empty <code>none-catalog.redb</code> —
+    two halves that never met.</p>
+    <div class="ba">
+      <div class="col before">
+        <h4>Before (1.8.0)</h4>
+        <ul>
+          <li><code>push</code>/<code>stage</code> without <code>--catalog</code> → recorded to <b>no catalog</b>.</li>
+          <li><code>revisions --catalog none</code> → silently <b>empty</b> (queried an empty DB named <code>none</code>).</li>
+          <li>Snapshots taken without a flag were <b>un-queryable</b>.</li>
+        </ul>
+      </div>
+      <div class="col after">
+        <h4>After (1.9.0)</h4>
+        <ul>
+          <li><code>--catalog</code> unset → a <b>default catalog</b>; <code>push</code>/<code>stage</code> auto-record, queries read it.</li>
+          <li>No-flag snapshots are now <b>queryable out of the box</b>.</li>
+          <li><code>--catalog none</code> = explicit <b>disable sentinel</b> → a clear "catalog disabled" message, not a fake-empty result.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="term"><span class="c"># 1.8.0 — snapshots made, but nothing comes back</span>
+$ snapdir push ./CleanedUpBooks --store … <span class="c"># (no --catalog)</span>
+$ snapdir revisions --catalog none --location ./CleanedUpBooks
+<span class="x">(nothing)</span>
+
+<span class="c"># 1.9.0 — the no-flag snapshot is recorded and listed</span>
+$ snapdir revisions --location ./CleanedUpBooks
+<span class="p">ce0dca… 2026-06-17  ./CleanedUpBooks</span></div>
+  </div>
+
+  <!-- FEATURE 2 -->
+  <h2>2 · Robustness — files changing mid-snapshot</h2>
+  <div class="feat">
+    <h3>A tree in flux fails loudly &amp; safely — never silently<span class="tag fix">fix</span></h3>
+    <p class="lede">Hashing a directory whose files were being written, truncated, or deleted could
+    end three bad ways: a hard SIGBUS process kill with <b>no output at all</b>, a Rust panic with a
+    backtrace, or a quietly-wrong recorded size. 1.9.0 turns every in-flux condition into a clear,
+    typed error that names the offending file and exits non-zero.</p>
+    <div class="ba">
+      <div class="col before">
+        <h4>Before (1.8.0)</h4>
+        <ul>
+          <li>Large file truncated mid-hash (mmap) → <b>SIGBUS kills the process, prints nothing</b>.</li>
+          <li>Directory vanishes mid-walk → <b>panic + backtrace</b> (two <code>expect()</code> sites).</li>
+          <li>File grows mid-hash → <b>silently records the wrong size</b>.</li>
+          <li>Deleted file → generic IO error (mislabeled a transient race).</li>
+        </ul>
+      </div>
+      <div class="col after">
+        <h4>After (1.9.0)</h4>
+        <ul>
+          <li>Scoped <b>SIGBUS handler</b> → truncation becomes a clean <code>file changed during walk</code> error (links on macOS <b>and</b> glibc/musl Linux).</li>
+          <li>The two panics → typed <code>tree structure changed during walk</code> returns.</li>
+          <li>Grow/shrink caught by a stat + bytes guard → <code>file changed during walk</code>, never a wrong size.</li>
+          <li>Deleted file → <code>file vanished during walk</code>, naming the path, exit ≠ 0.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="key"><b>Consistency model:</b> snapdir assumes a <b>quiescent tree</b> during a snapshot.
+    Outcome is now <b>always</b> either a valid 64-hex snapshot id (exit 0) <b>or</b> a typed error
+    naming the file (exit ≠ 0) — never a silent kill, never a panic, never a wrong size. On a static
+    tree, ids and manifests are <b>byte-identical to before</b> (the frozen-format keystone holds).</div>
+    <table class="facts">
+      <tr><th>Scenario (file changing mid-walk)</th><th>1.8.0</th><th>1.9.0</th></tr>
+      <tr><td>Large file truncated during hash</td><td class="b">SIGBUS — process killed, no message</td><td class="a">clean typed error, names the file</td></tr>
+      <tr><td>Directory removed mid-walk</td><td class="b">panic + backtrace</td><td class="a"><code>tree structure changed</code></td></tr>
+      <tr><td>File grows during hash</td><td class="b">silently wrong size in manifest</td><td class="a"><code>file changed during walk</code></td></tr>
+      <tr><td>Adversarial fuzz (10,500 iterations)</td><td class="b">crashes / panics observed</td><td class="a"><b>0 kills · 0 panics</b> — invariant held</td></tr>
+    </table>
+  </div>
+
+  <!-- FEATURE 3 -->
+  <h2>3 · Shell completions</h2>
+  <div class="feat">
+    <h3><code>snapdir autocomplete &lt;shell&gt;</code><span class="tag add">new</span></h3>
+    <p class="lede">A completion command existed but was hidden and undocumented. 1.9.0 promotes it to a
+    first-class, documented command with profile-wiring help — the way <code>gh</code> and <code>rustup</code> do it.</p>
+    <div class="ba">
+      <div class="col before">
+        <h4>Before (1.8.0)</h4>
+        <ul>
+          <li><code>completions</code> existed but was <b>hidden</b> from <code>--help</code>.</li>
+          <li>No documentation, no wiring guidance.</li>
+        </ul>
+      </div>
+      <div class="col after">
+        <h4>After (1.9.0)</h4>
+        <ul>
+          <li><code>snapdir autocomplete &lt;shell&gt;</code> — <b>visible &amp; documented</b>, for <b>bash · zsh · fish · powershell · elvish</b>.</li>
+          <li>Long-help shows exactly how to wire it into your profile.</li>
+          <li>An unknown shell fails fast (exit 2) listing the valid shells; <code>completions</code> stays as a back-compat alias.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="term"><span class="c"># add to ~/.zshrc (or ~/.bashrc with 'bash')</span>
+$ <span class="p">eval "$(snapdir autocomplete zsh)"</span></div>
+  </div>
+
+  <!-- METRICS -->
+  <h2>By the numbers</h2>
+  <div class="metrics">
+    <div class="metric"><div class="n">61</div><div class="l">new black-box tests<br>(22 autocomplete · 28 catalog · 11 in-flux)</div></div>
+    <div class="metric"><div class="n">10,500</div><div class="l">fuzz iterations vs the built binary — 0 kills, 0 panics</div></div>
+    <div class="metric"><div class="n">5</div><div class="l">shells supported by <code>autocomplete</code></div></div>
+    <div class="metric"><div class="n">0</div><div class="l">snapshot-id changes on a static tree (byte-identical)</div></div>
+  </div>
+
+  <h2>How it was built</h2>
+  <div class="feat" style="padding:20px 26px">
+    <p class="lede" style="margin:0">Each fix shipped as an <b>adversarial triple</b> — an independent agent wrote the
+    black-box tests from the spec alone, a separate lane wrote the source, and a third reviewed for weakening — coordinated by
+    a gate ledger (3 clusters + a 5-gate release chain). A Linux-only linker bug in the SIGBUS handler
+    (<code>sigsetjmp</code> is a macro over <code>__sigsetjmp</code> on glibc) was caught by CI, reopened, fixed, and
+    re-verified before release. The frozen manifest/merkle format was never touched.</p>
+  </div>
+
+  <footer>
+    snapdir 1.9.0 · 2026-06-17 · 6 crates (snapdir-core/-catalog/-stores/-ssh-store/-cli/snapdir).
+    Verify branch <code>release-verify/1.9.0</code> green on Linux <code>bench-verify</code>
+    (determinism + scenarios + benches). Generated from the release CHANGELOG and gate ledger.
+  </footer>
+
+</div>
+</body>
+</html>
