@@ -3,7 +3,10 @@
 > Derived from `.gatesmith/gates.yaml` — re-projected by the PM at the end of every
 > tick. Do not edit by hand; edit `gates.yaml` instead.
 
-## ▶ PHASE 31 IN PROGRESS — 15/20 — Catalog default · files-in-flux robustness · `autocomplete` → snapdir 1.9.0 — 290/295 total
+## ▶ PHASE 31 IN PROGRESS — 16/20 — Catalog default · files-in-flux robustness · `autocomplete` → snapdir 1.9.0 — 291/295 total
+
+> ✅ `release-prep-1.9.0` (generic, code `8f88366`) — bumped 1.8.0→1.9.0 (5 pins: workspace.package + snapdir-core/-catalog/-stores path-dep pins + flagship snapdir-cli pin) + Cargo.lock. Folded CHANGELOG `[Unreleased]`→`[1.9.0] - 2026-06-17` (Added: `autocomplete <shell>`; Changed: default-on catalog + `--catalog none` sentinel; Fixed: files-in-flux robustness) + fresh `[Unreleased]` + compare-links. No residual 1.8.0 version pins. `cargo build --workspace --locked` + fmt + clippy `--all-features` clean. Gatesmith-free commit.
+> **▶ NEXT: `release-verify-branch-1.9.0` (generic, HUMAN ✋)** — PM builds `release-verify/1.9.0` OFF `upstream/main` applying the net Phase-31 code diff (exclude `.gatesmith`/`.claude`/`utils/dx`), tip=1.9.0, ZERO `.gatesmith`; push origin; `bench-verify.yml` green; then escalate the approval. Then operator drives: PR ✋ → tag+crates ✋ (**TP pre-check on all 6 crates!**) → phase31-complete ✋.
 
 > 🏁 **FLUX CLUSTER COMPLETE — ALL 3 FEATURE CLUSTERS DONE** (autocomplete · catalog · flux). ✅ `flux-fuzz-verify` (adversary/HAIKU, independent, ledger-only) — built `target/debug/snapdir` from source; black-box fuzz against the REAL binary: **10,500 outcomes** (10k concurrent-mutation + 500 mid-mmap-truncation stress) → 9938 valid 64-hex ids + 562 clean typed errors + **0 unacceptable** (zero signal-kills, zero panics, zero empty-success). VERDICT: INVARIANT HELD — PASS. The robustness story is independently proven against the shipping binary.
 > **▶ NEXT (id-asc): `release-prep-1.9.0` (generic)** — all deps satisfied (catalog-default-review ✓ + flux-fuzz-verify ✓ + autocomplete-review ✓). Bump 1.8.0→1.9.0 (workspace.package + 3 path-dep pins + flagship snapdir-cli pin); fold CHANGELOG `[Unreleased]`→`[1.9.0]` + compare-links; `cargo build --workspace --locked` + fmt + clippy `--all-features`; gatesmith-free code commit. Then verify-branch ✋ → PR ✋ → tag+crates ✋ (TP pre-check!) → phase31-complete ✋.

@@ -5074,7 +5074,9 @@ gates:
     phase: 31
     owner_agent: generic
     depends_on: [catalog-default-review, flux-fuzz-verify, autocomplete-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T16:29:46Z
+    git_sha: 8f88366
     failure_count: 0
     verification_cmd: "grep -qE '^version = \"1.9.0\"' Cargo.toml && cargo build --workspace --locked && grep -q '1.9.0' docs/rust-port/CHANGELOG.md && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
     pass_criteria:
