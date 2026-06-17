@@ -12,15 +12,18 @@
 //! most memory-friendly engine:
 //!
 //! - **Unkeyed BLAKE3** ([`Blake3Hasher`](crate::Blake3Hasher)): for files at or
-//!   above [`MMAP_THRESHOLD`] it memory-maps the file and hashes it with
-//!   `update_mmap_rayon`, which both avoids a large heap copy and uses the
-//!   `rayon` thread-pool to hash a single large file in parallel. Files below
+//!   above [`MMAP_THRESHOLD`] it memory-maps the file and hashes it with the
+//!   single-threaded `update_mmap`, which avoids a large heap copy. Files below
 //!   the threshold (and **all empty / 0-byte files**) take the plain
-//!   [`std::fs::read`] branch — see the SIGBUS caveat below for why an empty
+//!   [`std::fs::read`] branch — see the SIGBUS note below for why an empty
 //!   file is never mmapped. The streaming `Hasher::new()+update+finalize`
-//!   shape is byte-identical to the one-shot [`blake3::hash`], so the per-file
-//!   checksums — and therefore the snapshot ids — are unchanged from the
-//!   read-then-`hash_hex` path.
+//!   shape is byte-identical to the one-shot [`blake3::hash`] (and to the prior
+//!   `update_mmap_rayon` path), so the per-file checksums — and therefore the
+//!   snapshot ids — are unchanged from the read-then-`hash_hex` path. The
+//!   cross-file parallel walk (`walk.rs`) still hashes many files concurrently
+//!   on a bounded rayon pool; only the rare *intra-file* `update_mmap_rayon`
+//!   fan-out is dropped so each file is hashed on a single thread (a
+//!   prerequisite for the SIGBUS guard below).
 //! - **Keyed BLAKE3** ([`Blake3KeyedHasher`](crate::Blake3KeyedHasher)): the
 //!   derive-key context lives in a private field of the frozen
 //!   [`merkle`](crate::merkle) module, so this module cannot re-seed a raw
@@ -34,17 +37,23 @@
 //!   defer to [`Hasher::hash_hex`](crate::merkle::Hasher::hash_hex), staying
 //!   byte-identical to the previous `fs::read` + `hash_hex` pair.
 //!
-//! ## SIGBUS on concurrent truncation (mmap caveat)
+//! ## SIGBUS on concurrent truncation (mmap)
 //!
-//! `update_mmap_rayon` memory-maps the file and reads it through the mapping.
-//! A snapshot assumes a **static tree**: if another process **truncates or
+//! `update_mmap` memory-maps the file and reads it through the mapping. A
+//! snapshot assumes a **static tree**: if another process **truncates or
 //! shrinks** a file *while it is being hashed*, accessing the now-invalid pages
-//! raises `SIGBUS` and aborts the process. This is the **same exposure as
-//! `b3sum`** (which mmaps by default) and is intrinsic to mmap-based hashing;
-//! we deliberately do **not** install a `SIGBUS` handler. Callers that cannot
-//! guarantee a quiescent tree should hash a copied/quiesced snapshot. Empty
-//! and sub-threshold files take the plain-read branch and are not exposed to
-//! this hazard.
+//! raises `SIGBUS`. Historically this aborted the process with no snapdir
+//! message (the "fails without printing anything" symptom). On **unix** the
+//! large-file mmap hash now runs inside [`sigbus::guard_mmap_hash`], which arms
+//! a per-thread guard and turns a mid-hash truncation into a clean
+//! [`io::Error`] ("file changed during hashing (mmap fault)") instead of a
+//! silent process kill — the [`walk`](crate::walk) layer maps that to a typed
+//! tree-in-flux error. Hashing each file **single-threaded** (`update_mmap`,
+//! not `update_mmap_rayon`) is what makes the guard sound: the faulting thread
+//! is always the thread that armed the jump buffer. Empty and sub-threshold
+//! files take the plain-read branch and are never mmapped. On **non-unix** there
+//! is no handler, but the engine still uses mmap; callers that cannot guarantee
+//! a quiescent tree should hash a copied/quiesced snapshot.
 
 use std::fs;
 use std::io;
@@ -99,37 +108,45 @@ pub trait HashFile {
     }
 }
 
-/// Hashes a BLAKE3 `hasher` over the file at `path`, choosing the mmap+rayon
-/// engine for files `>= MMAP_THRESHOLD` and a plain read otherwise.
+/// Memory-maps `path` into `hasher` with `update_mmap`, guarded against a
+/// concurrent-truncation `SIGBUS` on unix.
 ///
-/// `hasher` arrives pre-seeded (plain `new()` for unkeyed, `new_derive_key` for
-/// keyed); this only selects the read strategy. Returns `(hex, byte_len)`.
+/// `update_mmap` is **single-threaded** (no intra-file `rayon` fan-out), which
+/// is exactly what makes the unix [`sigbus::guard_mmap_hash`] guard sound: the
+/// thread that touches the mapping is the thread that armed the jump buffer, so
+/// a mid-hash truncation longjmps back here as a clean `io::Error` rather than
+/// killing the process. On non-unix there is no handler, so we map+hash
+/// directly (same byte-identical engine, no guard).
+fn blake3_update_mmap_guarded(hasher: &mut blake3::Hasher, path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        crate::sigbus::guard_mmap_hash(|| hasher.update_mmap(path).map(|_| ()))
+    }
+    #[cfg(not(unix))]
+    {
+        hasher.update_mmap(path).map(|_| ())
+    }
+}
+
+/// Hashes a BLAKE3 `hasher` over the file at `path`, choosing the single-thread
+/// `update_mmap` engine for files `>= MMAP_THRESHOLD` and a plain read
+/// otherwise.
+///
+/// `hasher` arrives pre-seeded (plain `new()` for unkeyed); this only selects
+/// the read strategy. Returns `(hex, byte_len)`. There is no longer a separate
+/// rayon-fan-out engine: every large file is hashed on a single thread (the
+/// cross-file parallelism in `walk.rs` is the dominant win and is unchanged),
+/// which the SIGBUS guard requires.
 fn blake3_hash_file(mut hasher: blake3::Hasher, path: &Path) -> io::Result<(String, u64)> {
     let len = fs::metadata(path)?.len();
     if len >= MMAP_THRESHOLD {
-        // Large file: memory-map + hash in parallel, no large heap copy. Never
-        // reached for an empty file (len 0 < MMAP_THRESHOLD), so mmap of a
+        // Large file: memory-map + hash single-threaded, no large heap copy.
+        // Never reached for an empty file (len 0 < MMAP_THRESHOLD), so mmap of a
         // zero-length file — which can SIGBUS — never happens.
-        hasher.update_mmap_rayon(path)?;
+        blake3_update_mmap_guarded(&mut hasher, path)?;
     } else {
         // Small/empty file: a plain read is cheaper than the mmap setup, and
         // the streaming update is byte-identical to the one-shot hash.
-        let bytes = fs::read(path)?;
-        hasher.update(&bytes);
-    }
-    Ok((hasher.finalize().to_hex().to_string(), len))
-}
-
-/// Single-threaded BLAKE3 file hash: same mmap/plain-read selection as
-/// [`blake3_hash_file`] but using `update_mmap` (no nested `rayon`) for large
-/// files. Byte-identical output; only the engine differs.
-fn blake3_hash_file_seq(mut hasher: blake3::Hasher, path: &Path) -> io::Result<(String, u64)> {
-    let len = fs::metadata(path)?.len();
-    if len >= MMAP_THRESHOLD {
-        // Large file: memory-map + hash single-threaded (no intra-file rayon
-        // fan-out). Empty files never reach this branch (len 0 < threshold).
-        hasher.update_mmap(path)?;
-    } else {
         let bytes = fs::read(path)?;
         hasher.update(&bytes);
     }
@@ -142,7 +159,11 @@ impl HashFile for Blake3Hasher {
     }
 
     fn hash_file_hex_seq(&self, path: &Path) -> io::Result<(String, u64)> {
-        blake3_hash_file_seq(blake3::Hasher::new(), path)
+        // Both engines now hash large files single-threaded via `update_mmap`,
+        // so the `_seq` variant and the default share one implementation. The
+        // distinct trait method is kept because `walk.rs` selects it for its
+        // oversubscription guard; the output is byte-identical either way.
+        blake3_hash_file(blake3::Hasher::new(), path)
     }
 }
 

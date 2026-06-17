@@ -25,6 +25,8 @@ pub mod manifest;
 pub mod merkle;
 pub mod progress;
 pub mod resources;
+#[cfg(unix)]
+pub mod sigbus;
 pub mod store;
 pub mod walk;
 
