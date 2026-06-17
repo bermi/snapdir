@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+### Fixed
+
+- **`snapdir id`/`manifest` now detect files changing during a snapshot and
+  fail with a clear, typed error naming the file instead of crashing or
+  recording a wrong size.** A large file truncated mid-hash no longer kills the
+  process via SIGBUS with no message; a file that vanishes, grows, or shrinks
+  mid-walk, or a directory removed mid-walk, is now reported as a typed
+  in-flux error (`file changed during walk` / `file vanished during walk` /
+  `tree structure changed during walk`) that names the path and exits non-zero,
+  rather than panicking with a backtrace or silently recording an incoherent
+  entry. snapdir assumes a **quiescent tree** during a snapshot: on a static
+  tree, ids and manifests are byte-identical to before.
+
 ## [1.8.0] - 2026-06-16
 
 This release is a CLI usability pass: stricter argument handling, a more honest
