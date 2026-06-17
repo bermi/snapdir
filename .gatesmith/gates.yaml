@@ -4979,7 +4979,9 @@ gates:
     owner_agent: adversary
     model: sonnet
     depends_on: [flux-impl-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T15:39:04Z
+    git_sha: d3d3f77
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --test concurrent_mutation && cargo test --workspace"
     pass_criteria:
