@@ -19,7 +19,7 @@ path = "src/main.rs"
 # is the flagship-named shim so `cargo install snapdir` installs the binary.
 # Path+version dep (not [workspace.dependencies]): only this crate consumes
 # it, and an unused workspace-level entry would be flagged by cargo-shear.
-snapdir-cli = { path = "../snapdir-cli", version = "1.8.0" }
+snapdir-cli = { path = "../snapdir-cli", version = "1.9.0" }
 
 [lints]
 workspace = true

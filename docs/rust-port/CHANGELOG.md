@@ -7,10 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-06-17
+
 ### Added
+
+- **`snapdir autocomplete <shell>` — a documented shell-completion command.**
+  Generates a completion script for `bash`, `zsh`, `fish`, `powershell`, or
+  `elvish`, with help text explaining how to wire it into your shell profile.
+  The previously-hidden `completions` subcommand remains as an alias.
+
+### Changed
+
+- **Catalog is now on by default.** When `--catalog` is unset, `push`/`stage`
+  record snapshots to a default catalog and `revisions`/`locations`/`ancestors`
+  read it, so snapshots taken without an explicit `--catalog` flag are now
+  queryable. Pass `--catalog none` to explicitly disable the catalog: querying
+  commands then print a clear message rather than querying an empty database.
 
 ### Fixed
 
+- **`revisions --catalog none` (and `locations`/`ancestors`) no longer returns
+  nothing silently.** `--catalog none` is now an explicit "disable" sentinel
+  that prints a clear message instead of querying an empty database; combined
+  with the default-on catalog above, snapshots recorded without a `--catalog`
+  flag are now queryable.
 - **`snapdir id`/`manifest` now detect files changing during a snapshot and
   fail with a clear, typed error naming the file instead of crashing or
   recording a wrong size.** A large file truncated mid-hash no longer kills the
@@ -527,7 +547,8 @@ Bash-written caches and remote buckets stay mutually readable.
   `gcloud`) in the shipped binary. External tools are used only by the test/oracle
   harness.
 
-[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/snapdir/snapdir/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/snapdir/snapdir/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/snapdir/snapdir/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/snapdir/snapdir/compare/v1.5.0...v1.6.0
