@@ -1,0 +1,55 @@
+```
+$ snapdir autocomplete --help
+Generate a shell completion script (bash, zsh, fish, …).
+
+Writes a completion script for the given shell to stdout. Wire it up by sourcing the output from your shell profile:
+
+bash:       eval "$(snapdir autocomplete bash)" # add the line above to ~/.bashrc
+
+zsh:        eval "$(snapdir autocomplete zsh)" # add the line above to ~/.zshrc
+
+fish:       snapdir autocomplete fish | source # or write to ~/.config/fish/completions/snapdir.fish
+
+powershell: snapdir autocomplete powershell | Out-String | Invoke-Expression # add the line above to your $PROFILE
+
+elvish:     eval (snapdir autocomplete elvish | slurp)
+
+The script always targets the `snapdir` binary name. The hidden `completions <shell>` alias is kept for back-compat (the release pipeline's gen-assets job and existing scripts) and emits byte-identical output.
+
+Usage: snapdir autocomplete [OPTIONS] <SHELL>
+
+Arguments:
+  <SHELL>
+          Target shell (`bash`, `fish`, `zsh`, `powershell`, `elvish`)
+          
+          [possible values: bash, elvish, fish, powershell, zsh]
+
+Options:
+  -q, --quiet
+          Suppress stderr banners and the live progress line
+
+      --color <WHEN>
+          When to colorize progress output: auto, always, or never
+
+          Possible values:
+          - auto:   Color when attached to a TTY and `NO_COLOR` is unset (default)
+          - always: Always emit color
+          - never:  Never emit color
+          
+          [default: auto]
+
+      --no-progress
+          Disable the live progress line (transfers still run)
+          
+          [env: SNAPDIR_NO_PROGRESS=]
+
+      --verbose
+          Enable verbose output. Honored by the transfer commands (push/fetch/pull/checkout/stage/sync emit an effective-config banner and CACHED/SAVED notices) and verify-cache (purge notices); inert elsewhere
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+```
