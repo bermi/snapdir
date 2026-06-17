@@ -5018,16 +5018,19 @@ gates:
     description: "CLI impl (cli.rs). Promote the hidden `Completions { shell }` command to a VISIBLE `autocomplete <shell>` (un-hide; keep `completions` as a HIDDEN alias via clap's #[command(alias = \"completions\")] so release.yml gen-assets keeps working) with rich long-help including per-shell profile-wiring examples (bash: `eval \"$(snapdir autocomplete bash)\"` in ~/.bashrc; zsh in ~/.zshrc; fish; powershell). Dispatch unchanged (clap_complete::generate(shell, &mut Cli::command(), \"snapdir\", stdout)); shell value set = clap_complete::Shell; bin_name stays `snapdir`. Take over the staged tests. In-lane = crates/snapdir-cli/ only. PM machine-check: builds locked, dx_autocomplete green, pending test moved, `autocomplete bash` emits a snapdir script, fmt+clippy clean."
   - id: autocomplete-ci-snapshots
     phase: 31
-    owner_agent: ci
+    owner_agent: cli
     depends_on: [autocomplete-impl-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T03:01:53Z
+    git_sha: 3adb8b1
     failure_count: 0
+    bump_reason: "GATE-BUMP 2026-06-17 (lane correction, mirrors Phase-30 dx-arg-snapshots): owner_agent ci->cli. The artifacts to regenerate are crates/snapdir-cli/tests/cmd/*.trycmd + the cli/clap_mangen man output — these live in the CLI lane, NOT the ci lane (which owns only Cargo/_typos/ci.yaml per ci.md; release.yml is the PACKAGING lane). A ci teammate would fail the fence on crates/snapdir-cli/. release.yml gen-assets needs NO change — the impl kept `completions` as a hidden alias, so `snapdir completions <shell>` still emits byte-identical assets (any switch to `autocomplete`-named assets is a separate optional packaging concern, out of scope here). verification_cmd + pass_criteria UNCHANGED."
     verification_cmd: "cargo test -p snapdir-cli && cargo run -q -p snapdir -- man >/dev/null"
     pass_criteria:
       and:
         - exit_code: 0
     human_checkpoint: false
-    description: "CI snapshot regeneration. Making `autocomplete` visible changes the top-level `--help` surface, so regenerate + commit the affected crates/snapdir-cli/tests/cmd/*.trycmd snapshots (help + a new autocomplete case) and confirm the man page (clap_mangen) renders. Update .github/workflows/release.yml gen-assets if needed (the `completions <shell>` loop keeps working via the hidden alias, OR switch it to `autocomplete <shell>`); keep actionlint clean. NOTE: the trycmd/man artifacts live in the CLI crate but the release.yml + actionlint scope is the ci lane — keep edits within crates/snapdir-cli/tests/cmd, the man output, and .github/workflows. PM machine-check: `cargo test -p snapdir-cli` green (trycmd included) + `snapdir man` renders."
+    description: "CLI snapshot regeneration (lane-corrected to cli). Making `autocomplete` visible adds it to the top-level `--help` surface (the impl gate already updated tests/cmd/help.trycmd). Add a dedicated per-command snapshot for `snapdir autocomplete --help` (consistent with the 21 per-command help-*.trycmd from Phase 30) capturing the wiring examples, regenerate any other affected tests/cmd/*.trycmd, and confirm the man page (clap_mangen) renders with the now-visible command. Stay in crates/snapdir-cli/. release.yml is UNTOUCHED (hidden `completions` alias preserves gen-assets). PM machine-check: `cargo test -p snapdir-cli` green (trycmd included) + `snapdir man` renders."
   - id: autocomplete-review
     phase: 31
     owner_agent: adversary
