@@ -4855,7 +4855,9 @@ gates:
     owner_agent: adversary
     model: sonnet
     depends_on: [catalog-default-design]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T11:29:46Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/catalog_default.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/catalog_default.rs"
     pass_criteria:
