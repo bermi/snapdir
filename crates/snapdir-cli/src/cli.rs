@@ -334,6 +334,13 @@ pub struct CatalogArgs {
     /// Store URI: `protocol://location/path` (revisions location fallback).
     #[arg(long, value_name = "URI", env = "SNAPDIR_STORE")]
     pub store: Option<String>,
+
+    /// Directory where the object cache (and the default catalog) is stored.
+    // Needed so the default catalog (`<cache-dir>/default-catalog.redb`) the
+    // query commands READ resolves to the SAME cache dir a no-flag
+    // `push`/`stage` WROTE to (respecting `--cache-dir`/`SNAPDIR_CACHE_DIR`).
+    #[arg(long, value_name = "DIR", env = "SNAPDIR_CACHE_DIR")]
+    pub cache_dir: Option<PathBuf>,
 }
 
 /// The cache-management family: applied to `verify`/`verify-cache`/`flush-cache`.
@@ -983,6 +990,7 @@ fn merge_catalog(g: &mut Resolved, c: &CatalogArgs) {
     g.location.clone_from(&c.location);
     g.id.clone_from(&c.id);
     g.store.clone_from(&c.store);
+    g.cache_dir.clone_from(&c.cache_dir);
 }
 
 /// Folds a parsed [`CacheMgmtArgs`] group into the resolved config.
@@ -1070,7 +1078,7 @@ impl Ctx {
                 let id = snapshot_id(&manifest, &Blake3Hasher::new());
                 let abs = resolve_root(path.as_deref())
                     .context("resolving the manifested directory path")?;
-                self.log_event("manifest", &id, &abs.to_string_lossy())?;
+                self.log_event("manifest", &id, &abs.to_string_lossy(), false)?;
                 Ok(())
             }
             Command::Id { path, .. } => {
@@ -1241,6 +1249,17 @@ enum Source {
     Default,
 }
 
+/// The resolved catalog selection: either an enabled redb DB path or the
+/// explicit `none`/empty disable sentinel.
+enum CatalogTarget {
+    /// Catalog logging/reads target this redb DB path.
+    Enabled(PathBuf),
+    /// `--catalog none` / `--catalog ""` (or `manifest` with no explicit
+    /// catalog): no logging, no DB created, query commands print a "disabled"
+    /// message and exit 0.
+    Disabled,
+}
+
 impl Source {
     fn tag(self) -> &'static str {
         match self {
@@ -1267,6 +1286,15 @@ fn knob_source(flag_set: bool, env_name: &str) -> Source {
     } else {
         Source::Default
     }
+}
+
+/// Prints the "catalog disabled" notice on stderr for the query commands when
+/// `--catalog none` (or empty) selects the disable sentinel, then the caller
+/// exits 0. Distinct from the enabled-but-empty case (which prints nothing),
+/// so a disabled catalog is never confused with a catalog that simply has no
+/// records yet.
+fn print_catalog_disabled() {
+    eprintln!("catalog disabled (--catalog none): nothing to query");
 }
 
 impl Ctx {
@@ -1321,9 +1349,16 @@ impl Ctx {
             self.globals.objects_store.as_deref().unwrap_or("none"),
             knob_source(has_flag("--objects-store"), "SNAPDIR_OBJECTS_STORE"),
         );
+        // catalog: when unset, resolve to the default catalog path so `defaults`
+        // surfaces what a no-flag run would actually use (default-on), with
+        // source=default. An explicit `none`/empty value stays verbatim.
+        let catalog_value = match self.resolve_catalog(true) {
+            CatalogTarget::Enabled(db) => db.display().to_string(),
+            CatalogTarget::Disabled => "none".to_owned(),
+        };
         emit(
             "catalog",
-            self.globals.catalog.as_deref().unwrap_or("none"),
+            &catalog_value,
             knob_source(has_flag("--catalog"), "SNAPDIR_CATALOG"),
         );
 
@@ -1547,7 +1582,7 @@ impl Ctx {
             }
             reporter.finish();
             println!("{id}");
-            self.log_event("push", id, store_url)?;
+            self.log_event("push", id, store_url, true)?;
             return Ok(());
         }
 
@@ -1611,7 +1646,7 @@ impl Ctx {
         // `revisions`/`ancestors` see it. Best-effort and only when the catalog
         // is enabled (`--catalog` / `SNAPDIR_CATALOG`), exactly like the oracle's
         // `_snapdir_log_event` no-op when no catalog adapter is configured.
-        self.log_event("push", &id, store_url)?;
+        self.log_event("push", &id, store_url, true)?;
         Ok(())
     }
 
@@ -1933,7 +1968,7 @@ impl Ctx {
         // staged base directory (the absolute path `stage` walked). Best-effort
         // and a no-op unless a catalog is enabled, so it never changes the
         // stdout bytes above.
-        self.log_event("stage", &id, &root.to_string_lossy())?;
+        self.log_event("stage", &id, &root.to_string_lossy(), true)?;
         Ok(())
     }
 
@@ -2045,7 +2080,10 @@ impl Ctx {
     /// catalog's order. Reproduces the original `snapdir locations` /
     /// `snapdir-sqlite3-catalog locations` query output.
     fn run_locations(&self) -> Result<()> {
-        let catalog = self.open_catalog()?;
+        let Some(catalog) = self.open_catalog()? else {
+            print_catalog_disabled();
+            return Ok(());
+        };
         for record in catalog.locations().context("querying catalog locations")? {
             println!("{}", locations_json_line(&record));
         }
@@ -2057,7 +2095,10 @@ impl Ctx {
     /// one frozen JSON line per ancestor (each line's `id` is the row's
     /// `previous_id`). Mirrors `snapdir ancestors --id=…`.
     fn run_ancestors(&self) -> Result<()> {
-        let catalog = self.open_catalog()?;
+        let Some(catalog) = self.open_catalog()? else {
+            print_catalog_disabled();
+            return Ok(());
+        };
         let id = self.require_id()?;
         let location = self.globals.location.as_deref();
         for record in catalog
@@ -2074,7 +2115,10 @@ impl Ctx {
     /// the oracle's `snapdir revisions --location=…`, whose location defaults to
     /// `--store` / the directory when `--location` is unset.
     fn run_revisions(&self) -> Result<()> {
-        let catalog = self.open_catalog()?;
+        let Some(catalog) = self.open_catalog()? else {
+            print_catalog_disabled();
+            return Ok(());
+        };
         // Oracle (L991-997): location = --location, else --store, else the dir;
         // empty → error.
         let location = self
@@ -2092,17 +2136,24 @@ impl Ctx {
         Ok(())
     }
 
-    /// Logs a catalog event (`event`/`id`/`location`) when the catalog is
-    /// enabled, mirroring the oracle's `_snapdir_log_event` (`snapdir` L1620): a
-    /// no-op unless `--catalog` / `SNAPDIR_CATALOG` selects a catalog. Uses the
-    /// shipped [`SystemClock`] (`created_at` = `YYYY-MM-DD HH:MM:SS.SSS`), so the
-    /// JSON timestamps are byte-shaped like the oracle's.
-    fn log_event(&self, event: &str, id: &str, location: &str) -> Result<()> {
-        // The oracle's `_snapdir_log_event` is a no-op when no catalog adapter
-        // is configured; only persist when the catalog is enabled.
-        let Some(db) = self.catalog_db_path() else {
+    /// Logs a catalog event (`event`/`id`/`location`) to the resolved catalog.
+    /// `push`/`stage` pass `allow_default = true` so a no-flag snapshot records
+    /// to the default catalog (`<cache-dir>/default-catalog.redb`); `manifest`
+    /// passes `false` so it only logs when a catalog is set EXPLICITLY (flag or
+    /// `SNAPDIR_CATALOG`), never auto-recording to the default. A `none`/empty
+    /// catalog (the disable sentinel) is always a silent no-op. Uses the shipped
+    /// [`SystemClock`] (`created_at` = `YYYY-MM-DD HH:MM:SS.SSS`), so the JSON
+    /// timestamps are byte-shaped like the oracle's.
+    fn log_event(&self, event: &str, id: &str, location: &str, allow_default: bool) -> Result<()> {
+        // Disabled sentinel or (for manifest) no explicit catalog → no-op,
+        // never changing the stdout bytes the command already printed.
+        let CatalogTarget::Enabled(db) = self.resolve_catalog(allow_default) else {
             return Ok(());
         };
+        if let Some(parent) = db.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating catalog directory {}", parent.display()))?;
+        }
         let catalog =
             Catalog::open(&db).with_context(|| format!("opening catalog at {}", db.display()))?;
         catalog
@@ -2111,39 +2162,49 @@ impl Ctx {
         Ok(())
     }
 
-    /// Opens the catalog for a read query, erroring when no catalog is enabled —
-    /// mirroring the oracle's `_snapdir_ensure_catalog` ("Missing
-    /// `SNAPDIR_CATALOG` or `--catalog`").
-    fn open_catalog(&self) -> Result<Catalog> {
-        let db = self
-            .catalog_db_path()
-            .context("error: Missing SNAPDIR_CATALOG or --catalog")?;
+    /// Opens the catalog for a read query (`revisions`/`locations`/`ancestors`),
+    /// resolving the default catalog when `--catalog`/`SNAPDIR_CATALOG` is unset
+    /// so a no-flag query reads the same default a no-flag `push`/`stage` wrote.
+    /// Returns `None` when the catalog is the `none`/empty disable sentinel; the
+    /// caller prints a "catalog disabled" message and exits 0.
+    fn open_catalog(&self) -> Result<Option<Catalog>> {
+        let CatalogTarget::Enabled(db) = self.resolve_catalog(true) else {
+            return Ok(None);
+        };
         if let Some(parent) = db.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating catalog directory {}", parent.display()))?;
         }
-        Catalog::open(&db).with_context(|| format!("opening catalog at {}", db.display()))
+        let catalog =
+            Catalog::open(&db).with_context(|| format!("opening catalog at {}", db.display()))?;
+        Ok(Some(catalog))
     }
 
-    /// Resolves the catalog database path, or `None` when the catalog is not
-    /// enabled (the oracle requires `--catalog` / `SNAPDIR_CATALOG` to be set;
-    /// when unset its `_snapdir_log_event` is a no-op and the query commands
-    /// error). The single redb backend replaces the oracle's pluggable adapters,
-    /// so the value is interpreted as the db path: an absolute/relative path is
-    /// used verbatim; a bare adapter name (e.g. the oracle's `"redb"` /
-    /// `"sqlite3"`) selects `<cache-dir>/<name>-catalog.redb`.
-    fn catalog_db_path(&self) -> Option<PathBuf> {
-        let catalog = self.globals.catalog.as_deref()?;
-        if catalog.is_empty() {
-            return None;
-        }
-        // A path-like value (contains a path separator) is used as the db file
-        // directly; otherwise treat it as a bare adapter name and place the db
-        // under the cache dir.
-        if catalog.contains(std::path::MAIN_SEPARATOR) {
-            Some(PathBuf::from(catalog))
-        } else {
-            Some(self.cache_dir().join(format!("{catalog}-catalog.redb")))
+    /// Resolves the catalog selection into either an enabled redb path or the
+    /// explicit disable sentinel. Precedence is flag > `SNAPDIR_CATALOG` env >
+    /// default (clap's `env` feature folds flag+env into one resolved `Option`).
+    ///
+    /// - `Some("none")` / `Some("")` → [`CatalogTarget::Disabled`] (no logging,
+    ///   no DB file created).
+    /// - `Some(path-with-separator)` → that path verbatim.
+    /// - `Some(bare-name)` → `<cache-dir>/<name>-catalog.redb`.
+    /// - `None` (unset) → `<cache-dir>/default-catalog.redb` when `allow_default`
+    ///   (the `push`/`stage` write-paths and the read queries), else
+    ///   [`CatalogTarget::Disabled`] (e.g. `manifest`, which never auto-records
+    ///   to the default).
+    fn resolve_catalog(&self, allow_default: bool) -> CatalogTarget {
+        match self.globals.catalog.as_deref() {
+            Some(v) if v == "none" || v.is_empty() => CatalogTarget::Disabled,
+            // A path-like value (contains a separator) is used verbatim;
+            // otherwise treat it as a bare adapter name under the cache dir.
+            Some(v) if v.contains(std::path::MAIN_SEPARATOR) => {
+                CatalogTarget::Enabled(PathBuf::from(v))
+            }
+            Some(v) => CatalogTarget::Enabled(self.cache_dir().join(format!("{v}-catalog.redb"))),
+            None if allow_default => {
+                CatalogTarget::Enabled(self.cache_dir().join("default-catalog.redb"))
+            }
+            None => CatalogTarget::Disabled,
         }
     }
 

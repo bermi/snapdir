@@ -42,6 +42,11 @@ Options:
       --verbose
           Enable verbose output. Honored by the transfer commands (push/fetch/pull/checkout/stage/sync emit an effective-config banner and CACHED/SAVED notices) and verify-cache (purge notices); inert elsewhere
 
+      --cache-dir <DIR>
+          Directory where the object cache (and the default catalog) is stored
+          
+          [env: SNAPDIR_CACHE_DIR=]
+
   -h, --help
           Print help (see a summary with '-h')
 

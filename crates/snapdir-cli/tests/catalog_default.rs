@@ -98,6 +98,7 @@ fn stdout_ok(cache_dir: &Path, args: &[&str]) -> String {
 
 /// Same as `stdout_ok` but returns the RAW (untrimmed) stdout bytes so
 /// byte-identity assertions are exact (including the trailing newline).
+#[allow(dead_code)]
 fn output_ok(cache_dir: &Path, args: &[&str]) -> Vec<u8> {
     let out = snapdir_isolated(cache_dir)
         .args(args)
@@ -117,7 +118,7 @@ fn file_store(dir: &Path) -> String {
     format!("file://{}", dir.display())
 }
 
-/// Minimal JSON field extractor (same idiom as catalog_commands.rs).
+/// Minimal JSON field extractor (same idiom as `catalog_commands.rs`).
 fn json_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let needle = format!("\"{key}\":");
     let start = line.find(&needle)? + needle.len();
@@ -151,16 +152,21 @@ fn catalog_default_push_and_stage_round_trip_no_flag() {
         cache.path(),
         &["push", "--store", &store, &src1.path().to_string_lossy()],
     );
-    assert_eq!(push_id.len(), 64, "push must print a 64-hex id: {push_id:?}");
+    assert_eq!(
+        push_id.len(),
+        64,
+        "push must print a 64-hex id: {push_id:?}"
+    );
 
     // Second snapshot: stage a different tree (no --catalog flag).
     let src2 = TempDir::new().unwrap();
     build_tree(&src2, "second stage (different)");
-    let stage_id = stdout_ok(
-        cache.path(),
-        &["stage", &src2.path().to_string_lossy()],
+    let stage_id = stdout_ok(cache.path(), &["stage", &src2.path().to_string_lossy()]);
+    assert_eq!(
+        stage_id.len(),
+        64,
+        "stage must print a 64-hex id: {stage_id:?}"
     );
-    assert_eq!(stage_id.len(), 64, "stage must print a 64-hex id: {stage_id:?}");
     assert_ne!(push_id, stage_id, "distinct trees must have distinct ids");
 
     // Query: revisions at the store location (no --catalog flag) must list BOTH
@@ -168,16 +174,13 @@ fn catalog_default_push_and_stage_round_trip_no_flag() {
     let revisions = stdout_ok(cache.path(), &["revisions", "--location", &store]);
     let lines: Vec<&str> = revisions.lines().collect();
     assert!(
-        lines.len() >= 1,
+        !lines.is_empty(),
         "revisions (default catalog, no flag) must not be empty after push; \
         got {revisions:?}. This is the bug: writes without --catalog were silently dropped."
     );
 
     // The pushed id must appear in the revision list.
-    let ids_in_output: Vec<&str> = lines
-        .iter()
-        .filter_map(|l| json_field(l, "id"))
-        .collect();
+    let ids_in_output: Vec<&str> = lines.iter().filter_map(|l| json_field(l, "id")).collect();
     assert!(
         ids_in_output.contains(&push_id.as_str()),
         "push id {push_id} must appear in default-catalog revisions; got {revisions:?}"
@@ -219,10 +222,7 @@ fn catalog_default_revisions_with_no_flag_lists_pushed_id() {
     build_tree(&src, "round-trip");
     let src_str = src.path().to_string_lossy().into_owned();
 
-    let push_id = stdout_ok(
-        cache.path(),
-        &["push", "--store", &store, &src_str],
-    );
+    let push_id = stdout_ok(cache.path(), &["push", "--store", &store, &src_str]);
     let bare_id = stdout_ok(cache.path(), &["id", &src_str]);
     assert_eq!(push_id, bare_id, "push id must equal `snapdir id`");
 
@@ -250,7 +250,14 @@ fn catalog_none_push_records_nothing() {
     // Push with --catalog none; the push itself must succeed (exit 0).
     stdout_ok(
         cache.path(),
-        &["push", "--store", &store, "--catalog", "none", &src.path().to_string_lossy()],
+        &[
+            "push",
+            "--store",
+            &store,
+            "--catalog",
+            "none",
+            &src.path().to_string_lossy(),
+        ],
     );
 
     // After the push, none-catalog.redb must NOT be created (the old bug:
@@ -365,7 +372,14 @@ fn catalog_empty_string_acts_like_none_sentinel() {
 
     // Push with --catalog ""; must not crash and must not record anything.
     let out = snapdir_isolated(cache.path())
-        .args(["push", "--store", &store, "--catalog", "", &src.path().to_string_lossy()])
+        .args([
+            "push",
+            "--store",
+            &store,
+            "--catalog",
+            "",
+            &src.path().to_string_lossy(),
+        ])
         .output()
         .expect("run snapdir push --catalog ''");
 
@@ -428,7 +442,12 @@ fn catalog_named_foo_isolated_from_default_both_directions() {
     build_tree(&src_default, "default-catalog-push");
     let default_push_id = stdout_ok(
         cache.path(),
-        &["push", "--store", &store, &src_default.path().to_string_lossy()],
+        &[
+            "push",
+            "--store",
+            &store,
+            &src_default.path().to_string_lossy(),
+        ],
     );
 
     // Push to the NAMED "foo" catalog.
@@ -445,7 +464,10 @@ fn catalog_named_foo_isolated_from_default_both_directions() {
             &src_foo.path().to_string_lossy(),
         ],
     );
-    assert_ne!(default_push_id, foo_push_id, "distinct trees produce distinct ids");
+    assert_ne!(
+        default_push_id, foo_push_id,
+        "distinct trees produce distinct ids"
+    );
 
     // Direction 1: default-catalog revisions must NOT contain foo's id.
     let default_revisions = stdout_ok(cache.path(), &["revisions", "--location", &store]);
@@ -603,7 +625,10 @@ fn catalog_default_manifest_stdout_byte_identical_with_and_without_logging() {
         .args(["manifest", "--catalog", "none", &src_str])
         .output()
         .expect("run manifest --catalog none");
-    assert!(without_catalog.status.success(), "manifest --catalog none failed");
+    assert!(
+        without_catalog.status.success(),
+        "manifest --catalog none failed"
+    );
 
     assert_eq!(
         with_catalog.stdout, without_catalog.stdout,
@@ -631,14 +656,20 @@ fn catalog_default_id_stdout_byte_identical_with_and_without_logging() {
         .args(["id", &src_str])
         .output()
         .expect("run id with SNAPDIR_CATALOG");
-    assert!(with_catalog_env.status.success(), "id with SNAPDIR_CATALOG failed");
+    assert!(
+        with_catalog_env.status.success(),
+        "id with SNAPDIR_CATALOG failed"
+    );
 
     // With no catalog env (clean).
     let without_catalog_env = snapdir_isolated(cache2.path())
         .args(["id", &src_str])
         .output()
         .expect("run id without SNAPDIR_CATALOG");
-    assert!(without_catalog_env.status.success(), "id without catalog failed");
+    assert!(
+        without_catalog_env.status.success(),
+        "id without catalog failed"
+    );
 
     assert_eq!(
         with_catalog_env.stdout, without_catalog_env.stdout,
@@ -656,11 +687,7 @@ fn catalog_default_id_is_64_hex_chars() {
     build_tree(&src, "id-format");
 
     let id = stdout_ok(cache.path(), &["id", &src.path().to_string_lossy()]);
-    assert_eq!(
-        id.len(),
-        64,
-        "id must be exactly 64 hex chars; got {id:?}"
-    );
+    assert_eq!(id.len(), 64, "id must be exactly 64 hex chars; got {id:?}");
     assert!(
         id.chars().all(|c| c.is_ascii_hexdigit()),
         "id must be all hex digits; got {id:?}"
@@ -698,7 +725,11 @@ fn catalog_path_like_arg_used_verbatim() {
             &src.path().to_string_lossy(),
         ],
     );
-    assert_eq!(push_id.len(), 64, "push with path catalog must print a 64-hex id");
+    assert_eq!(
+        push_id.len(),
+        64,
+        "push with path catalog must print a 64-hex id"
+    );
 
     // The DB file must be created at the exact given path (verbatim).
     assert!(
@@ -759,6 +790,7 @@ fn catalog_path_like_isolation_from_default() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[allow(clippy::similar_names)] // catalog_a_str / catalog_b_str are the test subjects
 fn catalog_flag_overrides_snapdir_catalog_env() {
     // Spec precedence: --catalog flag > SNAPDIR_CATALOG env > default.
     // Push with env pointing at catalog-A and flag pointing at catalog-B;
@@ -789,11 +821,20 @@ fn catalog_flag_overrides_snapdir_catalog_env() {
         .output()
         .expect("run push with flag+env");
     assert!(push_id.status.success(), "push with flag+env must exit 0");
-    let push_id_str = String::from_utf8(push_id.stdout).unwrap().trim_end().to_owned();
+    let push_id_str = String::from_utf8(push_id.stdout)
+        .unwrap()
+        .trim_end()
+        .to_owned();
 
     // catalog-B must contain the revision.
     let rev_b = snapdir_isolated(cache.path())
-        .args(["revisions", "--catalog", &catalog_b_str, "--location", &store])
+        .args([
+            "revisions",
+            "--catalog",
+            &catalog_b_str,
+            "--location",
+            &store,
+        ])
         .output()
         .expect("run revisions --catalog B");
     assert!(rev_b.status.success());
@@ -806,7 +847,13 @@ fn catalog_flag_overrides_snapdir_catalog_env() {
 
     // catalog-A must NOT contain the revision (flag beat env).
     let rev_a = snapdir_isolated(cache.path())
-        .args(["revisions", "--catalog", &catalog_a_str, "--location", &store])
+        .args([
+            "revisions",
+            "--catalog",
+            &catalog_a_str,
+            "--location",
+            &store,
+        ])
         .output()
         .expect("run revisions --catalog A");
     assert!(rev_a.status.success());
@@ -838,8 +885,14 @@ fn catalog_env_overrides_default_catalog() {
         .args(["push", "--store", &store, &src.path().to_string_lossy()])
         .output()
         .expect("run push with SNAPDIR_CATALOG env");
-    assert!(push_out.status.success(), "push with SNAPDIR_CATALOG must exit 0");
-    let push_id = String::from_utf8(push_out.stdout).unwrap().trim_end().to_owned();
+    assert!(
+        push_out.status.success(),
+        "push with SNAPDIR_CATALOG must exit 0"
+    );
+    let push_id = String::from_utf8(push_out.stdout)
+        .unwrap()
+        .trim_end()
+        .to_owned();
 
     // The custom catalog must contain the revision.
     let custom_rev = snapdir_isolated(cache.path())
@@ -927,7 +980,10 @@ fn catalog_none_disabled_message_distinct_from_empty_enabled_catalog() {
         .args(["revisions", "--catalog", &empty_str, "--location", &store])
         .output()
         .expect("run revisions with empty catalog");
-    assert!(empty_out.status.success(), "enabled-empty catalog must exit 0");
+    assert!(
+        empty_out.status.success(),
+        "enabled-empty catalog must exit 0"
+    );
 
     let empty_combined = format!(
         "{}{}",
