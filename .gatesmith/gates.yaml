@@ -4919,7 +4919,9 @@ gates:
     owner_agent: adversary
     model: sonnet
     depends_on: [flux-design]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T14:37:09Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/concurrent_mutation.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/concurrent_mutation.rs"
     pass_criteria:
