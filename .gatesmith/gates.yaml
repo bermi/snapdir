@@ -4994,7 +4994,9 @@ gates:
     owner_agent: adversary
     model: haiku
     depends_on: [flux-tests-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T16:11:49Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/evidence/flux-fuzz-verify.log && grep -qiE 'INVARIANT HELD|PASS' .gatesmith/evidence/flux-fuzz-verify.log && ! grep -qiE 'PANIC|SIGBUS|signal: bus|silently' .gatesmith/evidence/flux-fuzz-verify.log"
     pass_criteria:
