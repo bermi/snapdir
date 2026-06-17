@@ -22,6 +22,7 @@ Commands:
   sync          Copy a snapshot (its manifest + objects) directly between two stores, streaming through memory — no local staging
   diff          Compare two sides, each a set of manifests, reporting file-level differences — reading MANIFESTS ONLY
   version       Print the version
+  autocomplete  Generate a shell completion script (bash, zsh, fish, …)
   help          Print this message or the help of the given subcommand(s)
 
 Options:

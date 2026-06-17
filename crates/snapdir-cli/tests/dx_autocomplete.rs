@@ -51,7 +51,9 @@
     clippy::items_after_statements,
     clippy::doc_markdown,
     clippy::manual_let_else,
-    clippy::map_unwrap_or
+    clippy::map_unwrap_or,
+    clippy::uninlined_format_args,
+    clippy::manual_assert
 )]
 
 use std::path::PathBuf;
@@ -403,7 +405,9 @@ fn autocomplete_bash_output_passes_bash_syntax_check() {
     match bash_result {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // bash not available; skip gracefully rather than panic.
-            eprintln!("SKIP autocomplete_bash_output_passes_bash_syntax_check: bash not found on PATH");
+            eprintln!(
+                "SKIP autocomplete_bash_output_passes_bash_syntax_check: bash not found on PATH"
+            );
         }
         Err(e) => panic!("failed to run bash -n: {e}"),
         Ok(out) => {
@@ -422,7 +426,9 @@ fn autocomplete_bash_output_passes_bash_syntax_check() {
 fn autocomplete_zsh_output_sources_cleanly_if_zsh_present() {
     // (e) zsh source check — gated on zsh being available
     if !shell_on_path("zsh") {
-        eprintln!("SKIP autocomplete_zsh_output_sources_cleanly_if_zsh_present: zsh not found on PATH");
+        eprintln!(
+            "SKIP autocomplete_zsh_output_sources_cleanly_if_zsh_present: zsh not found on PATH"
+        );
         return;
     }
 
@@ -434,8 +440,17 @@ fn autocomplete_zsh_output_sources_cleanly_if_zsh_present() {
     );
     let script = &completion_out.stdout;
 
+    // The clap-generated zsh script ends in `compdef _snapdir snapdir`, so it
+    // can only be sourced after the zsh completion system is initialized — which
+    // is exactly the interactive-shell context a user wires it into. Initialize
+    // it (autoload compinit + compinit) before sourcing, mirroring a real
+    // `~/.zshrc` so the source check exercises the script in a valid context
+    // rather than a bare non-interactive shell where `compdef` is undefined.
     let zsh_result = Command::new("zsh")
-        .args(["-c", "source /dev/stdin"])
+        .args([
+            "-c",
+            "autoload -Uz compinit && compinit -u && source /dev/stdin",
+        ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -467,7 +482,9 @@ fn autocomplete_zsh_output_sources_cleanly_if_zsh_present() {
 fn autocomplete_fish_output_syntax_check_if_fish_present() {
     // (e) fish syntax check — gated on fish being available
     if !shell_on_path("fish") {
-        eprintln!("SKIP autocomplete_fish_output_syntax_check_if_fish_present: fish not found on PATH");
+        eprintln!(
+            "SKIP autocomplete_fish_output_syntax_check_if_fish_present: fish not found on PATH"
+        );
         return;
     }
 

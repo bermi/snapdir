@@ -756,12 +756,36 @@ pub enum Command {
         capabilities: bool,
     },
 
-    /// Generate a shell-completion script to stdout.
+    /// Generate a shell completion script (bash, zsh, fish, …).
     ///
-    /// Hidden from the documented 14-subcommand surface: this is a build-time
-    /// hook the release pipeline (`release.yml` gen-assets job) calls as
-    /// `snapdir completions <shell>` to bundle completions into each archive.
-    #[command(hide = true)]
+    /// Writes a completion script for the given shell to stdout. Wire it up by
+    /// sourcing the output from your shell profile:
+    ///
+    ///   bash:       eval "$(snapdir autocomplete bash)"
+    ///               # add the line above to ~/.bashrc
+    ///
+    ///   zsh:        eval "$(snapdir autocomplete zsh)"
+    ///               # add the line above to ~/.zshrc
+    ///
+    ///   fish:       snapdir autocomplete fish | source
+    ///               # or write to ~/.config/fish/completions/snapdir.fish
+    ///
+    ///   powershell: snapdir autocomplete powershell | Out-String | Invoke-Expression
+    ///               # add the line above to your $PROFILE
+    ///
+    ///   elvish:     eval (snapdir autocomplete elvish | slurp)
+    ///
+    /// The script always targets the `snapdir` binary name. The hidden
+    /// `completions <shell>` alias is kept for back-compat (the release
+    /// pipeline's gen-assets job and existing scripts) and emits byte-identical
+    /// output.
+    // `autocomplete` is the VISIBLE primary; `completions` is a HIDDEN alias
+    // (clap's `alias` is hidden, unlike `visible_alias`), so the release
+    // pipeline's `snapdir completions <shell>` keeps working unchanged while the
+    // documented surface shows only `autocomplete`. The internal enum variant
+    // stays `Completions` (lowest-churn); clap derives the command name from the
+    // explicit `name`.
+    #[command(name = "autocomplete", alias = "completions")]
     Completions {
         /// Target shell (`bash`, `fish`, `zsh`, `powershell`, `elvish`).
         shell: clap_complete::Shell,
@@ -1145,8 +1169,10 @@ impl Ctx {
                 ..
             } => self.run_diff(from, to, *all, *json, *exit_code, on_conflict.resolve()),
             Command::Completions { shell } => {
-                // Build-time hook: emit the requested shell's completion script
-                // to stdout for the release pipeline to bundle. The bin name is
+                // The visible `autocomplete <shell>` command (and its hidden
+                // `completions` back-compat alias): emit the requested shell's
+                // completion script to stdout — for a user to source from their
+                // profile, or for the release pipeline to bundle. The bin name is
                 // `snapdir` (the visible surface, hidden subcommands included).
                 let mut cmd = Cli::command();
                 clap_complete::generate(*shell, &mut cmd, "snapdir", &mut std::io::stdout());
