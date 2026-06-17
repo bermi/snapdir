@@ -338,7 +338,7 @@ fn autocomplete_unknown_shell_notashell_exit2_lists_valid() {
 
 // ---------------------------------------------------------------------------
 // (d) Back-compat: hidden `completions` alias emits identical output to
-//     `autocomplete` for the same shell (bash).
+//     `autocomplete` for the same shell (bash + zsh).
 // ---------------------------------------------------------------------------
 
 /// (d) The hidden `completions bash` alias still works (exit 0, non-empty) and
@@ -365,6 +365,51 @@ fn completions_alias_still_works_and_identical_to_autocomplete() {
         new_out.stdout, old_out.stdout,
         "completions bash and autocomplete bash differ in stdout\n\
          (they must be byte-identical for release.yml back-compat)",
+    );
+}
+
+/// (d) The hidden `completions zsh` alias also produces BYTE-IDENTICAL stdout
+/// to `autocomplete zsh`. Extends the alias back-compat check to a second
+/// shell to catch any shell-dispatch path divergence.
+#[test]
+fn completions_alias_zsh_identical_to_autocomplete_zsh() {
+    // (d) back-compat: completions alias == autocomplete for zsh
+    let new_out = run(&["autocomplete", "zsh"]);
+    assert!(
+        new_out.status.success(),
+        "autocomplete zsh: failed (prerequisite for alias check)\nstderr: {}",
+        stderr_of(&new_out),
+    );
+
+    let old_out = run(&["completions", "zsh"]);
+    assert!(
+        old_out.status.success(),
+        "completions zsh (hidden alias): expected exit 0, got {:?}\nstderr: {}",
+        old_out.status.code(),
+        stderr_of(&old_out),
+    );
+
+    assert_eq!(
+        new_out.stdout, old_out.stdout,
+        "completions zsh and autocomplete zsh differ in stdout\n\
+         (they must be byte-identical for release.yml back-compat)",
+    );
+}
+
+/// (d) The hidden `completions` alias does NOT appear in `snapdir --help`.
+/// This pins the contract that the alias is truly hidden from the documented
+/// surface (users see `autocomplete` only) while existing scripts keep working.
+#[test]
+fn completions_alias_is_hidden_from_top_level_help() {
+    // (d) completions alias must NOT appear in --help (it is a hidden clap alias)
+    let out = run(&["--help"]);
+    let stdout = stdout_of(&out);
+    assert!(
+        !stdout.contains("completions"),
+        "`completions` (hidden alias) APPEARS in `snapdir --help` — it should be hidden\n\
+         If visible, users see two commands for the same thing (breaks the documented surface).\n\
+         stdout:\n{}",
+        stdout,
     );
 }
 
@@ -591,6 +636,33 @@ fn autocomplete_uppercase_bash_deterministic_behavior() {
                 "autocomplete BASH: unexpected exit code {other:?} (must be 0 or 2)\nstdout: {stdout}\nstderr: {stderr}",
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (c-exact) The exact set of valid shells: exactly {bash, elvish, fish,
+//           powershell, zsh} — the clap_complete::Shell enum's five variants.
+// ---------------------------------------------------------------------------
+
+/// (c-exact) The error message for an unknown shell names all five accepted
+/// values: bash, elvish, fish, powershell, zsh — and no others. This pins the
+/// shell-set contract so any future addition/removal is caught immediately.
+#[test]
+fn autocomplete_unknown_shell_error_lists_exactly_five_shells() {
+    // (c-exact) clap must list all five valid shells; no more, no less
+    let out = run(&["autocomplete", "tcsh"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "autocomplete tcsh: expected exit 2\nstderr: {}",
+        stderr_of(&out),
+    );
+    let stderr = stderr_of(&out);
+    for shell in &["bash", "elvish", "fish", "powershell", "zsh"] {
+        assert!(
+            stderr.contains(shell),
+            "autocomplete tcsh: error message does not list expected shell `{shell}`\nstderr: {stderr}",
+        );
     }
 }
 
