@@ -4870,7 +4870,9 @@ gates:
     phase: 31
     owner_agent: cli
     depends_on: [catalog-default-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-17T11:35:43Z
+    git_sha: f4d55a3
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test catalog_default && test -f crates/snapdir-cli/tests/catalog_default.rs && test ! -f .gatesmith/pending-tests/catalog_default.rs && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
     pass_criteria:
