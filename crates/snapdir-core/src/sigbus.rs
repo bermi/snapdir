@@ -47,6 +47,8 @@
 //! if there was none — so an unrelated SIGBUS keeps its original behaviour.
 
 use std::cell::Cell;
+use std::error::Error as StdError;
+use std::fmt;
 use std::io;
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -67,6 +69,34 @@ extern "C" {
     // `savesigs != 0` => also save/restore the signal mask (the `sig` variant).
     fn sigsetjmp(env: *mut JmpBuf, savesigs: libc::c_int) -> libc::c_int;
     fn siglongjmp(env: *mut JmpBuf, val: libc::c_int) -> !;
+}
+
+/// Marker payload carried by the [`io::Error`] returned when a guarded `SIGBUS`
+/// is caught (a file truncated/shrunk mid-mmap-hash). It lets the
+/// [`walk`](crate::walk) layer *recognize* the mmap-fault error by downcasting
+/// the inner error (via [`io::Error::get_ref`]) rather than string-matching the
+/// message — see [`is_mmap_fault`]. Kept private to this module: callers use the
+/// [`is_mmap_fault`] predicate, not the type directly.
+#[derive(Debug)]
+struct MmapFault;
+
+impl fmt::Display for MmapFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("file changed during hashing (mmap fault)")
+    }
+}
+
+impl StdError for MmapFault {}
+
+/// Returns `true` if `err` is the synthetic [`io::Error`] produced by
+/// [`guard_mmap_hash`] when it caught a guarded `SIGBUS` (a concurrent
+/// truncation/shrink faulting the mmap). The walk layer maps such an error to a
+/// typed `FileChangedDuringWalk`, while a genuine permission/IO `io::Error`
+/// (for which this returns `false`) maps to `WalkError::Io`.
+#[must_use]
+pub fn is_mmap_fault(err: &io::Error) -> bool {
+    err.get_ref()
+        .is_some_and(<dyn StdError + Send + Sync>::is::<MmapFault>)
 }
 
 thread_local! {
@@ -177,9 +207,9 @@ fn ensure_installed() {
 ///
 /// # Errors
 ///
-/// Returns `f`'s own [`io::Result`], or a synthetic [`io::Error::other`]
-/// ("file changed during hashing (mmap fault)") if a guarded `SIGBUS` was
-/// caught.
+/// Returns `f`'s own [`io::Result`], or a synthetic [`io::Error`] carrying the
+/// private `MmapFault` marker ("file changed during hashing (mmap fault)") if a
+/// guarded `SIGBUS` was caught. Recognize that error with [`is_mmap_fault`].
 pub fn guard_mmap_hash<T, F: FnOnce() -> io::Result<T>>(f: F) -> io::Result<T> {
     ensure_installed();
 
@@ -197,7 +227,10 @@ pub fn guard_mmap_hash<T, F: FnOnce() -> io::Result<T>>(f: F) -> io::Result<T> {
         // below via the same disarm path.)
         JMP_TARGET.with(|t| t.set(ptr::null_mut()));
         IN_GUARD.with(|fl| fl.set(false));
-        return Err(io::Error::other("file changed during hashing (mmap fault)"));
+        // Carry the `MmapFault` marker so the walk layer can recognize this as a
+        // mid-hash truncation (`is_mmap_fault`) and map it to a typed
+        // `FileChangedDuringWalk`, distinct from a genuine IO fault.
+        return Err(io::Error::other(MmapFault));
     }
 
     // Save any outer frame's state so nested guards (none today, but cheap and

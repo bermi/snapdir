@@ -39,15 +39,22 @@
     // The `WalkError::FileVanishedDuringWalk` etc. patterns reference new enum
     // variants that don't exist until the impl gate. Once the impl lands and
     // the file is `git mv`-ed into the crate, the allow below is removed.
-    clippy::match_wildcard_for_single_variants
+    clippy::match_wildcard_for_single_variants,
+    // Test-shape pedantic lints in the adversary-authored fixture (style only,
+    // no assertion impact): the impl gate may suppress these as wiring so the
+    // suite builds under `-D warnings` without rewriting adversary source.
+    clippy::map_unwrap_or,
+    clippy::match_single_binding,
+    clippy::uninlined_format_args,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ignored_unit_patterns
 )]
 
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
 use snapdir_core::{snapshot_id, walk, Blake3Hasher, WalkError, WalkOptions};
 
@@ -147,7 +154,10 @@ const MMAP_THRESHOLD: usize = 256 * 1024;
 
 /// Returns true if `id` is a well-formed 64-hex snapshot id.
 fn is_valid_snapshot_id(id: &str) -> bool {
-    id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    id.len() == 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 /// Returns true if `err` is one of the four acceptable typed `WalkError` variants
@@ -552,10 +562,8 @@ fn quiescent_tree_snapshot_id_is_stable_and_deterministic() {
             ..WalkOptions::default()
         };
 
-        let m1 = walk(&root, &opts, &hasher)
-            .expect("first quiescent walk must succeed");
-        let m2 = walk(&root, &opts, &hasher)
-            .expect("second quiescent walk must succeed");
+        let m1 = walk(&root, &opts, &hasher).expect("first quiescent walk must succeed");
+        let m2 = walk(&root, &opts, &hasher).expect("second quiescent walk must succeed");
 
         let id1 = snapshot_id(&m1, &hasher);
         let id2 = snapshot_id(&m2, &hasher);
@@ -763,9 +771,8 @@ fn silent_wrong_size_detected_not_silently_recorded() {
                         let parts: Vec<&str> = line.split_whitespace().collect();
                         // parts[3] is the recorded size
                         if parts.len() >= 4 {
-                            let recorded_size: u64 = parts[3]
-                                .parse()
-                                .expect("size field must be a valid u64");
+                            let recorded_size: u64 =
+                                parts[3].parse().expect("size field must be a valid u64");
                             // The recorded checksum (parts[2]) should match
                             // the blake3 of exactly `recorded_size` bytes starting
                             // from offset 0 of whatever the file contained.

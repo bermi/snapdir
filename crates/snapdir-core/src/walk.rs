@@ -135,6 +135,45 @@ pub enum WalkError {
     /// UTF-8 text; non-UTF-8 paths cannot be represented.
     #[error("path is not valid UTF-8: {0:?}")]
     NonUtf8Path(PathBuf),
+
+    /// A regular file enumerated during discovery was gone before/at hashing —
+    /// a transient tree-in-flux race (the tree changed under snapdir), NOT a
+    /// durable IO fault. Distinct from [`WalkError::Io`], which is reserved for
+    /// genuine permission/IO errors.
+    #[error(
+        "file vanished during walk (tree changed under snapdir): {path:?}; \
+         re-run on a quiescent tree"
+    )]
+    FileVanishedDuringWalk {
+        /// The path of the file that vanished mid-walk.
+        path: PathBuf,
+    },
+
+    /// A file's size/mtime/content changed while it was being hashed, so the
+    /// recorded checksum/size would be incoherent (detected via a mid-mmap
+    /// `SIGBUS` fault or a stat-before/stat-after / bytes-vs-recorded-size
+    /// discrepancy). The tree changed under snapdir.
+    #[error(
+        "file changed during walk (tree changed under snapdir): {path:?}; \
+         re-run on a quiescent tree"
+    )]
+    FileChangedDuringWalk {
+        /// The path of the file that changed mid-hash.
+        path: PathBuf,
+    },
+
+    /// A directory invariant expected during the bottom-up finalize pass was
+    /// violated because the tree mutated mid-walk (e.g. a directory vanished
+    /// after discovery). Replaces the former `expect()` panics so an in-flux
+    /// tree yields a clean typed error rather than a backtrace.
+    #[error(
+        "tree structure changed during walk (tree changed under snapdir): {path:?}; \
+         re-run on a quiescent tree"
+    )]
+    TreeStructureChanged {
+        /// The path/key whose structural invariant was violated.
+        path: PathBuf,
+    },
 }
 
 impl WalkError {
@@ -201,6 +240,14 @@ struct PendingHash {
     file_index: usize,
     /// Path to hash the content through (follows symlinks).
     content_path: PathBuf,
+    /// The size recorded at discovery (the entry's own `lstat` length). The
+    /// hash pass compares the bytes it actually streams/maps against this to
+    /// catch a file that GREW or SHRANK mid-hash (→ `FileChangedDuringWalk`).
+    recorded_size: u64,
+    /// Whether this entry is a followed symlink. A symlink's recorded SIZE is
+    /// its own `lstat` length (deliberately != the dereferenced content
+    /// length), so the bytes-vs-`recorded_size` drift check is SKIPPED for it.
+    is_symlink: bool,
 }
 
 /// A discovered directory, holding its absolute path and (filled during the
@@ -394,9 +441,15 @@ fn walk_inner<H: Hasher + HashFile + Sync>(
             member_size += file.size;
         }
         for child in &record.child_dirs {
-            let (csum, size) = finalized
-                .get(child)
-                .expect("child dir finalized before parent (reverse key order)");
+            // On a quiescent tree a child dir is always finalized before its
+            // parent (reverse key order). A miss means the tree mutated
+            // mid-walk (the child vanished after discovery): a clean typed
+            // error instead of the former `expect()` panic/backtrace.
+            let Some((csum, size)) = finalized.get(child) else {
+                return Err(WalkError::TreeStructureChanged {
+                    path: PathBuf::from(child),
+                });
+            };
             child_checksums.push(csum.clone());
             member_size += size;
         }
@@ -568,6 +621,8 @@ fn discover_dir(
                 dir_key: abs_path.to_owned(),
                 file_index,
                 content_path: entry_path,
+                recorded_size: link_meta.len(),
+                is_symlink,
             });
         }
         // Anything else (sockets, fifos, devices) is neither `-type d` nor
@@ -612,12 +667,41 @@ fn hash_pending<H: Hasher + HashFile + Sync>(
     let per_file_seq = pending.len() >= jobs;
 
     let hash_one = |item: &PendingHash| -> Result<(String, usize, String), WalkError> {
-        let (checksum, hashed_bytes) = if per_file_seq {
+        let (checksum, hashed_bytes) = match if per_file_seq {
             hasher.hash_file_hex_seq(&item.content_path)
         } else {
             hasher.hash_file_hex(&item.content_path)
+        } {
+            Ok(ok) => ok,
+            // A file enumerated in discovery is now gone: a transient tree-in-flux
+            // race, not a durable IO fault.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(WalkError::FileVanishedDuringWalk {
+                    path: item.content_path.clone(),
+                });
+            }
+            // The SIGBUS guard caught a mid-hash truncation/shrink (mmap fault):
+            // the recorded checksum would be incoherent.
+            Err(e) if crate::sigbus::is_mmap_fault(&e) => {
+                return Err(WalkError::FileChangedDuringWalk {
+                    path: item.content_path.clone(),
+                });
+            }
+            // Genuine permission / IO fault.
+            Err(e) => return Err(WalkError::io(&item.content_path, e)),
+        };
+
+        // Size-drift guard: the bytes actually hashed must match the size
+        // recorded at discovery, or the file grew/shrank mid-walk and the
+        // (size, checksum) pair would be incoherent. SKIP for followed symlinks,
+        // whose recorded SIZE is the symlink's own `lstat` length (deliberately
+        // != the dereferenced content length the hasher reports).
+        if !item.is_symlink && hashed_bytes != item.recorded_size {
+            return Err(WalkError::FileChangedDuringWalk {
+                path: item.content_path.clone(),
+            });
         }
-        .map_err(|e| WalkError::io(&item.content_path, e))?;
+
         if let Some(meter) = meter {
             meter.add_in(hashed_bytes);
             meter.object_finished();
@@ -648,9 +732,14 @@ fn hash_pending<H: Hasher + HashFile + Sync>(
     // Write each result back into its fixed slot. Order-independent: the slot is
     // addressed by (dir_key, file_index), so completion order is irrelevant.
     for (dir_key, file_index, checksum) in results {
-        let record = dirs
-            .get_mut(&dir_key)
-            .expect("pending file's owning dir was discovered");
+        // The owning dir was discovered before its files were queued; a miss
+        // means the tree mutated mid-walk. Clean typed error, not an `expect()`
+        // panic.
+        let Some(record) = dirs.get_mut(&dir_key) else {
+            return Err(WalkError::TreeStructureChanged {
+                path: PathBuf::from(&dir_key),
+            });
+        };
         record.files[file_index].checksum = checksum;
     }
     Ok(())
