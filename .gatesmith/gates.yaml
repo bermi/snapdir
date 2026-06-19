@@ -5236,7 +5236,9 @@ gates:
     phase: 32
     owner_agent: adversary
     depends_on: [mirror-materialize-modes-impl]
-    status: pending
+    status: passed
+    passed_at: 2026-06-19T18:10:22Z
+    git_sha: 91eba16
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --test mirror_materialize_modes && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
