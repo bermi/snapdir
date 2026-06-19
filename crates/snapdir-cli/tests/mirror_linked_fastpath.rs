@@ -181,6 +181,68 @@ fn cleanup(dirs: &[&Path]) {
     }
 }
 
+/// REVIEW helper: asserts `manifest_text` is a well-formed snapdir manifest whose
+/// FILE rows (`F`) carry a checksum of exactly `checksum_hex_len` lowercase-hex
+/// chars. Every non-empty, non-comment line must be `<F|D> <perms> <checksum>
+/// <size> <path>` (5 whitespace columns; paths may contain spaces, so the path
+/// column is the remainder). Used to prove the md5 re-hash produced a real,
+/// structurally-valid md5 manifest — not a stale/garbage echo of the fast path.
+fn is_well_formed_file_manifest(manifest_text: &str, checksum_hex_len: usize) -> bool {
+    let mut saw_file = false;
+    for line in manifest_text.lines() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let cols: Vec<&str> = line.splitn(5, ' ').collect();
+        if cols.len() != 5 {
+            return false;
+        }
+        let (ty, _perms, checksum, size, _path) = (cols[0], cols[1], cols[2], cols[3], cols[4]);
+        if ty != "F" && ty != "D" {
+            return false;
+        }
+        if size.parse::<u64>().is_err() {
+            return false;
+        }
+        if ty == "F" {
+            saw_file = true;
+            let is_hex = checksum.len() == checksum_hex_len
+                && checksum
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+            if !is_hex {
+                return false;
+            }
+        }
+    }
+    saw_file
+}
+
+/// REVIEW helper: returns the md5 hex of `content` as computed by snapdir ITSELF
+/// (the frozen `--checksum-bin md5sum` oracle) over a throwaway one-file real
+/// tree. Keeps the test free of any md5 implementation / dependency of its own
+/// while still pinning that the corrupted bytes were actually read. The single
+/// FILE row's checksum column is the md5 of `content`.
+fn md5_of_bytes_via_snapdir(cache: &Path, home: &Path, tag: &str, content: &[u8]) -> String {
+    let dir = temp_dir(tag);
+    fs::write(dir.join("only.bin"), content).unwrap();
+    fs::set_permissions(dir.join("only.bin"), fs::Permissions::from_mode(0o644)).unwrap();
+    let dir_str = dir.to_string_lossy().into_owned();
+    let manifest = ok_stdout(
+        snapdir(cache, home),
+        &["manifest", "--checksum-bin", "md5sum", &dir_str],
+    );
+    let md5 = manifest
+        .lines()
+        .find(|l| l.starts_with("F "))
+        .and_then(|l| l.splitn(5, ' ').nth(2))
+        .expect("md5 manifest must have a FILE row with a checksum")
+        .to_owned();
+    assert_eq!(md5.len(), 32, "md5sum checksum column must be 32-hex");
+    cleanup(&[&dir]);
+    md5
+}
+
 // ===========================================================================
 // KEYSTONE — default fast path == strict re-hash path on a HEALTHY store.
 // ===========================================================================
@@ -344,7 +406,8 @@ fn wrong_checksum_bin_disables_fastpath_and_rehashes_corrupted_object() {
     let blake3_fast = ok_stdout(snapdir(&cache, &home), &["id", &dest_str]);
     assert_eq!(blake3_fast.len(), 64);
 
-    corrupt_object_keep_name(&dest, "a.txt", b"GARBAGE-FOR-MD5-PATHWAY-ZZZZZZZZ");
+    let garbage: &[u8] = b"GARBAGE-FOR-MD5-PATHWAY-ZZZZZZZZ";
+    corrupt_object_keep_name(&dest, "a.txt", garbage);
 
     // md5sum mode cannot recover a checksum from the BLAKE3 object path: the fast
     // path is DISABLED, so it RE-HASHES the (now corrupted) content and SUCCEEDS,
@@ -358,6 +421,37 @@ fn wrong_checksum_bin_disables_fastpath_and_rehashes_corrupted_object() {
         !md5_manifest.contains(&blake3_fast),
         "a non-BLAKE3 --checksum-bin must DISABLE the fast path and re-hash; the md5 \
          manifest must NOT echo the stale BLAKE3 fast-path id; manifest:\n{md5_manifest}"
+    );
+
+    // STRENGTHENED (review): the correction claims SUCCESS + a re-hash that
+    // actually READS the corrupted bytes. Prove all three:
+    //  (1) the output is a well-formed manifest (every line = 5 space-separated
+    //      columns; the checksum column is exactly 32-hex md5 for FILE rows);
+    //  (2) the md5 of the CORRUPTED bytes is PRESENT (content was truly read —
+    //      not the healthy "hello" md5, not the BLAKE3 address);
+    //  (3) the md5 of the ORIGINAL bytes ("hello") is ABSENT.
+    // The expected md5 hexes are derived from snapdir ITSELF (oracle md5sum) over
+    // real one-file trees, so the test carries no md5 implementation of its own
+    // and no extra dependency.
+    assert!(
+        is_well_formed_file_manifest(&md5_manifest, 32),
+        "md5 manifest must be well-formed with 32-hex checksum columns; got:\n{md5_manifest}"
+    );
+    let md5_corrupt = md5_of_bytes_via_snapdir(&cache, &home, "md5-corrupt", garbage);
+    let md5_original = md5_of_bytes_via_snapdir(&cache, &home, "md5-original", b"hello");
+    assert_ne!(
+        md5_corrupt, md5_original,
+        "sanity: corrupted and original content must have distinct md5s"
+    );
+    assert!(
+        md5_manifest.contains(&md5_corrupt),
+        "the md5 re-hash must reflect the CORRUPTED content (proving the fast path was \
+         disabled and the bytes were actually read); expected md5 {md5_corrupt} in:\n{md5_manifest}"
+    );
+    assert!(
+        !md5_manifest.contains(&md5_original),
+        "the md5 manifest must NOT contain the ORIGINAL content's md5 — the corrupted \
+         bytes were read, not a stale/cached value; manifest:\n{md5_manifest}"
     );
 
     cleanup(&[&src, &store, &cache, &home, &dest]);
@@ -427,6 +521,20 @@ fn keyed_manifest_context_disables_fastpath_and_rehashes_corrupted_object() {
     let plain_fast = ok_stdout(snapdir(&cache, &home), &["id", &dest_str]);
     assert_eq!(plain_fast.len(), 64);
 
+    // STRENGTHENED (review): the keyed id over the HEALTHY tree BEFORE corruption.
+    // The fast path is disabled for a keyed context, so this run already re-hashes
+    // the (healthy) content with the key. We capture it to prove that, AFTER
+    // corruption, the SAME keyed run produces a DIFFERENT id — i.e. it genuinely
+    // re-read the bytes each time rather than recovering a fixed address.
+    let mut keyed_healthy_cmd = snapdir(&cache, &home);
+    keyed_healthy_cmd.env("SNAPDIR_MANIFEST_CONTEXT", "some-keyed-context");
+    let keyed_healthy = ok_stdout(keyed_healthy_cmd, &["id", &dest_str]);
+    assert_eq!(
+        keyed_healthy.len(),
+        64,
+        "keyed id must be a 64-hex snapshot id"
+    );
+
     corrupt_object_keep_name(&dest, "a.txt", b"GARBAGE-FOR-KEYED-CONTEXT-QQQQQQ");
 
     // The keyed run cannot recover the plain address from the object path: the
@@ -436,11 +544,22 @@ fn keyed_manifest_context_disables_fastpath_and_rehashes_corrupted_object() {
     let mut cmd = snapdir(&cache, &home);
     cmd.env("SNAPDIR_MANIFEST_CONTEXT", "some-keyed-context");
     let keyed = ok_stdout(cmd, &["id", &dest_str]);
+    assert_eq!(keyed.len(), 64, "keyed id must be a 64-hex snapshot id");
     assert_ne!(
         keyed, plain_fast,
         "a keyed SNAPDIR_MANIFEST_CONTEXT must DISABLE the fast path (keyed BLAKE3 != \
          the store's plain-BLAKE3 address) and re-hash; the keyed id must NOT echo the \
          stale plain-BLAKE3 fast-path id"
+    );
+    // The KEYSTONE of the correction: corruption changed the keyed id, proving the
+    // keyed run actually READ the (now garbage) content instead of recovering a
+    // fixed object address from the path. A fast path firing wrongly here would
+    // have yielded the SAME id before and after corruption.
+    assert_ne!(
+        keyed, keyed_healthy,
+        "the keyed id over the CORRUPTED tree must differ from the keyed id over the \
+         HEALTHY tree — proving the keyed run re-read the bytes (fast path truly \
+         disabled), not recovered a stale address"
     );
 
     cleanup(&[&src, &store, &cache, &home, &dest]);
@@ -619,6 +738,166 @@ fn linked_resnapshot_id_differs_from_source_snapshot_id() {
         "CHECKSUM-ONLY: a linked re-snapshot must NOT reproduce the source snapshot \
          id (symlink mode/size differ from the original files)"
     );
+
+    cleanup(&[&src, &store, &cache, &home, &dest]);
+}
+
+// ===========================================================================
+// REVIEW-ADDED (impl-revealed) — the now-visible core/cli wiring exposes the
+// `manifest` keystone (not just `id`), mixed trees, and the strict-verify
+// integrity error on the `manifest` command path.
+// ===========================================================================
+
+/// REVIEW (no-read proof, MANIFEST level): the staged suite proves the default
+/// fast path doesn't read content for `snapdir id`; the impl recovers the
+/// checksum identically for the `manifest` command (both go through the same
+/// `resolve_walk`/`object_store_roots` wiring). Corrupt an object's bytes while
+/// keeping its filename (= its address): the default `snapdir manifest
+/// <linked-tree>` is UNCHANGED (it read the path, not the garbage).
+#[test]
+fn default_manifest_unchanged_after_object_bytes_corrupted_keeping_name() {
+    let src = build_src("manifest-noread-src");
+    let store = temp_dir("manifest-noread-store");
+    let cache = temp_dir("manifest-noread-cache");
+    let home = temp_dir("manifest-noread-home");
+    let (_url, _id, dest) = build_linked_tree("manifest-noread", &src, &cache, &home, &store);
+    let dest_str = dest.to_string_lossy().into_owned();
+
+    let before = ok_stdout(snapdir(&cache, &home), &["manifest", &dest_str]);
+
+    corrupt_object_keep_name(&dest, "a.txt", b"GARBAGE-MANIFEST-NOREAD-WWWWWWWW");
+
+    let after = ok_stdout(snapdir(&cache, &home), &["manifest", &dest_str]);
+    assert_eq!(
+        after, before,
+        "the default fast path must recover EACH file's checksum from the object PATH \
+         for `manifest` too — the corrupted bytes must not be read, so the manifest is \
+         byte-identical"
+    );
+
+    cleanup(&[&src, &store, &cache, &home, &dest]);
+}
+
+/// REVIEW (strict-verify integrity, MANIFEST level): the staged strict test
+/// drives `id`; the impl raises `WalkError::LinkedObjectIntegrity` from the same
+/// walk regardless of the front-end command. `SNAPDIR_VERIFY_COPIES=1 snapdir
+/// manifest <linked-tree>` against a garbage-injected object READS the bytes,
+/// detects content != address, and ERRORS (non-zero, names the file) — never a
+/// stale manifest, never a panic.
+#[test]
+fn strict_verify_manifest_errors_on_corrupted_object_naming_it() {
+    let src = build_src("strictman-src");
+    let store = temp_dir("strictman-store");
+    let cache = temp_dir("strictman-cache");
+    let home = temp_dir("strictman-home");
+    let (_url, _id, dest) = build_linked_tree("strictman", &src, &cache, &home, &store);
+    let dest_str = dest.to_string_lossy().into_owned();
+
+    let target = corrupt_object_keep_name(&dest, "a.txt", b"GARBAGE-STRICT-MANIFEST-VVVVVVVV");
+
+    let mut strict_cmd = snapdir(&cache, &home);
+    strict_cmd.env("SNAPDIR_VERIFY_COPIES", "1");
+    let out = strict_cmd
+        .args(["manifest", &dest_str])
+        .output()
+        .expect("run snapdir");
+    assert!(
+        !out.status.success(),
+        "SNAPDIR_VERIFY_COPIES=1 manifest must READ the bytes, detect the \
+         content/address mismatch, and FAIL with non-zero exit"
+    );
+    assert!(
+        out.status.code().is_some(),
+        "strict-verify mismatch must be a typed error, NOT a signal kill; got: {:?}",
+        out.status
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let target_name = target.file_name().unwrap().to_string_lossy();
+    assert!(
+        combined.contains("a.txt") || combined.contains(target_name.as_ref()),
+        "the strict-verify error must name the offending file/object; got: {combined}"
+    );
+    assert!(
+        !combined.contains("panicked"),
+        "the failure must be a typed error, not a Rust panic; got: {combined}"
+    );
+
+    cleanup(&[&src, &store, &cache, &home, &dest]);
+}
+
+/// REVIEW (mixed tree): a tree where SOME entries are recoverable in-store
+/// symlinks and ANOTHER is a real (non-symlink) file must be handled per-entry —
+/// the fast-path eligibility is decided per symlink, not for the whole walk. On
+/// a healthy store the default id (fast path for the linked entries, normal hash
+/// for the real file) is byte-identical to `SNAPDIR_VERIFY_COPIES=1` (every entry
+/// re-hashed). This pins that adding a non-symlink sibling does not break the
+/// per-entry decision and the two paths still agree.
+#[test]
+fn mixed_linked_and_real_tree_default_equals_strict() {
+    let src = build_src("mixed-src");
+    let store = temp_dir("mixed-store");
+    let cache = temp_dir("mixed-cache");
+    let home = temp_dir("mixed-home");
+    let (_url, _id, dest) = build_linked_tree("mixed", &src, &cache, &home, &store);
+
+    // Add a REAL regular file alongside the linked entries (not a symlink, so it
+    // is hashed normally in BOTH modes).
+    let real = dest.join("real.txt");
+    fs::write(&real, b"a genuine non-linked regular file").unwrap();
+    fs::set_permissions(&real, fs::Permissions::from_mode(0o644)).unwrap();
+    let dest_str = dest.to_string_lossy().into_owned();
+
+    let fast = ok_stdout(snapdir(&cache, &home), &["id", &dest_str]);
+
+    let mut strict_cmd = snapdir(&cache, &home);
+    strict_cmd.env("SNAPDIR_VERIFY_COPIES", "1");
+    let strict = ok_stdout(strict_cmd, &["id", &dest_str]);
+
+    assert_eq!(
+        fast, strict,
+        "a mixed linked+real tree must produce the same id under the default fast path \
+         and the strict re-hash on a healthy store (per-entry eligibility)"
+    );
+    assert_eq!(fast.len(), 64);
+
+    cleanup(&[&src, &store, &cache, &home, &dest]);
+}
+
+/// REVIEW (canonicalization / `..` in the symlink target): `recover_object_key`
+/// lexically folds `.`/`..` before testing the target against the store root. A
+/// linked tree whose object symlinks are still well-formed object addresses after
+/// folding must take the fast path. We exercise the recover path against a tree
+/// reached through a `..`-containing dest path (the dest is addressed via its
+/// parent + `..`), proving the lexical normalization in `recover_object_key`
+/// doesn't reject a legitimately-rooted object and the id still matches strict.
+#[test]
+fn dest_addressed_with_dotdot_still_fast_paths_and_matches_strict() {
+    let src = build_src("dotdot-src");
+    let store = temp_dir("dotdot-store");
+    let cache = temp_dir("dotdot-cache");
+    let home = temp_dir("dotdot-home");
+    let (_url, _id, dest) = build_linked_tree("dotdot", &src, &cache, &home, &store);
+
+    // Re-address the dest through a `..` hop: <dest>/sub/.. == <dest>.
+    let via_dotdot = dest.join("sub").join("..");
+    let via_dotdot_str = via_dotdot.to_string_lossy().into_owned();
+
+    let fast = ok_stdout(snapdir(&cache, &home), &["id", &via_dotdot_str]);
+
+    let mut strict_cmd = snapdir(&cache, &home);
+    strict_cmd.env("SNAPDIR_VERIFY_COPIES", "1");
+    let strict = ok_stdout(strict_cmd, &["id", &via_dotdot_str]);
+
+    assert_eq!(
+        fast, strict,
+        "a dest addressed via a `..` hop must still fast-path (lexical normalization \
+         in recover_object_key) and match the strict re-hash on a healthy store"
+    );
+    assert_eq!(fast.len(), 64);
 
     cleanup(&[&src, &store, &cache, &home, &dest]);
 }
