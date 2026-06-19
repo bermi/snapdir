@@ -5511,9 +5511,11 @@ gates:
     phase: 32
     owner_agent: core
     depends_on: [mirror-linked-fastpath-spec-tests]
-    status: failed
+    status: passed
+    passed_at: 2026-06-19T22:29:12Z
+    git_sha: 4154b8e
     failure_count: 1
-    failure_reason: "REOPENED by mirror-linked-fastpath-impl-cli (strict-verify gap). 2469a57 landed recover-from-object-path + DanglingLinkedObject, but NOT the design keystone 'SNAPDIR_VERIFY_COPIES=1 re-hashes AND ERRORS'. ADD an opt-in WalkOptions flag (verify_linked_objects, default false): when set, an eligible linked-into-store entry recovers address H AND hashes content -> H'; H!=H' -> typed WalkError naming the file. Default (flag off) byte-identical + frozen lock. Recovery itself is sound (8/11 incl. keystone + no-content-read passed); narrow add. Prior LANE-FENCE-EXC (..default() at cli) was reverted with the failed impl-cli tree."
+    failure_reason: "RESOLVED at 4154b8e: added the strict-verify keystone (opt-in WalkOptions::verify_linked_objects + typed WalkError::LinkedObjectIntegrity; flag on -> re-hash content + compare to recovered address, error on mismatch). Default byte-identical to 2469a57; wrong-algo/keyed/escaped inert (no spurious error). No LANE-FENCE-EXC (the ..default() from 2469a57 already in HEAD absorbs the new field; core-only diff). The fc=1 was the reopen for the missing strict-verify path."
     bump_reason: "GATE-BUMP 2026-06-19: operator 'wire CLI now' -> split mirror-linked-fastpath-impl into impl-core + impl-cli. Mechanical cross-lane split, pass INTENT preserved."
     verification_cmd: "cargo build --workspace --locked && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
