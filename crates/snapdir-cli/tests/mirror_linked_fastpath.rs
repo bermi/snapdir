@@ -324,10 +324,12 @@ fn strict_verify_id_errors_on_corrupted_object_naming_it() {
 /// SPEC (wrong algo): a non-default `--checksum-bin` (md5sum) makes the embedded
 /// BLAKE3 the WRONG algorithm, so the fast path is ineligible and content must be
 /// re-hashed. NOTE: `snapdir id` does NOT expose `--checksum-bin`; only `snapdir
-/// manifest` does. Against a garbage-injected object, `snapdir manifest
-/// --checksum-bin md5sum <linked-tree>` must READ the garbage (it cannot recover
-/// an md5 from a BLAKE3-addressed path) → it ERRORS, and never silently emits a
-/// stale BLAKE3.
+/// manifest` does. The fast path is DISABLED for md5 (it cannot recover an md5
+/// from a BLAKE3-addressed path), so the bytes are RE-HASHED: `snapdir manifest
+/// --checksum-bin md5sum <linked-tree>` SUCCEEDS and emits an md5 manifest that
+/// reflects the object's ACTUAL (corrupted) content — it must NOT echo the stale
+/// BLAKE3 fast-path output. Per the locked design, wrong-algo merely re-hashes;
+/// it does NOT error.
 #[test]
 fn wrong_checksum_bin_disables_fastpath_and_rehashes_corrupted_object() {
     let src = build_src("md5-src");
@@ -337,19 +339,25 @@ fn wrong_checksum_bin_disables_fastpath_and_rehashes_corrupted_object() {
     let (_url, _id, dest) = build_linked_tree("md5", &src, &cache, &home, &store);
     let dest_str = dest.to_string_lossy().into_owned();
 
+    // The plain-BLAKE3 fast-path id over the HEALTHY tree (what a wrongly-fired
+    // fast path would echo). Captured before corruption.
+    let blake3_fast = ok_stdout(snapdir(&cache, &home), &["id", &dest_str]);
+    assert_eq!(blake3_fast.len(), 64);
+
     corrupt_object_keep_name(&dest, "a.txt", b"GARBAGE-FOR-MD5-PATHWAY-ZZZZZZZZ");
 
-    // md5sum mode cannot recover a checksum from the BLAKE3 object path: it MUST
-    // re-hash, which reads the garbage and trips the store's verify-on-read.
-    let mut cmd = snapdir(&cache, &home);
-    let out = cmd
-        .args(["manifest", "--checksum-bin", "md5sum", &dest_str])
-        .output()
-        .expect("run snapdir");
+    // md5sum mode cannot recover a checksum from the BLAKE3 object path: the fast
+    // path is DISABLED, so it RE-HASHES the (now corrupted) content and SUCCEEDS,
+    // emitting an md5 manifest that reflects the actual bytes — NOT the stale
+    // BLAKE3 fast-path output.
+    let md5_manifest = ok_stdout(
+        snapdir(&cache, &home),
+        &["manifest", "--checksum-bin", "md5sum", &dest_str],
+    );
     assert!(
-        !out.status.success(),
-        "a non-BLAKE3 --checksum-bin must DISABLE the fast path and re-hash; against \
-         the corrupted object it must ERROR, never emit a stale BLAKE3"
+        !md5_manifest.contains(&blake3_fast),
+        "a non-BLAKE3 --checksum-bin must DISABLE the fast path and re-hash; the md5 \
+         manifest must NOT echo the stale BLAKE3 fast-path id; manifest:\n{md5_manifest}"
     );
 
     cleanup(&[&src, &store, &cache, &home, &dest]);
@@ -400,10 +408,11 @@ fn wrong_checksum_bin_does_not_emit_blake3_object_address() {
 
 /// SPEC (keyed algo): a keyed `SNAPDIR_MANIFEST_CONTEXT` makes the manifest's
 /// checksum keyed-BLAKE3, which differs from the store's plain-BLAKE3 address, so
-/// the fast path is ineligible and content must be re-hashed. Against a
-/// garbage-injected object, `SNAPDIR_MANIFEST_CONTEXT=<key> snapdir id
-/// <linked-tree>` must READ the garbage → ERROR, never emit the stale plain
-/// BLAKE3.
+/// the fast path is ineligible and content must be re-hashed. The keyed re-hash
+/// SUCCEEDS and reflects the object's ACTUAL (corrupted) content, so its id
+/// DIFFERS from the plain-BLAKE3 fast-path output — it must NOT echo the stale
+/// plain address. Per the locked design, keyed-algo merely re-hashes; it does
+/// NOT error.
 #[test]
 fn keyed_manifest_context_disables_fastpath_and_rehashes_corrupted_object() {
     let src = build_src("keyed-src");
@@ -413,16 +422,25 @@ fn keyed_manifest_context_disables_fastpath_and_rehashes_corrupted_object() {
     let (_url, _id, dest) = build_linked_tree("keyed", &src, &cache, &home, &store);
     let dest_str = dest.to_string_lossy().into_owned();
 
+    // The plain-BLAKE3 fast-path id over the HEALTHY tree (what a wrongly-fired
+    // fast path would echo). Captured before corruption.
+    let plain_fast = ok_stdout(snapdir(&cache, &home), &["id", &dest_str]);
+    assert_eq!(plain_fast.len(), 64);
+
     corrupt_object_keep_name(&dest, "a.txt", b"GARBAGE-FOR-KEYED-CONTEXT-QQQQQQ");
 
+    // The keyed run cannot recover the plain address from the object path: the
+    // fast path is DISABLED, so it RE-HASHES the (now corrupted) content with the
+    // key and SUCCEEDS, emitting a keyed id that reflects the actual bytes — NOT
+    // the stale plain-BLAKE3 fast-path output.
     let mut cmd = snapdir(&cache, &home);
     cmd.env("SNAPDIR_MANIFEST_CONTEXT", "some-keyed-context");
-    let out = cmd.args(["id", &dest_str]).output().expect("run snapdir");
-    assert!(
-        !out.status.success(),
+    let keyed = ok_stdout(cmd, &["id", &dest_str]);
+    assert_ne!(
+        keyed, plain_fast,
         "a keyed SNAPDIR_MANIFEST_CONTEXT must DISABLE the fast path (keyed BLAKE3 != \
-         the store's plain-BLAKE3 address) and re-hash; against the corrupted object \
-         it must ERROR"
+         the store's plain-BLAKE3 address) and re-hash; the keyed id must NOT echo the \
+         stale plain-BLAKE3 fast-path id"
     );
 
     cleanup(&[&src, &store, &cache, &home, &dest]);

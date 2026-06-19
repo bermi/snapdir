@@ -3277,9 +3277,18 @@ impl Ctx {
         if let Some(dir) = &self.globals.cache_dir {
             return dir.clone();
         }
-        let home = std::env::var("HOME").unwrap_or_default();
-        let base = std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| format!("{home}/.cache"));
-        PathBuf::from(format!("{base}/snapdir"))
+        // Commands that flatten `WalkArgs` (`id`/`manifest`) do NOT carry a
+        // `--cache-dir`/env field, so `globals.cache_dir` is unset for them even
+        // when `$SNAPDIR_CACHE_DIR` is exported. Honor the env directly here so
+        // the resolved cache matches the one `push`/`pull` wrote to — required
+        // for the linked-mode fast path to recognize a symlink whose target is a
+        // cache object (and correct independently of that path).
+        if let Some(dir) = std::env::var_os("SNAPDIR_CACHE_DIR") {
+            if !dir.is_empty() {
+                return PathBuf::from(dir);
+            }
+        }
+        default_cache_dir()
     }
 
     /// Returns the manifest's file objects that are ABSENT from the cache at
@@ -3326,6 +3335,7 @@ impl Ctx {
             path,
             absolute,
             no_follow,
+            checksum_bin,
             exclude,
             "resolving manifest path",
         )?;
@@ -3366,8 +3376,14 @@ impl Ctx {
         exclude: &[String],
         meter: Option<&Meter>,
     ) -> Result<(Manifest, std::collections::HashMap<PathBuf, CopyGuard>)> {
-        let (root, options) =
-            self.resolve_walk(path, absolute, no_follow, exclude, "resolving stage path")?;
+        let (root, options) = self.resolve_walk(
+            path,
+            absolute,
+            no_follow,
+            checksum_bin,
+            exclude,
+            "resolving stage path",
+        )?;
 
         match checksum_bin {
             None | Some("b3sum") => {
@@ -3394,6 +3410,7 @@ impl Ctx {
         path: Option<&Path>,
         absolute: bool,
         no_follow: bool,
+        checksum_bin: Option<&str>,
         exclude: &[String],
         context: &'static str,
     ) -> Result<(PathBuf, WalkOptions)> {
@@ -3427,15 +3444,47 @@ impl Ctx {
         } else {
             PathMode::Relative
         };
+        // Linked-mode checksum-reuse fast path. A `--linked` checkout's dest
+        // entries are symlinks into a LOCAL content-addressed `.objects/` pool
+        // whose sharded path mechanically encodes the file's BLAKE3, so a
+        // re-snapshot can recover each checksum from the symlink target's object
+        // path WITHOUT reading the bytes (core's `recover_object_key`).
+        //
+        // Eligibility (gated here so core stays env-pure): the requested
+        // checksum must be the store's addressing algorithm — plain, non-keyed
+        // BLAKE3. A non-default `--checksum-bin` (md5sum/sha256sum) or a keyed
+        // `SNAPDIR_MANIFEST_CONTEXT` makes the embedded hash the WRONG algorithm
+        // → leave the roots empty so core re-hashes content normally.
+        let plain_blake3 = matches!(checksum_bin, None | Some("b3sum"))
+            && std::env::var("SNAPDIR_MANIFEST_CONTEXT").map_or(true, |c| c.is_empty());
+        // The strict override forces a content re-hash (and, with the roots
+        // hinted, an integrity ERROR on a corrupt object). It is inert without
+        // eligible entries, so roots are still populated below.
+        let verify_linked_objects =
+            plain_blake3 && std::env::var("SNAPDIR_VERIFY_COPIES").as_deref() == Ok("1");
+        let object_store_roots = if plain_blake3 {
+            // The known LOCAL object-store roots `--linked` symlinks may point
+            // into: the resolved cache-dir store (`pull --linked` symlinks point
+            // into `<cache>/.objects/`) plus the local `--store`/`$SNAPDIR_STORE`
+            // root when local. Each root is a `<store-root>` dir (containing
+            // `.objects/`), exactly what `recover_object_key` strips against.
+            let mut roots = vec![self.cache_dir()];
+            if let Some(url) = self.globals.store.as_deref() {
+                if store_url_is_local(url) {
+                    roots.push(store_root_path(url));
+                }
+            }
+            roots
+        } else {
+            Vec::new()
+        };
         let options = WalkOptions {
             follow,
             path_mode,
             exclude: matcher,
             walk_jobs: self.globals.walk_jobs,
-            // Linked-mode checksum-reuse fast path stays DORMANT here: the
-            // object-store-roots hint is left empty so behavior is unchanged.
-            // The `mirror-linked-fastpath-impl-cli` gate wires the store root in.
-            ..WalkOptions::default()
+            object_store_roots,
+            verify_linked_objects,
         };
         Ok((root, options))
     }
