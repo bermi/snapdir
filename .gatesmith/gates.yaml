@@ -5280,7 +5280,9 @@ gates:
     phase: 32
     owner_agent: adversary
     depends_on: [mirror-checkout-cli-impl]
-    status: pending
+    status: passed
+    passed_at: 2026-06-19T19:16:48Z
+    git_sha: ee09890
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test mirror_checkout_cli && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
