@@ -5422,7 +5422,7 @@ gates:
   - id: mirror-docs
     phase: 32
     owner_agent: docs
-    depends_on: [mirror-bench, mirror-feasibility-matrix, mirror-security-review]
+    depends_on: [mirror-bench, mirror-feasibility-matrix, mirror-security-review, mirror-linked-fastpath-review]
     status: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test cli_surface && grep -q -- '--delete' README.md && grep -q -- '--linked' README.md"
@@ -5430,7 +5430,7 @@ gates:
       and:
         - exit_code: 0
     human_checkpoint: false
-    description: "DOCS: README + --help/man for --delete, --exclude, --linked (now real), the mode/CoW/atomic semantics, sync manifest-set-only + per-store support, and the read-only/no-GC caveats. trycmd help snapshots updated."
+    description: "DOCS: README + --help/man for --delete, --exclude, --linked (now real), the mode/CoW/atomic semantics, sync manifest-set-only + per-store support, the read-only/no-GC caveats, AND the linked-mode checksum-reuse fast path (re-snapshot of a --linked tree recovers BLAKE3 from the object path; CHECKSUM-ONLY — does not by itself reproduce the original id, which needs the source manifest; disabled under non-default --checksum-bin/keyed context; SNAPDIR_VERIFY_COPIES=1 forces re-hash). trycmd help snapshots updated."
   - id: mirror-verify
     phase: 32
     owner_agent: generic
@@ -5443,3 +5443,69 @@ gates:
         - exit_code: 0
     human_checkpoint: false
     description: "End-to-end verify: full workspace tests + fast CI parity (fmt/clippy --all-features/typos/deny/tests) + frozen lock. Phase-32 complete; --delete ships in a later release-* triple (dev -> main -> upstream, ledger split per gatesmith-branch-model)."
+
+  # ---- Linked-mode checksum-reuse fast path (operator add 2026-06-19) ----
+  # In --linked mode dest entries are symlinks into .objects/<sharded>, whose path
+  # ENCODES the BLAKE3 hash -> a re-snapshot can recover the content checksum WITHOUT
+  # reading/hashing bytes. VERIFIED FINDINGS (see journal LINKED-FASTPATH): (1) hash is
+  # mechanically recoverable (store.rs:79-118); (2) precedent exists (CopyTrust::TrustedObject,
+  # file_store.rs:100-112); BUT (3) walk records the SYMLINK's own lstat mode+size
+  # (walk.rs:562-567,614-619) not the target's, so a naive linked re-snapshot does NOT
+  # reproduce the original id (size/mode differ) — the fast path is CHECKSUM-ONLY; faithful
+  # round-trip needs the source manifest; (4) the object store always addresses by plain
+  # BLAKE3 — a non-default --checksum-bin (md5/sha256) or keyed SNAPDIR_MANIFEST_CONTEXT makes
+  # the embedded hash the WRONG algorithm -> must re-hash; (5) trusting an address skips the
+  # verify-on-read discipline -> SNAPDIR_VERIFY_COPIES=1 must force re-hash. KEYSTONE: id
+  # byte-identical with/without the fast path on a healthy store; frozen manifest format
+  # untouched (compute path only, additive/opt-in so existing call sites are unchanged).
+  - id: mirror-linked-fastpath-design
+    phase: 32
+    owner_agent: generic
+    depends_on: [mirror-materialize-modes-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/reviews/mirror-linked-fastpath.md"
+    pass_criteria:
+      and:
+        - file_exists: ".gatesmith/reviews/mirror-linked-fastpath.md"
+        - human_confirm: "Linked-mode checksum-reuse fast-path design locked in .gatesmith/reviews/mirror-linked-fastpath.md: eligibility predicate (entry is a symlink whose canonical target is an object in a KNOWN local .objects store AND requested checksum algo == store addressing algo (plain non-keyed BLAKE3) AND strict-verify off); fallbacks (non-default algo->re-hash; escaped/non-object target->normal followed-symlink hash; dangling->typed WalkError no panic; SNAPDIR_VERIFY_COPIES=1->force re-hash); mode+size fidelity decision (CHECKSUM-ONLY + documented limitation that faithful re-snapshot needs the source manifest); KEYSTONE id byte-identical with/without fast path on a healthy store; lane = core (additive opt-in 'object-store roots' hint defaulting to none so cli call sites are unchanged). Approve?"
+    human_checkpoint: true
+    description: "DESIGN LOCK (human ✋, like catalog-default-design/flux-design): write .gatesmith/reviews/mirror-linked-fastpath.md fixing the linked-mode checksum-reuse fast path — eligibility predicate, the 4 failure-mode fallbacks, the CHECKSUM-ONLY mode/size-fidelity decision, the byte-identical-id keystone, the strict-verify override, and the additive/opt-in core lane shape (no frozen-format change). Unblocks the fastpath triple."
+  - id: mirror-linked-fastpath-spec-tests
+    phase: 32
+    owner_agent: adversary
+    depends_on: [mirror-linked-fastpath-design]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/mirror_linked_fastpath.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/mirror_linked_fastpath.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/mirror_linked_fastpath.rs"
+    human_checkpoint: false
+    description: "ADVERSARY black-box spec for the linked-mode checksum-reuse fast path (per the locked design). Pin: (KEYSTONE) a re-snapshot checksum over a symlink-into-store entry is BYTE-IDENTICAL to the hash that reading the content would produce on a healthy store; PROVE no content read on the default path by replacing the object's CONTENT with garbage while keeping its address -> default fast path yields the address hash (no garbage read) while SNAPDIR_VERIFY_COPIES=1 re-hashes and ERRORS; non-default --checksum-bin/keyed context -> fast path DISABLED, content re-hashed (embedded BLAKE3 is the wrong algo); symlink target ESCAPED the store / not an object path -> normal followed-symlink hash, never trusted; DANGLING target -> typed WalkError (no panic); mixed tree (some symlinks-into-store, some real files, some symlinks-elsewhere) -> per-entry decision; mode+size still come from walk's lstat (the fast path is checksum-only — pin that it does NOT claim to reproduce the original id by itself). Expected to FAIL."
+  - id: mirror-linked-fastpath-impl
+    phase: 32
+    owner_agent: core
+    depends_on: [mirror-linked-fastpath-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-core --test mirror_linked_fastpath && cargo test --workspace && test -f crates/snapdir-core/tests/mirror_linked_fastpath.rs && test ! -f .gatesmith/pending-tests/mirror_linked_fastpath.rs && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-core/tests/mirror_linked_fastpath.rs"
+    human_checkpoint: false
+    description: "CORE impl of the checksum-reuse fast path (additive/opt-in per the locked design): the walk/hash path gains an optional 'object-store roots' hint (default none -> existing call sites unchanged, no frozen-format change); when an entry is a symlink whose canonical target parses to a valid object key under a hinted root AND the active checksum algo is the store's plain BLAKE3 AND strict-verify is off, recover the checksum from the object path instead of reading content; ALL fallbacks (non-default algo/escaped/dangling/strict-verify) re-hash or error per design. KEYSTONE: ids byte-identical with/without the hint on a healthy store; frozen lock must verify. Take over the staged test; green workspace."
+  - id: mirror-linked-fastpath-review
+    phase: 32
+    owner_agent: adversary
+    depends_on: [mirror-linked-fastpath-impl]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --test mirror_linked_fastpath && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of the linked-fastpath cluster; weakening audit vs staged; re-assert the byte-identical keystone + no-content-read proof + strict-verify-forces-rehash + wrong-algo-disables + escaped/dangling guards; add impl-revealed cases (canonicalization/symlink-chain edges, object key validation). No weakening; workspace + frozen lock green."
