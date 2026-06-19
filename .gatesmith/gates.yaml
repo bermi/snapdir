@@ -5221,7 +5221,9 @@ gates:
     phase: 32
     owner_agent: stores
     depends_on: [mirror-materialize-modes-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-19T17:48:25Z
+    git_sha: 959ddd6
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-stores --test mirror_materialize_modes && cargo test --workspace && test -f crates/snapdir-stores/tests/mirror_materialize_modes.rs && test ! -f .gatesmith/pending-tests/mirror_materialize_modes.rs"
     pass_criteria:
