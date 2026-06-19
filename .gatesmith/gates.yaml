@@ -5511,11 +5511,10 @@ gates:
     phase: 32
     owner_agent: core
     depends_on: [mirror-linked-fastpath-spec-tests]
-    status: passed
-    passed_at: 2026-06-19T20:45:53Z
-    git_sha: 2469a57
-    failure_count: 0
-    bump_reason: "GATE-BUMP 2026-06-19: operator 'wire CLI now' -> split mirror-linked-fastpath-impl into impl-core (this) + impl-cli (new). Mechanical cross-lane split, pass INTENT preserved. This gate lands the CORE recover capability; the CLI test is taken over by impl-cli. LANE-FENCE-EXC at pass: one behavior-preserving ..WalkOptions::default() at the sole exhaustive cli WalkOptions literal, mechanically forced by the new core field; impl-cli replaces it with real wiring."
+    status: failed
+    failure_count: 1
+    failure_reason: "REOPENED by mirror-linked-fastpath-impl-cli (strict-verify gap). 2469a57 landed recover-from-object-path + DanglingLinkedObject, but NOT the design keystone 'SNAPDIR_VERIFY_COPIES=1 re-hashes AND ERRORS'. ADD an opt-in WalkOptions flag (verify_linked_objects, default false): when set, an eligible linked-into-store entry recovers address H AND hashes content -> H'; H!=H' -> typed WalkError naming the file. Default (flag off) byte-identical + frozen lock. Recovery itself is sound (8/11 incl. keystone + no-content-read passed); narrow add. Prior LANE-FENCE-EXC (..default() at cli) was reverted with the failed impl-cli tree."
+    bump_reason: "GATE-BUMP 2026-06-19: operator 'wire CLI now' -> split mirror-linked-fastpath-impl into impl-core + impl-cli. Mechanical cross-lane split, pass INTENT preserved."
     verification_cmd: "cargo build --workspace --locked && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
       and:
