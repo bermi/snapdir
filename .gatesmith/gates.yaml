@@ -5192,7 +5192,9 @@ gates:
     phase: 32
     owner_agent: adversary
     depends_on: [mirror-prune-set-impl]
-    status: pending
+    status: passed
+    passed_at: 2026-06-19T17:06:12Z
+    git_sha: 38631e8
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-core --test mirror_prune_set && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
