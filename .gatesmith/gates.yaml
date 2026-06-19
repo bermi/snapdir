@@ -5147,3 +5147,293 @@ gates:
         - human_confirm: "Phase 31 done: snapdir 1.9.0 released end-to-end — canonical snapdir/snapdir at 1.9.0, tag v1.9.0, GitHub release live, all 6 crates on crates.io. Ships: a default-on catalog (revisions works out of the box; `--catalog none` is an explicit disable sentinel), a panic-free / silent-failure-free walk under concurrent mutation (SIGBUS handled, in-flux files reported with clear typed errors, two invariant panics removed), and a documented `snapdir autocomplete <shell>` for bash/zsh/fish/powershell/elvish. Frozen format untouched; snapshot ids byte-identical on a static tree. Approve?"
     human_checkpoint: true
     description: "PHASE 31 SIGN-OFF: snapdir 1.9.0 released end-to-end. Three operator-prioritized fixes, each adversarially verified (author != coder != reviewer; sonnet authoring/review, haiku high-volume fuzzing): catalog default-on + `revisions --catalog none` sentinel; files-in-flux robustness (no silent kill, no panic, clear typed errors, ids byte-identical on a static tree); `snapdir autocomplete <shell>`. 6 crates published; TP verified on all 6 pages pre-tag."
+
+  # ============================================================================
+  # Phase 32: exact-mirror (--delete) + materialization modes for checkout/pull/sync
+  # Plan: ~/.claude/plans/cosmic-knitting-tide.md (operator-approved 2026-06-19).
+  # HARD INVARIANTS (must be PREVENTED, adversarially verified): (1) no shared-object
+  # corruption (objects 0444; writable/remote-link combos hard-error); (2) no extra
+  # byte copies (atomic only when staging is zero-copy: reflink-on-CoW or symlink;
+  # non-CoW atomic = hard error); (3) hard-refuse dangerous dests (/, $HOME, cache,
+  # store) with NO --force escape, never delete outside dest root; (4) GC OUT OF
+  # SCOPE — sync --delete prunes manifests only, never objects (no delete_object).
+  # ============================================================================
+  - id: mirror-prune-set-spec-tests
+    phase: 32
+    owner_agent: adversary
+    depends_on: [phase31-complete]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/mirror_prune_set.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/mirror_prune_set.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/mirror_prune_set.rs"
+    human_checkpoint: false
+    description: "ADVERSARY black-box spec for the PURE prune-set: given a manifest + a dest path/type listing, the extraneous set = dest paths absent from the manifest. Pin: file<->dir type change is replaced not kept; nested dirs deepest-first; empty dirs included; --exclude globs removed from the prune set; NO hashing required (prove it works against a bogus/empty .objects pool). Write to .gatesmith/pending-tests/mirror_prune_set.rs; expected to FAIL (no impl)."
+  - id: mirror-prune-set-impl
+    phase: 32
+    owner_agent: core
+    depends_on: [mirror-prune-set-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-core --test mirror_prune_set && cargo test --workspace && test -f crates/snapdir-core/tests/mirror_prune_set.rs && test ! -f .gatesmith/pending-tests/mirror_prune_set.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-core/tests/mirror_prune_set.rs"
+    human_checkpoint: false
+    description: "CORE pure prune-set, reusing diff::classify/union_side (crates/snapdir-cli/src/diff.rs:126-219) and a light walk traversal (paths+types, NO hashing) honoring excludes. Take over the staged test (git mv .gatesmith/pending-tests/mirror_prune_set.rs -> crates/snapdir-core/tests/mirror_prune_set.rs), fix only wiring/shape. Green workspace; frozen manifest-format lock must verify."
+  - id: mirror-prune-set-review
+    phase: 32
+    owner_agent: adversary
+    depends_on: [mirror-prune-set-impl]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-core --test mirror_prune_set && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of prune-set; diff staged vs landed, restore any weakened assertion, add impl-revealed cases (symlink entries, dot/space/unicode paths). No weakening; workspace + frozen lock green."
+  - id: mirror-materialize-modes-spec-tests
+    phase: 32
+    owner_agent: adversary
+    depends_on: [mirror-prune-set-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/mirror_materialize_modes.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/mirror_materialize_modes.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/mirror_materialize_modes.rs"
+    human_checkpoint: false
+    description: "ADVERSARY black-box spec for materialization modes. Pin INVARIANTS: (a) --linked produces symlinks to LOCAL store objects; objects are 0444 so a write through a link FAILS (store uncorrupted); (b) --linked to a NON-LOCAL object source is a HARD ERROR; (c) auto mode reflinks on CoW (CopyMethod::Cloned) and copies otherwise, independent editable inodes; (d) a write to an editable reflinked file leaves the source object byte-identical. Expected to FAIL."
+  - id: mirror-materialize-modes-impl
+    phase: 32
+    owner_agent: stores
+    depends_on: [mirror-materialize-modes-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-stores --test mirror_materialize_modes && cargo test --workspace && test -f crates/snapdir-stores/tests/mirror_materialize_modes.rs && test ! -f .gatesmith/pending-tests/mirror_materialize_modes.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-stores/tests/mirror_materialize_modes.rs"
+    human_checkpoint: false
+    description: "STORES: implement --linked symlink materialization in fetch_files (local objects only; copy-only today) + 0444 object hardening + ahead-of-time CoW probe (trial copy_file into a temp sibling -> CopyMethod::Cloned? reusing clonefile/FICLONE at file_store.rs:973-1119). HARD-ERROR remote-link / writable-link combos. reflink/copy auto unchanged. Take over staged test; green workspace; frozen lock."
+  - id: mirror-materialize-modes-review
+    phase: 32
+    owner_agent: adversary
+    depends_on: [mirror-materialize-modes-impl]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --test mirror_materialize_modes && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of materialization modes; re-assert the no-corruption + 0444 + remote-link-refusal invariants; add impl-revealed cases. No weakening; workspace + frozen lock green."
+  - id: mirror-checkout-cli-spec-tests
+    phase: 32
+    owner_agent: adversary
+    depends_on: [mirror-materialize-modes-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/mirror_checkout_cli.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/mirror_checkout_cli.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/mirror_checkout_cli.rs"
+    human_checkpoint: false
+    description: "ADVERSARY black-box spec (assert_cmd) for checkout/pull --delete + --exclude. Pin: extraneous files pruned; idempotent second run; --dryrun lists deletions + removes nothing; dest-absent == plain checkout; HARD-REFUSE dest = / | $HOME | cache dir | store path (no --force bypass, non-zero exit, nothing deleted); a symlink escaping dest is removed-not-followed and nothing outside dest is deleted; --exclude protects matches. Expected to FAIL."
+  - id: mirror-checkout-cli-impl
+    phase: 32
+    owner_agent: cli
+    depends_on: [mirror-checkout-cli-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test mirror_checkout_cli && cargo test --workspace && test -f crates/snapdir-cli/tests/mirror_checkout_cli.rs && test ! -f .gatesmith/pending-tests/mirror_checkout_cli.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-cli/tests/mirror_checkout_cli.rs"
+    human_checkpoint: false
+    description: "CLI: --delete + --exclude <glob> on Checkout+Pull (cli.rs:614-711); in-place prune via the core prune-set; hard-refuse dangerous-dest guards; never follow a symlink out of dest; --dryrun listing. Take over staged test; green workspace; frozen lock."
+  - id: mirror-checkout-cli-review
+    phase: 32
+    owner_agent: adversary
+    depends_on: [mirror-checkout-cli-impl]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test mirror_checkout_cli && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of checkout/pull --delete; re-assert hard-refusal + outside-dest + exclude + dryrun; add impl-revealed cases. No weakening; workspace + frozen lock green."
+  - id: mirror-atomic-swap-spec-tests
+    phase: 32
+    owner_agent: adversary
+    depends_on: [mirror-checkout-cli-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/mirror_atomic_swap.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/mirror_atomic_swap.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/mirror_atomic_swap.rs"
+    human_checkpoint: false
+    description: "ADVERSARY black-box spec for atomic staged swap. Pin: on CoW/symlink the swap copies ZERO bytes (assert no byte-copy path taken); atomic requested where it would duplicate bytes (plain copy on non-CoW) is a HARD ERROR; a held-open fd keeps reading old bytes across the swap; a simulated mid-stage failure leaves the original dest intact (swap-or-nothing). Expected to FAIL."
+  - id: mirror-atomic-swap-impl
+    phase: 32
+    owner_agent: stores
+    depends_on: [mirror-atomic-swap-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-stores --test mirror_atomic_swap && cargo test --workspace && test -f crates/snapdir-stores/tests/mirror_atomic_swap.rs && test ! -f .gatesmith/pending-tests/mirror_atomic_swap.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-stores/tests/mirror_atomic_swap.rs"
+    human_checkpoint: false
+    description: "STORES: zero-copy staged swap (reflink files / symlink to objects into a sibling staging dir) + rename(dest->dest.old)+rename(staging->dest)+cleanup; HARD-ERROR non-zero-copy atomic; in-place prune fallback (per-file atomic). Take over staged test; green workspace; frozen lock."
+  - id: mirror-atomic-swap-review
+    phase: 32
+    owner_agent: adversary
+    depends_on: [mirror-atomic-swap-impl]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --test mirror_atomic_swap && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of atomic swap; re-assert zero-copy + swap-or-nothing + held-fd survival; add crash-window cases. No weakening; workspace + frozen lock green."
+  - id: mirror-sync-spec-tests
+    phase: 32
+    owner_agent: adversary
+    depends_on: [mirror-atomic-swap-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/pending-tests/mirror_sync.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/mirror_sync.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: ".gatesmith/pending-tests/mirror_sync.rs"
+    human_checkpoint: false
+    description: "ADVERSARY black-box spec for sync --delete (manifest-set mirror). Pin: after sync, dest manifests NOT in the source set are deleted; NO object is EVER deleted (point at a shared object referenced by another manifest -> it survives); copy-in happens BEFORE any delete; --delete to s3/gcs/b2/ssh dest is a clear HARD ERROR; a healthy --delete round-trip is byte-identical to plain sync. Expected to FAIL."
+  - id: mirror-sync-impl
+    phase: 32
+    owner_agent: stores
+    depends_on: [mirror-sync-spec-tests]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-stores --test mirror_sync && cargo test --workspace && test -f crates/snapdir-stores/tests/mirror_sync.rs && test ! -f .gatesmith/pending-tests/mirror_sync.rs"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-stores/tests/mirror_sync.rs"
+    human_checkpoint: false
+    description: "STORES+CLI: add delete_manifest + supports_mirror()->bool to the store trait (default Err(Unsupported)), implement ONLY on FileStore (NO delete_object). sync_snapshot (sync.rs:89) mirror path: copy-in -> list source vs dest manifest ids (list_manifest_ids) -> delete dest manifests absent from source set. Refuse object/remote dests with a clear error. Wire sync --delete. Take over staged test; green workspace; frozen lock."
+  - id: mirror-sync-review
+    phase: 32
+    owner_agent: adversary
+    depends_on: [mirror-sync-impl]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --test mirror_sync && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "ADVERSARY review of sync --delete; re-assert never-delete-object + copy-before-delete ordering + unsupported-dest refusal; add impl-revealed cases. No weakening; workspace + frozen lock green."
+  - id: mirror-durability-review
+    phase: 32
+    owner_agent: adversary
+    depends_on: [mirror-sync-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test mirror_durability && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-cli/tests/mirror_durability.rs"
+    human_checkpoint: false
+    description: "KEYSTONE adversary suite: a long-running process holding a dest file open keeps reading old bytes through --delete removal AND the atomic swap in ALL modes (copy, reflink, symlink); symlink write blocked; reflink write leaves the object byte-identical; zero extra copies on the zero-copy paths. New net suite owned by the adversary (crates/snapdir-cli/tests/mirror_durability.rs)."
+  - id: mirror-safety-review
+    phase: 32
+    owner_agent: adversary
+    depends_on: [mirror-durability-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test mirror_safety && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-cli/tests/mirror_safety.rs"
+    human_checkpoint: false
+    description: "Adversary safety suite: never delete outside dest root; symlink escape removed-not-followed; hard-refuse / | $HOME | cache | store dests (no --force bypass); --exclude honored; nothing deleted on refusal. New net suite owned by the adversary (crates/snapdir-cli/tests/mirror_safety.rs)."
+  - id: mirror-feasibility-matrix
+    phase: 32
+    owner_agent: stores
+    depends_on: [mirror-sync-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-stores --test mirror_feasibility && cargo test --workspace"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-stores/tests/mirror_feasibility.rs"
+    human_checkpoint: false
+    description: "Assert supports_mirror() per backend (FileStore true; S3/GCS/B2/SSH/external false) and that --delete against an unsupported dest returns the documented clear error. New suite crates/snapdir-stores/tests/mirror_feasibility.rs."
+  - id: mirror-bench
+    phase: 32
+    owner_agent: bench
+    depends_on: [mirror-safety-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo bench -p snapdir-benches --bench iai_hot && test -f benches/baselines/mirror_prune_set.json"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "benches/baselines/mirror_prune_set.json"
+    human_checkpoint: false
+    description: "BENCH: add the pure prune-set to iai_hot (<=5% Ir/EstimatedCycles soft limit) and COMMIT its baseline (also clears the open 'iai needs a committed baseline' item); add a criterion pipeline mirror scenario (reflink-swap vs symlink vs in-place; Phase-27 Darwin-fsync caveat); assert zero-extraneous ~= plain checkout."
+  - id: mirror-security-review
+    phase: 32
+    owner_agent: generic
+    depends_on: [mirror-safety-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "test -f .gatesmith/reviews/mirror-security.md"
+    pass_criteria:
+      and:
+        - file_exists: ".gatesmith/reviews/mirror-security.md"
+        - human_confirm: "/security-review run on the Phase-32 diff; destructive-op findings (path traversal, symlink escape, store corruption, TOCTOU on prune, dangerous-dest refusal) triaged/resolved. Approve?"
+    human_checkpoint: true
+    description: "ORCHESTRATION (human checkpoint): run /security-review on the branch diff (this is a destructive op). Record findings + resolutions to .gatesmith/reviews/mirror-security.md."
+  - id: mirror-docs
+    phase: 32
+    owner_agent: docs
+    depends_on: [mirror-bench, mirror-feasibility-matrix, mirror-security-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test -p snapdir-cli --test cli_surface && grep -q -- '--delete' README.md && grep -q -- '--linked' README.md"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "DOCS: README + --help/man for --delete, --exclude, --linked (now real), the mode/CoW/atomic semantics, sync manifest-set-only + per-store support, and the read-only/no-GC caveats. trycmd help snapshots updated."
+  - id: mirror-verify
+    phase: 32
+    owner_agent: generic
+    depends_on: [mirror-docs]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo test --workspace --all-features --locked && bash utils/ci/pre-push.sh --fast && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "End-to-end verify: full workspace tests + fast CI parity (fmt/clippy --all-features/typos/deny/tests) + frozen lock. Phase-32 complete; --delete ships in a later release-* triple (dev -> main -> upstream, ledger split per gatesmith-branch-model)."
