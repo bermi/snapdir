@@ -1041,3 +1041,298 @@ fn atomic_swap_into_absent_dest_is_plain_materialize() {
     // Still zero-copy (no object duplication into the store).
     let _ = store_dir; // keep the store alive
 }
+
+// ###########################################################################
+// IMPL-REVEALED CASES (review gate `mirror-atomic-swap-review`)
+//
+// Added after reading the landed impl (`FileStore::fetch_files_atomic`): the
+// staged spec-suite above proved zero-copy / held-fd / swap-or-nothing /
+// dest-absent. The impl now reveals concrete sibling-naming + a two-rename swap
+// + a dest-exists rename-aside branch; the cases below pin behaviors the
+// staged suite did NOT cover. NONE weaken anything above.
+// ###########################################################################
+
+/// Returns the names of any sibling of `dest` (under its parent) that looks
+/// like an atomic-swap scratch artifact: a `.snapdir-staging*`, a
+/// `.snapdir-dest-old*`, or anything that starts with the dest's own basename
+/// and carries `.old` / `stag`. Used to prove NO scratch residue survives.
+#[cfg(unix)]
+fn swap_scratch_siblings(dest: &Path) -> Vec<String> {
+    let parent = dest.parent().unwrap();
+    let dest_name = dest.file_name().unwrap().to_string_lossy().into_owned();
+    let mut out = Vec::new();
+    if let Ok(rd) = fs::read_dir(parent) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name == dest_name {
+                continue;
+            }
+            let looks_like_swap_scratch = name.starts_with(".snapdir-staging")
+                || name.starts_with(".snapdir-dest-old")
+                || (name.starts_with(&dest_name)
+                    && (name.contains(".old") || name.contains("stag")));
+            if looks_like_swap_scratch {
+                out.push(name);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+// ===========================================================================
+// CASE R1 — dest.old / STAGING CLEANUP AFTER A *SUCCESSFUL* SWAP. The impl does
+// `rename(dest -> .snapdir-dest-old-<tmp>)` + `rename(staging -> dest)` +
+// best-effort `remove_dir_all(old)`. The staged suite only checked residue on
+// FAILURE paths; this pins that a SUCCESSFUL swap over an existing dest leaves
+// NO `.snapdir-dest-old*` / `.snapdir-staging*` sibling behind. Linked mode so
+// it runs on any FS. (Impl branch: the dest-exists rename-aside arm.)
+// ===========================================================================
+
+#[cfg(unix)]
+#[test]
+fn successful_swap_over_existing_dest_leaves_no_old_or_staging_sibling() {
+    let parent = coloc_parent();
+
+    let v1_files: Vec<(&str, &[u8], &str)> = vec![("data.bin", b"V1-content\n".as_slice(), "644")];
+    let v2_files: Vec<(&str, &[u8], &str)> = vec![("data.bin", b"V2-content\n".as_slice(), "644")];
+
+    let store_dir = TempDir::under(&parent, "cleanup-store");
+    let store = FileStore::from_root(store_dir.path().to_path_buf());
+    let src1 = TempDir::under(&parent, "cleanup-src1");
+    let (m1, _i1) = build_tree(src1.path(), &v1_files);
+    store.push(&m1, src1.path()).expect("push v1");
+    let src2 = TempDir::under(&parent, "cleanup-src2");
+    let (m2, _i2) = build_tree(src2.path(), &v2_files);
+    store.push(&m2, src2.path()).expect("push v2");
+
+    // RACE ISOLATION: the impl's swap scratch (`.snapdir-staging*` /
+    // `.snapdir-dest-old*`, file_store.rs:326,345) is created as a sibling of
+    // `dest` under `dest.parent()` and is named by a GLOBAL counter (NOT the
+    // dest basename), so `swap_scratch_siblings` (generic-prefix scan) cannot
+    // filter it by name. Cargo runs this file's tests in PARALLEL; if `dest`
+    // sat directly under the shared `coloc_parent()`, this assertion would
+    // catch a CONCURRENT sibling test's transient scratch. Give `dest` its OWN
+    // private parent (`outer`) so `swap_scratch_siblings(dest)` only ever lists
+    // THIS test's scratch. Linked mode needs no reflink, so a private parent is
+    // fine even on the Btrfs CI leg.
+    let outer = TempDir::under(&parent, "cleanup-isolated");
+    let dest = TempDir::under(outer.path(), "cleanup-dest");
+    store
+        .fetch_files_atomic(&m1, dest.path(), MaterializeMode::Linked)
+        .expect("initial swap (V1) must succeed");
+    // After the FIRST swap (over an existing — but freshly created — dest) there
+    // must already be no scratch sibling.
+    assert!(
+        swap_scratch_siblings(dest.path()).is_empty(),
+        "no scratch sibling may survive the first successful swap: {:?}",
+        swap_scratch_siblings(dest.path())
+    );
+
+    // A SECOND swap over the now-populated dest exercises the rename-aside arm
+    // (rename dest -> dest.old, rename staging -> dest, remove old).
+    store
+        .fetch_files_atomic(&m2, dest.path(), MaterializeMode::Linked)
+        .expect("second swap (V2) over existing dest must succeed");
+    assert_eq!(
+        fs::read(dest.path().join("data.bin")).unwrap(),
+        b"V2-content\n",
+        "the second swap must have installed V2"
+    );
+
+    // KEYSTONE: no `.snapdir-dest-old*` and no `.snapdir-staging*` sibling
+    // survives a SUCCESSFUL swap — the old tree was removed and staging consumed.
+    let leftovers = swap_scratch_siblings(dest.path());
+    assert!(
+        leftovers.is_empty(),
+        "a successful swap must remove the renamed-aside old tree AND consume staging \
+         — found leftover scratch sibling(s): {leftovers:?}"
+    );
+}
+
+// ===========================================================================
+// CASE R2 — LINKED IS NEVER REFUSED ON A NON-CoW TARGET. The impl guard is
+// `matches!(mode, Auto) && !cow_reflink_supported(dest)`. With SNAPDIR_CLONEFILE=0
+// (probe reports false) an Auto swap hard-errors (case 1b above), but a Linked
+// swap MUST still SUCCEED — symlinks are zero-copy on any FS. Pins that the
+// refusal is the Auto path ONLY. (Impl branch: the mode-aware guard.)
+// ===========================================================================
+
+#[cfg(unix)]
+#[test]
+fn linked_swap_is_never_refused_on_non_cow_target() {
+    let files_owned = mixed_files();
+    let files: Vec<(&str, &[u8], &str)> = files_owned
+        .iter()
+        .map(|(p, c, m)| (*p, c.as_slice(), *m))
+        .collect();
+
+    let _g = env_lock();
+    let _e = CloneEnv::set(Some("0")); // force non-CoW everywhere
+
+    let parent = std::env::temp_dir();
+    let (store, store_dir, manifest, _id, _src) = staged_store(&parent, "linked-noncow", &files);
+    let dest = TempDir::under(&parent, "linked-noncow-dest");
+
+    // Precondition: the probe reports false (same condition that makes Auto error).
+    assert!(
+        !cow_reflink_supported(dest.path()).expect("probe must not error"),
+        "precondition: SNAPDIR_CLONEFILE=0 must make cow_reflink_supported report false"
+    );
+
+    // Linked mode MUST succeed despite the probe being false — symlinks copy
+    // zero bytes on ANY filesystem, so the zero-copy guard must NOT fire here.
+    store
+        .fetch_files_atomic(&manifest, dest.path(), MaterializeMode::Linked)
+        .expect(
+            "Linked atomic swap must SUCCEED on a non-CoW target (symlinks are zero-copy on \
+             any FS) — only the Auto path may refuse",
+        );
+
+    // The swapped-in entries are symlinks (zero-copy), proving no byte-copy.
+    let hasher = Blake3Hasher::new();
+    for (rel, content, _mode) in &files_owned {
+        let link = dest.path().join(rel);
+        let md = fs::symlink_metadata(&link).unwrap_or_else(|e| panic!("entry {rel}: {e}"));
+        assert!(
+            md.file_type().is_symlink(),
+            "Linked swap on a non-CoW target must still produce a SYMLINK for {rel}, not a copy"
+        );
+        assert_eq!(&fs::read(&link).unwrap(), content, "content for {rel}");
+    }
+    // No object duplicated into the store (zero-copy).
+    let distinct: std::collections::HashSet<String> = files_owned
+        .iter()
+        .map(|(_, c, _)| hasher.hash_hex(c))
+        .collect();
+    assert_eq!(
+        count_objects(store_dir.path()),
+        distinct.len(),
+        "Linked swap on non-CoW must not duplicate objects into the store"
+    );
+}
+
+// ===========================================================================
+// CASE R3 — EXISTING DEST WITH EXTRANEOUS FILES → EXACT MIRROR, EXTRANEOUS GONE.
+// The impl builds staging FRESH from the manifest then swaps it in wholesale, so
+// any extraneous file present in the old dest (not in the new manifest) must be
+// ABSENT afterward. Pins the swap is a wholesale replacement, not an in-place
+// merge. (Impl branch: rename-aside + fresh staging.)
+// ===========================================================================
+
+#[cfg(unix)]
+#[test]
+fn swap_replaces_dest_wholesale_extraneous_files_are_gone() {
+    let parent = coloc_parent();
+
+    let files: Vec<(&str, &[u8], &str)> = vec![
+        ("keep.txt", b"manifest-content\n".as_slice(), "644"),
+        ("sub/inner.bin", b"inner\n".as_slice(), "600"),
+    ];
+    let (store, store_dir, manifest, _id, _src) = staged_store(&parent, "wholesale", &files);
+
+    // RACE ISOLATION (same rationale as R1): this test ends with a
+    // `swap_scratch_siblings(dest)` generic-prefix scan, which would otherwise
+    // catch a concurrent sibling test's transient `.snapdir-staging*` /
+    // `.snapdir-dest-old*` scratch if `dest` sat directly under the shared
+    // `coloc_parent()`. Give `dest` its own private parent so the scan only
+    // ever lists THIS test's scratch.
+    let outer = TempDir::under(&parent, "wholesale-isolated");
+    // Pre-populate dest with EXTRANEOUS entries NOT in the manifest.
+    let dest = TempDir::under(outer.path(), "wholesale-dest");
+    fs::write(dest.path().join("EXTRANEOUS_TOP.txt"), b"stale-top").unwrap();
+    fs::create_dir_all(dest.path().join("stale_dir")).unwrap();
+    fs::write(dest.path().join("stale_dir/junk.bin"), b"stale-nested").unwrap();
+    fs::write(dest.path().join("keep.txt"), b"OLD-different-content").unwrap();
+
+    store
+        .fetch_files_atomic(&manifest, dest.path(), MaterializeMode::Linked)
+        .expect("wholesale swap must succeed");
+
+    // The manifest entries are present with the NEW content ...
+    assert_eq!(
+        fs::read(dest.path().join("keep.txt")).unwrap(),
+        b"manifest-content\n",
+        "keep.txt must hold the NEW manifest content, not the stale dest content"
+    );
+    assert_eq!(
+        fs::read(dest.path().join("sub/inner.bin")).unwrap(),
+        b"inner\n",
+        "nested manifest entry must be present"
+    );
+    // ... and EVERY extraneous entry is GONE (wholesale replacement).
+    assert!(
+        !dest.path().join("EXTRANEOUS_TOP.txt").exists(),
+        "extraneous top-level file must be GONE after a wholesale swap"
+    );
+    assert!(
+        !dest.path().join("stale_dir").exists(),
+        "extraneous directory must be GONE after a wholesale swap"
+    );
+    assert!(
+        swap_scratch_siblings(dest.path()).is_empty(),
+        "no scratch sibling may survive: {:?}",
+        swap_scratch_siblings(dest.path())
+    );
+    let _ = store_dir;
+}
+
+// ===========================================================================
+// CASE R4 — THE SWAP IS A REAL RENAME (SAME-FS, ATOMIC): the dest DIRECTORY's
+// identity (device+inode) changes WHOLESALE across the swap. A real `rename` of
+// a freshly-built sibling staging dir into place gives the dest a brand-new
+// inode; an in-place mutation (merge / byte-copy into the existing dir) would
+// KEEP the same inode. This proves the swap is rename-based, not a copy-merge.
+// (Impl: staging is a same-parent temp_sibling renamed into place.)
+// ===========================================================================
+
+#[cfg(unix)]
+#[test]
+fn swap_is_a_real_rename_dest_inode_changes_wholesale() {
+    let parent = coloc_parent();
+
+    let v1_files: Vec<(&str, &[u8], &str)> = vec![("f.bin", b"v1\n".as_slice(), "644")];
+    let v2_files: Vec<(&str, &[u8], &str)> = vec![("f.bin", b"v2\n".as_slice(), "644")];
+
+    let store_dir = TempDir::under(&parent, "inode-store");
+    let store = FileStore::from_root(store_dir.path().to_path_buf());
+    let src1 = TempDir::under(&parent, "inode-src1");
+    let (m1, _i1) = build_tree(src1.path(), &v1_files);
+    store.push(&m1, src1.path()).expect("push v1");
+    let src2 = TempDir::under(&parent, "inode-src2");
+    let (m2, _i2) = build_tree(src2.path(), &v2_files);
+    store.push(&m2, src2.path()).expect("push v2");
+
+    let dest = TempDir::under(&parent, "inode-dest");
+    store
+        .fetch_files_atomic(&m1, dest.path(), MaterializeMode::Linked)
+        .expect("first swap must succeed");
+
+    let before = fs::metadata(dest.path()).expect("stat dest after V1");
+    let (dev_before, ino_before) = (before.dev(), before.ino());
+
+    store
+        .fetch_files_atomic(&m2, dest.path(), MaterializeMode::Linked)
+        .expect("second swap must succeed");
+
+    let after = fs::metadata(dest.path()).expect("stat dest after V2");
+    let (dev_after, ino_after) = (after.dev(), after.ino());
+
+    // Same filesystem (a real rename never crosses devices) ...
+    assert_eq!(
+        dev_before, dev_after,
+        "the swap must stay on one filesystem (staging is a same-FS sibling)"
+    );
+    // ... but the dest directory inode changed WHOLESALE — the swap renamed a
+    // freshly-built tree into place rather than mutating the old dir in place.
+    assert_ne!(
+        ino_before, ino_after,
+        "KEYSTONE: an atomic rename-swap must give the dest a NEW directory inode \
+         (wholesale replacement); an unchanged inode would mean an in-place merge/copy"
+    );
+    assert_eq!(
+        fs::read(dest.path().join("f.bin")).unwrap(),
+        b"v2\n",
+        "the swapped-in dest must hold V2 content"
+    );
+}
