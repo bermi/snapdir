@@ -5543,7 +5543,9 @@ gates:
     phase: 32
     owner_agent: adversary
     depends_on: [mirror-linked-fastpath-impl-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-19T23:21:57Z
+    git_sha: cabc8d9
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test mirror_linked_fastpath && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
