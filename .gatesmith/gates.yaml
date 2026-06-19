@@ -5162,7 +5162,9 @@ gates:
     phase: 32
     owner_agent: adversary
     depends_on: [phase31-complete]
-    status: pending
+    status: passed
+    passed_at: 2026-06-19T16:27:41Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/mirror_prune_set.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/mirror_prune_set.rs"
     pass_criteria:
