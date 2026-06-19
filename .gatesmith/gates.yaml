@@ -5339,7 +5339,9 @@ gates:
     phase: 32
     owner_agent: adversary
     depends_on: [mirror-atomic-swap-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-19T23:29:55Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/mirror_sync.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/mirror_sync.rs"
     pass_criteria:
