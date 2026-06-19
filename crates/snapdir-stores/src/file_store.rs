@@ -79,6 +79,27 @@ pub struct FileStore {
     copy_guards: HashMap<PathBuf, CopyGuard>,
 }
 
+/// How a manifest's file entries are written into a destination by
+/// [`FileStore::fetch_files_with_mode`].
+///
+/// [`MaterializeMode::Auto`] is the historical default: each file is a real,
+/// independent, editable inode (a `CoW` reflink where the filesystem supports
+/// it, else a plain byte copy). [`MaterializeMode::Linked`] is the zero-copy
+/// thin store-view: each file entry is a symlink into the local
+/// content-addressed object, and those objects are hardened to `0444` so the
+/// shared bytes cannot be corrupted through the link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MaterializeMode {
+    /// Reflink-or-copy into an INDEPENDENT, EDITABLE dest inode (today's
+    /// default). Byte-for-byte [`Store::fetch_files`].
+    Auto,
+    /// Symlink each file entry into the LOCAL `.objects/<sharded>` object for
+    /// its checksum (zero-copy); the linked objects are hardened to `0444`
+    /// (read-only). Directories are still materialized as real directories.
+    Linked,
+}
+
 /// How [`copy_file`] actually moved the bytes — the trust input to whether
 /// [`persist`] may skip its post-copy re-hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,6 +225,89 @@ impl FileStore {
     /// Absolute on-disk path of a manifest given its snapshot id.
     fn manifest_disk_path(&self, id: &str) -> PathBuf {
         self.root.join(manifest_path(id))
+    }
+
+    /// Materializes `manifest` into `dest` using an explicit
+    /// [`MaterializeMode`].
+    ///
+    /// * [`MaterializeMode::Auto`] is byte-for-byte [`Store::fetch_files`]
+    ///   (reflink-or-copy into independent, editable inodes).
+    /// * [`MaterializeMode::Linked`] writes each file entry as a symlink into
+    ///   the LOCAL content-addressed object for its checksum (zero-copy) and
+    ///   hardens those objects to `0444`; directories are real directories.
+    ///   A required object that is not resolvable to a real LOCAL store object
+    ///   is a hard [`StoreError::ObjectNotFound`] (no dangling symlink is
+    ///   left). Symlinking to a remote object is impossible — the genuine
+    ///   non-local-source refusal lives at the CLI/router layer; this method
+    ///   only ever links to the local `.objects` pool.
+    pub fn fetch_files_with_mode(
+        &self,
+        manifest: &Manifest,
+        dest: &Path,
+        mode: MaterializeMode,
+    ) -> Result<(), StoreError> {
+        match mode {
+            // Auto is the historical default — delegate to the unchanged
+            // trait method so it stays byte-for-byte today's behavior.
+            MaterializeMode::Auto => self.fetch_files(manifest, dest),
+            MaterializeMode::Linked => self.fetch_files_linked(manifest, dest),
+        }
+    }
+
+    /// `--linked` materialization: directories become real directories and
+    /// each file entry becomes a `0444`-hardened, atomically-created symlink
+    /// into the local `.objects` pool. Zero-copy: no object is duplicated.
+    #[cfg(unix)]
+    fn fetch_files_linked(&self, manifest: &Manifest, dest: &Path) -> Result<(), StoreError> {
+        for entry in manifest.entries() {
+            let rel = strip_leading_dot_slash(&entry.path);
+            let target = dest.join(rel);
+            match entry.path_type {
+                PathType::Directory => {
+                    fs::create_dir_all(&target)?;
+                }
+                PathType::File => {
+                    if let Some(parent) = target.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    let object = self.object_disk_path(&entry.checksum);
+                    // The object must resolve to a real LOCAL store object — a
+                    // missing object is the stores-API analogue of a non-local
+                    // / unreachable source. Hard-error BEFORE creating any link
+                    // so no dangling symlink is ever left behind.
+                    if !object.exists() {
+                        return Err(StoreError::ObjectNotFound {
+                            checksum: entry.checksum.clone(),
+                        });
+                    }
+                    // Read-only-enforce the shared object (0444) so a write
+                    // THROUGH the link fails and the shared bytes cannot be
+                    // corrupted. Never re-chmod the object to the (writable)
+                    // manifest mode.
+                    harden_object_readonly(&object)?;
+                    // Atomic symlink: temp-sibling symlink + rename, mirroring
+                    // `persist`'s temp+rename discipline, so an idempotent
+                    // re-run never trips on an existing link.
+                    atomic_symlink(&object, &target)?;
+                    if let Some(m) = self.meter.as_deref() {
+                        m.object_started();
+                        m.object_finished();
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Linked materialization is unix-only (it relies on symlinks + `0444`
+    /// hardening). On non-unix targets it surfaces a typed [`StoreError`].
+    #[cfg(not(unix))]
+    fn fetch_files_linked(&self, _manifest: &Manifest, _dest: &Path) -> Result<(), StoreError> {
+        Err(StoreError::Backend {
+            message: "linked materialization is unsupported on this platform (no symlinks)"
+                .to_owned(),
+            source: None,
+        })
     }
 
     /// Copies a batch of `(source, target, expected_checksum)` jobs through
@@ -1116,6 +1220,79 @@ fn try_clonefile(source: &Path, target: &Path) -> Result<bool, StoreError> {
 
     CLONEFILE_HITS.fetch_add(1, Ordering::Relaxed);
     Ok(true)
+}
+
+/// Hardens a local store object to `0444` (read-only for everyone) so a write
+/// THROUGH a symlinked dest file fails (`PermissionDenied`) and the shared
+/// object bytes cannot be corrupted. Idempotent — re-running over an already
+/// `0444` object is a no-op.
+///
+/// Unlinking the object still only needs write on its PARENT shard directory
+/// (not the object itself), so a `0444` object stays GC-able. The clone
+/// fast-path opens the object `O_RDONLY`, so `clonefile`/`FICLONE` read a
+/// `0444` source fine.
+#[cfg(unix)]
+fn harden_object_readonly(object: &Path) -> Result<(), StoreError> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = fs::metadata(object)?;
+    let mut perms = meta.permissions();
+    if perms.mode() & 0o7777 != 0o444 {
+        perms.set_mode(0o444);
+        fs::set_permissions(object, perms)?;
+    }
+    Ok(())
+}
+
+/// Atomically (re)points `link` at `target` via a temp-sibling symlink +
+/// rename, mirroring [`persist`]'s temp+rename discipline. A `rename` over an
+/// existing path replaces it atomically, so an idempotent re-run never trips on
+/// an existing link.
+#[cfg(unix)]
+fn atomic_symlink(target: &Path, link: &Path) -> Result<(), StoreError> {
+    let tmp = temp_sibling(link);
+    // A leftover temp from a crashed prior run must not block us.
+    let _ = fs::remove_file(&tmp);
+    std::os::unix::fs::symlink(target, &tmp)?;
+    // `fs::rename` replaces an existing destination atomically (including an
+    // existing symlink from a prior linked checkout).
+    if let Err(err) = fs::rename(&tmp, link) {
+        let _ = fs::remove_file(&tmp);
+        return Err(StoreError::Io(err));
+    }
+    Ok(())
+}
+
+/// Ahead-of-time probe: does the filesystem hosting `dest` support a zero-copy
+/// `CoW` reflink (`clonefile` on macOS / `FICLONE` on Linux)?
+///
+/// It trial-clones a tiny temp file into a sibling of `dest` (same directory,
+/// so the probe runs on the SAME filesystem the real materialization will use,
+/// avoiding an `EXDEV` false negative) and reports whether the copy came back
+/// [`CopyMethod::Cloned`]. The probe temps are always cleaned up. Respects the
+/// `SNAPDIR_CLONEFILE` knob (a forced-off clone reports `false`). Used later by
+/// the atomic-swap path to decide its strategy ahead of time.
+///
+/// `dest` is the eventual destination path (need not exist yet); its PARENT
+/// directory is created if missing and is where the probe runs.
+pub fn cow_reflink_supported(dest: &Path) -> Result<bool, StoreError> {
+    let parent = dest.parent().unwrap_or(dest);
+    fs::create_dir_all(parent)?;
+
+    let probe_src = temp_sibling(&parent.join(".snapdir-cow-probe"));
+    let probe_dst = temp_sibling(&parent.join(".snapdir-cow-probe"));
+
+    // Tiny payload — a reflink shares extents regardless of size; a byte is
+    // enough to exercise the clone path.
+    if let Err(err) = fs::write(&probe_src, b"x") {
+        let _ = fs::remove_file(&probe_src);
+        return Err(StoreError::Io(err));
+    }
+
+    let result = copy_file(&probe_src, &probe_dst);
+    let _ = fs::remove_file(&probe_src);
+    let _ = fs::remove_file(&probe_dst);
+
+    Ok(matches!(result?, CopyMethod::Cloned))
 }
 
 /// Builds a unique temp sibling path for `target` (same directory, so the

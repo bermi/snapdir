@@ -343,7 +343,11 @@ fn mixed_files() -> Vec<(&'static str, Vec<u8>, &'static str)> {
         ("big.bin", big, "644"),
         ("tiny.txt", b"hello\n".to_vec(), "644"),
         ("empty", Vec::new(), "644"),
-        ("nested/deep/leaf.bin", vec![0u8, 1, 2, 3, 255, 254, 0], "600"),
+        (
+            "nested/deep/leaf.bin",
+            vec![0u8, 1, 2, 3, 255, 254, 0],
+            "600",
+        ),
         (
             "uni \u{2728}/space name.txt",
             "snowman \u{2603}\n".as_bytes().to_vec(),
@@ -364,7 +368,9 @@ fn staged_store(
     let src = TempDir::under(parent, &format!("{tag}-src"));
     let (manifest, id) = build_tree(src.path(), files);
     let store = FileStore::from_root(store_dir.path().to_path_buf());
-    store.push(&manifest, src.path()).expect("push to local store");
+    store
+        .push(&manifest, src.path())
+        .expect("push to local store");
     (store, store_dir, manifest, id, src)
 }
 
@@ -487,8 +493,7 @@ fn linked_objects_are_0444_and_write_through_link_fails_leaving_object_intact() 
     // 0444; an in-place write THROUGH a symlinked dest file is REJECTED
     // (permission error) and the underlying store object's bytes are UNCHANGED.
     let content = b"shared-object-must-not-be-corruptible\n".to_vec();
-    let files: Vec<(&str, &[u8], &str)> =
-        vec![("doc.txt", content.as_slice(), "644")];
+    let files: Vec<(&str, &[u8], &str)> = vec![("doc.txt", content.as_slice(), "644")];
 
     let parent = coloc_parent();
     let (store, store_dir, manifest, _id, _src) = staged_store(&parent, "ro-link", &files);
@@ -513,7 +518,10 @@ fn linked_objects_are_0444_and_write_through_link_fails_leaving_object_intact() 
     // vary, but it MUST be an error — never a silent success.
     let link = dest.path().join("doc.txt");
     assert!(
-        fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
         "dest entry must be a symlink for the write-through to target the object"
     );
     let write_res = fs::OpenOptions::new()
@@ -649,8 +657,7 @@ fn auto_mode_independent_editable_inode_write_does_not_corrupt_source_object() {
     let _g = env_lock();
     let _e = CloneEnv::set(None); // clone fast-path enabled (reflink where supported)
 
-    let (store, store_dir, manifest, _id, _src) =
-        staged_store(&parent, "auto-edit", &files);
+    let (store, store_dir, manifest, _id, _src) = staged_store(&parent, "auto-edit", &files);
     let dest = TempDir::under(&parent, "auto-edit-dest");
 
     let before = snapdir_stores::clonefile_hits();
@@ -769,7 +776,11 @@ fn auto_mode_copy_fallback_is_independent_and_editable() {
     );
 
     // Restored content correct + restored mode honors the manifest (0600).
-    assert_eq!(fs::read(&dest_file).unwrap(), content, "copied content must match");
+    assert_eq!(
+        fs::read(&dest_file).unwrap(),
+        content,
+        "copied content must match"
+    );
     assert_eq!(
         mode_bits(&dest_file),
         Some(0o600),
@@ -891,8 +902,8 @@ fn linked_mode_mixed_tree_dirs_real_files_links_zero_byte_ok() {
             continue; // the root "./" entry maps to dest itself
         }
         let d = dest.path().join(rel);
-        let m = fs::symlink_metadata(&d)
-            .unwrap_or_else(|e| panic!("dir entry {rel} must exist: {e}"));
+        let m =
+            fs::symlink_metadata(&d).unwrap_or_else(|e| panic!("dir entry {rel} must exist: {e}"));
         assert!(
             m.file_type().is_dir(),
             "directory entry {rel} must be a real directory under --linked, not a symlink"
@@ -904,7 +915,10 @@ fn linked_mode_mixed_tree_dirs_real_files_links_zero_byte_ok() {
     for (rel, content, _mode) in &files_owned {
         let link = dest.path().join(rel);
         assert!(
-            fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
             "file entry {rel} must be a symlink under --linked"
         );
         assert_eq!(
@@ -965,7 +979,10 @@ fn linked_mode_second_run_is_idempotent() {
     );
     let link = dest.path().join("a/b/c.txt");
     assert!(
-        fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
         "the dest entry must still be a symlink after the second run"
     );
     assert_eq!(
