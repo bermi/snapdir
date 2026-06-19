@@ -105,6 +105,30 @@ pub struct WalkOptions {
     /// oversubscribing the bounded pool, otherwise BLAKE3's intra-file `rayon`
     /// path is allowed so spare cores still help a lone big file.
     pub walk_jobs: Option<usize>,
+
+    /// Optional local **object-store roots** hint enabling the linked-mode
+    /// checksum-reuse fast path. Defaults to **empty** (the fast path is
+    /// DORMANT — every existing call site is byte-identical).
+    ///
+    /// When non-empty AND the active hasher reports
+    /// [`recovers_object_keys`](crate::hash_file::HashFile::recovers_object_keys)
+    /// (true only for plain, non-keyed BLAKE3), a **symlink-to-file** whose
+    /// canonical target is a valid object under one of these roots'
+    /// `.objects/<3>/<3>/<3>/<rest>` layout has its content checksum
+    /// **recovered from the path** (via [`recover_object_key`](crate::recover::recover_object_key))
+    /// instead of being read and hashed — the recovered key is byte-identical to
+    /// the hash the content would produce on a healthy store. Eligibility is
+    /// per-entry; ineligible symlinks fall back to a normal followed-content
+    /// hash, and a target whose object is MISSING (dangling) raises a typed
+    /// [`WalkError::DanglingLinkedObject`].
+    ///
+    /// The CLI passes the store root(s) here ONLY when the active checksum is
+    /// plain BLAKE3 and strict-verify (`SNAPDIR_VERIFY_COPIES=1`) is OFF; for
+    /// the strict / non-default-algo / keyed cases it leaves this empty so the
+    /// content is re-hashed. Each root is a `<store-root>` directory holding a
+    /// `.objects/` pool (the path `FileStore` materializes linked symlinks
+    /// into).
+    pub object_store_roots: Vec<PathBuf>,
 }
 
 /// Errors raised while walking the filesystem.
@@ -160,6 +184,25 @@ pub enum WalkError {
     FileChangedDuringWalk {
         /// The path of the file that changed mid-hash.
         path: PathBuf,
+    },
+
+    /// A linked-mode fast-path symlink pointed at an object under a hinted
+    /// store root, but the object is **missing** (dangling): the checkout's
+    /// backing object was GC'd / removed. The fast path will neither silently
+    /// drop the entry nor read garbage — it surfaces this typed error naming the
+    /// symlink (and its target), so an in-flux / pruned store fails cleanly
+    /// instead of panicking. (Only ever raised when the object-store-roots hint
+    /// is active; without the hint a dangling symlink is dropped as before,
+    /// matching `find -L`.)
+    #[error(
+        "linked object missing (dangling symlink into the store): {path:?} -> {target:?}; \
+         the backing object was removed/GC'd"
+    )]
+    DanglingLinkedObject {
+        /// The dest symlink whose target object is missing.
+        path: PathBuf,
+        /// The resolved object path the symlink pointed at.
+        target: PathBuf,
     },
 
     /// A directory invariant expected during the bottom-up finalize pass was
@@ -397,11 +440,19 @@ fn walk_inner<H: Hasher + HashFile + Sync>(
     // file's absolute working-tree path (what a store later clones from).
     let mut guards: HashMap<PathBuf, CopyGuard> = HashMap::new();
     let mut guard_sink = capture_guards.then_some(&mut guards);
+    // Linked-mode fast path is enabled only when a store-root hint was supplied
+    // AND the active hasher's digest matches the store's addressing algorithm
+    // (plain, non-keyed BLAKE3 — see `HashFile::recovers_object_keys`). Computed
+    // once; passed down so per-entry symlink handling can recover a checksum
+    // from the object path instead of reading the content. When `false` (the
+    // default — empty hint) discovery is byte-identical to before.
+    let recover_keys = !options.object_store_roots.is_empty() && hasher.recovers_object_keys();
     discover_dir(
         root,
         &root_str,
         root_permissions,
         options,
+        recover_keys,
         &mut dirs,
         &mut pending,
         &mut guard_sink,
@@ -496,6 +547,7 @@ fn discover_dir(
     abs_path: &str,
     permissions: String,
     options: &WalkOptions,
+    recover_keys: bool,
     dirs: &mut BTreeMap<String, DirRecord>,
     pending: &mut Vec<PendingHash>,
     guards: &mut Option<&mut HashMap<PathBuf, CopyGuard>>,
@@ -552,6 +604,17 @@ fn discover_dir(
                 // file or directory, so it is omitted. Surface real I/O errors
                 // on non-symlink entries.
                 if is_symlink && (e.kind() == io::ErrorKind::NotFound || is_loop_error(&e)) {
+                    // LINKED-MODE FAST PATH: a dangling symlink whose target IS a
+                    // recoverable object under a hinted store root is NOT a
+                    // benign broken link to silently drop — the checkout's
+                    // backing object was removed/GC'd. Surface a typed error
+                    // (never a panic, never a silent drop). Otherwise a broken
+                    // symlink is dropped exactly as before, matching `find -L`.
+                    if let Some(err) =
+                        dangling_linked_object(recover_keys, &e, dir, &entry_path, options)
+                    {
+                        return Err(err);
+                    }
                     continue;
                 }
                 return Err(WalkError::io(&entry_path, e));
@@ -573,6 +636,7 @@ fn discover_dir(
                 &entry_abs,
                 own_permissions,
                 options,
+                recover_keys,
                 dirs,
                 pending,
                 guards,
@@ -610,6 +674,43 @@ fn discover_dir(
                 meter.object_discovered();
             }
 
+            // LINKED-MODE FAST PATH (dormant unless `recover_keys`): for a
+            // symlink-to-file whose target is an object under a hinted store
+            // root, RECOVER the content checksum from the object path instead of
+            // reading + hashing the bytes. The recovered key is byte-identical
+            // to the content hash on a healthy store, so the manifest/id is
+            // unchanged from the read path — but no content is read. SIZE still
+            // comes from the symlink's own `lstat` (checksum-only fast path), so
+            // a linked re-snapshot does NOT reproduce the source id. Ineligible
+            // symlinks (escaped / non-object target) fall through to the normal
+            // followed-content hash below; a MISSING object (dangling) is a
+            // typed error, never a panic or a silent drop.
+            if recover_keys && is_symlink {
+                // The target object is already known to exist here: `target_meta`
+                // stat'd through the link successfully above, so this is NOT a
+                // dangling link (the dangling case is caught earlier and turned
+                // into `WalkError::DanglingLinkedObject`). `read_link` + pure
+                // path parsing recover the key; no content is read.
+                if let Some(key) = std::fs::read_link(&entry_path).ok().and_then(|t| {
+                    crate::recover::recover_object_key(dir, &t, &options.object_store_roots)
+                }) {
+                    // Record the recovered checksum directly. No `PendingHash`
+                    // is queued — the whole point is to avoid the content read.
+                    // SIZE is still the symlink's own `lstat` length, matching
+                    // the normal followed-symlink entry (checksum-only).
+                    record.files.push(FileRecord {
+                        abs_path: entry_abs,
+                        permissions: own_permissions,
+                        checksum: key,
+                        size: link_meta.len(),
+                    });
+                    if let Some(meter) = meter {
+                        meter.object_finished();
+                    }
+                    continue;
+                }
+            }
+
             let file_index = record.files.len();
             record.files.push(FileRecord {
                 abs_path: entry_abs,
@@ -631,6 +732,33 @@ fn discover_dir(
 
     dirs.insert(record.abs_path.clone(), record);
     Ok(())
+}
+
+/// Decides whether a broken symlink (`metadata` returned `NotFound`) is a
+/// dangling LINKED object that must surface a typed
+/// [`WalkError::DanglingLinkedObject`], rather than being silently dropped.
+///
+/// Returns `Some(err)` only when the linked-mode fast path is active
+/// (`recover_keys`), the failure was `NotFound` (not a symlink loop), and the
+/// symlink's target lexically resolves to a recoverable object under a hinted
+/// store root. Otherwise `None` (the caller drops the broken link as `find -L`
+/// does). Pure aside from one `read_link`; never reads content, never panics.
+fn dangling_linked_object(
+    recover_keys: bool,
+    err: &io::Error,
+    link_parent: &Path,
+    entry_path: &Path,
+    options: &WalkOptions,
+) -> Option<WalkError> {
+    if !recover_keys || err.kind() != io::ErrorKind::NotFound {
+        return None;
+    }
+    let target = std::fs::read_link(entry_path).ok()?;
+    crate::recover::recover_object_key(link_parent, &target, &options.object_store_roots)?;
+    Some(WalkError::DanglingLinkedObject {
+        path: entry_path.to_path_buf(),
+        target,
+    })
 }
 
 /// Hashes every [`PendingHash`] in parallel inside a bounded, scoped

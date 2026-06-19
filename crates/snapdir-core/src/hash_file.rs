@@ -106,6 +106,25 @@ pub trait HashFile {
     fn hash_file_hex_seq(&self, path: &Path) -> io::Result<(String, u64)> {
         self.hash_file_hex(path)
     }
+
+    /// Whether this hasher's digest is the SAME algorithm a snapdir object
+    /// store addresses its objects by — i.e. plain, non-keyed BLAKE3.
+    ///
+    /// This gates the linked-mode checksum-reuse fast path
+    /// ([`recover`](crate::recover)): a symlink target's object path encodes the
+    /// object's plain-BLAKE3 key, so its checksum can only be RECOVERED from the
+    /// path (instead of hashing the content) when the active hasher would itself
+    /// produce that same plain-BLAKE3 digest. For every other hasher — keyed
+    /// BLAKE3 ([`Blake3KeyedHasher`]), MD5 ([`Md5Hasher`]), SHA-256
+    /// ([`Sha256Hasher`]) — the embedded key is the WRONG algorithm, so the
+    /// default returns `false` and the walk re-hashes the content.
+    ///
+    /// The decision is driven by the concrete hasher TYPE, not by hardcoding an
+    /// algorithm name at the call site: only [`Blake3Hasher`] overrides this to
+    /// `true`. It is a pure, const-cheap predicate with no I/O.
+    fn recovers_object_keys(&self) -> bool {
+        false
+    }
 }
 
 /// Memory-maps `path` into `hasher` with `update_mmap`, guarded against a
@@ -164,6 +183,14 @@ impl HashFile for Blake3Hasher {
         // distinct trait method is kept because `walk.rs` selects it for its
         // oversubscription guard; the output is byte-identical either way.
         blake3_hash_file(blake3::Hasher::new(), path)
+    }
+
+    fn recovers_object_keys(&self) -> bool {
+        // Plain, non-keyed BLAKE3 IS the algorithm a snapdir object store
+        // addresses its objects by, so its checksum can be recovered from the
+        // symlink target's object path. (Keyed BLAKE3, MD5 and SHA-256 keep the
+        // trait default of `false`.)
+        true
     }
 }
 

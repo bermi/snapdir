@@ -3432,6 +3432,10 @@ impl Ctx {
             path_mode,
             exclude: matcher,
             walk_jobs: self.globals.walk_jobs,
+            // Linked-mode checksum-reuse fast path stays DORMANT here: the
+            // object-store-roots hint is left empty so behavior is unchanged.
+            // The `mirror-linked-fastpath-impl-cli` gate wires the store root in.
+            ..WalkOptions::default()
         };
         Ok((root, options))
     }
