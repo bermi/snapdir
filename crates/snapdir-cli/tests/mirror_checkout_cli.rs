@@ -687,3 +687,256 @@ fn pull_linked_against_remote_store_is_a_hard_error() {
 
     cleanup(&[&cache, &home, &parent]);
 }
+
+// ---------------------------------------------------------------------------
+// IMPL-REVEALED (review-phase additions). The impl made `--linked` from a LOCAL
+// store symlink each file entry into the shared 0444 content object, and SKIP
+// `restore_permissions` in Linked mode (re-chmod'ing the link would follow into
+// and corrupt the shared object). It also canonicalizes the dangerous-dest key.
+// These cases pin those now-visible branches. All remain black-box assert_cmd.
+// ---------------------------------------------------------------------------
+
+/// REVIEW: local `--linked` happy path. `checkout --linked` from a LOCAL
+/// `file://` store into a FRESH dir materializes each file entry as a SYMLINK
+/// (not a real-inode copy), the linked file reads the correct content, and the
+/// shared object the link points at is read-only `0444`. Pins the impl's
+/// `MaterializeMode::Linked` wiring for a local source.
+#[test]
+fn linked_local_checkout_creates_symlinks_to_readonly_objects() {
+    let src = build_src("linkok-src");
+    let store = temp_dir("linkok-store");
+    let dest = temp_dir("linkok-dest");
+    let cache = temp_dir("linkok-cache");
+    let home = temp_dir("linkok-home");
+    let (store_url, id) = push_to_store(&src, &cache, &home, &store);
+    let dest_str = dest.to_string_lossy().into_owned();
+
+    // `--linked` against the LOCAL file:// store must succeed (local objects to
+    // point at) and materialize symlinks, not copies. `pull --linked` = fetch
+    // (populate the cache with manifest + objects) + linked checkout in one.
+    ok_stdout(
+        snapdir(&cache, &home),
+        &[
+            "pull", "--store", &store_url, "--id", &id, "--linked", &dest_str,
+        ],
+    );
+
+    let a = dest.join("a.txt");
+    let a_meta = a.symlink_metadata().expect("a.txt exists");
+    assert!(
+        a_meta.file_type().is_symlink(),
+        "--linked must materialize a.txt as a SYMLINK, not a real-inode copy"
+    );
+    let b = dest.join("sub").join("b.txt");
+    assert!(
+        b.symlink_metadata().unwrap().file_type().is_symlink(),
+        "--linked must materialize the nested sub/b.txt as a symlink too"
+    );
+
+    // The linked files read the correct content (the link resolves into the
+    // shared object).
+    assert_eq!(fs::read(&a).unwrap(), b"hello");
+    assert_eq!(fs::read(&b).unwrap(), b"world!!");
+
+    // The shared object the link points at is read-only `0444` (hardened so a
+    // write THROUGH the link cannot corrupt the shared bytes). The link target
+    // is the object on disk; follow it and assert its real mode.
+    let target = fs::canonicalize(&a).expect("resolve linked target");
+    let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o444,
+        "the shared linked object must be read-only 0444 (got {mode:o})"
+    );
+
+    cleanup(&[&src, &store, &dest, &cache, &home]);
+}
+
+/// REVIEW: confirms the impl's `restore_permissions`-skip in Linked mode is
+/// CORRECT — a linked checkout must NOT chmod the shared object up to the
+/// manifest's writable (`0644`) mode. The source `a.txt` is `0644`; were the
+/// CLI to run `restore_permissions` in Linked mode it would follow the link and
+/// re-mode the shared `0444` object to `0644`, corrupting it for every other
+/// link. We pin that the resolved target stays `0444` and is NOT the manifest's
+/// `0644`.
+#[test]
+fn linked_checkout_does_not_rechmod_shared_object_to_manifest_mode() {
+    let src = build_src("linkperm-src"); // a.txt is 0644 in the source/manifest
+    let store = temp_dir("linkperm-store");
+    let dest = temp_dir("linkperm-dest");
+    let cache = temp_dir("linkperm-cache");
+    let home = temp_dir("linkperm-home");
+    let (store_url, id) = push_to_store(&src, &cache, &home, &store);
+    let dest_str = dest.to_string_lossy().into_owned();
+
+    ok_stdout(
+        snapdir(&cache, &home),
+        &[
+            "pull", "--store", &store_url, "--id", &id, "--linked", &dest_str,
+        ],
+    );
+
+    let target = fs::canonicalize(dest.join("a.txt")).expect("resolve linked target");
+    let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o444,
+        "Linked mode must SKIP restore_permissions: the shared object stays 0444 \
+         and must NOT be chmod'd to the manifest's writable 0644 (got {mode:o})"
+    );
+    assert_ne!(
+        mode, 0o644,
+        "the shared object must NOT be re-moded to the manifest's writable mode"
+    );
+
+    cleanup(&[&src, &store, &dest, &cache, &home]);
+}
+
+/// REVIEW: `--linked --delete` interaction. A linked checkout that also prunes
+/// must remove the extraneous dest entry while LEAVING the materialized symlinks
+/// (which are in-manifest) intact and still readable. Pins the
+/// `checkout_inner` branch where Linked materialize is followed by `prune_dest`.
+#[test]
+fn linked_with_delete_prunes_extraneous_but_keeps_links() {
+    let src = build_src("linkdel-src");
+    let store = temp_dir("linkdel-store");
+    let dest = temp_dir("linkdel-dest");
+    let cache = temp_dir("linkdel-cache");
+    let home = temp_dir("linkdel-home");
+    let (store_url, id) = push_to_store(&src, &cache, &home, &store);
+    let dest_str = dest.to_string_lossy().into_owned();
+
+    // First a linked pull (populate cache + materialize links), then drop an
+    // extraneous file alongside.
+    ok_stdout(
+        snapdir(&cache, &home),
+        &[
+            "pull", "--store", &store_url, "--id", &id, "--linked", &dest_str,
+        ],
+    );
+    fs::write(dest.join("EXTRA_LINKED.txt"), b"junk").unwrap();
+
+    // Re-run linked WITH --delete: prune the extraneous file, keep the links.
+    ok_stdout(
+        snapdir(&cache, &home),
+        &[
+            "checkout", "--store", &store_url, "--id", &id, "--linked", "--delete", &dest_str,
+        ],
+    );
+    assert!(
+        !dest.join("EXTRA_LINKED.txt").exists(),
+        "--linked --delete must prune the extraneous file"
+    );
+    assert!(
+        dest.join("a.txt")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the in-manifest link must survive the prune"
+    );
+    assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"hello");
+
+    cleanup(&[&src, &store, &dest, &cache, &home]);
+}
+
+/// REVIEW (guard canonicalization alias): the dangerous-dest guard compares the
+/// CANONICAL real path, so `$HOME` given with a trailing slash AND `$HOME/.`
+/// (both canonicalize to `$HOME`) must STILL be hard-refused. A purely lexical
+/// guard would miss these aliases. HOME is env-redirected to a tempdir, so a
+/// buggy impl cannot touch the real home; a sentinel proves nothing was pruned.
+#[test]
+fn delete_refuses_home_canonicalization_aliases_even_with_force() {
+    let cache = temp_dir("alias-cache");
+    let home = temp_dir("alias-home");
+    let sentinel = home.join("DO_NOT_DELETE.sentinel");
+    fs::write(&sentinel, b"sentinel").unwrap();
+
+    let home_str = home.to_string_lossy().into_owned();
+    // Aliases that all canonicalize to the env'd HOME.
+    for alias in [format!("{home_str}/"), format!("{home_str}/."), {
+        // A symlink that resolves to HOME — a canonicalizing guard must follow
+        // it; a lexical-only guard would not.
+        let parent = home.parent().unwrap();
+        let link = parent.join(format!("home-alias-{}", std::process::id()));
+        fs::remove_file(&link).ok();
+        symlink(&home, &link).unwrap();
+        link.to_string_lossy().into_owned()
+    }] {
+        let id = "0".repeat(64);
+        let out = snapdir(&cache, &home)
+            .args(["checkout", "--id", &id, "--delete", "--force", &alias])
+            .output()
+            .expect("run snapdir");
+        assert!(
+            !out.status.success(),
+            "checkout --delete onto a canonicalization-alias of $HOME ({alias}) \
+             MUST hard-refuse (canonical guard, no --force bypass)"
+        );
+        assert!(
+            sentinel.exists(),
+            "the refusal must fire before any deletion for alias {alias}"
+        );
+    }
+
+    // Clean up the symlink alias we created under home's parent.
+    let parent = home.parent().unwrap();
+    fs::remove_file(parent.join(format!("home-alias-{}", std::process::id()))).ok();
+    cleanup(&[&cache, &home]);
+}
+
+/// REVIEW (exclude regex semantics): `--exclude` is EXTENDED-REGEX (confirmed by
+/// the impl, resolving the gate's glob-vs-regex ambiguity). A regex METACHAR
+/// pattern protects as a regex (a `.` matches any char; an alternation matches
+/// either), and MULTIPLE `--exclude` flags ALL apply (each is its own protect
+/// pattern). A non-matching extraneous sibling is still pruned.
+#[test]
+fn delete_exclude_regex_metachars_and_multiple_flags_all_apply() {
+    let src = build_src("exclre-src");
+    let store = temp_dir("exclre-store");
+    let dest = temp_dir("exclre-dest");
+    let cache = temp_dir("exclre-cache");
+    let home = temp_dir("exclre-home");
+    let (store_url, id) = push_to_store(&src, &cache, &home, &store);
+    let dest_str = dest.to_string_lossy().into_owned();
+
+    ok_stdout(
+        snapdir(&cache, &home),
+        &["pull", "--store", &store_url, "--id", &id, &dest_str],
+    );
+    // Three extraneous files. `keep1.log` is protected by an alternation regex,
+    // `keepX.cfg` by a metachar (`.` = any char) regex via a SECOND --exclude,
+    // and `drop.bin` matches neither and must be pruned.
+    fs::write(dest.join("keep1.log"), b"a").unwrap();
+    fs::write(dest.join("keepX.cfg"), b"b").unwrap();
+    fs::write(dest.join("drop.bin"), b"c").unwrap();
+
+    ok_stdout(
+        snapdir(&cache, &home),
+        &[
+            "checkout",
+            "--id",
+            &id,
+            "--delete",
+            // Extended-regex alternation: protect either *.log or *.bak.
+            "--exclude",
+            "(keep1\\.log|keep1\\.bak)",
+            // SECOND --exclude, regex metachar `.` = any single char.
+            "--exclude",
+            "keep.\\.cfg",
+            &dest_str,
+        ],
+    );
+    assert!(
+        dest.join("keep1.log").exists(),
+        "the alternation-regex --exclude must protect keep1.log"
+    );
+    assert!(
+        dest.join("keepX.cfg").exists(),
+        "the SECOND --exclude (metachar regex) must ALSO apply and protect keepX.cfg"
+    );
+    assert!(
+        !dest.join("drop.bin").exists(),
+        "a sibling matching NEITHER exclude must still be pruned"
+    );
+
+    cleanup(&[&src, &store, &dest, &cache, &home]);
+}
