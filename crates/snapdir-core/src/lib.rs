@@ -23,6 +23,7 @@ pub mod excludes;
 pub mod hash_file;
 pub mod manifest;
 pub mod merkle;
+pub mod mirror;
 pub mod progress;
 pub mod resources;
 #[cfg(unix)]

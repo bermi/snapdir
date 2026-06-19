@@ -182,7 +182,10 @@ fn prune_set_ignores_checksum_field_entirely() {
 
     let s1 = prune_set(&m1, &dest, &[]);
     let s2 = prune_set(&m2, &dest, &[]);
-    assert_eq!(s1, s2, "prune-set must not depend on checksum/size; {s1:?} vs {s2:?}");
+    assert_eq!(
+        s1, s2,
+        "prune-set must not depend on checksum/size; {s1:?} vs {s2:?}"
+    );
     assert_eq!(s1, vec!["./drop".to_string()]);
 }
 
@@ -283,7 +286,10 @@ fn sibling_subtrees_each_internally_deepest_first() {
         df("./y/yy/y2"),
     ];
     let set = prune_set(&m, &dest, &[]);
-    assert!(is_deepest_first(&set), "each subtree must be deepest-first; got {set:?}");
+    assert!(
+        is_deepest_first(&set),
+        "each subtree must be deepest-first; got {set:?}"
+    );
 }
 
 // ===========================================================================
@@ -309,7 +315,10 @@ fn nested_empty_extraneous_dirs_ordered_deepest_first() {
     let m = manifest(&[md("./")]);
     let dest = vec![dd("./"), dd("./a/"), dd("./a/b/"), dd("./a/b/c/")];
     let set = prune_set(&m, &dest, &[]);
-    assert!(is_deepest_first(&set), "empty-dir chain must be deepest-first; got {set:?}");
+    assert!(
+        is_deepest_first(&set),
+        "empty-dir chain must be deepest-first; got {set:?}"
+    );
     let pos = |p: &str| set.iter().position(|x| x == p).expect("present");
     assert!(pos("./a/b/c/") < pos("./a/b/"));
     assert!(pos("./a/b/") < pos("./a/"));
@@ -325,7 +334,12 @@ fn exclude_protects_matching_extraneous_path() {
     // i.e. NOT pruned." `./protected.log` would be extraneous but is excluded;
     // `./pruned.tmp` is extraneous and NOT excluded => still pruned.
     let m = manifest(&[md("./"), mf("./keep")]);
-    let dest = vec![dd("./"), df("./keep"), df("./protected.log"), df("./pruned.tmp")];
+    let dest = vec![
+        dd("./"),
+        df("./keep"),
+        df("./protected.log"),
+        df("./pruned.tmp"),
+    ];
     let set = prune_set(&m, &dest, &["protected.log"]);
     assert!(
         !set.contains(&"./protected.log".to_string()),
@@ -358,7 +372,12 @@ fn multiple_excludes_all_apply() {
     // SPEC: each --exclude pattern protects matching extraneous paths. Two
     // patterns protect two different files; a third unmatched file is pruned.
     let m = manifest(&[md("./")]);
-    let dest = vec![dd("./"), df("./a.keepme"), df("./b.keepme2"), df("./c.gone")];
+    let dest = vec![
+        dd("./"),
+        df("./a.keepme"),
+        df("./b.keepme2"),
+        df("./c.gone"),
+    ];
     let set = prune_set(&m, &dest, &["keepme", "keepme2"]);
     assert!(!set.contains(&"./a.keepme".to_string()), "got {set:?}");
     assert!(!set.contains(&"./b.keepme2".to_string()), "got {set:?}");
@@ -399,7 +418,10 @@ fn dest_exactly_equals_manifest_yields_empty_prune_set() {
     let m = manifest(&[md("./"), md("./a/"), mf("./a/f"), mf("./r")]);
     let dest = vec![dd("./"), dd("./a/"), df("./a/f"), df("./r")];
     let set = prune_set(&m, &dest, &[]);
-    assert!(set.is_empty(), "exact mirror must produce no deletions; got {set:?}");
+    assert!(
+        set.is_empty(),
+        "exact mirror must produce no deletions; got {set:?}"
+    );
 }
 
 #[test]
@@ -407,7 +429,10 @@ fn empty_dest_yields_empty_prune_set() {
     // SPEC: "dest empty -> empty prune-set." Nothing on disk => nothing to remove.
     let m = manifest(&[md("./"), mf("./a"), mf("./b")]);
     let set = prune_set(&m, &[], &[]);
-    assert!(set.is_empty(), "an empty dest can have nothing extraneous; got {set:?}");
+    assert!(
+        set.is_empty(),
+        "an empty dest can have nothing extraneous; got {set:?}"
+    );
 }
 
 #[test]
@@ -475,14 +500,17 @@ fn unicode_and_space_and_dot_prefixed_extraneous_paths_handled() {
     let dest = vec![
         dd("./"),
         df("./keep"),
-        df("./naïve café.txt"),       // unicode + space
-        df("./a file with spaces"),    // spaces
-        df("./.hidden"),               // dot-prefixed (not the ./ prefix)
-        df("./日本語.txt"),            // unicode file name
+        df("./naïve café.txt"),     // unicode + space
+        df("./a file with spaces"), // spaces
+        df("./.hidden"),            // dot-prefixed (not the ./ prefix)
+        df("./日本語.txt"),         // unicode file name
     ];
     let set = prune_set(&m, &dest, &[]);
     assert!(set.contains(&"./naïve café.txt".to_string()), "got {set:?}");
-    assert!(set.contains(&"./a file with spaces".to_string()), "got {set:?}");
+    assert!(
+        set.contains(&"./a file with spaces".to_string()),
+        "got {set:?}"
+    );
     assert!(set.contains(&"./.hidden".to_string()), "got {set:?}");
     assert!(set.contains(&"./日本語.txt".to_string()), "got {set:?}");
 }
@@ -493,8 +521,14 @@ fn dot_prefixed_file_present_in_manifest_is_kept() {
     let m = manifest(&[md("./"), mf("./.config")]);
     let dest = vec![dd("./"), df("./.config"), df("./.junk")];
     let set = prune_set(&m, &dest, &[]);
-    assert!(!set.contains(&"./.config".to_string()), "dotfile in manifest kept; got {set:?}");
-    assert!(set.contains(&"./.junk".to_string()), "extraneous dotfile pruned; got {set:?}");
+    assert!(
+        !set.contains(&"./.config".to_string()),
+        "dotfile in manifest kept; got {set:?}"
+    );
+    assert!(
+        set.contains(&"./.junk".to_string()),
+        "extraneous dotfile pruned; got {set:?}"
+    );
 }
 
 #[test]
@@ -519,8 +553,8 @@ fn mixed_scenario_keep_replace_prune_exclude_ordered() {
     // nested-extraneous deepest-first, empty-dir, and exclude-protect together.
     let m = manifest(&[
         md("./"),
-        mf("./keep.txt"),     // present in dest, same type => kept
-        md("./libdir/"),      // present in dest as dir => kept
+        mf("./keep.txt"), // present in dest, same type => kept
+        md("./libdir/"),  // present in dest as dir => kept
         mf("./libdir/lib.rs"),
         mf("./becomes_file"), // manifest says File; dest has it as a dir => replace
     ]);
@@ -529,19 +563,28 @@ fn mixed_scenario_keep_replace_prune_exclude_ordered() {
         df("./keep.txt"),
         dd("./libdir/"),
         df("./libdir/lib.rs"),
-        dd("./becomes_file/"),        // type change -> prune the dir form
-        df("./becomes_file/stale"),   // its child -> prune
-        dd("./trash/"),               // wholly extraneous subtree
+        dd("./becomes_file/"),      // type change -> prune the dir form
+        df("./becomes_file/stale"), // its child -> prune
+        dd("./trash/"),             // wholly extraneous subtree
         dd("./trash/sub/"),
         df("./trash/sub/x"),
-        dd("./emptyextra/"),          // empty extraneous dir
-        df("./protected.keep"),       // extraneous but excluded => protected
+        dd("./emptyextra/"),    // empty extraneous dir
+        df("./protected.keep"), // extraneous but excluded => protected
     ];
     let set = prune_set(&m, &dest, &["protected.keep"]);
 
     // Kept paths absent from the prune-set.
-    for kept in ["./", "./keep.txt", "./libdir/", "./libdir/lib.rs", "./protected.keep"] {
-        assert!(!set.contains(&kept.to_string()), "{kept} must be kept; got {set:?}");
+    for kept in [
+        "./",
+        "./keep.txt",
+        "./libdir/",
+        "./libdir/lib.rs",
+        "./protected.keep",
+    ] {
+        assert!(
+            !set.contains(&kept.to_string()),
+            "{kept} must be kept; got {set:?}"
+        );
     }
     // Pruned paths present.
     for pruned in [
@@ -552,8 +595,14 @@ fn mixed_scenario_keep_replace_prune_exclude_ordered() {
         "./trash/sub/x",
         "./emptyextra/",
     ] {
-        assert!(set.contains(&pruned.to_string()), "{pruned} must be pruned; got {set:?}");
+        assert!(
+            set.contains(&pruned.to_string()),
+            "{pruned} must be pruned; got {set:?}"
+        );
     }
     // Ordering invariant holds across the whole set.
-    assert!(is_deepest_first(&set), "whole-set deletion order must be deepest-first; got {set:?}");
+    assert!(
+        is_deepest_first(&set),
+        "whole-set deletion order must be deepest-first; got {set:?}"
+    );
 }
