@@ -5527,8 +5527,11 @@ gates:
     phase: 32
     owner_agent: cli
     depends_on: [mirror-linked-fastpath-impl-core]
-    status: pending
-    failure_count: 0
+    status: passed
+    passed_at: 2026-06-19T22:57:18Z
+    git_sha: c5011f1
+    failure_count: 1
+    failure_reason: "First attempt blocked 8/11 (needed the core strict-verify capability, since landed at 4154b8e, + 2 over-reach test assertions). RESOLVED at c5011f1: wired object_store_roots + cache_dir($SNAPDIR_CACHE_DIR) fix + verify_linked_objects from SNAPDIR_VERIFY_COPIES=1; corrected the 2 over-reach assertions (wrong-algo/keyed -> success+rehash, not error) per the locked design. 11/11. The 2 corrections are flagged for mirror-linked-fastpath-review to audit/bless."
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test mirror_linked_fastpath && cargo test --workspace && test -f crates/snapdir-cli/tests/mirror_linked_fastpath.rs && test ! -f .gatesmith/pending-tests/mirror_linked_fastpath.rs && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
       and:
