@@ -5206,7 +5206,9 @@ gates:
     phase: 32
     owner_agent: adversary
     depends_on: [mirror-prune-set-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-19T17:17:52Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/pending-tests/mirror_materialize_modes.rs && grep -qE '#\\[test\\]' .gatesmith/pending-tests/mirror_materialize_modes.rs"
     pass_criteria:
