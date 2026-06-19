@@ -127,7 +127,9 @@ use snapdir_core::store::{manifest_path, object_path, Store, StoreError};
 // CONTRACTED symbols. `MaterializeMode` / `clonefile_hits` / `cow_reflink_supported`
 // exist (materialize-modes); `FileStore::fetch_files_atomic` is the ASSUMED
 // staged-swap entry point this suite calls (impl may re-point the name only).
-use snapdir_stores::{clonefile_hits, cow_reflink_supported, FileStore, MaterializeMode, StreamStore};
+use snapdir_stores::{
+    clonefile_hits, cow_reflink_supported, FileStore, MaterializeMode, StreamStore,
+};
 
 // ---------------------------------------------------------------------------
 // Test scaffolding (no dev-dependencies; mirrors mirror_materialize_modes.rs /
@@ -437,11 +439,7 @@ fn tree_snapshot(root: &Path) -> Vec<(String, char, Option<Vec<u8>>)> {
         };
         for e in rd.flatten() {
             let p = e.path();
-            let rel = p
-                .strip_prefix(base)
-                .unwrap()
-                .to_string_lossy()
-                .into_owned();
+            let rel = p.strip_prefix(base).unwrap().to_string_lossy().into_owned();
             let md = match fs::symlink_metadata(&p) {
                 Ok(m) => m,
                 Err(_) => continue,
@@ -449,7 +447,9 @@ fn tree_snapshot(root: &Path) -> Vec<(String, char, Option<Vec<u8>>)> {
             let ft = md.file_type();
             if ft.is_symlink() {
                 // record the LINK TARGET text, not the (followed) content
-                let tgt = fs::read_link(&p).ok().map(|t| t.into_os_string().into_vec_lossy());
+                let tgt = fs::read_link(&p)
+                    .ok()
+                    .map(|t| t.into_os_string().into_vec_lossy());
                 acc.push((rel, 'l', tgt));
             } else if ft.is_dir() {
                 acc.push((rel.clone(), 'd', None));
@@ -709,7 +709,12 @@ fn atomic_swap_on_non_cow_is_typed_hard_error_no_byte_copy_no_partial_apply() {
     let parent_of_dest = dest.path().parent().unwrap();
     for e in fs::read_dir(parent_of_dest).unwrap().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        let dest_name = dest.path().file_name().unwrap().to_string_lossy().into_owned();
+        let dest_name = dest
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         if name == dest_name {
             continue;
         }
@@ -742,9 +747,14 @@ fn held_open_fd_keeps_reading_old_bytes_across_atomic_swap_linked() {
     // snapshot swapped in). Same path "data.bin", different content/checksum.
     let v1_content: Vec<u8> = (0..(64 * 1024u32)).map(|i| (i % 251) as u8).collect();
     let v1_files: Vec<(&str, &[u8], &str)> = vec![("data.bin", v1_content.as_slice(), "644")];
-    let v2_content: Vec<u8> = (0..(64 * 1024u32)).map(|i| ((i * 7 + 3) % 251) as u8).collect();
+    let v2_content: Vec<u8> = (0..(64 * 1024u32))
+        .map(|i| ((i * 7 + 3) % 251) as u8)
+        .collect();
     let v2_files: Vec<(&str, &[u8], &str)> = vec![("data.bin", v2_content.as_slice(), "644")];
-    assert_ne!(v1_content, v2_content, "V1 and V2 must differ for the test to be meaningful");
+    assert_ne!(
+        v1_content, v2_content,
+        "V1 and V2 must differ for the test to be meaningful"
+    );
 
     // A single store holding BOTH snapshots' objects.
     let store_dir = TempDir::under(&parent, "heldfd-store");
@@ -769,7 +779,8 @@ fn held_open_fd_keeps_reading_old_bytes_across_atomic_swap_linked() {
     // so the fd binds to the underlying V1 object inode.
     let mut fd = fs::File::open(&data_path).expect("open dest data.bin before swap");
     let mut head = vec![0u8; v1_content.len() / 2];
-    fd.read_exact(&mut head).expect("read first half before swap");
+    fd.read_exact(&mut head)
+        .expect("read first half before swap");
     assert_eq!(
         head,
         &v1_content[..v1_content.len() / 2],
@@ -819,7 +830,9 @@ fn held_open_fd_keeps_reading_old_bytes_across_atomic_swap_auto_cow() {
 
     let v1_content: Vec<u8> = (0..(80 * 1024u32)).map(|i| (i % 251) as u8).collect();
     let v1_files: Vec<(&str, &[u8], &str)> = vec![("data.bin", v1_content.as_slice(), "644")];
-    let v2_content: Vec<u8> = (0..(80 * 1024u32)).map(|i| ((i * 11 + 5) % 251) as u8).collect();
+    let v2_content: Vec<u8> = (0..(80 * 1024u32))
+        .map(|i| ((i * 11 + 5) % 251) as u8)
+        .collect();
     let v2_files: Vec<(&str, &[u8], &str)> = vec![("data.bin", v2_content.as_slice(), "644")];
     assert_ne!(v1_content, v2_content);
 
@@ -843,7 +856,8 @@ fn held_open_fd_keeps_reading_old_bytes_across_atomic_swap_auto_cow() {
     let data_path = dest.path().join("data.bin");
     let mut fd = fs::File::open(&data_path).expect("open dest before swap");
     let mut head = vec![0u8; v1_content.len() / 2];
-    fd.read_exact(&mut head).expect("read first half before swap");
+    fd.read_exact(&mut head)
+        .expect("read first half before swap");
     assert_eq!(head, &v1_content[..v1_content.len() / 2]);
 
     store
@@ -965,7 +979,12 @@ fn mid_stage_failure_leaves_original_dest_intact_swap_or_nothing() {
 
     // No leftover staging / dest.old sibling from the aborted swap.
     let parent_of_dest = dest.path().parent().unwrap();
-    let dest_name = dest.path().file_name().unwrap().to_string_lossy().into_owned();
+    let dest_name = dest
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     for e in fs::read_dir(parent_of_dest).unwrap().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         if name == dest_name {
