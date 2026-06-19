@@ -606,3 +606,275 @@ fn mixed_scenario_keep_replace_prune_exclude_ordered() {
         "whole-set deletion order must be deepest-first; got {set:?}"
     );
 }
+
+// ===========================================================================
+// REVIEW-GATE ADDITIONS (impl now visible: excludes are extended-regex via
+// `snapdir_core::excludes::ExcludeMatcher` = `Regex::is_match`, UNANCHORED;
+// invalid regex protects nothing; keep/prune keys on the verbatim path string
+// only — `path_type` is never consulted; symlinks are ordinary path entries).
+// All assertions below remain BLACK-BOX against the public `mirror` API.
+// ===========================================================================
+
+#[test]
+fn exclude_regex_dot_metachar_matches_any_char_not_just_literal_dot() {
+    // IMPL-REVEALED: excludes are extended-regex (`Regex::is_match`), so `.` is
+    // the any-char metacharacter, NOT a literal dot. The pattern `protected.log`
+    // therefore protects BOTH `./protectedXlog` (`.`==`X`) and `./protected.log`
+    // (`.`==`.`). Pin this so a future "treat excludes as literals" change is
+    // caught: a metachar pattern protects the wider regex language, not just the
+    // literal string. (Documents the contract; does not over/under-protect a
+    // path the regex genuinely does not match.)
+    let m = manifest(&[md("./")]);
+    let dest = vec![
+        dd("./"),
+        df("./protected.log"), // literal dot — matches `protected.log`
+        df("./protectedXlog"), // `.` metachar matches the `X`
+        df("./protectedlog"),  // NO char between `protected` and `log` => no match
+    ];
+    let set = prune_set(&m, &dest, &["protected.log"]);
+    assert!(
+        !set.contains(&"./protected.log".to_string()),
+        "literal-dot path protected by regex `.`; got {set:?}"
+    );
+    assert!(
+        !set.contains(&"./protectedXlog".to_string()),
+        "regex `.` is any-char, so protectedXlog is also protected; got {set:?}"
+    );
+    assert!(
+        set.contains(&"./protectedlog".to_string()),
+        "no char to fill `.` => no match => still pruned; got {set:?}"
+    );
+}
+
+#[test]
+fn exclude_unanchored_matches_substring_anywhere_in_path() {
+    // IMPL-REVEALED: `ExcludeMatcher::is_excluded` is an UNANCHORED `is_match`,
+    // so a bare fragment matches as a substring anywhere — including across the
+    // `./` prefix and path segments. Pin that `node_modules` protects the dir,
+    // its children, AND a deeper-nested occurrence, while a sibling that merely
+    // shares a prefix substring (`node`) is also caught (documents substring,
+    // not segment, semantics) — but an unrelated path is pruned.
+    let m = manifest(&[md("./")]);
+    let dest = vec![
+        dd("./"),
+        dd("./node_modules/"),
+        df("./node_modules/pkg/index.js"),
+        df("./src/vendor/node_modules/x"), // nested occurrence matches too
+        df("./node_extra"),                // shares `node` only, NOT `node_modules`
+        df("./build.tmp"),
+    ];
+    let set = prune_set(&m, &dest, &["node_modules"]);
+    assert!(
+        !set.iter().any(|p| p.contains("node_modules")),
+        "every path containing node_modules (any depth) protected; got {set:?}"
+    );
+    assert!(
+        set.contains(&"./node_extra".to_string()),
+        "`node_extra` does not contain `node_modules` => pruned; got {set:?}"
+    );
+    assert!(
+        set.contains(&"./build.tmp".to_string()),
+        "unrelated extraneous file still pruned; got {set:?}"
+    );
+}
+
+#[test]
+fn exclude_anchored_pattern_respects_anchors() {
+    // IMPL-REVEALED: extended-regex anchors `^`/`$` work. `^\\./top$` (anchored
+    // to the whole path) protects exactly `./top` and nothing else; a path that
+    // merely contains `top` as a substring is NOT protected by the anchored
+    // pattern. Pin anchored vs unanchored distinction so excludes are not
+    // silently treated as always-substring.
+    let m = manifest(&[md("./")]);
+    let dest = vec![
+        dd("./"),
+        df("./top"),     // exact match for the anchored pattern
+        df("./topmost"), // contains `top` but anchored `$` rejects it
+        df("./sub/top"), // contains `top` but anchored `^\./top` rejects it
+    ];
+    let set = prune_set(&m, &dest, &[r"^\./top$"]);
+    assert!(
+        !set.contains(&"./top".to_string()),
+        "anchored pattern protects exactly ./top; got {set:?}"
+    );
+    assert!(
+        set.contains(&"./topmost".to_string()),
+        "anchored `$` => ./topmost NOT protected, pruned; got {set:?}"
+    );
+    assert!(
+        set.contains(&"./sub/top".to_string()),
+        "anchored `^\\./top` => ./sub/top NOT protected, pruned; got {set:?}"
+    );
+}
+
+#[test]
+fn invalid_exclude_regex_protects_nothing() {
+    // IMPL-REVEALED: `prune_set` compiles each pattern via `ExcludeMatcher::new`
+    // and SKIPS any that fail to compile (`filter_map(... .ok())`), so an invalid
+    // regex protects NOTHING and the function stays total/panic-free. Pin that an
+    // unbalanced bracket `[` (invalid ERE) silently protects nothing — the
+    // extraneous path is still pruned exactly as if no exclude were given.
+    let m = manifest(&[md("./"), mf("./keep")]);
+    let dest = vec![dd("./"), df("./keep"), df("./drop")];
+    let with_bad = prune_set(&m, &dest, &["["]); // unbalanced bracket: invalid
+    let without = prune_set(&m, &dest, &[]);
+    assert_eq!(
+        with_bad, without,
+        "an invalid regex protects nothing (skipped); {with_bad:?} vs {without:?}"
+    );
+    assert_eq!(
+        with_bad,
+        vec!["./drop".to_string()],
+        "extraneous ./drop still pruned despite the bad pattern; got {with_bad:?}"
+    );
+}
+
+#[test]
+fn invalid_exclude_does_not_suppress_other_valid_excludes() {
+    // IMPL-REVEALED corollary: with a mix of one invalid and one valid pattern,
+    // the invalid one is skipped but the valid one STILL protects its match —
+    // the bad pattern neither panics nor disables the good one.
+    let m = manifest(&[md("./")]);
+    let dest = vec![dd("./"), df("./safe.keep"), df("./gone")];
+    let set = prune_set(&m, &dest, &["(", "safe.keep"]); // first invalid, second valid
+    assert!(
+        !set.contains(&"./safe.keep".to_string()),
+        "valid pattern still protects despite a preceding invalid one; got {set:?}"
+    );
+    assert!(
+        set.contains(&"./gone".to_string()),
+        "unmatched extraneous path still pruned; got {set:?}"
+    );
+}
+
+#[test]
+fn symlink_dest_entry_classified_by_path_presence_not_followed() {
+    // IMPL-REVEALED + spec/_shared symlink note: `PathType` has only File/Dir, so
+    // a dest symlink surfaces as an ordinary path entry. The keep/prune decision
+    // keys ONLY on the verbatim path string vs the manifest — the impl never
+    // stats, follows, or resolves a symlink target. A symlink whose path is
+    // ABSENT from the manifest is extraneous (pruned); one whose path IS in the
+    // manifest is kept — regardless of what it points at.
+    let m = manifest(&[md("./"), mf("./linked_in")]);
+    let dest = vec![
+        dd("./"),
+        df("./linked_in"), // a symlink occupying a path the manifest keeps
+        df("./dangling"),  // a symlink path absent from the manifest => extraneous
+    ];
+    let set = prune_set(&m, &dest, &[]);
+    assert!(
+        !set.contains(&"./linked_in".to_string()),
+        "a symlink at a kept path is kept (not followed); got {set:?}"
+    );
+    assert_eq!(
+        set,
+        vec!["./dangling".to_string()],
+        "a symlink path absent from the manifest is extraneous by path alone; got {set:?}"
+    );
+}
+
+#[test]
+fn symlink_to_dir_without_trailing_slash_is_distinct_key_from_manifest_dir() {
+    // IMPL-REVEALED: the trailing-slash convention is the type key. A dest symlink
+    // recorded as a file `./p` (no trailing slash) is a DISTINCT key from a
+    // manifest directory `./p/`. So a symlink-as-file at ./p where the manifest
+    // has a real dir ./p/ is extraneous (must be replaced) — the symlink is not
+    // specially "followed" into the directory to make it match.
+    let m = manifest(&[md("./"), md("./p/"), mf("./p/inside")]);
+    let dest = vec![dd("./"), df("./p")]; // a symlink, recorded as a file key
+    let set = prune_set(&m, &dest, &[]);
+    assert_eq!(
+        set,
+        vec!["./p".to_string()],
+        "symlink-as-file ./p is extraneous vs manifest dir ./p/; got {set:?}"
+    );
+}
+
+#[test]
+fn duplicate_dest_entries_for_same_extraneous_path_both_emitted_verbatim() {
+    // IMPL-REVEALED edge: `prune_set` maps dest entries 1:1 (no dedup pass) before
+    // sorting. Pin the behavior on a degenerate duplicate input so a future
+    // dedup/refactor must be a deliberate, reviewed change rather than silent.
+    // The path is emitted once per dest entry; both are the same extraneous key.
+    let m = manifest(&[md("./")]);
+    let dest = vec![dd("./"), df("./dup"), df("./dup")];
+    let set = prune_set(&m, &dest, &[]);
+    assert!(
+        set.contains(&"./dup".to_string()),
+        "the extraneous duplicate path must be present; got {set:?}"
+    );
+    assert_eq!(
+        set.iter().filter(|p| *p == "./dup").count(),
+        2,
+        "current impl emits one entry per dest listing (no dedup); got {set:?}"
+    );
+}
+
+#[test]
+fn ordering_stable_under_adversarial_input_permutation() {
+    // IMPL-REVEALED: deepest-first is achieved by sort (descending depth, byte-
+    // order tie-break), so the OUTPUT must be identical regardless of the INPUT
+    // ordering. Feed the same nested extraneous tree in two scrambled orders and
+    // assert byte-identical results AND the deepest-first invariant for both.
+    let m = manifest(&[md("./")]);
+    let forward = vec![
+        dd("./"),
+        dd("./a/"),
+        dd("./a/b/"),
+        df("./a/b/leaf"),
+        df("./a/top"),
+        df("./z"),
+    ];
+    let scrambled = vec![
+        df("./z"),
+        df("./a/b/leaf"),
+        dd("./"),
+        df("./a/top"),
+        dd("./a/b/"),
+        dd("./a/"),
+    ];
+    let s1 = prune_set(&m, &forward, &[]);
+    let s2 = prune_set(&m, &scrambled, &[]);
+    assert_eq!(
+        s1, s2,
+        "output order must be independent of input order; {s1:?} vs {s2:?}"
+    );
+    assert!(is_deepest_first(&s1), "got {s1:?}");
+    assert!(is_deepest_first(&s2), "got {s2:?}");
+}
+
+#[test]
+fn equal_depth_extraneous_paths_break_ties_in_byte_order() {
+    // IMPL-REVEALED: among same-depth siblings (no ancestor/descendant relation),
+    // the impl tie-breaks by ascending byte order for determinism. Pin that the
+    // top-level siblings come out byte-sorted so the order is fully specified
+    // (not merely "some deterministic order").
+    let m = manifest(&[md("./")]);
+    let dest = vec![dd("./"), df("./c"), df("./a"), df("./b")];
+    let set = prune_set(&m, &dest, &[]);
+    assert_eq!(
+        set,
+        vec!["./a".to_string(), "./b".to_string(), "./c".to_string()],
+        "equal-depth siblings emit in ascending byte order; got {set:?}"
+    );
+}
+
+#[test]
+fn trailing_slash_directory_and_same_named_file_both_extraneous_distinct_keys() {
+    // IMPL-REVEALED corner: if the dest somehow lists BOTH `./p` (file) and
+    // `./p/` (dir) and the manifest has neither, both are distinct extraneous
+    // keys and BOTH are pruned; the file (depth 1) and the dir (depth 1) are
+    // independent. Pin that neither suppresses the other.
+    let m = manifest(&[md("./")]);
+    let dest = vec![dd("./"), df("./p"), dd("./p/")];
+    let set = prune_set(&m, &dest, &[]);
+    assert!(
+        set.contains(&"./p".to_string()),
+        "file ./p pruned; got {set:?}"
+    );
+    assert!(
+        set.contains(&"./p/".to_string()),
+        "dir ./p/ pruned; got {set:?}"
+    );
+    assert_eq!(set.len(), 2, "both distinct keys pruned; got {set:?}");
+}
