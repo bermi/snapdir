@@ -1,4 +1,4 @@
-//! ADVERSARY black-box spec suite (assert_cmd) for `checkout`/`pull` exact-mirror
+//! ADVERSARY black-box spec suite (`assert_cmd`) for `checkout`/`pull` exact-mirror
 //! `--delete` + `--exclude`, and the carried-forward remote-source `--linked`
 //! refusal. Phase 32.
 //!
@@ -138,16 +138,17 @@ fn delete_prunes_extraneous_top_level_file() {
     // in-manifest files must remain.
     ok_stdout(
         snapdir(&cache, &home),
-        &[
-            "checkout", "--id", &id, "--delete", &dest_str,
-        ],
+        &["checkout", "--id", &id, "--delete", &dest_str],
     );
     assert!(
         !dest.join("EXTRANEOUS.txt").exists(),
         "--delete must prune the extraneous file to make an exact mirror"
     );
     assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"hello");
-    assert_eq!(fs::read(dest.join("sub").join("b.txt")).unwrap(), b"world!!");
+    assert_eq!(
+        fs::read(dest.join("sub").join("b.txt")).unwrap(),
+        b"world!!"
+    );
     // And the mirror re-manifests back to the source id.
     assert_eq!(ok_stdout(snapdir(&cache, &home), &["id", &dest_str]), id);
 
@@ -234,10 +235,15 @@ fn delete_no_op_when_dest_already_matches() {
     // materialized dest already matches, so --delete prunes nothing.
     ok_stdout(
         snapdir(&cache, &home),
-        &["pull", "--store", &store_url, "--id", &id, "--delete", &dest_str],
+        &[
+            "pull", "--store", &store_url, "--id", &id, "--delete", &dest_str,
+        ],
     );
     assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"hello");
-    assert_eq!(fs::read(dest.join("sub").join("b.txt")).unwrap(), b"world!!");
+    assert_eq!(
+        fs::read(dest.join("sub").join("b.txt")).unwrap(),
+        b"world!!"
+    );
     assert_eq!(ok_stdout(snapdir(&cache, &home), &["id", &dest_str]), id);
 
     cleanup(&[&src, &store, &dest, &cache, &home]);
@@ -313,7 +319,9 @@ fn delete_with_absent_dest_is_plain_checkout() {
 
     ok_stdout(
         snapdir(&cache, &home),
-        &["pull", "--store", &store_url, "--id", &id, "--delete", &dest_str],
+        &[
+            "pull", "--store", &store_url, "--id", &id, "--delete", &dest_str,
+        ],
     );
     assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"hello");
     assert_eq!(ok_stdout(snapdir(&cache, &home), &["id", &dest_str]), id);
@@ -448,7 +456,10 @@ fn assert_refuses_dangerous(cache: &Path, home: &Path, dest: &Path, with_force: 
     }
     args.push(&dest_str);
 
-    let out = snapdir(cache, home).args(&args).output().expect("run snapdir");
+    let out = snapdir(cache, home)
+        .args(&args)
+        .output()
+        .expect("run snapdir");
     assert!(
         !out.status.success(),
         "checkout --delete on dangerous dest {} (force={with_force}) MUST refuse with non-zero exit",
@@ -468,7 +479,7 @@ fn assert_refuses_dangerous(cache: &Path, home: &Path, dest: &Path, with_force: 
 fn delete_refuses_home_dir_even_with_force() {
     let cache = temp_dir("home-cache");
     let home = temp_dir("home-home"); // env'd HOME -> this temp dir
-    // dest == the env'd $HOME
+                                      // dest == the env'd $HOME
     assert_refuses_dangerous(&cache, &home, &home, false);
     assert_refuses_dangerous(&cache, &home, &home, true);
     cleanup(&[&cache, &home]);
@@ -627,7 +638,9 @@ fn linked_against_remote_store_is_a_hard_error() {
         let dest_str = dest.to_string_lossy().into_owned();
         let id = "0".repeat(64);
         let out = snapdir(&cache, &home)
-            .args(["checkout", "--store", remote, "--id", &id, "--linked", &dest_str])
+            .args([
+                "checkout", "--store", remote, "--id", &id, "--linked", &dest_str,
+            ])
             .output()
             .expect("run snapdir");
         assert!(
@@ -635,7 +648,7 @@ fn linked_against_remote_store_is_a_hard_error() {
             "checkout --linked against remote {remote} MUST be a hard error"
         );
         assert!(
-            !dest.exists() || fs::read_dir(&dest).map(|mut d| d.next().is_none()).unwrap_or(true),
+            !dest.exists() || fs::read_dir(&dest).map_or(true, |mut d| d.next().is_none()),
             "no partial dest tree may be materialized for remote {remote}"
         );
     }

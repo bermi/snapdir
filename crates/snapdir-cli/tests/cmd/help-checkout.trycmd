@@ -99,6 +99,12 @@ Options:
       --dryrun
           Run without making any changes
 
+      --delete
+          Prune the destination to an EXACT mirror: remove anything not in the snapshot's manifest. Refuses dangerous destinations (/, $HOME, the cache dir, a store path) even with --force
+
+      --exclude <PATTERN>
+          With --delete, PROTECT destination paths matching the extended-regex PATTERN from pruning (repeatable / comma-delimited)
+
   -h, --help
           Print help (see a summary with '-h')
 

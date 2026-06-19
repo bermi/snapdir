@@ -35,9 +35,9 @@ use snapdir_core::{
 };
 use snapdir_stores::{
     is_hex64, limits, read_pack, resolve_adapter, write_pack_with_format, Adapter, B2Store,
-    Durability, ExternalStore, FileSink, FileStore, GcsStore, PackFormat, PackReadReport, PackSink,
-    RetryPolicy, S3Store, SplitStore, StreamSink, StreamStore, TransferAdaptivePolicy,
-    TransferConfig, DEFAULT_ZSTD_LEVEL, WIRE_CAPS, WIRE_VERSION,
+    Durability, ExternalStore, FileSink, FileStore, GcsStore, MaterializeMode, PackFormat,
+    PackReadReport, PackSink, RetryPolicy, S3Store, SplitStore, StreamSink, StreamStore,
+    TransferAdaptivePolicy, TransferConfig, DEFAULT_ZSTD_LEVEL, WIRE_CAPS, WIRE_VERSION,
 };
 
 /// Upper bound for the adaptive concurrency ceiling (`--max-jobs` / `--jobs`
@@ -244,6 +244,39 @@ pub struct TransferArgs {
     pub dryrun: bool,
 }
 
+/// The exact-mirror family: the `--delete` + `--exclude` flags attached ONLY to
+/// `checkout`/`pull` (Phase 32). Kept disjoint from [`TransferArgs`] /
+/// [`WalkArgs`] (no field-name overlap) so each command flattens exactly the
+/// groups it needs without a clap collision; `checkout`/`pull` flatten
+/// [`TransferArgs`] + [`MirrorArgs`].
+///
+/// `--exclude` lives here (not on `WalkArgs`) because `checkout`/`pull` do NOT
+/// flatten `WalkArgs` — they take no walk — and the prune-side excludes are a
+/// distinct concern (regex protect-patterns over the DEST tree) from the
+/// walk-side `--exclude`. The patterns are extended-regex (grep `-E`), matching
+/// the core `ExcludeMatcher` / `prune_set` contract.
+#[derive(Debug, Default, Args)]
+pub struct MirrorArgs {
+    /// Prune the destination to an EXACT mirror: remove anything not in the
+    /// snapshot's manifest. Refuses dangerous destinations (/, $HOME, the cache
+    /// dir, a store path) even with --force.
+    #[arg(long)]
+    pub delete: bool,
+
+    /// With --delete, PROTECT destination paths matching the extended-regex
+    /// PATTERN from pruning (repeatable / comma-delimited).
+    // Mirrors the walk-side `--exclude` shape: repeated occurrences and
+    // comma-delimited values are OR-combined; the patterns are extended-regex
+    // (the same primitive as the core `ExcludeMatcher`/`prune_set`).
+    #[arg(
+        long,
+        value_name = "PATTERN",
+        action = clap::ArgAction::Append,
+        value_delimiter = ','
+    )]
+    pub exclude: Vec<String>,
+}
+
 /// The `defaults` reporting family: the CONFIG knobs `snapdir defaults` resolves
 /// and reports (with a `flag`/`env`/`default` source tag). It deliberately
 /// mirrors only the resolvable subset of [`TransferArgs`] — the store/cache/
@@ -413,6 +446,7 @@ pub struct Resolved {
     pub objects_store: Option<String>,
     pub id: Option<String>,
     pub exclude: Vec<String>,
+    pub delete: bool,
     pub linked: bool,
     pub force: bool,
     pub purge: bool,
@@ -616,6 +650,10 @@ pub enum Command {
         #[command(flatten)]
         transfer: TransferArgs,
 
+        /// Mirror flags (`--delete`, `--exclude`).
+        #[command(flatten)]
+        mirror: MirrorArgs,
+
         /// Destination directory.
         path: Option<PathBuf>,
     },
@@ -625,6 +663,10 @@ pub enum Command {
         /// Transfer flags (`--id`, `--cache-dir`, `--linked`, …).
         #[command(flatten)]
         transfer: TransferArgs,
+
+        /// Mirror flags (`--delete`, `--exclude`).
+        #[command(flatten)]
+        mirror: MirrorArgs,
 
         /// Destination directory.
         dir: Option<PathBuf>,
@@ -907,10 +949,20 @@ impl Cli {
                 merge_walk(&mut globals, walk);
                 merge_transfer(&mut globals, transfer);
             }
-            Command::Fetch { transfer }
-            | Command::Pull { transfer, .. }
-            | Command::Checkout { transfer, .. }
-            | Command::Sync { transfer, .. } => merge_transfer(&mut globals, transfer),
+            Command::Fetch { transfer } | Command::Sync { transfer, .. } => {
+                merge_transfer(&mut globals, transfer);
+            }
+            // `checkout`/`pull` also carry the exact-mirror group (`--delete` +
+            // the prune-side `--exclude`), folded alongside the transfer flags.
+            Command::Pull {
+                transfer, mirror, ..
+            }
+            | Command::Checkout {
+                transfer, mirror, ..
+            } => {
+                merge_transfer(&mut globals, transfer);
+                merge_mirror(&mut globals, mirror);
+            }
             // `defaults` folds its config group so its `--cache-dir`/`--jobs`/
             // `--store`/… overrides resolve (and report `flag`) like a real run.
             Command::Defaults { config } => merge_defaults(&mut globals, config),
@@ -963,6 +1015,13 @@ fn merge_transfer(g: &mut Resolved, t: &TransferArgs) {
     g.force = t.force;
     g.keep = t.keep;
     g.dryrun = t.dryrun;
+}
+
+/// Folds a parsed [`MirrorArgs`] group (`--delete` + the prune-side
+/// `--exclude`) into the resolved config. Only `checkout`/`pull` carry it.
+fn merge_mirror(g: &mut Resolved, m: &MirrorArgs) {
+    g.delete = m.delete;
+    g.exclude.clone_from(&m.exclude);
 }
 
 /// Folds a parsed [`DefaultsArgs`] group into the resolved config so `defaults`
@@ -1811,13 +1870,25 @@ impl Ctx {
     fn checkout_inner(&self, dir: Option<&Path>, meter: Option<&Arc<Meter>>) -> Result<()> {
         let id = self.require_id()?;
         let dest = resolve_root(dir).context("resolving checkout destination")?;
-        // Under --dryrun: skip materializing the destination tree and restoring
-        // permissions — both write to the destination. The notice is emitted
-        // before the cache manifest read so `pull --dryrun` (whose `fetch` leg
-        // is itself a dry no-op and therefore leaves the cache unpopulated)
-        // composes into a clean, write-free no-op rather than failing on a
-        // missing cached manifest.
-        if self.globals.dryrun {
+        // FIRST, before ANY store/manifest lookup or deletion: the unconditional
+        // dangerous-dest refusal (only when mirroring). `--force` does NOT bypass
+        // it; firing here means the refusal is the surfaced failure even for a
+        // shape-valid-but-bogus id, and no deletion has happened yet.
+        if self.globals.delete {
+            self.guard_dangerous_dest(&dest)?;
+        }
+        // Resolve the materialize mode, enforcing the `--linked`-against-a-remote
+        // refusal at the CLI seam — BEFORE any materialization, so no partial
+        // dest is written.
+        let mode = self.materialize_mode()?;
+        // Under --dryrun WITHOUT --delete: skip materializing the destination
+        // tree and restoring permissions — both write to the destination. The
+        // notice is emitted before the cache manifest read so `pull --dryrun`
+        // (whose `fetch` leg is itself a dry no-op and therefore leaves the
+        // cache unpopulated) composes into a clean, write-free no-op rather than
+        // failing on a missing cached manifest. With --delete the dryrun must
+        // LIST the prune set, which needs the manifest, so it falls through.
+        if self.globals.dryrun && !self.globals.delete {
             if !self.globals.quiet {
                 eprintln!(
                     "dry-run: would check out {id} to {} (no writes performed)",
@@ -1830,6 +1901,11 @@ impl Ctx {
         let manifest = cache.get_manifest(id).with_context(|| {
             format!("manifest {id} not found locally; did you forget to fetch it?")
         })?;
+        // --delete --dryrun: list the prune set and write/remove NOTHING (no
+        // materialize, no restore_permissions). `prune_dest` handles the listing.
+        if self.globals.dryrun {
+            return self.prune_dest(&manifest, &dest);
+        }
         // Pre-flight the object pool so a checkout that cannot complete fails
         // with a message that locates the gap by FILE PATH (from the manifest),
         // not the bare object-not-found hash the store would surface mid-copy.
@@ -1848,14 +1924,37 @@ impl Ctx {
             m.set_total(total_object_bytes(&manifest));
         }
         cache
-            .fetch_files(&manifest, &dest)
+            .fetch_files_with_mode(&manifest, &dest, mode)
             .with_context(|| format!("checking out snapshot {id} to {}", dest.display()))?;
-        restore_permissions(&manifest, &dest)?;
+        // Restore per-entry permissions for the Auto (real-inode) materialize.
+        // In Linked mode the file entries are symlinks into the shared 0444
+        // objects (intentionally hardened, read-only); chmod-ing them would
+        // follow into and re-mode the shared store object, so it is skipped.
+        if mode == MaterializeMode::Auto {
+            restore_permissions(&manifest, &dest)?;
+        }
+        // After the normal materialize, prune the destination to an exact mirror
+        // when `--delete` is set. The pruned set is everything the dest holds
+        // that the manifest does not; deepest-first removal keeps dirs empty.
+        if self.globals.delete {
+            self.prune_dest(&manifest, &dest)?;
+        }
         Ok(())
     }
 
     /// `snapdir pull` = fetch + checkout.
     fn run_pull(&self, path: Option<&Path>) -> Result<()> {
+        // Refuse BEFORE the fetch leg so no partial dest is materialized and the
+        // refusal is the surfaced failure (not a downstream store error):
+        //   * `--linked` against a remote store has no local object to point at;
+        //   * `--delete` onto a dangerous dest is unconditionally refused.
+        // Both checks are repeated inside `checkout_inner`; doing them here too
+        // keeps the network/fetch leg from running for a doomed `pull`.
+        let _ = self.materialize_mode()?;
+        if self.globals.delete {
+            let dest = resolve_root(path).context("resolving pull destination")?;
+            self.guard_dangerous_dest(&dest)?;
+        }
         // Banner ONCE for the whole pull, then run the two legs without their
         // own banners (`fetch_inner`/`checkout_inner`) so `pull --verbose`
         // emits exactly one transfer-config line. ONE reporter spans the whole
@@ -3007,6 +3106,171 @@ impl Ctx {
         Ok(self.cache_store()?.with_meter(meter))
     }
 
+    /// Resolves the [`MaterializeMode`] for a checkout/pull, enforcing the
+    /// `--linked`-against-a-remote-store refusal at the CLI/router seam.
+    ///
+    /// `--linked` symlinks each dest file into the LOCAL content-addressed
+    /// object — only meaningful when the source store is local. Against a
+    /// non-local store (`s3://`/`gs://`/`b2://`/`ssh://`/`sftp://`/any
+    /// non-`file://` scheme) there is no local object to point at, so `--linked`
+    /// is a HARD ERROR here, BEFORE any materialization — never a silent
+    /// fall-back to copies. A bare `--store` of an absolute path, a `file://`
+    /// URL, or NO `--store` (checkout from the local cache) is local.
+    ///
+    /// # Errors
+    /// Returns an error when `--linked` is combined with a non-local `--store`.
+    fn materialize_mode(&self) -> Result<MaterializeMode> {
+        if !self.globals.linked {
+            return Ok(MaterializeMode::Auto);
+        }
+        if let Some(store_url) = self.globals.store.as_deref() {
+            if !store_url_is_local(store_url) {
+                anyhow::bail!(
+                    "snapdir: --linked cannot be used with the remote store {store_url}: \
+                     symlinks point at LOCAL content-addressed objects, which a remote \
+                     store does not provide; drop --linked (objects are copied) or use a \
+                     local file:// store"
+                );
+            }
+        }
+        Ok(MaterializeMode::Linked)
+    }
+
+    /// HARD-REFUSES an exact-mirror `--delete` against a dangerous destination,
+    /// UNCONDITIONALLY (`--force` does NOT bypass). Fires BEFORE any deletion and
+    /// BEFORE the manifest/store lookup, so the refusal is the failure surfaced.
+    ///
+    /// `dest` is the already-resolved (absolute, lexically-normalized) checkout
+    /// destination. The guard compares the CANONICAL real path of `dest` against
+    /// the canonical real paths of the protected locations — the filesystem root
+    /// `/`, `$HOME`, the cache dir (explicit `$SNAPDIR_CACHE_DIR` AND the default
+    /// `${XDG_CACHE_HOME:-$HOME/.cache}/snapdir`), and any configured store root
+    /// (`--store` and `--objects-store`, for local `file://`/path stores) — so a
+    /// trailing slash, a `.` segment, or a symlinked alias still trips the guard.
+    /// A location that does not exist on disk falls back to its
+    /// lexically-normalized form so the comparison still fires.
+    ///
+    /// # Errors
+    /// Returns an error (the refusal) when `dest` resolves to a protected path.
+    fn guard_dangerous_dest(&self, dest: &Path) -> Result<()> {
+        let dest_key = canonical_key(dest);
+
+        let mut guarded: Vec<(PathBuf, &'static str)> = Vec::new();
+        guarded.push((canonical_key(Path::new("/")), "the filesystem root"));
+        if let Ok(home) = std::env::var("HOME") {
+            if !home.is_empty() {
+                guarded.push((canonical_key(Path::new(&home)), "your home directory"));
+            }
+        }
+        // The cache dir holds the content-addressable objects; pruning it would
+        // corrupt the cache. Guard the resolved cache dir (which already honors
+        // explicit `--cache-dir`/`$SNAPDIR_CACHE_DIR` else the XDG default).
+        guarded.push((
+            canonical_key(&self.cache_dir()),
+            "the object cache directory",
+        ));
+        // Also guard the DEFAULT cache location even when an explicit cache dir
+        // is configured, so the default is never prunable.
+        guarded.push((
+            canonical_key(&default_cache_dir()),
+            "the object cache directory",
+        ));
+        // The store(s) hold the snapshot's manifests/objects; mirror-pruning the
+        // store would destroy it. Guard both the manifest store and the object
+        // pool roots (only the local ones resolve to a real path).
+        for url in [
+            self.globals.store.as_deref(),
+            self.globals.objects_store.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if store_url_is_local(url) {
+                guarded.push((canonical_key(&store_root_path(url)), "the snapshot store"));
+            }
+        }
+
+        for (path, label) in guarded {
+            if path == dest_key {
+                anyhow::bail!(
+                    "snapdir: refusing to mirror-delete {} — it is {label}; \
+                     --delete only prunes a checkout destination (this guard is \
+                     unconditional and is NOT bypassed by --force)",
+                    dest.display()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Prunes the destination tree to an EXACT mirror of `manifest`: removes
+    /// every dest path NOT in the manifest, deepest-first, honoring the
+    /// prune-side `--exclude` protect-patterns. Under `--dryrun` it LISTS the
+    /// deletion set (one path per line, to stdout) and removes NOTHING.
+    ///
+    /// The dest walk is content-free (no hashing): each entry is recorded by
+    /// `(./`-prefixed path, type) via `symlink_metadata` so a symlink is an
+    /// ENTRY and is NEVER followed. The pure [`snapdir_core::mirror::prune_set`]
+    /// decides what is extraneous; this method only walks + unlinks. Every prune
+    /// path is dest-relative, so nothing outside the dest root is ever touched.
+    ///
+    /// A dest that does not exist yet is a no-op (a plain checkout has nothing to
+    /// prune).
+    ///
+    /// # Errors
+    /// Returns an error when the dest walk or a removal fails.
+    fn prune_dest(&self, manifest: &Manifest, dest: &Path) -> Result<()> {
+        if !dest.exists() {
+            return Ok(());
+        }
+        let mut entries = Vec::new();
+        collect_dest_entries(dest, dest, &mut entries)
+            .with_context(|| format!("walking checkout destination {}", dest.display()))?;
+
+        let exclude_refs: Vec<&str> = self.globals.exclude.iter().map(String::as_str).collect();
+        let prune = snapdir_core::mirror::prune_set(manifest, &entries, &exclude_refs);
+
+        if self.globals.dryrun {
+            // List the exact deletion set and remove nothing. Paths are the
+            // verbatim `./`-prefixed dest-relative keys `prune_set` returned.
+            let mut out = std::io::stdout().lock();
+            for path in &prune {
+                writeln!(out, "would delete: {path}")
+                    .context("writing the dry-run deletion list")?;
+            }
+            return Ok(());
+        }
+
+        for path in &prune {
+            // `prune_set` returns dest-relative `./`-prefixed keys (dirs end
+            // `/`); join under the dest root only. Deepest-first ordering
+            // guarantees a directory is empty by the time we reach it.
+            let rel = path.strip_prefix("./").unwrap_or(path);
+            let rel = rel.strip_suffix('/').unwrap_or(rel);
+            let target = dest.join(rel);
+            // Use symlink_metadata so a symlink (even one pointing OUTSIDE the
+            // dest) is classified by the LINK itself and unlinked, never
+            // followed into a recursive delete of its target.
+            let meta = match std::fs::symlink_metadata(&target) {
+                Ok(m) => m,
+                // Already gone (e.g. a parent removed it): idempotent no-op.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e).with_context(|| format!("stat'ing {}", target.display())),
+            };
+            if meta.file_type().is_dir() {
+                std::fs::remove_dir(&target).with_context(|| {
+                    format!("removing extraneous directory {}", target.display())
+                })?;
+            } else {
+                // A regular file OR a symlink: `remove_file` unlinks the entry
+                // itself (for a symlink, the link — NOT its target).
+                std::fs::remove_file(&target)
+                    .with_context(|| format!("removing extraneous path {}", target.display()))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Resolves the cache directory: `--cache-dir`, else
     /// `${XDG_CACHE_HOME:-$HOME/.cache}/snapdir` (the oracle default).
     fn cache_dir(&self) -> PathBuf {
@@ -3629,6 +3893,81 @@ impl Drop for ScratchDir {
 /// This is purely lexical: it does **not** call `.canonicalize()`, so symlinks
 /// and `..` keep their existing semantics and the not-found error path is
 /// preserved (the path need not exist yet for some commands).
+/// Whether a `--store` URL routes to a LOCAL filesystem store — i.e. a
+/// `file://` URL or a bare absolute path (no `<scheme>://`). Everything else
+/// (`s3://`/`gs://`/`b2://`/`ssh://`/`sftp://`/any other scheme) is remote.
+///
+/// Used by the `--linked` remote-refusal and the store-path dangerous-dest
+/// guard (which only resolves a real path for a local store).
+fn store_url_is_local(store_url: &str) -> bool {
+    if store_url.starts_with("file:") {
+        return true;
+    }
+    // A bare absolute path has no `<scheme>://` separator.
+    !store_url.contains("://")
+}
+
+/// The on-disk root of a LOCAL store URL (a `file://` URL or a bare path),
+/// reusing the stores layer's `FileStore::new(..).root()` parse so the CLI
+/// never re-implements the `file:`-scheme normalization. Only meaningful for a
+/// URL [`store_url_is_local`] accepted.
+fn store_root_path(store_url: &str) -> PathBuf {
+    FileStore::new(store_url).root().to_path_buf()
+}
+
+/// The DEFAULT cache directory: `${XDG_CACHE_HOME:-$HOME/.cache}/snapdir` —
+/// independent of any explicit `--cache-dir`/`$SNAPDIR_CACHE_DIR`. Used by the
+/// dangerous-dest guard so the default cache location is always protected.
+fn default_cache_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let base = std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| format!("{home}/.cache"));
+    PathBuf::from(format!("{base}/snapdir"))
+}
+
+/// A comparison key for a path: its CANONICAL real path when it exists on disk
+/// (so a trailing slash, a `.` segment, or a symlinked alias all collapse to
+/// the same key), else its lexically-normalized form (so a not-yet-existing
+/// dangerous target — e.g. a store root that the test tore down — still
+/// compares equal to its guarded twin).
+fn canonical_key(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| lexically_normalize_root(path))
+}
+
+/// Recursively records the destination tree's entries as [`DestEntry`] values
+/// for [`snapdir_core::mirror::prune_set`]: each path is rendered `./`-prefixed
+/// (relative to `root`) with directories ending `/`, matching the manifest
+/// convention. Entries are recorded via `symlink_metadata` (lstat), so a
+/// symlink is recorded as a NON-directory entry and is NEVER descended into —
+/// the prune step unlinks the link itself, never following it out of the dest.
+fn collect_dest_entries(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<snapdir_core::mirror::DestEntry>,
+) -> std::io::Result<()> {
+    use snapdir_core::mirror::DestEntry;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let meta = std::fs::symlink_metadata(&path)?;
+        let ft = meta.file_type();
+        // Render the dest-relative path the manifest way: `./` + components.
+        let rel = path
+            .strip_prefix(root)
+            .expect("dest child is under the dest root");
+        let rel_str = rel.to_string_lossy();
+        if ft.is_dir() {
+            out.push(DestEntry::new(format!("./{rel_str}/"), PathType::Directory));
+            // Recurse into real directories only (NOT a symlink to a dir).
+            collect_dest_entries(root, &path, out)?;
+        } else {
+            // A regular file OR a symlink: a single non-directory entry. A
+            // symlink is recorded by the LINK, not its target, and not followed.
+            out.push(DestEntry::new(format!("./{rel_str}"), PathType::File));
+        }
+    }
+    Ok(())
+}
+
 fn resolve_root(path: Option<&Path>) -> Result<PathBuf> {
     let raw = match path {
         Some(p) => p.to_path_buf(),
