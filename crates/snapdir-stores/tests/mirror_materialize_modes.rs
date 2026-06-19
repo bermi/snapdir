@@ -996,3 +996,344 @@ fn linked_mode_second_run_is_idempotent() {
         "an idempotent re-run must not duplicate objects"
     );
 }
+
+// ===========================================================================
+// REVIEW-ADDED CASES (impl now visible). These pin branches the landed impl
+// in `src/file_store.rs` exposes: `harden_object_readonly` idempotency, the
+// `atomic_symlink` canonical target, the `cow_reflink_supported` public probe
+// (residue + SNAPDIR_CLONEFILE=0 + non-CoW path), and the no-corruption depth
+// invariant via the public `get_object`. NONE of these weaken the contract;
+// they strengthen it against the revealed implementation.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// REVIEW (h) — 0444 idempotency / RE-hardening. A SECOND linked checkout over an
+// already-0444 object stays 0444 and succeeds (the atomic-symlink replace path),
+// and writing THROUGH the (now re-checked-out) link still fails. Pins the
+// `harden_object_readonly` idempotent no-op branch (`mode & 0o7777 == 0o444`) +
+// `atomic_symlink`'s rename-over-existing-link replace, distinctly from the
+// first-run hardening exercised in case (g).
+// ---------------------------------------------------------------------------
+#[cfg(unix)]
+#[test]
+fn linked_rehardening_second_checkout_stays_0444_and_write_still_fails() {
+    let content = b"re-harden-must-stay-0444\n".to_vec();
+    let files: Vec<(&str, &[u8], &str)> = vec![("re.txt", content.as_slice(), "644")];
+
+    let parent = coloc_parent();
+    let (store, store_dir, manifest, _id, _src) = staged_store(&parent, "reharden", &files);
+    let dest = TempDir::under(&parent, "reharden-dest");
+
+    let sum = Blake3Hasher::new().hash_hex(&content);
+    let obj = object_disk(store_dir.path(), &sum);
+
+    // First linked checkout hardens the object to 0444.
+    store
+        .fetch_files_with_mode(&manifest, dest.path(), MaterializeMode::Linked)
+        .expect("first linked checkout");
+    assert_eq!(
+        mode_bits(&obj),
+        Some(0o444),
+        "first linked checkout must harden the object to 0444"
+    );
+
+    // A SECOND linked checkout, with the object ALREADY 0444, must succeed (the
+    // `harden_object_readonly` idempotent no-op branch + the atomic-symlink
+    // rename-over-existing-link replace) and leave the object 0444 — never
+    // re-chmod it writable.
+    store
+        .fetch_files_with_mode(&manifest, dest.path(), MaterializeMode::Linked)
+        .expect("second linked checkout over an already-0444 object must succeed (idempotent)");
+    assert_eq!(
+        mode_bits(&obj),
+        Some(0o444),
+        "re-hardening an already-0444 object must keep it 0444 (idempotent no-op)"
+    );
+
+    // The dest entry is still a symlink and writing THROUGH it still fails.
+    let link = dest.path().join("re.txt");
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "after the re-checkout the dest entry must still be a symlink"
+    );
+    let write_res = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&link)
+        .and_then(|mut f| {
+            use std::io::Write as _;
+            f.write_all(b"CORRUPTION")
+        });
+    assert!(
+        write_res.is_err(),
+        "writing through the re-hardened (0444) link MUST still fail"
+    );
+    if let Err(e) = &write_res {
+        assert_eq!(
+            e.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "the re-hardened write-through failure must be a permission error, got {e:?}"
+        );
+    }
+
+    // The object's bytes are still intact + still verify through get_object.
+    assert_eq!(
+        store.get_object(&sum).expect("object verifies after re-checkout"),
+        content,
+        "the object must still verify (get_object) after the idempotent re-checkout + blocked write"
+    );
+    assert_eq!(
+        count_objects(store_dir.path()),
+        1,
+        "the re-checkout must not duplicate the object"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW (i) — Symlink-chain / canonicalization. The created link's canonical
+// target is EXACTLY the sharded `.objects/<h0:3>/<h3:6>/<h6:9>/<h9:>` object —
+// no `..`/double-indirection surprise, no chain-of-links — and the link's
+// immediate readlink target is NOT itself another symlink. Pins
+// `atomic_symlink(object, target)`'s single-hop link to the object_disk_path.
+// ---------------------------------------------------------------------------
+#[cfg(unix)]
+#[test]
+fn linked_target_is_single_hop_canonical_sharded_object_no_chain() {
+    let content = b"single-hop-canonical-target\n".to_vec();
+    let files: Vec<(&str, &[u8], &str)> = vec![("only.bin", content.as_slice(), "644")];
+
+    let parent = coloc_parent();
+    let (store, store_dir, manifest, _id, _src) = staged_store(&parent, "canon", &files);
+    let dest = TempDir::under(&parent, "canon-dest");
+
+    store
+        .fetch_files_with_mode(&manifest, dest.path(), MaterializeMode::Linked)
+        .expect("linked checkout");
+
+    let sum = Blake3Hasher::new().hash_hex(&content);
+    let link = dest.path().join("only.bin");
+
+    // The link's IMMEDIATE readlink target must itself be a regular file (the
+    // object), i.e. a SINGLE hop — not another symlink (no link-to-link chain).
+    let immediate = fs::read_link(&link).expect("dest entry must be a symlink");
+    let immediate_meta =
+        fs::symlink_metadata(&immediate).expect("the link's immediate target must exist");
+    assert!(
+        immediate_meta.file_type().is_file(),
+        "the symlink must point DIRECTLY at the object file (single hop, not a chain to another link)"
+    );
+
+    // The canonical resolution of the link equals the canonical sharded object
+    // path — confirming no `..`/double-indirection produced a different inode.
+    let want_obj = object_disk(store_dir.path(), &sum)
+        .canonicalize()
+        .expect("object must exist");
+    let got = fs::canonicalize(&link).expect("link must resolve");
+    assert_eq!(
+        got, want_obj,
+        "the link's canonical target must be exactly the sharded .objects/<...> object"
+    );
+
+    // The canonical target path actually lives under the store's .objects pool
+    // (defends against a future regression pointing links elsewhere).
+    let objects_root = store_dir
+        .path()
+        .join(".objects")
+        .canonicalize()
+        .expect(".objects must exist");
+    assert!(
+        got.starts_with(&objects_root),
+        "the resolved target {got:?} must live under the store .objects pool {objects_root:?}"
+    );
+
+    // And reading through the (single-hop) link returns the right content.
+    assert_eq!(
+        fs::read(&link).expect("read through link"),
+        content,
+        "reading through the single-hop link must return the source content"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW (j) — `cow_reflink_supported(dest)` public probe. Returns a bool
+// WITHOUT corrupting/leaving probe temps in dest's parent; honors
+// `SNAPDIR_CLONEFILE=0` (=> false). On a clone-capable host the default probe
+// reports true. Black-box against the public crate-root fn.
+// ---------------------------------------------------------------------------
+#[cfg(unix)]
+#[test]
+fn cow_reflink_probe_reports_bool_leaves_no_residue_and_honors_clonefile_off() {
+    let _g = env_lock();
+
+    let parent = coloc_parent();
+    let dir = TempDir::under(&parent, "cow-probe");
+    // The eventual dest need not exist; use a child path under our temp dir so
+    // the probe runs in `dir` (its parent).
+    let dest = dir.path().join("would-be-dest");
+
+    let snapshot_entries = |d: &Path| -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(d)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.sort();
+        v
+    };
+    let before = snapshot_entries(dir.path());
+
+    // (1) Default knob (clone enabled where the FS supports it).
+    {
+        let _e = CloneEnv::set(None);
+        let supported = snapdir_stores::cow_reflink_supported(&dest)
+            .expect("probe must not error on a writable dir");
+        // On a clone-capable host (macOS APFS, or a Linux reflink root) the
+        // probe MUST report true; elsewhere it may legitimately be false. Either
+        // way it returns a bool (no panic, no error).
+        if reflink_capable() {
+            assert!(
+                supported,
+                "cow_reflink_supported must report true on a clone-capable host (default knob)"
+            );
+        }
+    }
+
+    // (2) SNAPDIR_CLONEFILE=0 forces the probe to report false (it routes
+    // through the same copy_file machinery, which honors the knob).
+    {
+        let _e = CloneEnv::set(Some("0"));
+        let forced_off = snapdir_stores::cow_reflink_supported(&dest)
+            .expect("probe must not error with the clone knob forced off");
+        assert!(
+            !forced_off,
+            "SNAPDIR_CLONEFILE=0 must make cow_reflink_supported report false"
+        );
+    }
+
+    // (3) No residue: the probe must clean up BOTH its probe temps; the dir
+    // holds exactly what it held before (the would-be dest itself is never
+    // created as a file — only its parent is touched).
+    let after = snapshot_entries(dir.path());
+    assert_eq!(
+        before, after,
+        "cow_reflink_supported must leave NO probe temp files behind in the dest parent: \
+         before={before:?} after={after:?}"
+    );
+    // Belt-and-suspenders: no stray probe-named entries.
+    for name in &after {
+        assert!(
+            !name.contains("snapdir-cow-probe"),
+            "a probe temp file leaked into the dest parent: {name}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW (k) — `cow_reflink_supported` on a NON-CoW path reports false without
+// residue. We force the copy fallback via SNAPDIR_CLONEFILE=0 (the
+// host-independent way to exercise the "not CoW" branch: copy_file returns
+// CopyMethod::Copied, so the probe must report false) and confirm no temp file
+// is left. (A genuinely non-CoW filesystem is not portably mountable in a unit
+// test; the forced-off knob exercises the identical `!Cloned => false` branch.)
+// ---------------------------------------------------------------------------
+#[cfg(unix)]
+#[test]
+fn cow_reflink_probe_false_on_non_cow_path_no_residue() {
+    let _g = env_lock();
+    let _e = CloneEnv::set(Some("0")); // force the non-CoW (copy) branch
+
+    let dir = TempDir::new("cow-probe-noncow");
+    let dest = dir.path().join("nested/created/on/demand/dest");
+
+    // The probe creates `dest`'s parent if missing; confirm it still reports
+    // false (copy path) and errors on nothing.
+    let supported = snapdir_stores::cow_reflink_supported(&dest)
+        .expect("probe must succeed (creating the parent) and not error");
+    assert!(
+        !supported,
+        "the non-CoW (copy) path must make cow_reflink_supported report false"
+    );
+
+    // The parent was created; it must hold NO probe residue.
+    let probe_parent = dest.parent().unwrap();
+    let leaked: Vec<String> = fs::read_dir(probe_parent)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.contains("snapdir-cow-probe"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        leaked.is_empty(),
+        "the non-CoW probe must leave no probe temps behind, found: {leaked:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW (l) — No-corruption DEPTH after an auto-mode CoW/copy edit. The
+// keystone in case (d) checks the object after editing a >256KiB reflinked
+// file; this case additionally drives the full BLAKE3 verify path (get_object)
+// AND a second auto re-fetch into a fresh dest to prove the object remained a
+// faithful source after the edit (no shared-extent CoW-break leakage). Pins
+// the verify-on-fetch backstop interacting with an auto edit.
+// ---------------------------------------------------------------------------
+#[cfg(unix)]
+#[test]
+fn auto_edit_then_object_still_verifies_and_refetches_clean() {
+    let content: Vec<u8> = (0..(300 * 1024u32)).map(|i| (i % 251) as u8).collect();
+    let files: Vec<(&str, &[u8], &str)> = vec![("v.bin", content.as_slice(), "644")];
+
+    let parent = coloc_parent();
+
+    let _g = env_lock();
+    let _e = CloneEnv::set(None);
+
+    let (store, store_dir, manifest, _id, _src) = staged_store(&parent, "verify-depth", &files);
+    let dest1 = TempDir::under(&parent, "verify-depth-d1");
+
+    store
+        .fetch_files_with_mode(&manifest, dest1.path(), MaterializeMode::Auto)
+        .expect("first auto checkout");
+
+    // Edit the (possibly reflinked) dest file — a CoW break.
+    let dest_file = dest1.path().join("v.bin");
+    let mut edited = content.clone();
+    edited[0] ^= 0xff;
+    edited[content.len() / 2] ^= 0xff;
+    edited[content.len() - 1] ^= 0xff;
+    fs::write(&dest_file, &edited).expect("auto dest must be editable");
+
+    let sum = Blake3Hasher::new().hash_hex(&content);
+
+    // (1) The object still verifies via the public get_object BLAKE3 backstop.
+    assert_eq!(
+        store
+            .get_object(&sum)
+            .expect("object verifies after the edit"),
+        content,
+        "after a CoW-break edit the source object must still BLAKE3-verify (get_object)"
+    );
+
+    // (2) A SECOND auto fetch into a FRESH dest restores the ORIGINAL content,
+    // proving the edit never leaked into the shared object via reflinked extents.
+    let dest2 = TempDir::under(&parent, "verify-depth-d2");
+    store
+        .fetch_files_with_mode(&manifest, dest2.path(), MaterializeMode::Auto)
+        .expect("second auto checkout into a fresh dest");
+    assert_eq!(
+        fs::read(dest2.path().join("v.bin")).expect("read re-fetched file"),
+        content,
+        "a re-fetch after a CoW-break edit must restore the ORIGINAL (uncorrupted) content"
+    );
+    assert_eq!(
+        count_objects(store_dir.path()),
+        1,
+        "the edit + re-fetch must not have duplicated/added objects"
+    );
+}
