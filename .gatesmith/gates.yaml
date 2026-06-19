@@ -5481,7 +5481,9 @@ gates:
     phase: 32
     owner_agent: generic
     depends_on: [mirror-materialize-modes-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-19T20:14:00Z
+    git_sha: ledger-only
     failure_count: 0
     verification_cmd: "test -f .gatesmith/reviews/mirror-linked-fastpath.md"
     pass_criteria:
@@ -5502,27 +5504,40 @@ gates:
         - exit_code: 0
         - file_exists: ".gatesmith/pending-tests/mirror_linked_fastpath.rs"
     human_checkpoint: false
-    description: "ADVERSARY black-box spec for the linked-mode checksum-reuse fast path (per the locked design). Pin: (KEYSTONE) a re-snapshot checksum over a symlink-into-store entry is BYTE-IDENTICAL to the hash that reading the content would produce on a healthy store; PROVE no content read on the default path by replacing the object's CONTENT with garbage while keeping its address -> default fast path yields the address hash (no garbage read) while SNAPDIR_VERIFY_COPIES=1 re-hashes and ERRORS; non-default --checksum-bin/keyed context -> fast path DISABLED, content re-hashed (embedded BLAKE3 is the wrong algo); symlink target ESCAPED the store / not an object path -> normal followed-symlink hash, never trusted; DANGLING target -> typed WalkError (no panic); mixed tree (some symlinks-into-store, some real files, some symlinks-elsewhere) -> per-entry decision; mode+size still come from walk's lstat (the fast path is checksum-only — pin that it does NOT claim to reproduce the original id by itself). Expected to FAIL."
-  - id: mirror-linked-fastpath-impl
+    description: "ADVERSARY black-box spec for the linked-mode checksum-reuse fast path (per the locked design). Pin: (KEYSTONE) a re-snapshot checksum over a symlink-into-store entry is BYTE-IDENTICAL to the hash that reading the content would produce on a healthy store; PROVE no content read on the default path by replacing the object's CONTENT with garbage while keeping its address -> default fast path yields the address hash (no garbage read) while SNAPDIR_VERIFY_COPIES=1 re-hashes and ERRORS; non-default --checksum-bin/keyed context -> fast path DISABLED, content re-hashed (embedded BLAKE3 is the wrong algo); symlink target ESCAPED the store / not an object path -> normal followed-symlink hash, never trusted; DANGLING target -> typed WalkError (no panic); mixed tree (some symlinks-into-store, some real files, some symlinks-elsewhere) -> per-entry decision; mode+size still come from walk's lstat (the fast path is checksum-only — pin that it does NOT claim to reproduce the original id by itself). CLI-LEVEL assert_cmd suite (operator 'wire CLI now'): exercise `snapdir id`/`manifest` over a real `--linked` checkout from a local file:// store; staged at .gatesmith/pending-tests/mirror_linked_fastpath.rs, taken over by mirror-linked-fastpath-impl-cli into crates/snapdir-cli/tests/. Expected to FAIL."
+  - id: mirror-linked-fastpath-impl-core
     phase: 32
     owner_agent: core
     depends_on: [mirror-linked-fastpath-spec-tests]
     status: pending
     failure_count: 0
-    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-core --test mirror_linked_fastpath && cargo test --workspace && test -f crates/snapdir-core/tests/mirror_linked_fastpath.rs && test ! -f .gatesmith/pending-tests/mirror_linked_fastpath.rs && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    bump_reason: "GATE-BUMP 2026-06-19: operator 'wire CLI now' -> split mirror-linked-fastpath-impl into impl-core (this) + impl-cli (new). Mechanical cross-lane split, pass INTENT preserved. This gate lands the CORE recover capability; the CLI test is taken over by impl-cli."
+    verification_cmd: "cargo build --workspace --locked && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
       and:
         - exit_code: 0
-        - file_exists: "crates/snapdir-core/tests/mirror_linked_fastpath.rs"
     human_checkpoint: false
-    description: "CORE impl of the checksum-reuse fast path (additive/opt-in per the locked design): the walk/hash path gains an optional 'object-store roots' hint (default none -> existing call sites unchanged, no frozen-format change); when an entry is a symlink whose canonical target parses to a valid object key under a hinted root AND the active checksum algo is the store's plain BLAKE3 AND strict-verify is off, recover the checksum from the object path instead of reading content; ALL fallbacks (non-default algo/escaped/dangling/strict-verify) re-hash or error per design. KEYSTONE: ids byte-identical with/without the hint on a healthy store; frozen lock must verify. Take over the staged test; green workspace."
+    description: "CORE half of the checksum-reuse fast path (additive/opt-in per the locked design .gatesmith/reviews/mirror-linked-fastpath.md): the walk/hash path gains an optional 'object-store roots' hint (default none -> existing call sites unchanged, NO frozen-format change); when an entry is a symlink whose canonical target parses to a valid object key under a hinted root AND the active checksum algo is the store's plain non-keyed BLAKE3 AND strict-verify (SNAPDIR_VERIFY_COPIES=1) is off, recover the checksum from the object path instead of reading content; ALL fallbacks (non-default/keyed algo, escaped/non-object target -> normal hash; dangling -> typed WalkError no panic; strict-verify -> re-hash). Capability is DORMANT until impl-cli wires the hint, so this gate does NOT take over the staged (CLI-level) test; verified by workspace build+tests staying green + frozen lock. KEYSTONE (proven at impl-cli/review): recovered checksum byte-identical to hashing on a healthy store."
+  - id: mirror-linked-fastpath-impl-cli
+    phase: 32
+    owner_agent: cli
+    depends_on: [mirror-linked-fastpath-impl-core]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-cli --test mirror_linked_fastpath && cargo test --workspace && test -f crates/snapdir-cli/tests/mirror_linked_fastpath.rs && test ! -f .gatesmith/pending-tests/mirror_linked_fastpath.rs && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - file_exists: "crates/snapdir-cli/tests/mirror_linked_fastpath.rs"
+    human_checkpoint: false
+    description: "CLI half (operator 'wire CLI now'): wire the core 'object-store roots' hint into the id/manifest walk so a re-snapshot over a --linked tree (symlinks into a local store) takes the fast path. When the dest entries are symlinks into a known local file:// object store and the checksum mode is plain BLAKE3 and strict-verify is off, recover checksums from the object paths; otherwise re-hash. Take over the staged CLI assert_cmd test (git mv .gatesmith/pending-tests/mirror_linked_fastpath.rs -> crates/snapdir-cli/tests/mirror_linked_fastpath.rs) and green it. KEYSTONE: `snapdir id`/`manifest` over a linked tree is byte-identical to the hashing path on a healthy store; proven no-content-read (corrupt object bytes, keep address) on the default path while SNAPDIR_VERIFY_COPIES=1 re-hashes+errors. Frozen lock must verify."
   - id: mirror-linked-fastpath-review
     phase: 32
     owner_agent: adversary
-    depends_on: [mirror-linked-fastpath-impl]
+    depends_on: [mirror-linked-fastpath-impl-cli]
     status: pending
     failure_count: 0
-    verification_cmd: "cargo test -p snapdir-core --test mirror_linked_fastpath && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    verification_cmd: "cargo test -p snapdir-cli --test mirror_linked_fastpath && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
       and:
         - exit_code: 0
