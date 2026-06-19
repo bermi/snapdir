@@ -5177,7 +5177,9 @@ gates:
     phase: 32
     owner_agent: core
     depends_on: [mirror-prune-set-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-19T16:50:00Z
+    git_sha: 63ad6fe
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-core --test mirror_prune_set && cargo test --workspace && test -f crates/snapdir-core/tests/mirror_prune_set.rs && test ! -f .gatesmith/pending-tests/mirror_prune_set.rs"
     pass_criteria:
