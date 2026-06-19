@@ -5324,9 +5324,11 @@ gates:
     phase: 32
     owner_agent: adversary
     depends_on: [mirror-atomic-swap-impl]
-    status: failed
+    status: passed
+    passed_at: 2026-06-19T20:06:57Z
+    git_sha: 9f3cdab
     failure_count: 1
-    failure_reason: "PM re-run FINAL_EXIT=101 (teammate run passed -> FLAKY). The adversary's NEW R1 case successful_swap_over_existing_dest_leaves_no_old_or_staging_sibling races on the SHARED coloc_parent(): swap_scratch_siblings scans dest.parent() for generic .snapdir-staging*/.snapdir-dest-old* prefixes and caught a CONCURRENT sibling test's transient scratch dir (TOCTOU; message re-scan showed []). TEST bug, NOT a src defect (impl b9bf8bf cleanup correct; weakening-audit + R2/R3/R4 sound). Re-spawn adversary to scope the scan to this dest's own scratch suffix / serialize via env_lock / use a per-test unique parent. Do NOT reopen mirror-atomic-swap-impl."
+    failure_reason: "RESOLVED at 9f3cdab: the fc=1 fail was a flaky NEW test (R1/R3 scanned dest.parent() for global-counter-named scratch under the shared coloc_parent(), racing parallel sibling tests). Fixed by isolating each under a private per-test parent; assertion intent unchanged. Stable 11/11 across 8+3 runs. Was NOT a src defect — impl b9bf8bf unchanged."
     verification_cmd: "cargo test -p snapdir-stores --test mirror_atomic_swap && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
       and:
