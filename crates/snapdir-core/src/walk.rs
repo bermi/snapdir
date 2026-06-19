@@ -122,13 +122,41 @@ pub struct WalkOptions {
     /// hash, and a target whose object is MISSING (dangling) raises a typed
     /// [`WalkError::DanglingLinkedObject`].
     ///
-    /// The CLI passes the store root(s) here ONLY when the active checksum is
-    /// plain BLAKE3 and strict-verify (`SNAPDIR_VERIFY_COPIES=1`) is OFF; for
-    /// the strict / non-default-algo / keyed cases it leaves this empty so the
-    /// content is re-hashed. Each root is a `<store-root>` directory holding a
-    /// `.objects/` pool (the path `FileStore` materializes linked symlinks
-    /// into).
+    /// The CLI passes the store root(s) here regardless of strict-verify; the
+    /// strict override is carried by [`verify_linked_objects`](WalkOptions::verify_linked_objects)
+    /// instead (so a strict run still recognizes a dangling object and still
+    /// re-hashes-and-ERRORS on a corrupted one). For the non-default-algo /
+    /// keyed cases the CLI leaves this empty so the content is re-hashed. Each
+    /// root is a `<store-root>` directory holding a `.objects/` pool (the path
+    /// `FileStore` materializes linked symlinks into).
     pub object_store_roots: Vec<PathBuf>,
+
+    /// **Strict-verify override** for the linked-mode fast path. Defaults to
+    /// **`false`** — the fast path TRUSTS the object's address (recovers the
+    /// checksum from the symlink target's path WITHOUT reading the bytes), which
+    /// is the byte-identical default behavior.
+    ///
+    /// When `true` AND an entry would otherwise take the fast path (the same
+    /// eligibility the recover path uses: a symlink whose canonical target is a
+    /// valid object under a hinted [`object_store_roots`](WalkOptions::object_store_roots)
+    /// root, with a hasher that
+    /// [`recovers_object_keys`](crate::hash_file::HashFile::recovers_object_keys)),
+    /// the walk does NOT trust the address: it **reads + hashes the content**
+    /// (`H'`), recovers the address (`H`) from the object path, and compares. On
+    /// a match it records `H` (correct). On a mismatch it returns a typed
+    /// [`WalkError::LinkedObjectIntegrity`] naming the offending symlink and its
+    /// object — the store's content no longer matches the address it is filed
+    /// under. This is the `SNAPDIR_VERIFY_COPIES=1` re-hash-and-error keystone.
+    ///
+    /// This flag ONLY affects entries that WOULD have taken the fast path.
+    /// Ineligible entries (wrong / keyed algo, escaped the store, non-linked)
+    /// are unaffected and hash normally — `true` here never turns those into an
+    /// error. A dangling target still raises
+    /// [`WalkError::DanglingLinkedObject`] regardless of this flag.
+    ///
+    /// The CLI sets this to `true` when `SNAPDIR_VERIFY_COPIES=1`; core stays
+    /// pure / env-free — this bool is the seam.
+    pub verify_linked_objects: bool,
 }
 
 /// Errors raised while walking the filesystem.
@@ -203,6 +231,30 @@ pub enum WalkError {
         path: PathBuf,
         /// The resolved object path the symlink pointed at.
         target: PathBuf,
+    },
+
+    /// Strict-verify (`SNAPDIR_VERIFY_COPIES=1`,
+    /// [`WalkOptions::verify_linked_objects`]) re-hashed a linked object's
+    /// CONTENT and found it no longer matches the address its object path is
+    /// filed under: the store is corrupt (the content was mutated while keeping
+    /// — or having been moved under — the wrong address). The fast path would
+    /// have trusted the address; strict-verify catches the integrity violation
+    /// and refuses to record a checksum that does not match the bytes. Only ever
+    /// raised when both the object-store-roots hint and `verify_linked_objects`
+    /// are active, and only for an entry that WOULD have taken the fast path.
+    #[error(
+        "linked object integrity check failed (content does not match its address): \
+         {path:?} -> {target:?}; addressed as {expected}, content hashes to {actual}"
+    )]
+    LinkedObjectIntegrity {
+        /// The dest symlink whose backing object's content is corrupt.
+        path: PathBuf,
+        /// The resolved object path the symlink pointed at.
+        target: PathBuf,
+        /// The hash recovered from the object's address (what it claims to be).
+        expected: String,
+        /// The hash of the object's actual content (what it really is).
+        actual: String,
     },
 
     /// A directory invariant expected during the bottom-up finalize pass was
@@ -453,6 +505,7 @@ fn walk_inner<H: Hasher + HashFile + Sync>(
         root_permissions,
         options,
         recover_keys,
+        hasher,
         &mut dirs,
         &mut pending,
         &mut guard_sink,
@@ -542,12 +595,14 @@ fn walk_inner<H: Hasher + HashFile + Sync>(
 /// directory), recording its direct files and child directories, then recurses
 /// into each child directory.
 #[allow(clippy::too_many_arguments)] // internal recursion carrying walk state + the discovery meter
-fn discover_dir(
+#[allow(clippy::too_many_lines)] // one cohesive readdir loop: per-entry exclude/follow/type + fast-path
+fn discover_dir<H: Hasher + HashFile + Sync>(
     dir: &Path,
     abs_path: &str,
     permissions: String,
     options: &WalkOptions,
     recover_keys: bool,
+    hasher: &H,
     dirs: &mut BTreeMap<String, DirRecord>,
     pending: &mut Vec<PendingHash>,
     guards: &mut Option<&mut HashMap<PathBuf, CopyGuard>>,
@@ -637,6 +692,7 @@ fn discover_dir(
                 own_permissions,
                 options,
                 recover_keys,
+                hasher,
                 dirs,
                 pending,
                 guards,
@@ -694,14 +750,24 @@ fn discover_dir(
                 if let Some(key) = std::fs::read_link(&entry_path).ok().and_then(|t| {
                     crate::recover::recover_object_key(dir, &t, &options.object_store_roots)
                 }) {
-                    // Record the recovered checksum directly. No `PendingHash`
-                    // is queued — the whole point is to avoid the content read.
-                    // SIZE is still the symlink's own `lstat` length, matching
-                    // the normal followed-symlink entry (checksum-only).
+                    // STRICT-VERIFY override (`SNAPDIR_VERIFY_COPIES=1`): when
+                    // `verify_linked_objects` is set, do NOT trust the address —
+                    // re-hash the content and ERROR on a mismatch (corrupt store).
+                    // On the default path (`false`) the recovered `key` is trusted
+                    // and recorded WITHOUT reading the bytes. Either way the
+                    // checksum-to-record is resolved here.
+                    let checksum = if options.verify_linked_objects {
+                        verify_linked_checksum(hasher, dir, &entry_path, key)?
+                    } else {
+                        key
+                    };
+                    // Record the (recovered or verified) checksum directly. No
+                    // `PendingHash` is queued; SIZE is still the symlink's own
+                    // `lstat` length (checksum-only fast path).
                     record.files.push(FileRecord {
                         abs_path: entry_abs,
                         permissions: own_permissions,
-                        checksum: key,
+                        checksum,
                         size: link_meta.len(),
                     });
                     if let Some(meter) = meter {
@@ -759,6 +825,55 @@ fn dangling_linked_object(
         path: entry_path.to_path_buf(),
         target,
     })
+}
+
+/// Strict-verify a fast-path-eligible linked object: re-hash its CONTENT and
+/// confirm it matches the address (`expected`) recovered from the object path.
+///
+/// Only called for an entry that WOULD take the fast path (eligible symlink,
+/// recoverable object key) when [`WalkOptions::verify_linked_objects`] is set —
+/// the `SNAPDIR_VERIFY_COPIES=1` keystone. It reads + hashes the bytes the
+/// default fast path deliberately skips, then:
+/// - on a **match** returns the verified checksum (identical to `expected`), so
+///   the caller records a checksum proven against the content;
+/// - on a **mismatch** returns [`WalkError::LinkedObjectIntegrity`] naming the
+///   symlink, its target object, the claimed address and the actual content
+///   hash — the store filed bytes under the wrong address (corruption), and the
+///   walk refuses to trust it.
+///
+/// A genuine read/IO fault on the content surfaces as [`WalkError::Io`].
+fn verify_linked_checksum<H: HashFile>(
+    hasher: &H,
+    link_parent: &Path,
+    entry_path: &Path,
+    expected: String,
+) -> Result<String, WalkError> {
+    let (actual, _len) = hasher
+        .hash_file_hex(entry_path)
+        .map_err(|e| WalkError::io(entry_path, e))?;
+    if actual == expected {
+        return Ok(actual);
+    }
+    let target = std::fs::read_link(entry_path).map_or_else(
+        |_| entry_path.to_path_buf(),
+        |t| resolve_link_target(link_parent, &t),
+    );
+    Err(WalkError::LinkedObjectIntegrity {
+        path: entry_path.to_path_buf(),
+        target,
+        expected,
+        actual,
+    })
+}
+
+/// Resolves a (possibly relative) symlink target against the link's parent
+/// directory, for the human-facing `target` field of an integrity error.
+fn resolve_link_target(link_parent: &Path, target: &Path) -> PathBuf {
+    if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        link_parent.join(target)
+    }
 }
 
 /// Hashes every [`PendingHash`] in parallel inside a bounded, scoped
