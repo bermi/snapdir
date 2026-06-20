@@ -714,16 +714,16 @@ fn dangling_symlink_is_typed_error_not_panic() {
 /// over-claim that a linked re-snapshot round-trips the source id.
 #[test]
 fn linked_resnapshot_id_differs_from_source_snapshot_id() {
-    let src = build_src("conly-src");
-    let store = temp_dir("conly-store");
-    let cache = temp_dir("conly-cache");
-    let home = temp_dir("conly-home");
+    let src = build_src("creuse-src");
+    let store = temp_dir("creuse-store");
+    let cache = temp_dir("creuse-cache");
+    let home = temp_dir("creuse-home");
 
     // The original source snapshot id (real files, real modes/sizes).
     let src_str = src.to_string_lossy().into_owned();
     let source_id = ok_stdout(snapdir(&cache, &home), &["id", &src_str]);
 
-    let (_url, pushed_id, dest) = build_linked_tree("conly", &src, &cache, &home, &store);
+    let (_url, pushed_id, dest) = build_linked_tree("creuse", &src, &cache, &home, &store);
     assert_eq!(
         pushed_id, source_id,
         "precondition: the pushed snapshot id equals the real-file source id"
