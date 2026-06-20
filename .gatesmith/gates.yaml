@@ -5369,7 +5369,9 @@ gates:
     phase: 32
     owner_agent: adversary
     depends_on: [mirror-sync-impl]
-    status: pending
+    status: passed
+    passed_at: 2026-06-20T00:17:29Z
+    git_sha: 9aecba0
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --test mirror_sync && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
@@ -5377,6 +5379,18 @@ gates:
         - exit_code: 0
     human_checkpoint: false
     description: "ADVERSARY review of sync --delete; re-assert never-delete-object + copy-before-delete ordering + unsupported-dest refusal; add impl-revealed cases. No weakening; workspace + frozen lock green."
+  - id: mirror-sync-cli
+    phase: 32
+    owner_agent: cli
+    depends_on: [mirror-sync-review]
+    status: pending
+    failure_count: 0
+    verification_cmd: "cargo build --workspace --locked && cargo test --workspace && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo fmt --all --check && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "CLI wiring of `snapdir sync --delete` (follow-up to mirror-sync-impl, which landed the reviewed stores primitive sync_snapshot_mirror). Add a `--delete` flag to the Sync clap struct (+ thread the existing `--dryrun`); when set, run_sync routes through sync_snapshot_mirror instead of sync_snapshot and reports MirrorReport (manifests pruned). The stores layer is the safety backstop (refuses !supports_mirror() dests, never deletes objects), so the CLI is thin plumbing. ALSO CLEAR THE KNOWN CLIPPY DEBT in-lane: fix clippy::needless_splitn at crates/snapdir-cli/tests/mirror_linked_fastpath.rs:238 (a trivial lint cleanup in the cli-tests lane; PM-authorized so the workspace passes clippy --all-features). Verification RUNS clippy --all-features + fmt so the phase cannot reach mirror-verify with the debt unresolved. No frozen-format change; existing sync behavior unchanged when --delete absent."
   - id: mirror-durability-review
     phase: 32
     owner_agent: adversary
@@ -5445,7 +5459,7 @@ gates:
   - id: mirror-docs
     phase: 32
     owner_agent: docs
-    depends_on: [mirror-bench, mirror-feasibility-matrix, mirror-security-review, mirror-linked-fastpath-review]
+    depends_on: [mirror-bench, mirror-feasibility-matrix, mirror-security-review, mirror-linked-fastpath-review, mirror-sync-cli]
     status: pending
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test cli_surface && grep -q -- '--delete' README.md && grep -q -- '--linked' README.md"
