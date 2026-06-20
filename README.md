@@ -185,6 +185,79 @@ snapdir diff \
 - `--exit-code` adopts git's `diff --exit-code` semantics: exit `1` when any difference is found (after writing the report), `0` otherwise.
 - `--on-conflict <error|last-wins>` controls an intra-side collision (the same path with differing content unioned across two refs on one side): `error` (the default) fails hard naming the path; `last-wins` lets the last ref win.
 
+## Exact mirror — prune the destination
+
+By default `checkout` and `pull` only *add* to the destination: files already there that aren't in the snapshot are left alone. Pass **`--delete`** to make the destination an **exact mirror** of the snapshot — after materializing the manifest, anything in the destination that is *not* in the manifest is pruned (deepest-first, idempotent).
+
+```sh
+# Mirror a snapshot into ./site, removing anything not in the snapshot
+snapdir checkout --id "$id" --delete ./site
+
+# Same for a pull straight from a store
+snapdir pull --store s3://my-bucket/snaps --id "$id" --delete ./site
+```
+
+`--dryrun` with `--delete` lists exactly what *would* be pruned and removes nothing:
+
+```sh
+snapdir checkout --id "$id" --delete --dryrun ./site   # lists prune candidates, deletes nothing
+```
+
+**Protect extraneous paths with `--exclude`.** A destination path that would otherwise be pruned is kept if it matches a `--exclude` pattern (extended-regex, the same `-E` flavor as the walk-side `--exclude`; repeatable / comma-delimited, OR-combined):
+
+```sh
+# Mirror, but never prune a local .env or anything under cache/
+snapdir checkout --id "$id" --delete --exclude '\.env$' --exclude '^\./cache/' ./site
+```
+
+### Safety (this deletes user data — by design, narrowly)
+
+`--delete` is bounded and unforgiving on purpose:
+
+- It **only ever deletes inside the destination root** — the prune set is a path-set difference computed against the manifest, always destination-relative.
+- An extraneous **symlink is unlinked, never followed** — a link pointing outside the destination is removed as a link; its target is never touched.
+- It **hard-refuses a dangerous destination** — `/`, `$HOME`, the cache directory, or a store path — and **`--force` does NOT bypass** this. Nothing is deleted on refusal.
+
+### Materialization modes
+
+By default the destination entries are **independent, editable files** — written via a reflink (copy-on-write clone) on filesystems that support it (APFS, Btrfs, XFS), falling back to a plain copy elsewhere.
+
+**`--linked`** instead makes each destination entry a **symlink into the local store's content-addressed objects** — zero-copy on any filesystem:
+
+```sh
+snapdir checkout --id "$id" --linked ./readonly-view
+```
+
+`--linked` trades editability for speed:
+
+- The linked entries are **read-only**: the store objects are mode `0444`, so writing *through* a link fails (`EACCES`). This protects the shared content-addressed store from being corrupted through a checkout.
+- It is valid **only against a local store** — `--linked` against a remote/object store (`s3://`, `gs://`, `b2://`, `ssh://`) is a hard error.
+
+On a copy-on-write filesystem (or with `--linked`) a mirror is applied via a zero-copy staged swap. In **every** mode, a long-running process that already holds a destination file open keeps reading the old content through its open descriptor (POSIX inode retention) — a mirror never yanks bytes out from under a live reader.
+
+### Re-snapshotting a linked tree (checksum-only fast path)
+
+Because a `--linked` entry's symlink target *is* an object whose path encodes its BLAKE3 hash, re-running `snapdir id` / `snapdir manifest` over a linked tree recovers each file's checksum **directly from the object path — without re-reading or re-hashing the bytes**. This is fast, but **checksum-only**: it does **not**, by itself, reproduce the original snapshot ID, because a followed symlink reports the *link's* size and permissions, not the original file's (those live only in the source manifest).
+
+The fast path is conservative — it falls back to a normal content hash whenever it cannot safely trust the address:
+
+- It is **disabled under a non-default checksum** (`--checksum-bin md5sum`/`sha256sum`) or a keyed context (`SNAPDIR_MANIFEST_CONTEXT`), since the embedded hash would then be the wrong algorithm.
+- **`SNAPDIR_VERIFY_COPIES=1`** forces a full content re-hash and errors on any mismatch.
+
+## Sync as an exact mirror
+
+`snapdir sync --delete` mirrors a **manifest set**: after copying the snapshot into the destination store, it prunes destination **manifests** that are not present in the source store's manifest set.
+
+```sh
+# Make the dest store's manifest set an exact mirror of the source's
+snapdir sync --id "$id" --from "file://$PWD/src" --to "file://$PWD/dst" --delete
+```
+
+Two guarantees worth stating plainly:
+
+- **Objects are NEVER deleted.** Garbage collection is out of scope; an object that no surviving manifest references is left in place (orphans are reclaimable later). Only manifests are pruned.
+- It is supported **only on a local `file://` destination**. A `sync --delete` to an object/remote store (`s3://`, `gs://`, `b2://`, `ssh://`, `sftp://`) is refused with a clear error. `--dryrun` is honored.
+
 ## Rate limiting & retries
 
 For the network backends (`s3://`, `gs://`, `b2://`), snapdir paces its requests and retries transient failures so transfers stay polite to the provider and survive throttling. The local `file://` store does no network retrying. No extra dependencies are pulled in for any of this — it is all in-process.
