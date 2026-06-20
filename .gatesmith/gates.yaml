@@ -5383,7 +5383,9 @@ gates:
     phase: 32
     owner_agent: cli
     depends_on: [mirror-sync-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-20T21:57:13Z
+    git_sha: 2cea944
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test --workspace && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo fmt --all --check && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
