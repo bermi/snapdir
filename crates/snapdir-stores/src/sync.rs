@@ -254,6 +254,139 @@ pub fn sync_snapshot(
     })
 }
 
+/// Outcome of a [`sync_snapshot_mirror`] call: the underlying additive-sync
+/// counters PLUS the manifest-set prune accounting.
+///
+/// `sync` carries the [`SyncReport`] from the copy-in half (objects copied /
+/// skipped / bytes). `manifests_pruned` is the number of destination manifests
+/// that were absent from the SOURCE store's manifest set and were therefore
+/// deleted (or, in a dry run, that WOULD be deleted); `pruned_ids` is that exact
+/// id set. **No object is ever counted here because no object is ever deleted.**
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirrorReport {
+    /// The additive copy-in half's counters (objects copied/skipped, bytes,
+    /// dry-run flag). Folds [`SyncReport`] so callers keep the full picture.
+    pub sync: SyncReport,
+    /// Number of destination manifests pruned (absent from the source set). In a
+    /// dry run, the number that WOULD be pruned.
+    pub manifests_pruned: usize,
+    /// The exact id set pruned (or, in a dry run, that would be pruned).
+    pub pruned_ids: Vec<String>,
+}
+
+/// Objects copied source → dest by the copy-in half (mirrors
+/// [`SyncReport::objects_copied`]).
+impl MirrorReport {
+    /// Objects actually copied by the copy-in half (or, in a dry run, that would
+    /// be copied). Convenience pass-through to the folded [`SyncReport`].
+    #[must_use]
+    pub fn objects_copied(&self) -> usize {
+        self.sync.objects_copied
+    }
+
+    /// Objects skipped because the destination already held them. Convenience
+    /// pass-through to the folded [`SyncReport`].
+    #[must_use]
+    pub fn objects_skipped(&self) -> usize {
+        self.sync.objects_skipped
+    }
+}
+
+/// Copies one snapshot in (additive, manifest-last — exactly
+/// [`sync_snapshot`]), THEN mirrors the destination's manifest set to the
+/// SOURCE store's: every destination manifest **absent from the source set** is
+/// pruned via [`StreamStore::delete_manifest`]. This is the stores half of
+/// `snapdir sync --delete`.
+///
+/// # Manifest-set mirror, never object GC
+///
+/// After the copy-in, the prune set is
+/// `to.list_manifest_ids()` MINUS `from.list_manifest_ids()` — destination
+/// manifests that do not exist in the source store. Each is deleted with
+/// [`delete_manifest`](StreamStore::delete_manifest). **No object is ever
+/// deleted** (not a shared object a retained manifest still references, not even
+/// an orphan referenced only by a pruned manifest): reclaiming orphan objects is
+/// a future `snapdir gc`, never this path. The just-synced `id` is in the source
+/// set, so it is naturally retained — and explicitly guarded against deletion.
+///
+/// # Ordering / safety
+///
+/// The copy-in happens FIRST and in full (objects-then-manifest, manifest-last),
+/// so a healthy mirror with nothing to prune is byte-identical to a plain
+/// [`sync_snapshot`]. The prune runs only after the copy-in succeeds.
+///
+/// # Unsupported destination
+///
+/// If `to` does not [`supports_mirror`](StreamStore::supports_mirror) (every
+/// object/remote backend: S3/GCS/B2/SSH/external), this returns a typed
+/// [`StoreError::Backend`] up front and **changes NOTHING** in the destination —
+/// no copy-in, no delete.
+///
+/// # Dry run
+///
+/// `dry_run` computes and reports the prune set (and the would-copy counters)
+/// but writes/deletes nothing.
+///
+/// # Errors
+///
+/// - [`StoreError::Backend`] if `to` does not support mirroring (refused up
+///   front, destination untouched).
+/// - The first [`StoreError`] from the copy-in ([`sync_snapshot`]) or from
+///   listing/deleting a manifest.
+pub fn sync_snapshot_mirror(
+    from: &(dyn StreamStore + Sync),
+    to: &(dyn StreamStore + Sync),
+    id: &str,
+    config: &TransferConfig,
+    dry_run: bool,
+    meter: Option<&Meter>,
+) -> Result<MirrorReport, StoreError> {
+    // Refuse early on an unsupported (object/remote) destination: the capability
+    // gate must fire BEFORE any copy-in or delete, leaving the dest untouched.
+    if !to.supports_mirror() {
+        return Err(StoreError::Backend {
+            message: "mirror unsupported: the destination store cannot delete a manifest \
+                      (object/remote dest); `--delete` requires a local file:// destination"
+                .to_owned(),
+            source: None,
+        });
+    }
+
+    // Copy-in FIRST, in full (objects-then-manifest, manifest-last). A dry run
+    // copies nothing; a wet run lands the snapshot before any prune.
+    let sync = sync_snapshot(from, to, id, config, dry_run, meter)?;
+
+    // Compute the prune set: dest manifests ABSENT from the SOURCE store's set.
+    // The just-synced `id` is in the source set, so it is never in this set —
+    // but guard explicitly so no edge can classify it for deletion.
+    let source_ids: std::collections::HashSet<String> =
+        from.list_manifest_ids()?.into_iter().collect();
+    let dest_ids = to.list_manifest_ids()?;
+
+    let mut pruned_ids: Vec<String> = dest_ids
+        .into_iter()
+        .filter(|dest_id| dest_id != id && !source_ids.contains(dest_id))
+        .collect();
+    pruned_ids.sort();
+    pruned_ids.dedup();
+
+    // Dry run: report what WOULD be pruned, delete nothing.
+    if !dry_run {
+        for prune in &pruned_ids {
+            // Defense-in-depth: never delete the just-synced id (already excluded
+            // above; assert the invariant holds before any delete).
+            debug_assert_ne!(prune, id, "the just-synced id must never be pruned");
+            to.delete_manifest(prune)?;
+        }
+    }
+
+    Ok(MirrorReport {
+        sync,
+        manifests_pruned: pruned_ids.len(),
+        pruned_ids,
+    })
+}
+
 /// Adaptive store-to-store copy pass: pool sized to the policy `ceiling`, each
 /// object gated to the controller's live limit (effective concurrency ≤
 /// ceiling), every copy timed + classified + recorded via `copy_one`'s report

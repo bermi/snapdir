@@ -82,7 +82,13 @@
 
 // Mirror the style allowances used by the sibling adversarial suites so every
 // assertion stays byte-for-byte as authored under the crate's `-D warnings`.
-#![allow(clippy::manual_contains, clippy::explicit_auto_deref)]
+#![allow(
+    clippy::manual_contains,
+    clippy::explicit_auto_deref,
+    clippy::cloned_ref_to_slice_refs,
+    clippy::doc_markdown,
+    clippy::items_after_statements
+)]
 
 use std::collections::HashSet;
 use std::fs;
@@ -302,13 +308,10 @@ fn mirror_keeps_a_dest_manifest_that_is_also_in_the_source_set() {
     let (mx, id_x) = push_tree(&source, "keep-x", &[("x", b"kept snapshot\n")]);
     // Put the SAME X into the dest already (so it is a dest manifest that is also
     // in the source set), plus an extra B.
-    dest.push(&mx, {
-        let s = TempDir::new("keep-x-redo");
-        let (_m2, id2) = build_tree(s.path(), &[("x", b"kept snapshot\n")]);
-        assert_eq!(id2, id_x, "rebuilt X must hash to the same id");
-        s.path()
-    })
-    .expect("seed dest with X");
+    let s = TempDir::new("keep-x-redo");
+    let (_m2, id2) = build_tree(s.path(), &[("x", b"kept snapshot\n")]);
+    assert_eq!(id2, id_x, "rebuilt X must hash to the same id");
+    dest.push(&mx, s.path()).expect("seed dest with X");
     let (_mb, id_b) = push_tree(&dest, "keep-b", &[("b", b"prune me\n")]);
     assert_manifest_set(&dest, &[id_x.clone(), id_b.clone()]);
 
@@ -374,7 +377,8 @@ fn mirror_never_deletes_a_shared_object_a_retained_manifest_still_references() {
     );
     // The SHARED object MUST still exist AND still verify (no object deletion).
     assert!(
-        dest.has_object(&shared_sum).expect("has_object after mirror"),
+        dest.has_object(&shared_sum)
+            .expect("has_object after mirror"),
         "the shared object referenced by retained X must NOT be deleted"
     );
     assert!(
@@ -407,7 +411,8 @@ fn mirror_does_not_delete_an_orphan_object_referenced_only_by_a_pruned_manifest(
     let orphan_sum = Blake3Hasher::new().hash_hex(orphan_bytes);
     let (_mp, id_p) = push_tree(&dest, "orphan-p", &[("orphan", orphan_bytes)]);
     assert!(
-        dest.has_object(&orphan_sum).expect("has orphan precondition"),
+        dest.has_object(&orphan_sum)
+            .expect("has orphan precondition"),
         "precondition: dest holds the orphan object via P"
     );
 
@@ -729,8 +734,8 @@ fn mirror_dry_run_reports_pruned_set_but_deletes_nothing() {
     let (_mb, id_b) = push_tree(&dest, "dry-b", &[("b", b"B extra\n")]);
     let before = sorted_set(dest.list_manifest_ids().unwrap());
 
-    let report = sync_snapshot_mirror(&source, &dest, &id_x, &cfg(), true, None)
-        .expect("dry-run mirror ok");
+    let report =
+        sync_snapshot_mirror(&source, &dest, &id_x, &cfg(), true, None).expect("dry-run mirror ok");
 
     // NOTHING deleted: A and B still present.
     assert!(

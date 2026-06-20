@@ -176,6 +176,42 @@ pub trait StreamStore: Store {
             source: None,
         })
     }
+
+    /// Whether this store can serve as the destination of a manifest-set
+    /// **mirror** (`sync --delete`): i.e. it can delete a manifest under its
+    /// `id` atomically/efficiently via [`delete_manifest`](Self::delete_manifest).
+    ///
+    /// The default is `false`: only the local [`FileStore`](crate::FileStore)
+    /// overrides this to `true`. Object/remote backends (S3/GCS/B2/SSH/external)
+    /// inherit `false`, so a mirror targeting them is refused up front by
+    /// [`sync_snapshot_mirror`](crate::sync_snapshot_mirror) before anything in
+    /// the destination is touched.
+    fn supports_mirror(&self) -> bool {
+        false
+    }
+
+    /// Deletes the manifest filed under `id`. **No object is ever touched** —
+    /// this removes ONLY the manifest entry. Garbage-collecting the objects a
+    /// pruned manifest referenced is out of scope (a future `snapdir gc`).
+    ///
+    /// The default implementation returns a [`StoreError::Backend`]
+    /// ("delete unsupported"): a store that cannot mirror-prune must not silently
+    /// succeed. The local [`FileStore`](crate::FileStore) overrides this to
+    /// remove the sharded `.manifests/<id>` file.
+    ///
+    /// # Errors
+    ///
+    /// - [`StoreError::Backend`] from the default impl (delete unsupported).
+    /// - [`StoreError::Io`] / [`StoreError::Backend`] on transport failure for
+    ///   a store that implements it.
+    fn delete_manifest(&self, id: &str) -> Result<(), StoreError> {
+        let _ = id;
+        Err(StoreError::Backend {
+            message: "delete unsupported: this store cannot delete a manifest (mirror unsupported)"
+                .to_owned(),
+            source: None,
+        })
+    }
 }
 
 /// Reconstructs a candidate 64-hex snapshot id from the shard segments of a

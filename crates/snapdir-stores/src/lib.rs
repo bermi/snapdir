@@ -97,7 +97,7 @@ pub use s3_store::{S3Location, S3Store};
 pub use shim::ExternalStore;
 pub use split::SplitStore;
 pub use stream::StreamStore;
-pub use sync::{sync_snapshot, SyncReport};
+pub use sync::{sync_snapshot, sync_snapshot_mirror, MirrorReport, SyncReport};
 pub use transfer::{
     classify_error, run_adaptive, run_concurrent, AdaptivePolicy as TransferAdaptivePolicy,
     BlockingRateLimiter, RateLimiter, TransferConfig,

@@ -829,6 +829,25 @@ impl StreamStore for FileStore {
         )
     }
 
+    fn supports_mirror(&self) -> bool {
+        // A local `file://` store can delete a manifest file atomically — it is
+        // the only backend that supports the manifest-set mirror (`sync --delete`).
+        true
+    }
+
+    fn delete_manifest(&self, id: &str) -> Result<(), StoreError> {
+        // Remove ONLY the sharded `.manifests/<id>` manifest file; NO object is
+        // ever touched (object GC is out of scope). Removing an already-absent
+        // manifest is idempotent (`Ok(())`), matching the listing/dedup
+        // discipline elsewhere.
+        let path = self.manifest_disk_path(id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(StoreError::Io(err)),
+        }
+    }
+
     fn list_manifest_ids(&self) -> Result<Vec<String>, StoreError> {
         let manifests_root = self.root.join(MANIFESTS_DIR);
 
