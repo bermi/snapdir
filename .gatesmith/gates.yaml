@@ -5473,7 +5473,9 @@ gates:
     phase: 32
     owner_agent: docs
     depends_on: [mirror-bench, mirror-feasibility-matrix, mirror-security-review, mirror-linked-fastpath-review, mirror-sync-cli]
-    status: pending
+    status: passed
+    passed_at: 2026-06-20T22:04:38Z
+    git_sha: 53c2ed8
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test cli_surface && grep -q -- '--delete' README.md && grep -q -- '--linked' README.md"
     pass_criteria:
