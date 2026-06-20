@@ -1,0 +1,12 @@
+{
+  "bench": "iai_hot::hot::bench_prune_set",
+  "ir": null,
+  "estimated_cycles": null,
+  "tool": "iai-callgrind 0.16.1",
+  "image": "rust:1.91-slim-bookworm",
+  "platform": "linux/amd64",
+  "recorded_by": "run-iai-docker.sh",
+  "soft_limit_pct": 5,
+  "metrics_pending": true,
+  "note": "Committed human-readable reference for the Phase-32 mirror::prune_set instruction-count gate (5% Ir/EstimatedCycles soft limit; see ../benches/iai_hot.rs and ./README.md). The benched input is a FIXED tiny `mixed` GATE-tier manifest plus a constant planted-extraneous DestEntry listing (PRUNE_EXTRANEOUS=16). `ir`/`estimated_cycles` are null because callgrind counts could NOT be captured on the Apple-Silicon macOS dev host: valgrind/callgrind is Linux-only, and under Docker the amd64-emulated container crashes QEMU (rcu_read_unlock assertion / SIGABRT and `Instructions: 0|N/A`), while an arm64 container is refused by iai-callgrind's `setarch` ASLR-disable (the same failure the script documents). The first GREEN run on a native-amd64 Linux CI (with valgrind) ESTABLISHES the baseline: read the `iai_hot::hot::bench_prune_set` group's reported Instructions (Ir) and Estimated Cycles from that run and replace the two nulls here (set metrics_pending=false), in the same commit that records the machine baseline under target/iai/."
+}

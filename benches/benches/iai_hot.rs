@@ -20,19 +20,24 @@
 //! single source of truth ([`snapdir_benches`]): [`deterministic_bytes`] (a fixed
 //! byte ramp, no RNG) and a single small GATE-tier [`Scenario`].
 //!
-//! Three groups, mirroring the perf-critical paths:
+//! Groups, mirroring the perf-critical paths:
 //!
 //! 1. `blake3`      — `Blake3Hasher::hash_hex` over a fixed small buffer.
 //! 2. `walk`        — `walk()` over a small fixed scenario materialized ONCE in
 //!    `setup` (the materialization is not counted; only the walk is).
 //! 3. `snapshot_id` — `snapshot_id()` over a small pre-built manifest.
+//! 4. `read_pack`   — SNAPPACK receive (`read_pack` into a fresh `FileSink`).
+//! 5. `prune_set`   — `mirror::prune_set` over a small pre-built manifest + a
+//!    fixed `DestEntry` listing carrying a constant set of planted extraneous
+//!    paths (Phase 32 `checkout/sync --delete` set-difference).
 
 use iai_callgrind::{
     library_benchmark, library_benchmark_group, main, Callgrind, EventKind, LibraryBenchmarkConfig,
 };
 use snapdir_benches::{deterministic_bytes, gate_scenarios, Scenario};
 use snapdir_core::merkle::snapshot_id;
-use snapdir_core::{walk, Blake3Hasher, Hasher, Manifest, WalkOptions};
+use snapdir_core::mirror::{prune_set, DestEntry};
+use snapdir_core::{walk, Blake3Hasher, Hasher, Manifest, PathType, WalkOptions};
 use snapdir_stores::{
     read_pack, write_pack, Durability, FileSink, FileStore, PackReadReport, StreamStore,
 };
@@ -200,6 +205,70 @@ fn bench_read_pack(input: (TempDir, Vec<u8>)) -> PackReadReport {
 }
 
 // ---------------------------------------------------------------------------
+// 5. mirror prune-set hot path (Phase 32: checkout/sync `--delete`).
+// ---------------------------------------------------------------------------
+
+/// Fixed count of planted extraneous dest paths (NOT in the manifest). Small +
+/// constant so callgrind's instruction counts for `prune_set` stay byte-stable.
+const PRUNE_EXTRANEOUS: usize = 16;
+
+/// Builds the fixed `prune_set` input ONCE (NOT counted — runs in `setup`): the
+/// small `mixed` GATE-tier manifest plus a deterministic `DestEntry` listing.
+///
+/// The dest listing mirrors what a real `--delete` checkout walk produces: every
+/// KEPT path (each manifest entry, so the set-difference must skip them) PLUS a
+/// constant block of planted EXTRANEOUS paths (files + a couple of dirs) absent
+/// from the manifest. Fully deterministic — no RNG/clock — so the benched
+/// set-difference + deepest-first sort counts the same work every run. Only
+/// `prune_set` itself is counted; this construction is not.
+fn setup_prune_set(name: &str) -> (Manifest, Vec<DestEntry>) {
+    let tmp = TempDir::new().expect("create temp dir");
+    scenario_by_name(name)
+        .materialize(tmp.path())
+        .expect("materialize scenario");
+    let manifest =
+        walk(tmp.path(), &WalkOptions::default(), &Blake3Hasher::new()).expect("walk for manifest");
+
+    // Start from the KEPT set: every manifest path is present in the dest and
+    // must be retained by the set-difference.
+    let mut dest_entries: Vec<DestEntry> = manifest
+        .entries()
+        .iter()
+        .map(|e| DestEntry::new(e.path.clone(), e.path_type))
+        .collect();
+
+    // Plant a CONSTANT block of extraneous paths absent from the manifest: a
+    // couple of extraneous directories, then files distributed across them and
+    // the root. Deterministic names (no RNG) keep the prune set fixed.
+    dest_entries.push(DestEntry::new("./extra_a/", PathType::Directory));
+    dest_entries.push(DestEntry::new("./extra_b/", PathType::Directory));
+    for i in 0..PRUNE_EXTRANEOUS {
+        let path = match i % 3 {
+            0 => format!("./stale{i:03}.bin"),
+            1 => format!("./extra_a/stale{i:03}.bin"),
+            _ => format!("./extra_b/stale{i:03}.bin"),
+        };
+        dest_entries.push(DestEntry::new(path, PathType::File));
+    }
+
+    (manifest, dest_entries)
+}
+
+// `prune_set` over the fixed manifest + dest listing (no excludes). Only this
+// body — the set-difference, exclude check, and deepest-first sort — is counted.
+// The first run sets the baseline; a >5% Ir/EstimatedCycles drift fails the gate.
+#[library_benchmark]
+#[bench::fixed(args = (WALK_SCENARIO,), setup = setup_prune_set)]
+fn bench_prune_set(input: (Manifest, Vec<DestEntry>)) -> Vec<String> {
+    let (manifest, dest_entries) = input;
+    black_box(prune_set(
+        black_box(&manifest),
+        black_box(&dest_entries),
+        black_box(&[]),
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Groups + harness. The 5% Ir / EstimatedCycles soft limit is wired in via the
 // group `config` so every benched fn inherits the regression gate.
 // ---------------------------------------------------------------------------
@@ -207,7 +276,7 @@ fn bench_read_pack(input: (TempDir, Vec<u8>)) -> PackReadReport {
 library_benchmark_group!(
     name = hot;
     config = callgrind_5pct();
-    benchmarks = bench_blake3, bench_walk, bench_snapshot_id, bench_read_pack
+    benchmarks = bench_blake3, bench_walk, bench_snapshot_id, bench_read_pack, bench_prune_set
 );
 
 main!(library_benchmark_groups = hot);
