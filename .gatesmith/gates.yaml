@@ -5410,7 +5410,9 @@ gates:
     phase: 32
     owner_agent: adversary
     depends_on: [mirror-durability-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-20T01:11:11Z
+    git_sha: a89439c
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-cli --test mirror_safety && cargo test --workspace && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
