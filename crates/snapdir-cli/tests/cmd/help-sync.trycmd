@@ -109,6 +109,9 @@ Options:
       --to-objects <URI>
           Explicit DESTINATION object pool URI (split dest): objects are written here while manifests go to `--to`. Absent => `--to` is a plain colocated store. Distinct from the global `--objects-store`
 
+      --delete
+          Make the dest store an exact mirror of the source's manifest set: after the copy-in, prune dest manifests not present in the source. Objects are NEVER deleted. Requires a local file:// destination (an object/remote dest is refused). Honors --dryrun
+
   -h, --help
           Print help (see a summary with '-h')
 

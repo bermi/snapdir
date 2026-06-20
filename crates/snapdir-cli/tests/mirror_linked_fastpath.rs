@@ -235,7 +235,7 @@ fn md5_of_bytes_via_snapdir(cache: &Path, home: &Path, tag: &str, content: &[u8]
     let md5 = manifest
         .lines()
         .find(|l| l.starts_with("F "))
-        .and_then(|l| l.splitn(5, ' ').nth(2))
+        .and_then(|l| l.split(' ').nth(2))
         .expect("md5 manifest must have a FILE row with a checksum")
         .to_owned();
     assert_eq!(md5.len(), 32, "md5sum checksum column must be 32-hex");

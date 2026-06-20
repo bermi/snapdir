@@ -750,6 +750,12 @@ pub enum Command {
         /// colocated store. Distinct from the global `--objects-store`.
         #[arg(long, value_name = "URI")]
         to_objects: Option<String>,
+        /// Make the dest store an exact mirror of the source's manifest set:
+        /// after the copy-in, prune dest manifests not present in the source.
+        /// Objects are NEVER deleted. Requires a local file:// destination (an
+        /// object/remote dest is refused). Honors --dryrun.
+        #[arg(long)]
+        delete: bool,
     },
 
     /// Compare two sides, each a set of manifests, reporting file-level
@@ -949,8 +955,16 @@ impl Cli {
                 merge_walk(&mut globals, walk);
                 merge_transfer(&mut globals, transfer);
             }
-            Command::Fetch { transfer } | Command::Sync { transfer, .. } => {
+            Command::Fetch { transfer } => {
                 merge_transfer(&mut globals, transfer);
+            }
+            // `sync` carries the transfer group PLUS its own `--delete` mirror
+            // flag (manifest-set mirror of the dest to the source set).
+            Command::Sync {
+                transfer, delete, ..
+            } => {
+                merge_transfer(&mut globals, transfer);
+                globals.delete = *delete;
             }
             // `checkout`/`pull` also carry the exact-mirror group (`--delete` +
             // the prune-side `--exclude`), folded alongside the transfer flags.
@@ -2740,6 +2754,51 @@ impl Ctx {
         let (meter, reporter) = self.start_progress(jobs);
         if let Some(m) = &meter {
             m.set_phase(Phase::Transfer);
+        }
+
+        // `--delete` upgrades the additive copy-in to a manifest-set MIRROR:
+        // after the copy-in, dest manifests absent from the SOURCE set are
+        // pruned (objects are NEVER deleted). The stores layer refuses an
+        // object/remote dest up front via `supports_mirror()`, surfaced here as
+        // a clear non-zero-exit error. Without `--delete`, behavior is unchanged
+        // (plain additive `sync_snapshot`). The mirror path folds a `SyncReport`,
+        // so both paths report the same copy-in counters; the mirror adds the
+        // manifests-pruned accounting on top.
+        if self.globals.delete {
+            let report = snapdir_stores::sync_snapshot_mirror(
+                &*from_store,
+                &*to_store,
+                id,
+                &config,
+                self.globals.dryrun,
+                meter.as_deref(),
+            );
+            // Clear the live line before ANY stdout/stderr summary write.
+            reporter.finish();
+            let report = report
+                .with_context(|| format!("mirroring snapshot {id} from {from_url} to {to_url}"))?;
+            let sync = &report.sync;
+            if sync.dry_run {
+                if !self.globals.quiet {
+                    eprintln!(
+                        "dry-run: would copy {} object(s) and prune {} manifest(s) for {id}",
+                        sync.objects_copied, report.manifests_pruned
+                    );
+                }
+            } else {
+                // Scriptable id-on-stdout contract (matches push/stage).
+                println!("{id}");
+                if !self.globals.quiet {
+                    eprintln!(
+                        "mirrored {id}: {} copied, {} skipped ({} bytes), {} manifest(s) pruned",
+                        sync.objects_copied,
+                        sync.objects_skipped,
+                        sync.bytes_copied,
+                        report.manifests_pruned
+                    );
+                }
+            }
+            return Ok(());
         }
 
         let report = snapdir_stores::sync_snapshot(

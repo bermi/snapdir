@@ -227,3 +227,105 @@ fn sync_cmd_dryrun_writes_nothing() {
         "dry-run sync must not write to the destination store"
     );
 }
+
+/// `sync --delete` between two `file://` stores makes the dest an exact mirror of
+/// the SOURCE's manifest set: it copies the synced id in AND prunes a dest
+/// manifest that the source does not hold. Objects are never deleted (owned
+/// exhaustively by the stores adversary suite; here we just confirm the CLI
+/// wiring prunes the extraneous manifest and the summary reports it).
+#[test]
+fn sync_cmd_delete_prunes_extraneous_dest_manifest() {
+    let cache = TempDir::new().unwrap();
+    let src_a = TempDir::new().unwrap();
+    let src_b = TempDir::new().unwrap();
+    let store_a = TempDir::new().unwrap();
+    let store_b = TempDir::new().unwrap();
+    build_tree(&src_a);
+    src_b.child("only-b.txt").write_str("extraneous").unwrap();
+
+    let a_str = src_a.path().to_string_lossy().into_owned();
+    let b_str = src_b.path().to_string_lossy().into_owned();
+    let a_url = format!("file://{}", store_a.path().display());
+    let b_url = format!("file://{}", store_b.path().display());
+
+    // Source A holds one snapshot; dest B holds a DIFFERENT snapshot absent from A.
+    let id_a = stdout_ok(cache.path(), &["push", "--store", &a_url, &a_str]);
+    let id_b = stdout_ok(cache.path(), &["push", "--store", &b_url, &b_str]);
+    assert_ne!(id_a, id_b);
+
+    let manifest_b = store_b.path().join(".manifests");
+    let extraneous = walk_find_manifest(&manifest_b, &id_b);
+    assert!(extraneous.exists(), "dest must hold id_b before the mirror");
+
+    // sync --delete A -> B: copy id_a in, prune id_b (absent from A's set).
+    let out = snapdir(cache.path())
+        .args([
+            "sync", "--delete", "--id", &id_a, "--from", &a_url, "--to", &b_url,
+        ])
+        .output()
+        .expect("run snapdir sync --delete");
+    assert!(
+        out.status.success(),
+        "mirror sync must succeed\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains(&format!("mirrored {id_a}")) && stderr.contains("1 manifest(s) pruned"),
+        "mirror summary must report the pruned manifest:\n{stderr}"
+    );
+    assert!(
+        !extraneous.exists(),
+        "the dest manifest absent from the source set must be pruned"
+    );
+    assert!(
+        walk_find_manifest(&manifest_b, &id_a).exists(),
+        "the synced id must be present in the dest after the mirror"
+    );
+}
+
+/// `sync --delete` to an object/remote (`gs://`) destination is refused with a
+/// clear, actionable non-zero-exit error: the stores capability gate
+/// (`supports_mirror()`) fires before any write. (The plain additive `sync`
+/// to such a dest is a separate path; here we only confirm `--delete` is gated.)
+#[test]
+fn sync_cmd_delete_remote_dest_errors_clearly() {
+    let cache = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let store_a = TempDir::new().unwrap();
+    build_tree(&src);
+
+    let src_str = src.path().to_string_lossy().into_owned();
+    let a_url = format!("file://{}", store_a.path().display());
+    let id = stdout_ok(cache.path(), &["push", "--store", &a_url, &src_str]);
+
+    snapdir(cache.path())
+        .args([
+            "sync",
+            "--delete",
+            "--id",
+            &id,
+            "--from",
+            &a_url,
+            "--to",
+            "gs://example-bucket/path",
+        ])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("mirror unsupported").and(predicate::str::contains(
+                "requires a local file:// destination",
+            )),
+        );
+}
+
+/// Locates the on-disk manifest path for `id` under a `file://` store's
+/// `.manifests/` dir, using the frozen `3/3/3/rest` shard layout, so a test can
+/// assert presence / absence after a mirror prune.
+fn walk_find_manifest(manifests_root: &Path, id: &str) -> std::path::PathBuf {
+    manifests_root
+        .join(&id[0..3])
+        .join(&id[3..6])
+        .join(&id[6..9])
+        .join(&id[9..])
+}
