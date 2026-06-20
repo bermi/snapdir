@@ -5354,7 +5354,9 @@ gates:
     phase: 32
     owner_agent: stores
     depends_on: [mirror-sync-spec-tests]
-    status: pending
+    status: passed
+    passed_at: 2026-06-19T23:55:26Z
+    git_sha: 163a353
     failure_count: 0
     verification_cmd: "cargo build --workspace --locked && cargo test -p snapdir-stores --test mirror_sync && cargo test --workspace && test -f crates/snapdir-stores/tests/mirror_sync.rs && test ! -f .gatesmith/pending-tests/mirror_sync.rs"
     pass_criteria:
