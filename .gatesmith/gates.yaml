@@ -5487,8 +5487,9 @@ gates:
     phase: 32
     owner_agent: generic
     depends_on: [mirror-docs]
-    status: pending
-    failure_count: 0
+    status: failed
+    failure_count: 1
+    failure_reason: "FINAL_EXIT=1 on ONE check: typos (conly->only, 5x) in crates/snapdir-cli/tests/mirror_linked_fastpath.rs fixture prefix. All else green (fmt/clippy --all-features/semver/deny/audit/full+MSRV tests/doctests). Fix: rename the conly fixture token (typos-clean), re-run. Not a logic defect."
     verification_cmd: "cargo test --workspace --all-features --locked && bash utils/ci/pre-push.sh --fast && shasum -a 256 -c .gatesmith/manifest-format.sha.lock"
     pass_criteria:
       and:
