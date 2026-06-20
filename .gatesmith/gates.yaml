@@ -5423,7 +5423,9 @@ gates:
     phase: 32
     owner_agent: stores
     depends_on: [mirror-sync-review]
-    status: pending
+    status: passed
+    passed_at: 2026-06-20T00:54:23Z
+    git_sha: dad5ad0
     failure_count: 0
     verification_cmd: "cargo test -p snapdir-stores --test mirror_feasibility && cargo test --workspace"
     pass_criteria:
