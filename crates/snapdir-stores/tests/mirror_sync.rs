@@ -433,6 +433,16 @@ fn mirror_does_not_delete_an_orphan_object_referenced_only_by_a_pruned_manifest(
         object_disk_path(dst_dir.path(), &orphan_sum).exists(),
         "the orphan object file must still be on disk after the mirror prune"
     );
+    // STRONGER (review): the now-orphan object must still READ + BLAKE3-verify
+    // through the store API (a corrupted-but-present file would still satisfy the
+    // on-disk/has_object checks; get_object proves the bytes are intact).
+    let orphan_blob = dest
+        .get_object(&orphan_sum)
+        .expect("orphan object must still read + BLAKE3-verify after the prune");
+    assert_eq!(
+        orphan_blob, orphan_bytes,
+        "the orphan object bytes must be intact after the prune"
+    );
     let _ = id_x;
 }
 
@@ -470,6 +480,20 @@ fn mirror_deletes_no_object_at_all_object_pool_byte_identical() {
             "object file {o:?} was deleted by the mirror prune — objects must NEVER be deleted"
         );
     }
+    // STRONGER (review): `before` is a strict SUBSET of `after` and the pool only
+    // ever GREW — a single new object (X's `x` blob) was copied in, the three
+    // orphaned p1/p2/p3 blobs survived. So `after.len() == before.len() + 1` and
+    // nothing was removed. This rules out a "delete one, copy one" wash that the
+    // subset check alone would miss.
+    assert!(
+        before.is_subset(&after),
+        "the whole .objects/ pool before must be a subset of after (no object removed)"
+    );
+    assert_eq!(
+        after.len(),
+        before.len() + 1,
+        "the pool must grow by exactly the one new copied-in object and lose none"
+    );
 }
 
 /// Collects the set of object FILE leaf paths (relative to root) under
@@ -654,9 +678,15 @@ fn mirror_to_unsupported_dest_is_a_hard_error_and_deletes_nothing() {
     let source = FileStore::from_root(src_dir.path().to_path_buf());
     let dest = RemoteLikeDest::new(dst_dir.path().to_path_buf());
 
-    let (_mx, id_x) = push_tree(&source, "unsup-x", &[("x", b"x to sync\n")]);
+    let (mx, id_x) = push_tree(&source, "unsup-x", &[("x", b"x to sync\n")]);
     // A pre-existing extra manifest in the (file-backed) remote-like dest.
     let (_mp, id_p) = push_tree(&dest.inner, "unsup-p", &[("p", b"must survive\n")]);
+
+    // Snapshot the FULL dest state (manifest set + object pool) before the refused
+    // mirror, so we can prove the refusal changed NOTHING — not just that no delete
+    // was attempted, but that no copy-in mutated the dest either.
+    let manifests_before = sorted_set(dest.inner.list_manifest_ids().unwrap());
+    let objects_before = object_files_on_disk(dst_dir.path());
 
     let err = sync_snapshot_mirror(&source, &dest, &id_x, &cfg(), false, None)
         .expect_err("mirror to an unsupported (non-mirror) dest must be a hard error");
@@ -697,6 +727,31 @@ fn mirror_to_unsupported_dest_is_a_hard_error_and_deletes_nothing() {
             .any(|i| *i == id_p),
         "the pre-existing dest manifest P must survive a refused mirror"
     );
+    // STRONGER (review): the refusal must change NOTHING. The capability gate fires
+    // BEFORE the copy-in, so the dest's manifest SET and the entire `.objects/`
+    // pool are byte-identical to before — no copy-in, no delete, no torn state.
+    assert_eq!(
+        manifests_before,
+        sorted_set(dest.inner.list_manifest_ids().unwrap()),
+        "a refused mirror must leave the dest manifest set byte-identical"
+    );
+    assert_eq!(
+        objects_before,
+        object_files_on_disk(dst_dir.path()),
+        "a refused mirror must leave the dest object pool byte-identical (no copy-in)"
+    );
+    // X's manifest was NOT copied in (the refusal preceded any copy).
+    assert!(
+        dest.inner.get_manifest(&id_x).is_err(),
+        "a refused mirror must NOT have copied the synced manifest in"
+    );
+    // None of X's objects were copied in either.
+    for sum in object_checksums(&mx) {
+        assert!(
+            !dest.inner.has_object(&sum).expect("has_object"),
+            "a refused mirror must NOT have copied any object of X in"
+        );
+    }
 }
 
 #[test]
@@ -733,6 +788,8 @@ fn mirror_dry_run_reports_pruned_set_but_deletes_nothing() {
     let (_ma, id_a) = push_tree(&dest, "dry-a", &[("a", b"A extra\n")]);
     let (_mb, id_b) = push_tree(&dest, "dry-b", &[("b", b"B extra\n")]);
     let before = sorted_set(dest.list_manifest_ids().unwrap());
+    // Also snapshot the object pool: a dry run must leave it byte-identical too.
+    let objects_before = object_files_on_disk(dst_dir.path());
 
     let report =
         sync_snapshot_mirror(&source, &dest, &id_x, &cfg(), true, None).expect("dry-run mirror ok");
@@ -763,6 +820,13 @@ fn mirror_dry_run_reports_pruned_set_but_deletes_nothing() {
     assert!(
         dest.get_manifest(&id_x).is_err(),
         "dry-run must not write the synced manifest"
+    );
+    // STRONGER (review): the entire object pool is byte-identical — a dry run
+    // neither copies a new object in nor (ever) removes one.
+    assert_eq!(
+        objects_before,
+        object_files_on_disk(dst_dir.path()),
+        "dry-run must leave the dest object pool byte-identical"
     );
 
     // The report names what WOULD be pruned. If the impl exposes `pruned_ids`,
@@ -894,4 +958,157 @@ fn mirror_with_empty_dest_only_copies_in_prunes_nothing() {
     assert_manifest_set(&dest, &[id_x.clone()]);
     assert_eq!(report.manifests_pruned, 0, "empty dest prunes nothing");
     dest.get_manifest(&id_x).expect("X present");
+}
+
+// ===========================================================================
+// 8. IMPL-REVEALED cases (review gate, implementation now visible)
+// ===========================================================================
+
+#[test]
+fn mirror_prunes_every_one_of_many_extraneous_manifests_and_report_matches_exactly() {
+    // SPEC invariant 1 + report contract (review-added): a dest seeded with MANY
+    // extraneous manifests {A,B,C,D} (none in the source set) must have ALL of
+    // them pruned by a single mirror, and `MirrorReport.pruned_ids` must be
+    // EXACTLY that set (+ `manifests_pruned == 4`). Pins that the prune loop does
+    // not stop early and that the report's id set is precise, not approximate.
+    let src_dir = TempDir::new("many-src");
+    let dst_dir = TempDir::new("many-dst");
+    let source = FileStore::from_root(src_dir.path().to_path_buf());
+    let dest = FileStore::from_root(dst_dir.path().to_path_buf());
+
+    let (_mx, id_x) = push_tree(&source, "many-x", &[("x", b"the synced one\n")]);
+
+    let (_ma, id_a) = push_tree(&dest, "many-a", &[("a", b"extra A\n")]);
+    let (_mb, id_b) = push_tree(&dest, "many-b", &[("b", b"extra B\n")]);
+    let (_mc, id_c) = push_tree(&dest, "many-c", &[("c", b"extra C\n")]);
+    let (_md, id_d) = push_tree(&dest, "many-d", &[("d", b"extra D\n")]);
+    assert_manifest_set(
+        &dest,
+        &[id_a.clone(), id_b.clone(), id_c.clone(), id_d.clone()],
+    );
+
+    let report =
+        sync_snapshot_mirror(&source, &dest, &id_x, &cfg(), false, None).expect("mirror ok");
+
+    // ALL four extraneous manifests pruned; only X remains.
+    assert_manifest_set(&dest, &[id_x.clone()]);
+    // The report's pruned id set is EXACTLY {A,B,C,D} (the just-synced X excluded).
+    assert_eq!(report.manifests_pruned, 4, "all four extras pruned");
+    assert_eq!(
+        sorted_set(report.pruned_ids.clone()),
+        sorted_set(vec![id_a, id_b, id_c, id_d]),
+        "pruned_ids must be exactly the four absent-from-source manifests"
+    );
+    assert!(
+        !report.pruned_ids.iter().any(|i| *i == id_x),
+        "the just-synced id must never appear in pruned_ids"
+    );
+}
+
+#[test]
+fn filestore_delete_manifest_of_absent_id_is_idempotent() {
+    // delete_manifest contract (review-added, impl-revealed): deleting a manifest
+    // id that is NOT present is idempotent — returns Ok(()), matching the
+    // listing/dedup discipline elsewhere. This underpins the mirror's prune loop
+    // tolerating concurrent/duplicate deletes without erroring. Also confirm it
+    // leaves an unrelated existing manifest + its object untouched.
+    let dir = TempDir::new("idem-del");
+    let store = FileStore::from_root(dir.path().to_path_buf());
+
+    let (mx, id_x) = push_tree(&store, "idem-x", &[("x", b"keep me\n")]);
+    let x_obj = object_checksums(&mx);
+
+    // Deleting a never-existed id: Ok, no panic, nothing changed.
+    store
+        .delete_manifest("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+        .expect("deleting an absent manifest id must be idempotent (Ok)");
+    assert_manifest_set(&store, &[id_x.clone()]);
+
+    // Delete X, then delete X AGAIN — the second delete is still Ok (idempotent).
+    store.delete_manifest(&id_x).expect("first delete ok");
+    assert!(
+        store.get_manifest(&id_x).is_err(),
+        "X manifest gone after delete"
+    );
+    store
+        .delete_manifest(&id_x)
+        .expect("re-deleting the now-absent id must be idempotent (Ok)");
+
+    // delete_manifest NEVER touches objects: X's object still exists on disk and
+    // reads back even though its manifest is gone (it is now an orphan).
+    for sum in &x_obj {
+        assert!(
+            object_disk_path(dir.path(), sum).exists(),
+            "delete_manifest must never remove an object file"
+        );
+        assert!(
+            store.has_object(sum).expect("has_object"),
+            "the object of a deleted manifest must survive (no object GC)"
+        );
+    }
+}
+
+#[test]
+fn default_streamstore_delete_manifest_and_supports_mirror_refuse() {
+    // SPEC invariant 4 (capability default, impl-revealed): a StreamStore that does
+    // NOT override the mirror capability inherits supports_mirror() == false and a
+    // delete_manifest() that HARD-ERRORS (typed StoreError, no silent success).
+    // Our RemoteLikeDest forwards delete to its FileStore inner, so build a pure
+    // default-impl double that overrides NOTHING to pin the trait defaults.
+    let dir = TempDir::new("default-cap");
+    let inner = FileStore::from_root(dir.path().to_path_buf());
+
+    struct DefaultsOnly {
+        inner: FileStore,
+    }
+    impl Store for DefaultsOnly {
+        fn get_manifest(&self, id: &str) -> Result<Manifest, StoreError> {
+            self.inner.get_manifest(id)
+        }
+        fn fetch_files(&self, manifest: &Manifest, dest: &Path) -> Result<(), StoreError> {
+            self.inner.fetch_files(manifest, dest)
+        }
+        fn push(&self, manifest: &Manifest, source: &Path) -> Result<(), StoreError> {
+            self.inner.push(manifest, source)
+        }
+    }
+    impl StreamStore for DefaultsOnly {
+        fn has_object(&self, checksum: &str) -> Result<bool, StoreError> {
+            self.inner.has_object(checksum)
+        }
+        fn get_object(&self, checksum: &str) -> Result<Vec<u8>, StoreError> {
+            self.inner.get_object(checksum)
+        }
+        fn put_object(&self, checksum: &str, bytes: Vec<u8>) -> Result<(), StoreError> {
+            self.inner.put_object(checksum, bytes)
+        }
+        fn put_manifest(&self, id: &str, manifest: &Manifest) -> Result<(), StoreError> {
+            self.inner.put_manifest(id, manifest)
+        }
+        fn list_manifest_ids(&self) -> Result<Vec<String>, StoreError> {
+            self.inner.list_manifest_ids()
+        }
+        // supports_mirror + delete_manifest deliberately NOT overridden -> defaults.
+    }
+
+    let store = DefaultsOnly { inner };
+    // Default supports_mirror() is false (only FileStore opts in).
+    assert!(
+        !store.supports_mirror(),
+        "the default StreamStore must NOT support mirroring"
+    );
+    // Default delete_manifest() hard-errors (typed, not a panic, not a silent Ok).
+    let err = store
+        .delete_manifest("anything")
+        .expect_err("the default delete_manifest must hard-error, not silently succeed");
+    match &err {
+        StoreError::Backend { message, .. } => {
+            let m = message.to_lowercase();
+            assert!(
+                m.contains("delete") || m.contains("mirror") || m.contains("unsupported"),
+                "the default refusal should explain delete/mirror is unsupported; got: {message}"
+            );
+        }
+        other => panic!("default delete_manifest should be a Backend error, got {other:?}"),
+    }
 }
