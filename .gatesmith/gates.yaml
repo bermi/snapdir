@@ -5615,7 +5615,8 @@ gates:
     phase: 32
     owner_agent: generic
     depends_on: [release-prep-1.10.0]
-    status: pending
+    status: passed
+    git_sha: 1be5bc0
     failure_count: 0
     verification_cmd: "git ls-remote --heads origin refs/heads/release-verify/1.10.0 | grep -q release-verify/1.10.0"
     pass_criteria:
