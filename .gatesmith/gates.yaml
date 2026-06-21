@@ -5589,3 +5589,76 @@ gates:
         - exit_code: 0
     human_checkpoint: false
     description: "ADVERSARY review of the linked-fastpath cluster; weakening audit vs staged; re-assert the byte-identical keystone + no-content-read proof + strict-verify-forces-rehash + wrong-algo-disables + escaped/dangling guards; add impl-revealed cases (canonicalization/symlink-chain edges, object key validation). No weakening; workspace + frozen lock green."
+
+  # ============================================================================
+  # Phase 32 RELEASE chain — snapdir 1.10.0 (operator-approved 2026-06-21).
+  # Minor bump (additive-only; semver-checks clean). Modeled verbatim on the
+  # release-*-1.9.0 chain. Branch model: dev keeps .gatesmith; release-verify/main/
+  # upstream are .gatesmith-free; PM splits code vs ledger commits. RELEASE GOTCHAS:
+  # release-prep MUST author the empty CHANGELOG [Unreleased] + verify fmt/clippy
+  # --all-features/typos (not just test); TP pre-check all 6 crate pages before tag.
+  # ============================================================================
+  - id: release-prep-1.10.0
+    phase: 32
+    owner_agent: generic
+    depends_on: [mirror-verify]
+    status: pending
+    failure_count: 0
+    verification_cmd: "grep -qE '^version = \"1.10.0\"' Cargo.toml && cargo build --workspace --locked && grep -q '1.10.0' docs/rust-port/CHANGELOG.md && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && typos"
+    pass_criteria:
+      and:
+        - exit_code: 0
+    human_checkpoint: false
+    description: "RELEASE PREP 1.10.0. Author the EMPTY CHANGELOG [Unreleased] with the Phase-32 entries — Added: exact-mirror `checkout`/`pull --delete` + `--exclude` (deepest-first prune, --dryrun); `--linked` read-only zero-copy materialization; linked-mode checksum-reuse fast path for `id`/`manifest` (checksum-only); `sync --delete` manifest-set mirror (objects never deleted, local file:// only) — then fold [Unreleased] -> [1.10.0] - 2026-06-21 + fresh [Unreleased] + compare-links. Bump 1.9.0->1.10.0: root Cargo.toml workspace.package.version + the path-dep pins (snapdir-core/-catalog/-stores; add snapdir-ssh-store if pinned) + crates/snapdir/Cargo.toml snapdir-cli pin + regenerate Cargo.lock. Gatesmith-free code commit (Cargo.toml/Cargo.lock/crates/snapdir/Cargo.toml/CHANGELOG). Verification includes fmt + clippy --all-features + typos (the 1.8.0/1.9.0 release gotcha)."
+  - id: release-verify-branch-1.10.0
+    phase: 32
+    owner_agent: generic
+    depends_on: [release-prep-1.10.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git ls-remote --heads origin refs/heads/release-verify/1.10.0 | grep -q release-verify/1.10.0"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "release-verify/1.10.0 built OFF upstream/main with the net Phase-32 code diff (ZERO .gatesmith/.claude/utils-dx), tip=1.10.0, pushed to origin; bench-verify.yml GREEN on Linux (the real native-amd64 iai run — fill the benches/baselines/mirror_prune_set.json null metrics from it); local pre-push CI mirror passed. Approve?"
+    human_checkpoint: true
+    description: "RELEASE VERIFY BRANCH (human checkpoint). PM builds release-verify/1.10.0 OFF upstream/main applying the net Phase-32 code diff (EXCLUDE .gatesmith/, .claude/, utils/dx/), tip=1.10.0, ZERO .gatesmith; push origin; bench-verify.yml green on Linux (real iai run); then escalate. Then operator drives PR -> tag+crates (TP pre-check all 6!) -> phase32-release-complete."
+  - id: release-pr-upstream-1.10.0
+    phase: 32
+    owner_agent: generic
+    depends_on: [release-verify-branch-1.10.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.10.0\"'"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "PR release-verify/1.10.0 -> snapdir/snapdir was opened (title 'release: 1.10.0', body = CHANGELOG [1.10.0]), the full CI matrix went green (lint/deny/test-matrix incl. loopback-sshd on ubuntu+macos, the required reflink Btrfs FICLONE job, static-musl, coverage, crate-age >=3 days), and it was squash-merged; upstream/main is now at 1.10.0 with ZERO .gatesmith. Approve?"
+    human_checkpoint: true
+    description: "RELEASE PR UPSTREAM (human checkpoint, IRREVERSIBLE — merges to the canonical repo). Open PR release-verify/1.10.0 -> snapdir/snapdir main, wait for the full CI matrix (incl. the required reflink Btrfs FICLONE job + loopback-sshd + musl leg + crate-age), operator-authorized squash-merge. PM machine-check: upstream/main Cargo.toml shows 1.10.0."
+  - id: release-tag-crates-1.10.0
+    phase: 32
+    owner_agent: packaging
+    depends_on: [release-pr-upstream-1.10.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git ls-remote --tags upstream refs/tags/v1.10.0 | grep -q v1.10.0 && for c in snapdir-core snapdir-catalog snapdir-stores snapdir-ssh-store snapdir-cli snapdir; do curl -sf \"https://index.crates.io/$(printf %s \"$c\" | cut -c1-2)/$(printf %s \"$c\" | cut -c3-4)/$c\" | grep -q '\"vers\":\"1.10.0\"' || exit 1; done"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "v1.10.0 is tagged on snapdir/snapdir, the GitHub release is live (signed archives + SHA256SUMS/SLSA), and ALL 6 crates are at 1.10.0 on crates.io. Approve?"
+    human_checkpoint: true
+    description: "RELEASE TAG + CRATES (human checkpoint, IRREVERSIBLE — permanent tag + crates.io publish). *** TP PRE-CHECK FIRST (1.7.0/1.9.0 lesson): BEFORE tagging confirm Trusted Publishing is attached on ALL 6 crate pages (snapdir-core/-catalog/-stores/-ssh-store/-cli/snapdir) for repo=snapdir/snapdir workflow=release.yml, no environment. *** Then tag v1.10.0 on the merged upstream/main commit + push -> release.yml builds per-target archives + signed/SLSA GitHub release + the idempotent 6-crate publish in dep order (snapdir-core -> -catalog -> -stores -> -ssh-store -> -cli -> snapdir; skip-if-published makes a re-run safe). PM machine-check: upstream tag v1.10.0 AND crates.io sparse index shows 1.10.0 for all SIX crates."
+  - id: phase32-release-complete
+    phase: 32
+    owner_agent: generic
+    depends_on: [release-tag-crates-1.10.0]
+    status: pending
+    failure_count: 0
+    verification_cmd: "git fetch upstream --quiet && git show upstream/main:Cargo.toml | grep -qE '^version = \"1.10.0\"'"
+    pass_criteria:
+      and:
+        - exit_code: 0
+        - human_confirm: "Phase 32 RELEASED end-to-end: snapdir 1.10.0 — canonical snapdir/snapdir at 1.10.0, tag v1.10.0, GitHub release live, all 6 crates on crates.io. Ships exact-mirror --delete + materialization modes (--linked) + linked checksum-reuse fast path + sync --delete manifest-set mirror; frozen format untouched; durability + destructive-safety keystones adversarially verified. Approve?"
+    human_checkpoint: true
+    description: "PHASE 32 RELEASE SIGN-OFF (human checkpoint): snapdir 1.10.0 released end-to-end. The exact-mirror feature (28 build/verify gates + 5 release gates) shipped to crates.io. Closes Phase 32."
