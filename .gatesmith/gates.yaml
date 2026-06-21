@@ -5602,7 +5602,8 @@ gates:
     phase: 32
     owner_agent: generic
     depends_on: [mirror-verify]
-    status: pending
+    status: passed
+    git_sha: 053503c
     failure_count: 0
     verification_cmd: "grep -qE '^version = \"1.10.0\"' Cargo.toml && cargo build --workspace --locked && grep -q '1.10.0' docs/rust-port/CHANGELOG.md && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && typos"
     pass_criteria:
