@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-06-21
+
+### Added
+
+- **Exact-mirror `--delete` on `checkout` and `pull`.** With `--delete`, the
+  destination becomes an exact mirror of the snapshot: files and directories
+  present in the destination but absent from the manifest are pruned
+  (deepest-first). Pruning is literal-exact and content-free (no hashing). Use
+  `--exclude <regex>` to protect destination paths from pruning, and `--dryrun`
+  to list the exact deletion set without removing anything. The operation
+  hard-refuses dangerous destinations (`/`, `$HOME`, the cache dir, a store
+  path) with no `--force` bypass, never deletes outside the destination root,
+  and removes — never follows — a symlink that escapes the destination.
+- **`--linked` read-only materialization (the flag is now real).** `checkout`
+  can now materialize the destination as `0444` symlinks into the local store's
+  content-addressed objects — a zero-copy, read-only "thin" view that works on
+  any filesystem. Writing through a link fails (objects stay `0444`), so the
+  shared store can never be corrupted. `--linked` against a non-local object
+  source (a remote store/cache) is a hard error. The default (auto) mode is
+  unchanged: reflink (copy-on-write) where the destination filesystem supports
+  it, else a plain copy — independent, editable inodes either way.
+- **Linked-mode checksum-reuse fast path.** Running `snapdir id`/`manifest` over
+  a `--linked` tree recovers each object's BLAKE3 checksum directly from the
+  object path without reading or re-hashing the bytes. The fast path is
+  checksum-only and strictly gated: plain non-keyed BLAKE3 + a known local store
+  only; a non-default `--checksum-bin` or a keyed manifest context falls back to
+  a normal re-hash, as does `SNAPDIR_VERIFY_COPIES=1` (which additionally errors
+  on any mismatch). A dangling object link is reported as a typed error.
+- **`snapdir sync --delete` — manifest-set mirror.** After copying the snapshot,
+  `sync --delete` deletes destination manifests that are not in the source
+  store's manifest set (copy-in always happens before any delete). Objects are
+  **never** deleted — garbage collection is out of scope, so orphaned objects
+  are left harmless and reclaimable. `--delete` is supported on local `file://`
+  destinations only and is a clear hard error against object/remote stores
+  (s3/gcs/b2/ssh).
+
+### Changed
+
+- **Whole-operation atomicity where it is free.** When materialization is
+  zero-copy (reflink on a copy-on-write filesystem, or `--linked` symlinks), a
+  mirror is applied as an atomic staged swap (build a sibling tree, then
+  `rename`) so the destination is never observed in a torn state. On non-CoW
+  plain-copy destinations an atomic swap would duplicate bytes, so it is a hard
+  error and the mirror runs in-place (per-file atomic) instead. In every mode, a
+  process holding a pruned or swapped-out file open keeps reading the old bytes
+  until it closes the descriptor (POSIX inode semantics).
+
 ## [1.9.0] - 2026-06-17
 
 ### Added
@@ -547,7 +594,8 @@ Bash-written caches and remote buckets stay mutually readable.
   `gcloud`) in the shipped binary. External tools are used only by the test/oracle
   harness.
 
-[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/snapdir/snapdir/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/snapdir/snapdir/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/snapdir/snapdir/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/snapdir/snapdir/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/snapdir/snapdir/compare/v1.6.0...v1.7.0
