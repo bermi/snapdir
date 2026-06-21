@@ -5643,7 +5643,8 @@ gates:
     phase: 32
     owner_agent: packaging
     depends_on: [release-pr-upstream-1.10.0]
-    status: pending
+    status: passed
+    git_sha: 5fef1d9
     failure_count: 0
     verification_cmd: "git ls-remote --tags upstream refs/tags/v1.10.0 | grep -q v1.10.0 && for c in snapdir-core snapdir-catalog snapdir-stores snapdir-ssh-store snapdir-cli snapdir; do curl -sf \"https://index.crates.io/$(printf %s \"$c\" | cut -c1-2)/$(printf %s \"$c\" | cut -c3-4)/$c\" | grep -q '\"vers\":\"1.10.0\"' || exit 1; done"
     pass_criteria:
